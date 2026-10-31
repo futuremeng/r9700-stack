@@ -76,18 +76,24 @@ def one(base, prompt, max_tokens):
 
 
 def aggregate(base, conc, max_tokens=256):
+    """(aggregate tok/s over the wave's wall time, per-request tok/s for every stream in the wave).
+
+    Both are needed: at 32 streams this model earns ~1,500 tok/s as a box while every one of those streams
+    runs at ~45. A per-stream number is each request's own completion tokens over its own latency, so it
+    carries queueing and time-to-first-token -- that is what a client feels."""
     res, lock = [], threading.Lock()
 
     def w(i):
-        ct, _, _ = one(base, _nonce() + f"Explain concept number {i}: describe tensor parallelism in depth.",
-                       max_tokens)
+        ct, _, dt = one(base, _nonce() + f"Explain concept number {i}: describe tensor parallelism in depth.",
+                        max_tokens)
         with lock:
-            res.append(ct)
+            res.append((ct, dt))
     t0 = time.perf_counter()
     ts = [threading.Thread(target=w, args=(i,)) for i in range(conc)]
     [t.start() for t in ts]
     [t.join() for t in ts]
-    return sum(res) / (time.perf_counter() - t0)
+    wall = time.perf_counter() - t0
+    return sum(ct for ct, _ in res) / wall, [ct / dt for ct, dt in res]
 
 
 def prefill(base, words):
@@ -117,7 +123,13 @@ def run(a):
     metrics["single_decode_tok_s"] = sd
     metrics["single_ttft_ms"] = ttft
     for c in ((8,) if a.quick else (4, 8, 16)):
-        metrics[f"agg{c}_tok_s"] = [aggregate(base, c) for _ in range(max(2, reps // 2 + 1))]
+        aggs, per_stream = [], []
+        for _ in range(max(2, reps // 2 + 1)):
+            agg, streams = aggregate(base, c)
+            aggs.append(agg)
+            per_stream += streams
+        metrics[f"agg{c}_tok_s"] = aggs
+        metrics[f"stream{c}_tok_s"] = per_stream
     for w in ((2000,) if a.quick else (2000, 8000)):
         metrics[f"prefill{w}w_tok_s"] = [prefill(base, w) for _ in range(max(2, reps // 2 + 1))]
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)

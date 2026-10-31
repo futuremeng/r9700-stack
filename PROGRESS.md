@@ -40,6 +40,12 @@
   EngineCore 1.00 spinning, API 0.05); at 16-32 streams the cards sit at ~300 W and the DPM pulls sclk from
   3.3 GHz to 2.0-2.3 GHz. Per joule: 0.21 tok/J single-stream -> 1.30 at 32 streams.
 
+* **Per-stream rate added to the bench** (`bench.py` prints it, `harness.py` records `streamN_tok_s`): reading
+  only the aggregate hid the real knee. 300-token outputs: 1 stream 193 tok/s; 8 -> 900 aggregate but **119.6 a
+  stream**; 16 -> 1,203 / 79.8; **32 -> 1,537 / 50.5 (spread 48-54)**; 48 -> 1,454 / 48.2 (spread 30-53); 64 ->
+  1,532 / 34.8. The box saturates at ~1,530 while every client keeps getting slower and the spread opens up past
+  32 in flight -- the `NSEQ=32` choice holds on fairness as well as throughput.
+
 ## 2026-10-07 (evening): prefill kernels, the KV cache, and two things that did not pay
 
 - **Fused fp8 hyper-connection up GEMM + gate mix** on the tiled WMMA kernel: 268-298 us vs the 665-674 us bf16

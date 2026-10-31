@@ -181,6 +181,27 @@ or an in-tree load profiler. `R9K_MTP_MLP=off` is not a usable probe: the draft 
   launch dies with `Free memory on device cuda:0 (0.0/31.86 GiB)`. Kill those PIDs too; that is also where the
   swap residue came from.
 
+**Concurrency: always read the per-stream rate next to the aggregate** (`bench/bench.py` and
+`bench/harness.py` now report both: `aggN_tok_s` is what the box earns, `streamN_tok_s` is what a client feels --
+each request's own completion tokens over its own latency, queueing and TTFT included). Same server, 300-token
+outputs:
+
+| in flight | aggregate | per stream (median) | spread | median wall for 300 tok |
+|---:|---:|---:|---:|---:|
+| 1 | 193 | 193.0 | - | 1.6 s |
+| 4 | 544 | 146.8 | 136-157 | 2.0 s |
+| 8 | 900 | 119.6 | 113-123 | 2.5 s |
+| 16 | 1,203 | 79.8 | 75-90 | 3.8 s |
+| **32** | **1,537** | **50.5** | 48-54 | 5.9 s |
+| 48 | 1,454 | 48.2 | **30-53** | 6.2 s |
+| 64 | 1,532 | 34.8 | 24-56 | 9.2 s |
+
+The aggregate saturates at ~1,530 from 32 streams on (the power wall above), while the per-stream rate keeps
+falling and its spread blows up past 32: at 48 in flight the aggregate drops and the slowest stream is at 30.4
+against the median 48.2. So the `NSEQ=32` knee shows up twice, once in throughput and once in fairness, and the
+aggregate alone would have hidden the second one. Even eight streams in flight give every client 119.6 tok/s --
+faster than the fastest single stream the GGUF/Strata stack on this box managed (90-97).
+
 ## How to run it again
 
 ```
