@@ -32,6 +32,20 @@ export GPU_MAX_HW_QUEUES=${HWQ:-1} HSA_ENABLE_MWAITX=${MWAITX:-1} OMP_NUM_THREAD
 export R9K_MTP_QUANT_ROWS PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 export R9K_LIB=$SO VLLM_CACHE_ROOT=${VLLM_CACHE_ROOT:-$HOME/vllm-native-cache} TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-$HOME/vllm-native-triton}
 
+# Pre-flight. Measured 2026-10-31: SIGTERM does not stop the ranks -- pkill'ing the API server leaves four
+# VLLM::Worker_TP* holding 27-31 GiB a card, and the next launch dies with "Free memory on device cuda:0
+# (0.0/31.86 GiB)". Refuse rather than eat a 2-minute failure; STOP=1 clears them, FORCE=1 launches anyway.
+if [ "${STOP:-0}" = 1 ]; then
+  pkill -9 -f 'VLLM[::]' 2>/dev/null; pkill -9 -f 'vll[m] serve' 2>/dev/null; sleep 5
+  echo "leftover vLLM processes after STOP: $(pgrep -cf 'VLLM[::]|vll[m] serve')"; exit 0
+fi
+LEFT=$(pgrep -cf 'VLLM[::]' || true)
+if [ "${FORCE:-0}" != 1 ] && [ "${LEFT:-0}" -gt 0 ]; then
+  echo "refusing to launch: $LEFT vLLM process(es) still holding the GPUs (SIGTERM does not stop the ranks)." >&2
+  echo "  clear them: STOP=1 bash serve/native-flashnext.sh    (FORCE=1 to launch anyway)" >&2
+  exit 1
+fi
+
 # Defaults by tensor-parallel size. NBT=8192 / NSEQ=32 are measured at TP4 with everything resident in VRAM:
 # the chunk is +5.4% prefill at 7.8k (9,331 -> 9,831) and +3.5% at 31k, +4.4% aggregate at conc 16, for 64k KV
 # tokens (563,692 -> 499,815, still 15.2x at 32k); the slots are +18% aggregate at 32 clients in flight
