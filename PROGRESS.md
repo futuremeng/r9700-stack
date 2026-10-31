@@ -53,8 +53,10 @@
   not disk). Aggregate 147 @8 / 135 @16 with 18.8 / 12.5 a stream; prefill 4,190 / 4,582. Host memory adds up
   exactly as `38.7 (PLE int6, TP-independent) + TP x OFFLOAD_GB + TP x 4.3 + page cache`: at TP2 that is 92.5 GiB
   touched with only 12 a rank. **The repo's TP2 default (34 a rank) needs ~135 GiB -- 192 GiB is the comfortable
-  size. Four cards needs none of it: 56-60 GiB steady/peak, and its ceiling is VRAM plus the ~300 W envelope.**
-  Also: SIGTERM does not stop the ranks -- `kill -9` the PIDs from `rocm-smi --showpids`.
+  size.** Four cards fits (30+ GiB spare in steady state) but the load still swaps ~4.1 GiB even from a clean
+  start, and starting a second server on top of a live one cost **171.3 vs 186.4 tok/s** single-stream -- which
+  is what the launcher's new pre-flight guard (`STOP=1` / `FORCE=1`) is for. Four-card's ceiling stays VRAM plus
+  the ~300 W envelope. Also: SIGTERM does not stop the ranks -- `kill -9` the PIDs from `rocm-smi --showpids`.
 
 ## 2026-10-07 (evening): prefill kernels, the KV cache, and two things that did not pay
 

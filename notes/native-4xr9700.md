@@ -239,9 +239,16 @@ against 93.8 installed, low-water `MemAvailable` 14.6 GiB. Per rank 19.4 + 12.2 
 
 So, for the RAM question:
 
-* **4 cards needs no more RAM.** Steady RSS ~56 GiB, peak ~60 GiB of the 93.8: the pinned tables are only 9.7 GiB
-  a rank, nothing is offloaded, and there were 30+ GiB to spare the whole time. Buying memory changes nothing
-  about this config -- its ceiling is VRAM (31.86 GiB a card) and the ~300 W power envelope.
+* **4 cards fits, but the load leans on swap.** Steady state is comfortable -- 56 GiB used, `MemAvailable` 37 GiB,
+  nothing faulting during serving (60 pages in during a 100-token decode) -- and there is 30+ GiB of headroom.
+  But on a completely clean start (87 GiB available, 102 MiB swapped) the TP4 load still ends with **4.1 GiB in
+  swap, ~0.53 GiB of it inside each rank**: the pinned 38.7 GiB plus four ranks' load-time temporaries plus the
+  page cache the kernel wants to keep for a 110.6 GiB read is more than 93.8 GiB wants to hold. It costs little
+  (decode measured at baseline right after), but 128 GiB would take the last of that risk out.
+* **Overlapping two servers on this box measurably costs speed.** The launch that ran while the TP2 ranks were
+  still alive (78 GiB used) came up with ~0.5 GiB swapped a rank and read **171.3 tok/s single-stream**;
+  the same config started clean reads **186.4**. Aggregate across those two states stayed inside the usual
+  restart spread (1,148-1,190 @16). That is the practical reason for the launcher's new pre-flight guard.
 * **2 cards with the repo's default needs ~135 GiB**: 38.7 + 2x34 + 8.6 = 115 GiB resident, plus ~20 GiB of page
   cache for the checkpoint read. 128 GiB would be tight (that is only 13 GiB of headroom over the resident part),
   **192 GiB is the size that makes TP2 a comfortable, supported config** -- the reference box has 256 GiB.
