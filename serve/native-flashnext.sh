@@ -34,7 +34,10 @@ export R9K_LIB=$SO VLLM_CACHE_ROOT=${VLLM_CACHE_ROOT:-$HOME/vllm-native-cache} T
 
 ARGS=(--served-model-name "${SERVED_NAME:-Qwen3.8}" --host 0.0.0.0 --port "${PORT:-8080}"
       --tensor-parallel-size "${TP:-4}" --max-model-len "${MAXLEN:-32768}"
-      --max-num-seqs "${NSEQ:-16}" --max-num-batched-tokens "${NBT:-4096}"
+      --max-num-seqs "${NSEQ:-16}" --max-num-batched-tokens "${NBT:-8192}"   # TP4 on this box, 2026-10-31: 4096 -> 8192
+      # is +5.4% prefill at 7.8k (9,331 -> 9,831) and +3.5% at 31k (8,909 -> 9,220), +4.4% aggregate at conc 16
+      # (1,163 -> 1,214), decode and conc-8 unchanged; it costs 64k KV tokens (563,692 -> 499,815, still 15.2x
+      # at 32k). serve/flashnext.sh keeps 4096: at TP2 with offloaded experts that chunk has no KV room.
       --gpu-memory-utilization "${UTIL:-$([ "${TP:-4}" = 4 ] && echo 0.97 || echo 0.94)}"
       --reasoning-parser qwen3 --tool-call-parser qwen3_coder --enable-auto-tool-choice
       --language-model-only)

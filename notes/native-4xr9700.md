@@ -68,6 +68,23 @@ GGUF, 4-card layer split, 8 slots): single-stream decode 90-97 tok/s, prompt-4k 
 is ~2x single-stream decode, 2.3-4x prompt processing and ~6x at 16 concurrent requests — for ~4.5
 effective bits a weight against IQ3_S's 3, and with a 555k-token KV pool against Strata's ~22k slots.
 
+## Knob A/B on this box (each change measured alone, one commit each)
+
+**`--max-num-batched-tokens` 4096 -> 8192** (native TP4 default now; two launches, `bench/prefill.py` repeated 3x
+at NBT=8192 so the spread is shown, `bench/bench.py`, `bench/itl.py`):
+
+| | NBT 4096 | NBT 8192 |
+|---|---:|---:|
+| prefill 7.8k tok | 9,331 | **9,686-9,867** (+4-5%) |
+| prefill 31k tok | 8,909 | **9,190-9,221** (+3.3-3.5%) |
+| single-stream decode | 187.0 | 187.0 |
+| aggregate @8 / @16 | 842 / 1,163 | 844 / **1,214** (+4.4%) |
+| KV pool | 563,692 tok | 499,815 tok (-64k, still 15.2x at 32k) |
+
+vLLM itself warns about the 4096 chunk under speculative decoding (`max_num_scheduled_tokens is set to 4096
+... may lead to suboptimal`). `serve/flashnext.sh` stays at 4096: at TP2 with offloaded experts that chunk
+price has no KV room.
+
 ## How to run it again
 
 ```
@@ -76,7 +93,7 @@ cd ~/r9700-stack/kernels && HIPCFLAGS=-I$HOME/opt/rocm-dev/opt/rocm/core-10.1/in
   && cp libr9k.so ../r9700_vllm/kernels/
 # serve (TP4, everything in VRAM)
 cd ~/r9700-stack && GPUS=0,1,2,3 TP=4 OFFLOAD_GB=0 NSEQ=16 MAXLEN=32768 UTIL=0.97 \
-  bash serve/native-flashnext.sh           # log: ~/logs/serve-tp4.out
+  bash serve/native-flashnext.sh           # log: ~/logs/serve-tp4.out  (NBT defaults to 8192)
 # check
 ~/venv-r9700/bin/python3 bench/warmup.py && ~/venv-r9700/bin/python3 bench/bench.py run
 ~/venv-r9700/bin/python3 bench/quality.py 100 8
