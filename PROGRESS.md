@@ -30,6 +30,11 @@
   Single-stream decode and long-context prefill do not move; the gate (GSM8K 97/100, needles 3/3, 64 sanity
   answers at conc 16) is clean.
 
+* **Not adopted: `R9K_AR4_SDMA=1`** on a Gen5 host (@32 1,440 -> 1,402, @8 844 -> 822, decode unchanged) -- the
+  2026-10-07 DMA-push result holds when the uplink is already saturated. **Load floor**: dummy 8.8 s, real 143.8 s,
+  116.5 with `R9K_FOLD=0` (the fold repack is ~27 s), disk alone 19 s at 5.8 GB/s -- the rest is per-tensor repack
+  under page-cache pressure, four ranks at once, with 38.7 GiB of RAM already pinned before the load starts.
+
 ## 2026-10-07 (evening): prefill kernels, the KV cache, and two things that did not pay
 
 - **Fused fp8 hyper-connection up GEMM + gate mix** on the tiled WMMA kernel: 268-298 us vs the 665-674 us bf16

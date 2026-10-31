@@ -125,6 +125,28 @@ compute-bound and does not move with slots, and vLLM still admits only 15.2 requ
 so nothing breaks for long-context traffic. Gate at the new defaults: GSM8K 97/100, needles 3/3,
 `sanity_stress --rounds 4 --conc 16` 0 bad of 64.
 
+**`R9K_AR4_SDMA=1` does not pay here either** (same launch otherwise, NSEQ=32 / NBT=8192): single-stream decode
+187.0 and ITL 14.0 ms unchanged, aggregate @8 844 -> 822, @32 1,429-1,440 -> 1,402, prefill 7.8k 9,686-9,867 ->
+9,736. Matches `PROGRESS.md` 2026-10-07 (the DMA-push variant of the ar4 stage loses): the kernel-driven pushes
+already saturate the Gen5 uplink and the SDMA path just adds a queue round trip. Not adopted.
+
+**Load-time decomposition** (`--load-format dummy` for the floor, `R9K_FOLD=0` for the folded-exponent repack,
+`bench`-free launches, the `Model loading took N seconds` line, NSEQ=32 config):
+
+| | seconds |
+|---|---:|
+| dummy (construct + PLE pinned table + graph-independent init, no checkpoint) | **8.8** |
+| real load, `R9K_FOLD=0` | 116.5 |
+| real load, defaults | 143.8 |
+| the same 110.6 GiB read once, O_DIRECT single stream | ~19 |
+
+So the fold repack is ~27 s and the remaining ~108 s is safetensors iteration plus the per-tensor repacks
+(MXFP4 expert repack, fp8 hyper-connection quantization, int6 PLE shard writes) -- four ranks doing it at once
+while 38.7 GiB of RAM is already pinned, which is also why the per-shard progress bars disagree wildly in the
+same launch (1:13 to 2:52 across ranks, and identical expert shards taking 3 s, 24 s and 43 s). py-spy cannot
+attach without ptrace on this box (`Permission Denied`), so a real flame graph needs `kernel.yama.ptrace_scope=0`
+or an in-tree load profiler. `R9K_MTP_MLP=off` is not a usable probe: the draft does not load without it.
+
 ## How to run it again
 
 ```
