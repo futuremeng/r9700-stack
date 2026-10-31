@@ -46,6 +46,16 @@
   1,532 / 34.8. The box saturates at ~1,530 while every client keeps getting slower and the spread opens up past
   32 in flight -- the `NSEQ=32` choice holds on fairness as well as throughput.
 
+* **Two-card probe on 93.8 GiB of host RAM (the RAM question):** TP2 with the biggest offload that fits
+  (`OFFLOAD_GB=12` a rank) boots but is boxed in -- load 327.5 s swapping 4.1 -> 6.1 GiB, `Available KV cache
+  memory` only **2.18 GiB (134,795 tokens, 4.11x at 32k)** against 491,520 at TP4, and decode 62 tok/s warm
+  decaying to 9.5 within minutes (swap traffic during decode was 60 pages, so it is the streamed-expert path,
+  not disk). Aggregate 147 @8 / 135 @16 with 18.8 / 12.5 a stream; prefill 4,190 / 4,582. Host memory adds up
+  exactly as `38.7 (PLE int6, TP-independent) + TP x OFFLOAD_GB + TP x 4.3 + page cache`: at TP2 that is 92.5 GiB
+  touched with only 12 a rank. **The repo's TP2 default (34 a rank) needs ~135 GiB -- 192 GiB is the comfortable
+  size. Four cards needs none of it: 56-60 GiB steady/peak, and its ceiling is VRAM plus the ~300 W envelope.**
+  Also: SIGTERM does not stop the ranks -- `kill -9` the PIDs from `rocm-smi --showpids`.
+
 ## 2026-10-07 (evening): prefill kernels, the KV cache, and two things that did not pay
 
 - **Fused fp8 hyper-connection up GEMM + gate mix** on the tiled WMMA kernel: 268-298 us vs the 665-674 us bf16

@@ -202,6 +202,62 @@ against the median 48.2. So the `NSEQ=32` knee shows up twice, once in throughpu
 aggregate alone would have hidden the second one. Even eight streams in flight give every client 119.6 tok/s --
 faster than the fastest single stream the GGUF/Strata stack on this box managed (90-97).
 
+## Two-card probe (2026-10-31): what host RAM costs, in GiB per rank
+
+Flash-Next on two cards is the repo's offloaded-expert recipe (`serve/flashnext.sh` defaults to TP2 with
+`OFFLOAD_GB=34` a rank, "needs the 256 GB VM"). This box has **93.8 GiB**, so the probe was run with the biggest
+offload that fits: `GPUS=0,1 TP=2 OFFLOAD_GB=12 UTIL=0.96 MAXLEN=32768` (NSEQ=8 / NBT=4096 from the launcher's
+new TP-aware defaults). Cards 0 and 1 hang off separate PLX switches (0000:00:01.1 and 0000:00:03.1), which is
+what README.md:131 asks for; the box is single-NUMA so there is no local/remote choice to make.
+
+| | TP4 (running) | TP2 probe | TP2 at the repo default |
+|---|---|---|---|
+| weights resident | 19.16 GiB a card, none offloaded | 24.56 GiB a card, 12.22 offloaded | ~14 GiB a card, 34 offloaded |
+| `Available KV cache memory` | 8.2 GiB -> **491,520 tok**, 15.0x at 32k | **2.18 GiB -> 134,795 tok**, 4.11x | ~167k tokens (their box) |
+| load time | 143.8 s | **327.5 s**, and it swapped 4.1 -> 6.1 GiB on the way | -- |
+| single-stream decode | 187 tok/s | 62 tok/s warm, then 18.9, then **9.5** minutes later | -- |
+| aggregate / per stream | 900 / 119.6 @8, 1,203 / 79.8 @16, 1,537 / 50.5 @32 | 147 / 18.8 @8, 135 / 12.5 @16 | 502 @16 on their box |
+| prefill | 9,633 / 9,437 tok/s (7.8k / 31k) | 4,190 / 4,582 (8.9k / 28.9k) | -- |
+
+The decode collapse is the interesting part: 62 -> 18.9 -> 9.5 tok/s over a few minutes of serving, while the
+swap traffic during a 100-token decode was 60 pages. It is not disk thrash -- with 2.18 GiB of KV and most of the
+expert set living in host RAM, the streamed-expert path is what degrades once the resident expert set churns.
+Host RAM does not just size the cache here, it decides whether two cards are usable at all.
+
+**The measured host-memory formula** (components from the log, they add up to the measured RSS exactly):
+
+```
+host GiB  ~=  38.7 (PLE int6 table, TP-independent: 160,000,768 rows x 130 B = 19.4 GiB a rank at TP2,
+                   9.7 GiB a rank at TP4 -- the same 38.7 GiB either way)
+            + TP x OFFLOAD_GB                       (log: "Total CPU offloaded parameters: 12.22" a rank)
+            + TP x 4.3                              (torch / python / CUDA host side per rank)
+            + page cache for the 110.6 GiB checkpoint read
+```
+
+TP2 probe steady state: 2 x 35.9 GiB + 0.8 = 72.6 GiB RSS, peak 86.4 GiB + 6.1 GiB swap = **92.5 GiB touched**
+against 93.8 installed, low-water `MemAvailable` 14.6 GiB. Per rank 19.4 + 12.2 + 4.3 = 35.9 = the measured RSS.
+
+So, for the RAM question:
+
+* **4 cards needs no more RAM.** Steady RSS ~56 GiB, peak ~60 GiB of the 93.8: the pinned tables are only 9.7 GiB
+  a rank, nothing is offloaded, and there were 30+ GiB to spare the whole time. Buying memory changes nothing
+  about this config -- its ceiling is VRAM (31.86 GiB a card) and the ~300 W power envelope.
+* **2 cards with the repo's default needs ~135 GiB**: 38.7 + 2x34 + 8.6 = 115 GiB resident, plus ~20 GiB of page
+  cache for the checkpoint read. 128 GiB would be tight (that is only 13 GiB of headroom over the resident part),
+  **192 GiB is the size that makes TP2 a comfortable, supported config** -- the reference box has 256 GiB.
+* Every extra 1 GiB of `OFFLOAD_GB` costs **2 GiB** of host RAM at TP2 (4 GiB at TP4), and at 93.8 GiB we could
+  only afford 12 a rank, which left 2.18 GiB of KV -- i.e. the two-card path is boxed in from both sides here:
+  offload more and the host runs out, offload less and the KV pool disappears.
+* **1 card is not a memory question at all** (well, it is: 38.7 PLE + 64.45 experts + 4.3 = ~107 GiB resident
+  before page cache, so >128 GiB just to start), and no recipe in this repo runs Flash-Next at TP1. Treat the
+  27B dense line as the single-card model.
+* Practical reading: more RAM buys *redundancy and the two-card fallback*, not speed. Even done properly (192 GiB,
+  34 GiB a rank), the repo's own two-card numbers are ~45% of four-card aggregate.
+
+One more operational trap, hit twice while probing: **SIGTERM does not stop the workers.** `pkill -f 'vllm serve'`
+(and even SIGTERM to the ranks) leaves `VLLM::Worker_TP*` alive holding ~27-31 GiB a card, and the next launch
+fails with `Free memory on device cuda:0 (0.0/31.86 GiB)`. Use `kill -9` on the PIDs from `rocm-smi --showpids`.
+
 ## How to run it again
 
 ```
