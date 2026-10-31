@@ -18,6 +18,14 @@
   Strata IQ3_S server on the same hardware the same afternoon: ~2x decode, 2.3-4x prefill, ~6x at 16 up.
   Full detail: `notes/native-4xr9700.md`.
 
+* **P2P is not "~nothing" on a Gen5 host.** Negative control at TP4 (`R9K_ARN=0`, RCCL only): decode 187.0 ->
+  155.1 tok/s, ITL 14.1 -> 16.3 ms, conc-8 844 -> 750, prefill 7.8k 9,686 -> 8,983. The 2026-09-18 finding
+  ("P2P gives ~nothing at TP2") is a Gen3 box with the experts offloaded: there the step belongs to host expert
+  traffic, not collectives. Here collectives are ~2.2 ms of a 16.3 ms step; the residual bound is ~1 ms.
+* **Prefill chunk 4096 -> 8192** on the native TP4 launcher: +5.4% at 7.8k, +3.5% at 31k, +4.4% at conc 16,
+  decode flat, costs 64k KV tokens. Cold start here is ~236 s, of which the safetensors + conversion pass is
+  144 s while the disk can do 5.8 GB/s (O_DIRECT) -- page-cache thrash and per-tensor conversion, not IO.
+
 ## 2026-10-07 (evening): prefill kernels, the KV cache, and two things that did not pay
 
 - **Fused fp8 hyper-connection up GEMM + gate mix** on the tiled WMMA kernel: 268-298 us vs the 665-674 us bf16

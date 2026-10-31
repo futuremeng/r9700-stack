@@ -85,6 +85,29 @@ vLLM itself warns about the 4096 chunk under speculative decoding (`max_num_sche
 ... may lead to suboptimal`). `serve/flashnext.sh` stays at 4096: at TP2 with offloaded experts that chunk
 price has no KV room.
 
+**Negative control: the N-rank P2P all-reduce is worth +20.6% decode on this host** (`R9K_ARN=0` = RCCL only,
+same launch otherwise, NBT=8192). That is a different answer from `PROGRESS.md` 2026-09-18 ("P2P gives ~nothing
+at TP2") -- that box is PCIe **Gen3** behind PLX switches and runs TP2 with the experts offloaded, where host->GPU
+expert traffic, not collectives, owns the step. This box is **Gen5 x16** (measured 49-50 GB/s per card, NVMe 5.8 GB/s)
+and everything is resident, so the 96 collectives a Flash-Next step dominate:
+
+| | plugin N-rank AR (default) | `R9K_ARN=0` (RCCL) | the path is worth |
+|---|---:|---:|---:|
+| single-stream decode | 187.0 tok/s | 155.1 | **+20.6%** |
+| median ITL, conc 1 | 14.1 ms | 16.3 ms | 2.2 ms a step |
+| aggregate @8 / @16 | 843.8 / 1,214 | 749.8 / 1,170 | +12.5% / +3.8% |
+| prefill 7.8k / 31k | 9,686-9,867 / 9,190-9,221 | 8,983 / 8,479 | +8-10% |
+| KV pool | 499,815 tok | 491,934 tok | RCCL keeps ~8k more tokens of scratch
+
+So the step's remaining collective time (48 layers x 2 collectives, one-shot 6.8-10 us measured on a 4-rank
+stand-in in `notes/glm53.md`) bounds any further comm work at roughly 1 ms a step, ~7%.
+
+**Cold-start breakdown** (same launch, warm compile/Triton cache): engine start -> weight load starts 32 s,
+safetensors + conversion **144 s**, compile + graph capture + KV profile ~60 s, total ~236 s. The disk is not the
+limit (O_DIRECT single stream: 5.8 GB/s); the load is per-tensor work and page-cache thrash -- 4 ranks stream the
+same 110.6 GiB while 38.7 GiB of RAM is pinned for the PLE table, and two of the expert shards took 24 s and 43 s
+while their neighbours took 3 s. A pack/pre-converted + parallel-read loader is where those ~2 minutes live.
+
 ## How to run it again
 
 ```
