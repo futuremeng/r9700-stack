@@ -96,8 +96,12 @@ def mtp_weights(weights, mtp_mxfp4: bool):
         # HF rev 6fe3e746 ships the MTP MLP in bf16 (fused experts) instead of fp8
         if mtp_mxfp4 and (_MTP_EXPERTS_FUSED.search(name) or (_MTP_MLP_FP8.search(name) and name.endswith(".weight"))) \
                 and w.dtype == torch.bfloat16:
-            # MSE-searched block exponents (quant/nvfp4.py): 3-5% lower error than round-to-nearest on bf16 MLP weights
-            q = [quantize_mxfp4_search(x.cuda().float()) for x in w.reshape(-1, w.shape[-1]).split(1 << 18)]
+            # MSE-searched block exponents (quant/nvfp4.py): 3-5% lower error than round-to-nearest on bf16 MLP weights.
+            # The chunk row count is the load-time VRAM peak: each chunk goes to fp32 on the device, and the search
+            # holds a couple of fp32 copies of it (2^18 rows x 2560 cols = 2.68 GiB each). Lower it on a card that
+            # has no room for that (4x R9700 TP4 with the 512-expert Flash-Next rev: 5 GiB of headroom left).
+            rows = int(os.environ.get("R9K_MTP_QUANT_ROWS", 1 << 18))
+            q = [quantize_mxfp4_search(x.cuda().float()) for x in w.reshape(-1, w.shape[-1]).split(rows)]
             yield f"{name}_packed", torch.cat([p for p, _ in q]).cpu().reshape(*w.shape[:-1], -1)
             yield f"{name}_scale", torch.cat([s for _, s in q]).cpu().reshape(*w.shape[:-1], -1)
             continue

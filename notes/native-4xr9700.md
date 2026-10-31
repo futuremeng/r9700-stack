@@ -1,0 +1,87 @@
+# Native bring-up on the 4x R9700 box (no docker, no root) — 2026-10-31
+
+The box: 4x Radeon AI PRO R9700 (gfx1201, 31.9 GiB each, PCIe **Gen5 x16** under four embedded PLX
+switches), EPYC Genoa, 93 GiB RAM, Ubuntu 24.04, **ROCm 10.1** installed system-wide
+(`/opt/rocm` -> `core-10.1`, HIP runtime 7.16.26385, hipcc present, **no `-dev` packages**), amdgpu
+driver 7.1.9.31600000. No docker, and `sudo` needs a password: `serve/serve.sh` (`sudo docker run`)
+cannot run here, and the pinned `vllm/vllm-openai-rocm` nightly cannot be pulled (registry-1.docker.io
+is unreachable from this network; huggingface.co too — weights came from `hf-mirror.com`).
+
+So this is the same product (stock vLLM + `r9700_vllm` + libr9k) installed **into a venv** instead of
+the image: `~/venv-r9700`, `vllm==0.32.0+rocm723` / `torch==2.13.0+git733fca1` / `triton 3.8.0` from
+`https://wheels.vllm.ai/rocm/5df63a72.../rocm723/`, plugin `pip install -e .`, `libr9k.so` built by
+`kernels/build.sh` with the host hipcc for gfx1201. `serve/native-flashnext.sh` is the container-free
+launcher (same knobs as `serve/serve.sh`).
+
+## What the host needed (three unpacked .debs, no root)
+
+| problem | fix |
+|---|---|
+| `hip/hip_runtime.h` missing (no `hip-dev` on the host) — `build.sh` fails | `amdrocm-runtime-dev10.1_10.1.0-3_amd64.deb` from `stable.repo.amd.com/rocm/core/packages/ubuntu2404/`, `dpkg-deb -x` to `~/opt/rocm-dev`, then `HIPCFLAGS=-I$HOME/opt/rocm-dev/opt/rocm/core-10.1/include ./build.sh`. The build then passes every export check and the `hidden_hostcall_buffer` check (P2P-safe). |
+| the ROCm 7.2-era wheels link OpenMPI 4, which the host does not have (`libmpi_cxx.so.40: cannot open shared object file`) | `apt-get download libopenmpi3t64 openmpi-common libpmix2t64 libhwloc15 libevent-2.1-7t64 libevent-pthreads-2.1-7t64 libevent-extra-2.1-7t64 libevent-openssl-2.1-7t64 libmunge2`, `dpkg-deb -x` to `~/opt/openmpi`, `LD_LIBRARY_PATH=$HOME/opt/openmpi/usr/lib/x86_64-linux-gnu` (the launcher sets it). |
+| the pip `amdsmi` wrapper loads `/opt/rocm/lib/libamd_smi.so` (ROCm 10.1) and dies on `amdsmi_set_gpu_clk_range` | the wheel's own `libamd_smi.so` goes where its loader looks first: `ln -s .../site-packages/amdsmi/libamd_smi.so ~/venv-r9700/lib/lib/libamd_smi.so.26`. |
+| torch/RCCL use the **system** `libamdhip64.so.7` / `libhsa-runtime64` / `librccl` (checked with `ldd`) | so libr9k compiled by the host ROCm 10.1 hipcc is the right binary — no ABI mismatch. |
+
+## One plugin change (this tree)
+
+`models/qwen4_exp.py`: the bf16 -> MXFP4 requant of the MTP MLP (rev 6fe3e746 ships fused bf16 experts)
+chunked its rows at a fixed `1 << 18` = **2.68 GiB of fp32 per chunk on the device, several copies at
+once**. On this checkpoint that peak does not fit after the target weights (27.85 GiB allocated, the
+draft's first `bucketize` asked for 5 GiB): the launch died in `quantize_mxfp4_search`. The chunk row
+count is now `R9K_MTP_QUANT_ROWS` (default unchanged at `1 << 18`); the launcher runs it at 32768.
+Load-time only, no numerics change: weights 19.16 GiB a GPU, `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
+
+## Gates on this box
+
+* `kernels/build.sh`: all 68 export checks, no hostcall kernels.
+* kernel unit gates (`test_moe_mxfp4`, `test_ple_int6`, `test_gemm_fp8`): ALL OK
+  (MoE gate_up 598 GB/s at 139 touched experts; fp8-block GEMM 1,126-1,230 GB/s; lm_head fp8 523 us vs bf16 1,021).
+* `tests/test_integration.py` against **vLLM 0.32.0** (the release, not the pinned nightly): **ALL OK**
+  (29 checks; the plugin logs two "patch untested on vLLM 0.32.0" lines for `mtp_allowlist` /
+  `glm5next_rdna4` and installs both).
+* `bench/quality.py 100 8`: GSM8K no-think **97/100**, needles found at 3.8k / 15.2k / 30.4k tokens.
+* `bench/sanity_stress.py --rounds 6 --conc 8`: see below.
+
+## Speed (Qwen3.8-Flash-Next, TP4, MTP-3, 32k context, NSEQ=16, UTIL=0.97, cards uncapped)
+
+checkpoint `tcclaviger/Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ` revision 2026-10-01 (= rev 6fe3e746), 110.6 GiB
+on disk: 64.5 GiB routed experts (512 experts), 38.7 GiB int6 PLE (pinned host, 9.7 GiB/rank UVA), 7.2
+GiB everything else. **19.16 GiB of weights a GPU**, KV cache **554,982 tokens**, draft acceptance
+4,088/7,290 = 56.1% (2.68 tokens a step).
+
+| | this box (Gen5 host, uncapped) | README v0.3.8 gate (210 W cap) |
+|---|---:|---:|
+| single-stream decode | **186.7 tok/s** | 225 tok/s |
+| step (median ITL, conc 1) | **14.3 ms** | 14.3 ms |
+| ITL conc 4 / 8 | 18.1 / 22.6 ms | - |
+| aggregate @4 / @8 / @16 (`bench/bench.py`) | 372 / **841 / 1,164** tok/s | 530 (@8) / 944 (@16, probe) |
+| prefill 1,951 / 7,789 / 31,166 tok | **7,702 / 9,633 / 8,963** tok/s | 5,175 / 7,141 / 7,233 (2k/8k/32k) |
+| KV cache | 554,982 tokens | 518,481 |
+
+Decode is the one number below the gate: same 14.3 ms step, but 2.68 tokens a step here against ~3.1 in
+the reference run — acceptance, not kernels (the reference reports 62.2% acceptance; `bench/bench.py`'s
+essay prompts at temperature 0 give 56.1%).
+
+Against the **Strata** server that ran on this same box the same afternoon (Qwen3.8-Flash-Next IQ3_S
+GGUF, 4-card layer split, 8 slots): single-stream decode 90-97 tok/s, prompt-4k 2,369 tok/s, prompt-16k
+4,185 tok/s, four requests at once 166-194 tok/s. The vLLM stack with the MXFP4 experts + fp8 dense path
+is ~2x single-stream decode, 2.3-4x prompt processing and ~6x at 16 concurrent requests — for ~4.5
+effective bits a weight against IQ3_S's 3, and with a 555k-token KV pool against Strata's ~22k slots.
+
+## How to run it again
+
+```
+# kernels
+cd ~/r9700-stack/kernels && HIPCFLAGS=-I$HOME/opt/rocm-dev/opt/rocm/core-10.1/include ./build.sh \
+  && cp libr9k.so ../r9700_vllm/kernels/
+# serve (TP4, everything in VRAM)
+cd ~/r9700-stack && GPUS=0,1,2,3 TP=4 OFFLOAD_GB=0 NSEQ=16 MAXLEN=32768 UTIL=0.97 \
+  bash serve/native-flashnext.sh           # log: ~/logs/serve-tp4.out
+# check
+~/venv-r9700/bin/python3 bench/warmup.py && ~/venv-r9700/bin/python3 bench/bench.py run
+~/venv-r9700/bin/python3 bench/quality.py 100 8
+```
+
+Not done here: the 2-card offloaded-experts recipe (needs ~120 GiB of host RAM, this box has 93), the
+27B and GLM configs, `--kv-cache-dtype fp8`, the P2P communicator A/B, and a power-capped run for a
+like-for-like decode comparison against the 210 W gate numbers.

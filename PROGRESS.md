@@ -1,5 +1,23 @@
 # Progress log
 
+## 2026-10-31: the stack, installed natively on a second 4x R9700 box
+
+* No docker, no root, ROCm 10.1 host packages: the release tree runs in a **venv** (`vllm 0.32.0+rocm723`,
+  `torch 2.13.0+git733fca1`) with `serve/native-flashnext.sh` as the launcher. The host needed three
+  unpacked .debs and no privileges: ROCm's `-dev` headers for the libr9k build, OpenMPI 4 runtime for the
+  ROCm 7.2-era wheels' torch, and the wheel's own `libamd_smi.so` reachable by its loader (the system
+  ROCm 10.1 one lacks `amdsmi_set_gpu_clk_range`).
+* **`R9K_MTP_QUANT_ROWS`**: rev 6fe3e746's bf16 fused MTP experts requant chunked at 2^18 rows = 2.68 GiB
+  of fp32 a copy on the device. On this checkpoint it did not fit next to 19.2 GiB of weights (tried to
+  allocate 5 GiB at 27.85 GiB in). Chunk count is now a knob; 32768 rows loads clean.
+* Gates on a box that has never seen this code (Gen5 x16 host, four PLX switches, uncapped cards):
+  integration vs **vLLM 0.32.0** ALL OK, kernel gates ALL OK, GSM8K 97/100, needles to 30.4k tokens.
+* Flash-Next TP4: 19.16 GiB weights a GPU, KV 554,982 tokens, **186.7 tok/s single-stream (14.3 ms a step,
+  2.68 tokens a step), 841 / 1,164 tok/s aggregate at 8 / 16, 7,702 / 9,633 / 8,963 tok/s prefill at
+  2k / 8k / 31k.** Same step time as the 210 W gate, less draft acceptance (56.1% vs 62.2%). Against the
+  Strata IQ3_S server on the same hardware the same afternoon: ~2x decode, 2.3-4x prefill, ~6x at 16 up.
+  Full detail: `notes/native-4xr9700.md`.
+
 ## 2026-10-07 (evening): prefill kernels, the KV cache, and two things that did not pay
 
 - **Fused fp8 hyper-connection up GEMM + gate mix** on the tiled WMMA kernel: 268-298 us vs the 665-674 us bf16
