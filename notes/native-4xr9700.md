@@ -108,6 +108,23 @@ limit (O_DIRECT single stream: 5.8 GB/s); the load is per-tensor work and page-c
 same 110.6 GiB while 38.7 GiB of RAM is pinned for the PLE table, and two of the expert shards took 24 s and 43 s
 while their neighbours took 3 s. A pack/pre-converted + parallel-read loader is where those ~2 minutes live.
 
+**`--max-num-seqs` 16 -> 32** (native TP4 default now; same launch otherwise, `bench/bench.py aggregate`, a
+~20k-token concurrent-prefill probe, `bench/quality.py`, `bench/sanity_stress.py`):
+
+| | NSEQ 16 | NSEQ 32 |
+|---|---:|---:|
+| aggregate @16 | 1,155-1,214 | 1,158-1,197 |
+| aggregate @32 | 1,207 / 1,226 | **1,429 / 1,437 / 1,440** |
+| aggregate @48 | - | 1,366 (the knee is 32, not 48) |
+| single-stream decode | 185.6-187.0 | 186.7-186.9 |
+| long-context prefill @16 / @24 (~20k tok each) | 9,376 / 9,311 | 9,323 / 9,298 |
+| KV pool | 499,815 tok | 491,520-498,571 |
+
+At NSEQ=16, 32 clients only buy +5% over 16 (they queue in two waves); at 32 they buy +18%. Prefill is
+compute-bound and does not move with slots, and vLLM still admits only 15.2 requests at the full 32k context,
+so nothing breaks for long-context traffic. Gate at the new defaults: GSM8K 97/100, needles 3/3,
+`sanity_stress --rounds 4 --conc 16` 0 bad of 64.
+
 ## How to run it again
 
 ```

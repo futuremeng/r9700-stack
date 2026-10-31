@@ -32,7 +32,9 @@ exec env \
   NSEQ=${NSEQ-8} `    # requests running at once. Each holds 18 KV blocks whatever its length (vLLM: 4 state
                       # groups x (1 + 3 MTP blocks) + 2 attention blocks), and the graphs for 16 sequences take
                       # ~0.9 GiB from the KV pool: at TP2 with offloaded experts NSEQ=16 ran 4-6 requests at
-                      # once, NSEQ=8 runs 8 (conc-8, one prompt type: 283 -> 401 tok/s). NSEQ=16 for TP4.` \
+                      # once, NSEQ=8 runs 8 (conc-8, one prompt type: 283 -> 401 tok/s). NSEQ=16 for TP4; the Gen5 box measures 32 as
+                                    the knee: +18% aggregate decode at 32 in flight (1,216 -> 1,433, 48 worse at
+                                    1,366), single-stream and long-context prefill untouched.` \
   PREFIX_CACHE=${PREFIX_CACHE-0} `  # off: avoids the mamba-aligned prefill chunking (2k prefill 2.8k -> ~4.7k tok/s,
                                     # see serve.sh); =1 restores prefix reuse across requests` \
   CGSIZES=${CGSIZES-1,2,4,8,16,24,32,48,64,96,128,192,256} `  # graphs for prefill chunks <= 256 tokens

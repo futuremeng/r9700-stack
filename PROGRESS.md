@@ -25,6 +25,10 @@
 * **Prefill chunk 4096 -> 8192** on the native TP4 launcher: +5.4% at 7.8k, +3.5% at 31k, +4.4% at conc 16,
   decode flat, costs 64k KV tokens. Cold start here is ~236 s, of which the safetensors + conversion pass is
   144 s while the disk can do 5.8 GB/s (O_DIRECT) -- page-cache thrash and per-tensor conversion, not IO.
+* **`max_num_seqs` 16 -> 32** on the same launcher: 32 clients in flight 1,216 -> **1,433 tok/s** aggregate
+  (+18%); at 16 slots they buy only +5% over 16 because they queue in two waves, and 48 is worse (1,366).
+  Single-stream decode and long-context prefill do not move; the gate (GSM8K 97/100, needles 3/3, 64 sanity
+  answers at conc 16) is clean.
 
 ## 2026-10-07 (evening): prefill kernels, the KV cache, and two things that did not pay
 
