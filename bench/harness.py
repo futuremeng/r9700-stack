@@ -122,7 +122,7 @@ def run(a):
         sd.append(d)
     metrics["single_decode_tok_s"] = sd
     metrics["single_ttft_ms"] = ttft
-    for c in ((8,) if a.quick else (4, 8, 16)):
+    for c in ((8,) if a.quick else tuple(int(x) for x in a.conc.split(","))):
         aggs, per_stream = [], []
         for _ in range(max(2, reps // 2 + 1)):
             agg, streams = aggregate(base, c)
@@ -175,6 +175,8 @@ if __name__ == "__main__":
     r.add_argument("--base", default="http://localhost:8080")
     r.add_argument("--reps", type=int, default=5)
     r.add_argument("--out", default="results.jsonl")
+    r.add_argument("--conc", default="4,8,16",
+                   help="concurrency levels for the aggregate and per-stream metrics (the historical gate is 4,8,16)")
     r.add_argument("--quick", action="store_true")
     s = sp.add_parser("summarize")
     s.add_argument("paths", nargs="+")
