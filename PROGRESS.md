@@ -35,6 +35,11 @@
   116.5 with `R9K_FOLD=0` (the fold repack is ~27 s), disk alone 19 s at 5.8 GB/s -- the rest is per-tensor repack
   under page-cache pressure, four ranks at once, with 38.7 GiB of RAM already pinned before the load starts.
 
+* **What caps concurrency on this box is the power envelope.** VRAM is the binding resource for the model
+  (31.3-31.4 of 31.86 GiB a card); CPU is flat at 5.4% of 192 cores from 1 to 32 streams (each rank 2.1 cores,
+  EngineCore 1.00 spinning, API 0.05); at 16-32 streams the cards sit at ~300 W and the DPM pulls sclk from
+  3.3 GHz to 2.0-2.3 GHz. Per joule: 0.21 tok/J single-stream -> 1.30 at 32 streams.
+
 ## 2026-10-07 (evening): prefill kernels, the KV cache, and two things that did not pay
 
 - **Fused fp8 hyper-connection up GEMM + gate mix** on the tiled WMMA kernel: 268-298 us vs the 665-674 us bf16

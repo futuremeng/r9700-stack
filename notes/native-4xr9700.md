@@ -147,6 +147,40 @@ same launch (1:13 to 2:52 across ranks, and identical expert shards taking 3 s, 
 attach without ptrace on this box (`Permission Denied`), so a real flame graph needs `kernel.yama.ptrace_scope=0`
 or an in-tree load profiler. `R9K_MTP_MLP=off` is not a usable probe: the draft does not load without it.
 
+## Utilization on this box (steady state, sampled at conc 1 / 8 / 16 / 32, NSEQ=32 / NBT=8192)
+
+| conc | tokens/s (400-token streams) | W a card | sclk | box CPU | tok per joule |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 187-200 | 212-234 | 3.2-3.4 GHz (full) | 5.4% | 0.21 |
+| 8 | 911 | 264-316 | 2.3-3.4 GHz | 5.4% | 0.77 |
+| 16 | 1,239 | 282-309 | 2.0-3.3 GHz | 5.4% | 1.05 |
+| 32 | 1,533 | 288-334 | **1.9-3.3 GHz** | 5.4% | 1.30 |
+
+* **VRAM is the binding resource**: 31.3-31.4 GiB of the 31.86 GiB usable a card -- 19.2 weights + 8.2 KV
+  (491,520 tokens) + 1.9 graphs + ~1.5-2 context/activation. `rocm-smi --showpids` per worker 31.3-31.4 GiB.
+* **CPU is nowhere near a limit and does not move with concurrency**: ~11 of 192 cores at every conc -- each
+  `VLLM::Worker_TP` 2.06 cores (rank 0 3.03), `VLLM::EngineCore` exactly 1.00 (the scheduler spin loop), the
+  API server 0.04-0.05. 247 core-seconds per 24 s window at conc 1 and at conc 32. GPU use reads 100% throughout,
+  and the KFD `CU OCCUPANCY` column reads 0-6%, so the cards are latency/bandwidth/power-bound, never CU-bound.
+  The idle cores cannot shorten decode: vLLM's expert offload keeps expert *weights* in host RAM but computes
+  them on the GPU -- there is no host expert pool like Strata's `32 expert-pool workers + the host thread`, and
+  on a Gen5 host with everything resident a host-side gather+compute would lose (EPYC ~200 GB/s aggregate
+  against 4 x ~512 GB/s of GDDR7). The headroom is real but it is only useful for what the CPU already does:
+  the 144 s checkpoint pass, torch.compile, and tokenization (4% at conc 32, no pressure).
+* **What caps concurrency here is the power envelope, not memory or CPU**: ~300 W a card with the DPM pulling
+  sclk from 3.3 GHz (single stream) down through 2.0-2.3 GHz at 16-32 streams. Efficiency therefore improves
+  ~6x from one stream to 32 (0.21 -> 1.30 tok/J) and then flattens -- the same wall the 210 W reference caps
+  sit on the far side of.
+* **Host RAM**: 56 GiB used + 39 GiB cache, `MemAvailable` 37 GiB; Pss 12.0 GiB a worker, of which the int6 PLE
+  table is 9.7 GiB pinned (`hipHostRegister`, so it does not show in `Unevictable`, which reads 30 MB).
+  Swap holds 4 GiB and the lifetime `pswpout` is 96.4M pages (~360 GiB): the load streams 110.6 GiB through a
+  93 GiB box while pinning 38.7 GiB. During serving the swap traffic is negligible (pswpin +101 pages in 20 s
+  at conc 32).
+* Operational trap found while measuring: killing the API server alone leaves the four `VLLM::Worker_TP` and the
+  `VLLM::EngineCore` alive holding 31 GiB a card (`rocm-smi --showpids` is the way to see them), and the next
+  launch dies with `Free memory on device cuda:0 (0.0/31.86 GiB)`. Kill those PIDs too; that is also where the
+  swap residue came from.
+
 ## How to run it again
 
 ```
