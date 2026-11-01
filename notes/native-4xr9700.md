@@ -312,6 +312,44 @@ Both follow-ups, measured:
 Running default after all of this: `MTP=2 NSEQ=32 NBT=8192 UTIL=0.97`, measured on the restored instance at
 1,779 aggregate / 58.0 a stream with 32 in flight, 189.2 single-stream, KV 496,374 tokens.
 
+## Cold start anatomy (`R9K_LOAD_PROF=1`, `r9700_vllm/utils/prof.py`, `bench/loadpath.py`)
+
+`Model loading took` for four TP4 launches of the same config: **143.8 / 149.3 / 175.7 / 178.8 / 179.9 s** -- a
+25% spread that is page-cache state, not code. Inside it, per rank:
+
+| | measured |
+|---|---|
+| safetensors iterator pull | **0.2 s** (zero-copy mmap views) |
+| consumer side ("place") | 77.5 - 156 s |
+| ... of which the experts group | **120.8 s** -- 192 tensors, 59.8 GiB of checkpoint bytes a rank |
+| ... 1306 small tensors ("other") | 30.2 s |
+| ... the one lm_head tensor | 4.6 s |
+| ... hc (387 tensors) | 0.5 s |
+| **everything the plugin does at load** | **1.3 s**: fold_stats 0.4, `_prep_mxfp4` 0.4, `permute_in_place` and `pack_scales_gpu` ~0, ct linear 0.1 |
+| draft bf16 -> MXFP4 requant | 4.9 s |
+| `--load-format dummy` (allocate, no content) | 8.8 s |
+| reading the 110.6 GiB off disk once | ~19 s (5.8 GB/s) |
+| one real 0.78 GiB fused expert tensor, bulk H2D | **0.02 s = 47 GiB/s**; per-expert strided TP slice only 2.5x slower |
+
+So the load is neither repacking nor the plugin: each of the four ranks iterates the **whole** checkpoint
+(59.8 GiB of expert bytes plus 38.8 GiB of PLE, so ~390 GiB of host reads across four ranks) against one 5.8 GB/s
+disk and 93.8 GiB of RAM, and that is where the minutes go. The TP shard is a *column slice of every expert*, so
+the expert-id filter vLLM offers (`local_expert_ids`) cannot skip anything at TP -- every rank needs all 512
+experts, a quarter of each.
+
+Two claims this corrects:
+
+* The fold guard is **0.4 s**, not the ~27 s the `R9K_FOLD=0` ablation implied: that A/B compared two different
+  page-cache states. `R9K_FOLD=1` stays adopted for its *runtime* win; its load cost is noise.
+* `--load-format fastsafetensors` is not available on this stack: it fails at the first tensor with
+  `[FAIL] framework hinted GPU runtime 'libamdhip64.so'` (fastsafetensors 0.5.0 is CUDA-only).
+
+Queued next, with the protocol this table forces: vLLM prefetches `sorted_files[rank::world_size]` at 8 threads /
+16 MiB a rank by default (`--safetensors-prefetch-num-threads` / `--safetensors-prefetch-block-size`), and with a
+110.6 GiB checkpoint against 93.8 GiB of RAM, prefetching later shards evicts the pages the iteration is still
+reading -- so *less* prefetch may be faster. Any variant must be measured as two launches with the second one
+counted, because one config alone spans 143.8 - 179.9 s.
+
 ## How to run it again
 
 ```

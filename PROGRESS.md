@@ -22,6 +22,15 @@
   on a 60 s fetch), the launcher refuses to start on top of leftover ranks (`STOP=1` / `FORCE=1`), NSEQ/NBT
   defaults are TP-aware, `harness.py --conc`, and bench reports per-stream speed.
 
+* **Cold-start anatomy.** `Model loading took` spans 143.8-179.9 s for the same config (page-cache state). Per
+  rank the safetensors pull is 0.2 s and the consumer side is 77-156 s, of which **120.8 s is the 192 expert
+  tensors (59.8 GiB a rank)**; **everything the plugin does at load adds up to 1.3 s** (fold_stats 0.4,
+  `_prep_mxfp4` 0.4, permute/pack_scales ~0), and moving bytes is cheap: a real 0.78 GiB fused expert tensor does
+  bulk H2D in 0.02 s (47 GiB/s), a per-expert strided TP slice only 2.5x slower. The minutes are four ranks each
+  iterating the whole 110.6 GiB against one 5.8 GB/s disk. `local_expert_ids` cannot help at TP (a TP shard is a
+  column slice of every expert) and `--load-format fastsafetensors` fails on ROCm outright. Corrected: the fold
+  guard costs 0.4 s, not the 27 s the earlier `R9K_FOLD=0` ablation implied (different cache states).
+
 ## 2026-10-31: the stack, installed natively on a second 4x R9700 box
 
 * No docker, no root, ROCm 10.1 host packages: the release tree runs in a **venv** (`vllm 0.32.0+rocm723`,
