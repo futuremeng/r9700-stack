@@ -1,5 +1,32 @@
 # Progress log
 
+## 2026-11-01 (same day, five gated relaunches): what the 116-155 s cold start actually is
+
+* Reloading five times behind `bench/gate.sh` (new: `bench/relaunch.sh` prints the fingerprints -- load seconds,
+  place breakdown, KV pool, spec config, RAM/swap at the moment the load finishes) shows the **total is the wrong
+  metric**: **115.7 / 120.6 / 138.6 / 149.9 / 155.3 s**, built from a target `experts` term that swings
+  **32.8-108.0 s** and a draft pass that swings **5.5-76 s**, in opposite directions. So my "page cache is worth
+  4%" from earlier today is corrected: cache state moves the parts hard and the sum little.
+* New counters did it, not the old ones. `snap()` now logs `Cached` / `SwapFree` / `majflt` / `minflt` /
+  **`rchar` / `read_bytes`** / PSI-memory at each phase boundary. The decisive number: **23.0-28.3 GiB of block
+  reads a rank during the target pass** (0.0 at start) with `Cached` pinned at 38-46 GiB against a 110.6 GiB
+  checkpoint -- the ranks stream the whole file, take ~50 GiB of anon (9.7 GiB of it the pinned int6 PLE table),
+  and evict the pages they are streaming, so ~1/4 of it comes off disk again.
+* Two counters that would have misled: `rchar` is only 0.5-0.6 GiB (safetensors is mmap, not `read()`), and
+  `majflt` ~130-150k a rank is ~0.5 GiB of anon swap-in, not checkpoint traffic -- page-cache misses never show up
+  there. PSI memory grows just **~2.7 s** across the entire target pass, so the seconds are not spent stalled in
+  reclaim, even though every load writes **~5 GiB of swap** (`SwapFree` 7 -> 2 GiB): the same precondition that
+  made the amdgpu SVM deadlock reachable.
+* The draft pass iterates **2182 tensors / 110.6 GiB a rank** to consume a few GiB of bf16 MTP MLP weights and
+  requantize them; 5-8 s when those bytes are still resident, 60-76 s when they are not, and inside one instance
+  one rank paid 5.2 s while another paid 47.7 s (they race). KV pool 496,374 tok is identical on every instance,
+  so it is not the variable.
+* Ranked next experiments (none run yet, all in `notes/native-4xr9700.md`): **E1** pre-stage the draft's bf16 byte
+  ranges once (kills up to ~70 s and the whole variance, plugin-local); **E3** lower the load-time footprint -- no
+  more ~5 GiB of swap written per load, which is also the incident's precondition; **E2** attack the 4x read
+  amplification of the 192 fused expert tensors (4 ranks x 59.8 GiB streamed = 442 GiB of page-cache work), the
+  biggest term but the most invasive.
+
 ## 2026-11-01 (after the reboot): the throughput baseline is protocol-defined; the envelope is a flat 300.0 W
 
 * Post-reboot health on the same tree: **GSM8K 98/100, needles 3/3**, single-stream decode 169.4-181.1 (median

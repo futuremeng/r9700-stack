@@ -356,11 +356,11 @@ and the run that tested it wedged the box** (see `notes/load-oom-svm-wedge.md`):
   already 40 GiB short of the 110.6 GiB the four ranks stream -- vLLM logs `This may cause out-of-memory errors`.
   Not attempted, and it should not be.
 * Page-cache cold vs warm is **not** worth 2.02x -- that pair (`208.4 / 103.2 s`) was read off a machine that was
-  already degrading under an unmapped previous attempt. Re-measured 2026-11-01 03:31-03:39 on a clean boot with
-  `bench/gate.sh` verifying teardown between launches: boot-cold (`Cached` 0.35 GiB) **115.67 s**, warm (`Cached`
-  39.3 GiB) **120.60 s**, experts term 87.8 s vs 88.2 s. Page cache is worth 4%, and a warm cache actually slows
-  the shard stream (10.1 s/it vs 2.7 s) by fighting the ranks' ~50 GiB of anon for RAM. Fourth load-path number in
-  this line of work that turned out to be machine state, not the config under test.
+  already degrading under an unmapped previous attempt. Re-measured 2026-11-01 with `bench/gate.sh` verifying
+  teardown between launches, the totals are 115.67 s boot-cold vs 120.60 s warm, i.e. the *sum* barely moves --
+  but that is an artifact of two components cancelling (see "Cold-start anatomy, five instances"): the target
+  experts term is 33-108 s and the draft pass 5.5-76 s depending on cache state. Fourth load-path number in this
+  line of work that turned out to be machine state, not the config under test.
 * The two-launch protocol still applies, and now a hard gate: no launch unless every `vllm serve|VLLM::` process
   is gone and `MemAvailable >= 55 GiB` -- see `bench/coldstart_ab.sh`, which replaces `bench/prefetch_ab.sh`.
 
@@ -394,6 +394,57 @@ cap belongs to the production guests, see `host/README.md`). Other fingerprints:
 needles 3/3; temps and counters clean. Open, low priority: whether that -5% and the 1.2% smaller KV pool are
 instance drift or something real -- settle it by rerunning `probe32.sh` on the next launch rather than by trusting
 the single historical samples.
+
+## Cold-start anatomy, five instances with the phase timers (2026-11-01)
+
+Same config every time (TP4, NSEQ=32, MAXLEN=32768, OFFLOAD_GB=0), every relaunch behind `bench/gate.sh`,
+`R9K_LOAD_PROF=1` with the phase snapshots. Per rank:
+
+| inst | Cached at start | target `place` | `experts` 192t/59.8 GiB | draft wall (requant) | load total | disk reads a rank |
+|---|---|---|---|---|---|---|
+| 0 boot-cold | 0.35 GiB | 98.0 s | 87.8 s | ~6 s | **115.7 s** | -- |
+| 1 | 39 GiB | 100.7 s | 88.2 s | 8.0 (6.2-6.6) | **120.6 s** | -- |
+| 2 | 38 | 49.9 s | 32.8-35.7 s | ~76 (72.3-73.8) | **138.6-140.2** | -- |
+| 3 | 38 | 132.8 s | 101.2-108.0 s | 7.7 (5.6) | **155.3 s** | majflt 136-148k -> 185-199k |
+| 4 | 38 | 74.0 s | 43.2 s | 7.1-64.4 (5.2-47.7) | **149.9 s** | -- |
+| 5 | 38 | 124.0 s | 102.2 s | 5.5-7.3 (2.6-5.1) | **143.6 s** | **23.0-28.3 GiB** target, 24.0-32.5 by draft end |
+
+What that buys, in order of confidence:
+
+1. **The total is a bad metric and my earlier "page cache is worth 4%" understates the picture.** Cold start spans
+   **115.7-155.3 s (34%)**, made of two large components that move in *opposite* directions: target `experts`
+   (32.8-108.0 s) and the draft pass (5.5-76 s). Cache state at launch biases one down and the other up, which is
+   why the sums looked stable across a 40 s spread. Every number in this section is per rank; ranks agree with
+   each other to ~5% inside an instance except the draft pass (inst4: one rank 5.2 s, another 47.7 s -- they race).
+2. **The target pass re-reads the checkpoint from the block device: 23-28 GiB a rank** (`/proc/self/io`
+   `read_bytes` at target end; 0.0 GiB at target start) even though `Cached` sits at 38-46 GiB. The reason is our
+   own footprint: four ranks take ~50 GiB of anon, of which **9.7 GiB a rank is the pinned int6 PLE table**
+   (`hipHostRegister`), and the streaming window is only ~1/4 of the 110.6 GiB. The kernel evicts pages the other
+   ranks still need, so ~1/4 of what each rank streams comes off disk again. `Cached` also never exceeds 46 GiB
+   against a 110.6 GiB checkpoint -- there is no regime here where the file fits.
+3. **The checkpoint bytes are not read with `read()`.** `rchar` is 0.5-0.6 GiB total while 110.6 GiB is streamed,
+   so safetensors traffic is mmap page-cache work (`minflt` ~1M a rank across the load). Page-cache misses do not
+   show as `majflt` (127-153k a rank = ~0.5 GiB, i.e. anon swap-in), which is why the earlier counters could not
+   see the problem; only `read_bytes` does. That is the counter to keep on this path.
+4. **Reclaim stall is not where the seconds go**: PSI `memory` grows by only ~2.7 s across the whole target pass
+   (avg10 12-15% at the peak but total stall small). Yet every load writes ~5 GiB of swap (`SwapFree` 7 -> 2 GiB),
+   which is the same precondition that made the amdgpu SVM deadlock reachable (`notes/load-oom-svm-wedge.md`).
+5. **The draft pass is a duplicate read of the whole checkpoint index**: `mtp_weights` iterates 2182 tensors /
+   110.6 GiB per rank to consume a few GiB of bf16 MTP MLP weights that it then requantizes to MXFP4. When those
+   bytes are still resident it costs 5-8 s; when they have been evicted it costs 60-76 s. That is the single most
+   avoidable term on this path.
+
+Ranked experiments, cheapest first (none run yet):
+
+* **E1 pre-stage the draft's bf16 ranges.** The safetensors index gives the byte ranges of the MTP tensors; pull
+  them once (a few GiB) before the four ranks start the draft pass, or keep the target pass's copies. Removes up
+  to ~70 s on bad instances and the whole 5-76 s variance. Low risk, plugin-local.
+* **E2 cut the 4x read amplification on the fused experts.** Four ranks stream all 59.8 GiB each (442 GiB of
+  page-cache work a rank) and then narrow to their slice. Rank-sliced reads attack the largest single term
+  (32.8-108 s). More invasive: it touches how the fused-expert weight_loader gets its bytes.
+* **E3 lower the load-time footprint.** Stop writing ~5 GiB of swap per load (defer the 9.7 GiB pinned PLE table
+  per rank until after the expert stream, or stagger the ranks). Stability win first -- it is the incident's
+  precondition -- and it should also cut the 23-28 GiB of re-reads by leaving more cache for the stream.
 
 ## How to run it again
 
