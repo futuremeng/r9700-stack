@@ -24,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import os
 import re
+import time
 
 import torch
 
@@ -72,21 +73,61 @@ def fp8_block_to_mxfp4(base: str, w: torch.Tensor, scale: torch.Tensor, block: i
 
 def target_weights(weights):
     """Target-model checkpoint stream: drop unused attention scales, rename block-fp8 scales; log the failing
-    tensor if loading raises (stock only says which parameter)."""
+    tensor if loading raises (stock only says which parameter).
+
+    With R9K_LOAD_PROF=1 it also times the two halves of the load: pulling a tensor out of the safetensors
+    shards (the `for` step) against what the consumer does with it -- the consumer is vLLM's weight_loader, and
+    for this checkpoint that is where the plugin's fold repack and the int6 PLE copy happen. Measured floor on
+    this box: the raw 110.6 GiB read is ~19 s at 5.8 GB/s, a dummy (no-content) load is 8.8 s, and the real
+    load is 143.8 s, so the ~125 s in between is what this is for."""
     last = [None]
 
     def gen():
+        pull = place = 0.0
+        seen: dict[str, list] = {}
+        t = time.perf_counter()
         for n, w in weights:
+            now = time.perf_counter(); pull += now - t
             if _DROP_ATTN_SCALE.search(n):
+                t = now
                 continue
             n = rename_scale(n)
             last[0] = n
             yield n, w
+            now = time.perf_counter(); place += now - t      # weight_loader: fold repack, int6 PLE copy, ... 
+            if _PROF:
+                g = seen.setdefault(_group(n), [0, 0.0, 0])
+                g[0] += 1
+                g[1] += w.numel() * w.element_size()
+                g[2] += now - t
+            t = now
+        if _PROF:
+            parts = ", ".join(f"{k} {v[0]}t/{v[1] / 2**30:.1f}GiB/{v[2]:.1f}s" for k, v in sorted(seen.items()))
+            logger.info("r9700 load profile (target): pull %.1f s, place %.1f s | %s", pull, place, parts)
+            for k, v in sorted(seen.items(), key=lambda kv: -kv[1][2])[:4]:
+                logger.info("r9700 load profile: %7.1f s on %s (%s tensors, %.1f GiB checkpoint bytes a rank)",
+                            v[2], k, v[0], v[1] / 2**30)
     return gen(), last
+
+
+_PROF = os.environ.get("R9K_LOAD_PROF", "") == "1"
+_GROUP = [(re.compile(r"(^|\.)mtp\."), "mtp"),
+          (re.compile(r"ngram|(^|\.)ple\."), "ple"),
+          (re.compile(r"\.experts\."), "experts"),
+          (re.compile(r"hyper|(^|\.)hc\."), "hc"),
+          (re.compile(r"lm_head"), "head")]
+
+
+def _group(name: str) -> str:
+    for rx, g in _GROUP:
+        if rx.search(name):
+            return g
+    return "other"
 
 
 def mtp_weights(weights, mtp_mxfp4: bool):
     dropped, pend = [], {}
+    requant = 0.0
     for name, w in weights:
         if _DROP_MTP_HEAD.search(name):
             dropped.append(name)
@@ -101,7 +142,9 @@ def mtp_weights(weights, mtp_mxfp4: bool):
             # holds a couple of fp32 copies of it (2^18 rows x 2560 cols = 2.68 GiB each). Lower it on a card that
             # has no room for that (4x R9700 TP4 with the 512-expert Flash-Next rev: 5 GiB of headroom left).
             rows = int(os.environ.get("R9K_MTP_QUANT_ROWS", 1 << 18))
+            t0 = time.perf_counter()
             q = [quantize_mxfp4_search(x.cuda().float()) for x in w.reshape(-1, w.shape[-1]).split(rows)]
+            requant += time.perf_counter() - t0
             yield f"{name}_packed", torch.cat([p for p, _ in q]).cpu().reshape(*w.shape[:-1], -1)
             yield f"{name}_scale", torch.cat([s for _, s in q]).cpu().reshape(*w.shape[:-1], -1)
             continue
@@ -116,6 +159,8 @@ def mtp_weights(weights, mtp_mxfp4: bool):
         yield rename_scale(name), w
     if pend:
         logger.warning("r9700: unpaired MTP fp8 tensors left: %s", list(pend)[:4])
+    if _PROF:
+        logger.info("r9700 load profile (draft): bf16->MXFP4 requant %.1f s", requant)
     if dropped:
         logger.info_once("r9700: ignored fork-private MTP draft head tensors: %s", ", ".join(dropped))
 
