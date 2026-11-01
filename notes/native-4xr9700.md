@@ -1092,6 +1092,57 @@ host threads spin (`syscall running`, state R), on tensors of 26 KB, with no swa
 pressure and no cross-rank queueing. The warm-up removes the *waiting*; nothing here says what the device was doing
 while the host waited.
 
+## C14: there are two shapes of tail, and `gpu_busy_percent` says the device was idle while the host waited
+
+Unwarmed again (the warm-up is what hides this), tail66 gave 74.9 / 21.8 / 12.8 / 11.8 s -- and it is not the same
+failure as tail48/tail57:
+
+* **No single call exceeded 2 s** (`prof.slowcall` printed nothing), while the per-class totals are all inflated
+  together: `R9kQwenGatedDeltaNetAttention` 41.14 s over 864 visits (a clean rank: not in the top eight at all),
+  `GatedResidual` 10.95 s, `Qwen4ExpQSAAttention` 6.93 s, `MergedColumnParallelLinear` 6.80 s. The biggest single
+  visit is `layers.26.linear_attn` at 24.29 s, then 10.54, 6.35, 6.03, 3.50, 3.05, 2.76, 1.55 s.
+* So the tail has two shapes: **(a) one enormous visit** -- always the first tensor the guard runs (tail48 43.57 s,
+  tail57 69.30 s, tail45's 32.5 s HC visit), which the warm-up suppresses; and **(b) the whole pass running 4-8x
+  slower**, dozens of visits inflated at once, which is what tail66 is.
+* The device side is the interesting part. `gpu_busy_percent` (sysfs, no root, no ROCm tooling) sampled at 0.25 s
+  across tail66's slowest rank: `####+-.....#...#-.###..........--###.-`, mean 31%, with idle stretches of 1.25-2.5 s
+  -- and that is the **max over all four GPUs**, all four idle at those moments, while the rank was inside a call in
+  state R. Nothing was computing. The same rank's thread was in R 14/16 samples, memory pressure 0.0 s, io pressure
+  1.0 s, and this instance's workers had 982 MiB each in swap (clean ones 512-750 MiB).
+
+Shape (b) is what a heartbeat tests: `R9K_PWAL_BEAT=1` submits one trivial kernel on that rank's device every 50 ms
+while the window is open. If the window is the cost of a device queue that sleeps between bursts of submissions and
+pays a slow wakeup each time, keeping it awake should flatten (b) -- and it is a stronger test than the warm-up,
+because the warm-up plausibly cures (b) for the same reason while also curing (a), which is why these runs set
+`R9K_PWAL_WARM=0`.
+
+## C15: the heartbeat does not help (and could barely run), and the swap number starts to separate the elevated instances again
+
+With `R9K_PWAL_WARM=0 R9K_PWAL_BEAT=1`: tail67 gave 11.6-12.2 s on all four ranks and tail68 **50.4 / 38.6 / 35.6 /
+25.7 s** -- every rank slow, heartbeat running the whole time. So a 50 ms heartbeat does not flatten shape (b).
+
+The caveat is worth keeping, because it is itself a measurement: in a 25-50 s window the heartbeat thread managed
+only **83-136 submissions**, about 4 per second rather than the 20 it asks for. A daemon thread doing `x.add_(1)`
+cannot get the GIL while the load thread sits inside C calls, so what was tested is a much sparser heartbeat than
+intended. (And it is the same fact the Python sampler kept reporting: 0.7-1.1 Hz instead of 4 Hz.)
+
+The number that did move is the workers' own swap at the start of the window:
+
+| instance | worst rank | worker swap at window |
+|---|---|---|
+| tail66 | 74.9 s | 982 MiB |
+| tail67 | 12.2 s | 931 MiB |
+| tail68 | 50.4 s | 931 MiB |
+| tail61-65 (warmed, clean) | 4.4-4.8 s | 512-607 MiB |
+| tail57 | 73.8 s | 578 MiB |
+
+Every instance whose window was inflated in this stretch of the day had ~0.93-0.98 GiB of itself swapped at the
+start of the window, against 0.51-0.61 GiB in the clean warmed ones -- and those three launches came after a day of
+relaunches, while swap on this box is only 8 GiB and is not drained between launches. tail57 sits in the way of
+calling it a rule (shape (a) at 578 MiB), so it stays a correlation: **the more of the worker is swapped out when
+the post-load pass starts, the more of the pass is spent waiting on a device that is not computing.** Nothing here
+says why the wait is charged as user CPU and not as iowait, which is the part a fix would want.
+
 
 ## How to reproduce the load-path analysis
 

@@ -1,3 +1,21 @@
+## 2026-11-01 (later night): two shapes of tail; the device is idle while the host waits; a heartbeat does not help
+
+* New instrument: `gpu_busy_percent` from sysfs (no root, no ROCm tooling) sampled at 0.25 s -- the window census now
+  prints it as a sparkline -- and `_fold_hist` now splits *issuing* (host) from *waiting* (device) via
+  `prof.slow_note`; `slowcall` also samples gpu busy around a slow call.
+* **tail66 (74.9 / 21.8 / 12.8 / 11.8 s) is a second shape**: no single call over 2 s, every class inflated together
+  (`R9kQwenGatedDeltaNetAttention` 41.14 s/864 visits, `layers.26.linear_attn` 24.29 s), and the max-over-GPUs busy
+  trace `####+-.....#...#-.###..........--###.-` with **1.25-2.5 s stretches where no GPU is computing** while the
+  rank sits in state R. So: (a) one enormous visit at the first guarded tensor (tail48/57, warm-up suppresses it),
+  (b) the whole pass 4-8x slower (tail66).
+* `R9K_PWAL_BEAT=1` (one trivial kernel every 50 ms on the rank's device during the window, warm-up off) is a
+  **negative**: tail67 11.6-12.2 s, tail68 50.4 / 38.6 / 35.6 / 25.7 s. Caveat that matters: the beat thread managed
+  83-136 submissions in a 25-50 s window (~4 Hz, not 20) because the load thread holds the GIL inside C calls.
+* The swap column now separates the elevated instances: 982 / 931 / 931 MiB of each worker swapped at window start for
+  tail66/67/68 versus 512-607 MiB in the clean warmed rounds -- though tail57 (578 MiB, 73.8 s) blocks calling it a
+  rule. Swap on this box is 8 GiB and is never drained between launches, and the elevated launches came late in a day
+  of relaunches.
+
 ## 2026-11-01 (end of day): warming the post-load path took the tail away -- 7 launches, no window over 20 s, and the clean window fell from 5.6 s to 4.6 s a rank
 
 * The swap reading died with the KV one: a worker starts its post-load window with 512-750 MiB of itself in swap
