@@ -150,6 +150,7 @@ def _group(name: str) -> str:
 def mtp_weights(weights, mtp_mxfp4: bool):
     dropped, pend = [], {}
     requant = 0.0
+    rq = [0.0, 0.0, 0.0, 0.0]      # _PROF only: [to-GPU (pageable H2D from the mmap'd pages), search, cat+to-CPU, calls]
     n_t, n_b, t_all = 0, 0, time.perf_counter()
     for name, w in weights:
         if _DROP_MTP_HEAD.search(name):
@@ -169,6 +170,28 @@ def mtp_weights(weights, mtp_mxfp4: bool):
             # has no room for that (4x R9700 TP4 with the 512-expert Flash-Next rev: 5 GiB of headroom left).
             rows = int(os.environ.get("R9K_MTP_QUANT_ROWS", 1 << 18))
             t0 = time.perf_counter()
+            if _PROF:
+                q = []
+                for x in w.reshape(-1, w.shape[-1]).split(rows):
+                    torch.cuda.synchronize()      # attribution: the search is async, so wall time needs a barrier
+                    ta = time.perf_counter()
+                    xc = x.cuda().float()
+                    torch.cuda.synchronize()
+                    tb = time.perf_counter()
+                    q.append(quantize_mxfp4_search(xc))
+                    torch.cuda.synchronize()
+                    tc = time.perf_counter()
+                    rq[0] += tb - ta
+                    rq[1] += tc - tb
+                    del xc
+                pk = torch.cat([p for p, _ in q])
+                sc = torch.cat([s for _, s in q])
+                rq[2] += time.perf_counter() - tc
+                rq[3] += 1
+                yield f"{name}_packed", pk.cpu().reshape(*w.shape[:-1], -1)
+                yield f"{name}_scale", sc.cpu().reshape(*w.shape[:-1], -1)
+                requant += time.perf_counter() - t0
+                continue
             q = [quantize_mxfp4_search(x.cuda().float()) for x in w.reshape(-1, w.shape[-1]).split(rows)]
             requant += time.perf_counter() - t0
             yield f"{name}_packed", torch.cat([p for p, _ in q]).cpu().reshape(*w.shape[:-1], -1)
@@ -188,6 +211,9 @@ def mtp_weights(weights, mtp_mxfp4: bool):
     if _PROF:
         logger.info("r9700 load profile (draft): bf16->MXFP4 requant %.1f s (%s tensors, %.1f GiB a rank, "
                     "%.1f s wall)", requant, n_t, n_b / 2**30, time.perf_counter() - t_all)
+        logger.info("r9700 load profile (draft requant): to-GPU %.1f s, search %.1f s, cat %.1f s over %d calls "
+                    "(a lone quantize_mxfp4_search costs 0.39 s of launch + 4.3 GiB/s; the to-CPU transfer lands in pull, not "
+                    "here)", *rq[:3], int(rq[3]))
         prof.snap("draft end")          # majflt delta vs "target end" = the duplicate read, measured
     if dropped:
         logger.info_once("r9700: ignored fork-private MTP draft head tensors: %s", ", ".join(dropped))
