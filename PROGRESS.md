@@ -14,6 +14,10 @@
 * Method notes for every future A/B here: @32 samples are bimodal (1,54x vs 1,75x, tracking 2.0 vs 3.1 GHz DPM
   states) so take medians of >=3; and low-concurrency aggregates swing 10% (first @4 328, repeat 471), so A/B on
   @8/@16/@32 with ITL as the tie-breaker.
+* **MTP=1 completes the curve** -- @32 median 1,638 (below MTP=2's 1,755), single-stream 146.2, but the best ITL
+  of the three (11.9 / 17.6 / 29.8 ms at 1 / 8 / 32) and the biggest KV pool (527,085). Aggregate peaks at depth 2.
+  **NSEQ=48 with MTP=2 is a negative control**: @32 1,794 (inside the spread), @16 1,252, ITL unchanged, and 48 in
+  flight reads 1,811 at only 39-40 tok/s a stream -- `--max-num-seqs 32` stands.
 * Also today: the quality gate caches GSM8K locally (GitHub reach is intermittent here, and a mid-A/B gate died
   on a 60 s fetch), the launcher refuses to start on top of leftover ranks (`STOP=1` / `FORCE=1`), NSEQ/NBT
   defaults are TP-aware, `harness.py --conc`, and bench reports per-stream speed.

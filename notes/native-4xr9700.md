@@ -296,9 +296,21 @@ Two things this measurement exposed about the method, worth keeping in mind for 
 * low-concurrency aggregates are noisy at the 10% level (the first @4 run read 328, its repeat 471); prefer
   @8/@16/@32 for A/B and use ITL as the tie-breaker since it is per-step and much tighter.
 
-Queued follow-ups from this result: **MTP=1** (96 -> 64 rows a step: does the aggregate keep climbing?), and
-**NSEQ=48 with MTP=2** (144 rows a step, still above the old MTP=3/NSEQ=32's 128 -- the admission knee may have
-moved once each step got cheaper).
+Both follow-ups, measured:
+
+* **MTP=1 completes the curve**: @32 1,553 / 1,700 / 1,638 -> median **1,638**, below MTP=2's 1,755; @16 1,171 /
+  75.2; single-stream 146.2. It does have the tightest ITL of the three -- 11.9 / 17.6 / **29.8 ms** at 1 / 8 / 32
+  streams -- and the largest KV pool (527,085 tokens). So the aggregate peaks at a draft depth of **2** for this
+  workload: 1,488 (3) -> 1,755 (2) -> 1,638 (1), with accepted tokens a step at one stream 2.52 / 2.22 / 1.74 out
+  of a possible 4 / 3 / 2. If the thing you care about is per-token latency at high concurrency rather than
+  tokens/s, MTP=1 is the setting to look at.
+* **NSEQ=48 with MTP=2** (144 rows a step, still above MTP=3/NSEQ=32's 128) does not move the knee: @32 median
+  1,794 (1,745 / 1,809 / 1,794) against 1,755 at NSEQ=32 -- inside the spread; @16 1,252 against 1,265; ITL
+  12.9 / 21.0 / 37.4 ms, indistinguishable. And 48 in flight earns 1,811 aggregate at **39-40 tok/s a stream**
+  against 57-59 with 32 in flight, for 4,854 fewer KV tokens. `--max-num-seqs 32` stands.
+
+Running default after all of this: `MTP=2 NSEQ=32 NBT=8192 UTIL=0.97`, measured on the restored instance at
+1,779 aggregate / 58.0 a stream with 32 in flight, 189.2 single-stream, KV 496,374 tokens.
 
 ## How to run it again
 
