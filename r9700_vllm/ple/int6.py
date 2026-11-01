@@ -120,12 +120,27 @@ def make_int6_embedding_cls(base):
                              self._r9k_host.shape[0], self.row_bytes, self._r9k_host.numel() / 2**30)
 
         def _alloc_int6(self, rows: int, embedding_dim: int) -> torch.Tensor:
-            from ..utils.hostmem import pinned_empty
+            from ..utils.hostmem import pinned_empty, late_enabled, register_late
             self.head_dim = embedding_dim
             self.row_bytes = int6_row_bytes(embedding_dim)
-            host = pinned_empty((rows, self.row_bytes), torch.uint8)   # exact size (torch pinning rounds to 2^k)
-            assert host.is_pinned(), "r9700: PLE host table not pinned; the UVA view would be a copy"
+            late = late_enabled()
+            host = pinned_empty((rows, self.row_bytes), torch.uint8, pin=not late)  # exact size (torch rounds to 2^k)
             self._r9k_host = host
+            if late:
+                # Ordinary, reclaimable host memory for the duration of the weight stream: 9.69 GiB a rank of
+                # *registered* memory is 38.8 GiB the kernel can neither swap nor evict while it is also trying to
+                # keep a 110.6 GiB mmap'd checkpoint in cache, and the resulting swap churn is what stalls the load
+                # (notes/native-4xr9700.md). Registered once the stream is over, still before the first forward.
+                self._r9k_view = host
+
+                def _done(h):
+                    self._r9k_view = get_accelerator_view_from_cpu_tensor(h)
+                    self.weight = torch.nn.Parameter(self._r9k_view, requires_grad=False)
+                    self.weight._vllm_is_uva_offloaded = True
+
+                register_late(host, _done)
+                return host
+            assert host.is_pinned(), "r9700: PLE host table not pinned; the UVA view would be a copy"
             self._r9k_view = get_accelerator_view_from_cpu_tensor(host)
             return self._r9k_view
 

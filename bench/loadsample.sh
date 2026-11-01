@@ -23,8 +23,9 @@ while :; do
   # a wait on a page being read, so both are needed.
   psi_mem=$(awk '/^some/{split($2,a,"=");print a[2]}' /proc/pressure/memory 2>/dev/null)
   psi_io=$(awk '/^some/{split($2,a,"=");print a[2]}' /proc/pressure/io 2>/dev/null)
-  # diskstats: sectors read/written on the data device (rd, the one holding the checkpoint)
-  read -r r w < <(awk '$3 ~ /^sd|^nvme|^vd/ {r+=$6; w+=$10} END {print r+0, w+0}' /proc/diskstats)
+  # diskstats: sectors read/written on whole devices only -- the partition lines repeat the same sectors, and summing
+  # both (as the first version did) doubles every number.
+  read -r r w < <(awk '($3 ~ /^[a-z]+[0-9]+$/ || $3 ~ /^nvme[0-9]+n[0-9]+$/ || $3 ~ /^mmcblk[0-9]+$/) {r+=$6; w+=$10} END {print r+0, w+0}' /proc/diskstats)
   rd=$(( (r - prev_r) / 2 / 2048 )); wr=$(( (w - prev_w) / 2 / 2048 ))   # MiB/s over the 2 s interval
   prev_r=$r; prev_w=$w
   # what the vLLM workers themselves are reading from block devices right now

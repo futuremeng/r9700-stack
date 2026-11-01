@@ -110,6 +110,8 @@ def target_weights(weights):
                 g[2] += now - t
                 g[4] = now - tstream
             t = now
+        from ..utils import hostmem          # late pinning: register the PLE tables now, not at construction
+        hostmem.finalize_late_pins()
         if _PROF:
             prof.dump_stacks("target pass")      # which functions, not just which tensor group
             prof.report_copies("target pass")
