@@ -1,5 +1,22 @@
 # Progress log
 
+## 2026-11-01 (later still): cold-cache A/B done, late pinning is now the default
+
+* The operator ran `sync; echo 3 > /proc/sys/vm/drop_caches` before two launches (`Cached` 0.06 GiB both times), which
+  is the cleanest pair so far: **cold + late pin 68.7 s** (place 47.3, experts 37.7, `>1s` copies **0**) vs **cold +
+  early pin 114.5 s** (place 96.6, experts 55.7, 1-5 copies of 50.8-52.5 s each).
+* Late pinning does **not** reduce I/O: duplicate reads are 23.6-26.7 GiB per rank in both. It removes the waiting.
+  And the shared page cache already holds read amplification at **~1.07x** of the checkpoint for four ranks (118.7 GiB
+  read by the four workers on a cold cache) -- so the worry that each rank streams the whole file four times was wrong.
+* Cold+early (114.5 s) is far better than warm+early (174.8-189.6 s): the pathological window needs a **full** page
+  cache to show up, because that is when the kernel starts swapping instead of shedding cache.
+* `R9K_PLE_PIN_LATE` now defaults to on (five instances with it: 68.7 / 72.3 / 72.5 / 118.6 s; three without:
+  114.5 / 174.8 / 189.6 s). Final serving instance late27: load **72.27 s**, GSM8K 99/100, needles 3/3, KV 496,374
+  tokens, `@32 x300` 1543-1590, `@32 x1200` 1810-1815, `@16 x300` 1107-1132 tok/s, 299 W median at busy==100.
+* Open: swap headroom (late pinning uses all 8 GiB of swap during the load; needs root), E1 prestage re-tested under
+  late pinning, and the draft pass's 3.4-48.8 s swing (data movement into the draft, not the requant -- the search is
+  1.5 s of it).
+
 ## 2026-11-01 (later): the load's stalls are swap I/O -- found by nine instrumented launches
 
 * `Tensor.copy_` accounting (`R9K_LOAD_COPIES=1`): the target pass makes **148,998 copy_ calls per rank writing

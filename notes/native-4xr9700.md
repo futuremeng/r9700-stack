@@ -531,7 +531,7 @@ before the first byte is read**, plus ~15 GiB of anon and ~46 GiB of page cache 
 mmap'd checkpoint; every `copy_` that touches a non-resident page queues behind that, GPU idle. Whether and when
 the kernel decides to do this is what makes a load 115.7 s or 186.1 s.
 
-Fix candidates, cheapest first (none run yet):
+Fix candidates, cheapest first (C1 and C2 were run, see the next section; C3 was not needed once C2 landed):
 
 * **C1 (system, one line, needs root) -- stop the kernel from swapping during the load**: `vm.swappiness=1`, or
   `swapoff -a` for the harsher A/B. Prediction: the `>1s` bucket collapses from 83-121 s to a few seconds and the
@@ -609,11 +609,29 @@ writes concurrently with reads while the ranks' own `read_bytes` stood still and
   launch overhead. late23's 44.1 s was almost entirely `x.cuda()` paging in the draft's bf16 bytes from a device
   that was busy swapping. So the draft pass's 3.5-48.8 s swing is a page-cache question, not a quantization one --
   and it is the last big swing left in the load.
-* Next, in order: (i) re-test **E1 prestage with late pinning** -- it failed before because the MTP span was evicted
-  during consumption, but the tables are now swappable, so the readahead may actually survive; (ii) a **cold-cache**
-  A/B (`sync; echo 3 > /proc/sys/vm/drop_caches` before the launch, needs root) to get the boot-cold number for late
-  vs early pinning, which is the number that matters on first boot; (iii) more swap (needs root) -- late pinning now
-  deliberately uses all 8 GiB, and that is the one sharp edge left.
+* **The cold-cache A/B (operator ran `sync; echo 3 > /proc/sys/vm/drop_caches` before each launch, `Cached` 0.06 GiB
+  both times) gives the cleanest comparison, and it points the same way:**
+
+  | cold start | total | place | experts | `>1s` copies | swap peak | device read peak | checkpoint read by the 4 workers |
+  |---|---|---|---|---|---|---|---|
+  | late pin (cold-late25) | **68.7 s** | 47.3 s | 37.7 s | **0** | 8191 MiB | 6.8 GB/s | 118.7 GiB (1.07x the file) |
+  | early pin (cold-early26) | 114.5 s | 96.6 s | 55.7 s | 1-5 calls, 50.8-52.5 s each | 6286 MiB | 6.9 GB/s | 115.7 GiB |
+
+  Two things worth keeping: the duplicate reads are **the same in both** (23.6-26.7 GiB per rank at `target end`), so
+  late pinning does not reduce I/O -- it removes the *waiting*; and the shared page cache already keeps read
+  amplification at ~1.07x of the checkpoint size for four ranks, which is why no one reads this file four times.
+  Cold+early (114.5 s) is also much better than warm+early (174.8-189.6 s): with an empty cache the kernel has
+  somewhere to go before it starts swapping, so the pathological window needs a full cache to appear.
+* **Late pinning is now the default** (`R9K_PLE_PIN_LATE=0` restores the old behaviour). Five instances with it:
+  68.7 (cold) / 72.3 / 72.5 / 118.6 s; three without: 114.5 (cold) / 174.8 / 189.6 s. Throughput and quality are
+  unchanged in every case (`@32 x300` 1543-1608, `@32 x1200` 1800-1815, `@16 x300` 1107-1206 tok/s, GSM8K 98-99/100,
+  needles 3/3, KV 496,374 tokens, ~299 W at busy==100).
+* Remaining: (i) **swap headroom** -- late pinning deliberately uses all 8 GiB of swap during the load (peak 8191 MiB
+  of 8191) while `MemAvailable` stays at ~36-37 GiB; more swap would take the last sharp edge off (needs root, and the
+  earlier incident was a reclaim/GPU-fence deadlock, so a bigger buffer is worth having); (ii) re-test **E1 prestage
+  with late pinning** (it failed early-pinned because the MTP span was evicted during consumption); (iii) the last big
+  swing is the draft pass (3.4-48.8 s), and it is data movement into the draft, not the requant; (iv) the experts term
+  (35.5-37.7 s) is now plain work: 147k copies of 27.3 GiB, ~30 s of copy wall time, with nothing pathological left.
 
 ## How to reproduce the load-path analysis
 
@@ -629,5 +647,10 @@ PIN_GIB=9.7 COPIES=4000 DEV=0 ~/venv-r9700/bin/python3 bench/svm_probe.py # does
 
 Switches: `R9K_LOAD_PROF=1` (group timers + phase snapshots), `R9K_LOAD_STACKS=1` (SIGPROF stack sampler: which
 function), `R9K_LOAD_COPIES=1` (`copy_` accounting, fault deltas, slow-call names, watchdog wchan),
-`R9K_PRESTAGE_MTP=0|1` (the E1 control). Read the pair: the log's `slow call` offsets (`+N s into the load`, with
-`probe at HH:MM:SS` in the header line) line up with the sampler CSV's clock columns.
+`R9K_PRESTAGE_MTP=0|1` (the E1 control), `R9K_PLE_PIN_LATE=0|1` (default 1: register the PLE tables after the stream).
+Read the pair: the log's `slow call` offsets (`+N s into the load`, with `probe at HH:MM:SS` in the header line) line up
+with the sampler CSV's clock columns.
+
+For a **cold-cache** launch (what a first boot sees), the operator has to drop the cache after the gate and before the
+launch -- `sync; echo 3 > /proc/sys/vm/drop_caches`, check that `Cached` in `/proc/meminfo` fell to ~0.06 GiB. It needs
+root and it is safe only with no vLLM processes running, i.e. after `bench/gate.sh` has passed.

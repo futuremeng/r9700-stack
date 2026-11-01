@@ -63,8 +63,11 @@ _LATE: list[tuple[torch.Tensor, object]] = []
 
 
 def late_enabled() -> bool:
+    """On by default: three late instances (68.7 / 72.5 / 118.6 s) against three early ones (114.5 / 174.8 / 189.6 s),
+    same throughput and quality, and the multi-second four-rank copy stalls disappear. ``R9K_PLE_PIN_LATE=0`` restores
+    the old behaviour."""
     import os
-    return os.environ.get("R9K_PLE_PIN_LATE", "0") == "1"
+    return os.environ.get("R9K_PLE_PIN_LATE", "1") != "0"
 
 
 def register_late(host: torch.Tensor, then) -> None:
