@@ -6,6 +6,7 @@ Prints accuracy and needle hits; exit 0. Deterministic (temperature 0) so two st
 """
 import concurrent.futures as cf
 import json
+import os
 import random
 import re
 import sys
@@ -32,8 +33,18 @@ def last_number(t):
 
 
 def gsm8k():
-    url = "https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/test.jsonl"
-    rows = [json.loads(x) for x in urllib.request.urlopen(url, timeout=60).read().decode().splitlines()]
+    # this box reaches GitHub only sometimes (a 100-question gate died on a 60 s fetch mid-A/B), and the gate has
+    # to be re-runnable offline, so the 1.3 MB test set is cached on first use
+    cache = os.path.expanduser("~/data/gsm8k-test.jsonl")
+    if os.path.exists(cache):
+        raw = open(cache).read()
+    else:
+        url = "https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/test.jsonl"
+        raw = urllib.request.urlopen(url, timeout=60).read().decode()
+        os.makedirs(os.path.dirname(cache), exist_ok=True)
+        open(cache, "w").write(raw)
+        print(f"gsm8k: cached {len(raw)} bytes -> {cache}")
+    rows = [json.loads(x) for x in raw.splitlines()]
     rows = rows[:N]
 
     def one(d):
