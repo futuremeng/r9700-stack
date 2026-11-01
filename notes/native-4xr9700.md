@@ -1311,6 +1311,30 @@ the 2.5x the post-load window showed -- and it did so with `prestage mtp` on and
 the bytes already cached. So the slow state is neither code-path-specific nor of constant severity: the same launch
 can pay 2.5x in one phase and 16x in another. `tail83`'s arm showed the same thing (draft 74.5 s).
 
+## C21: the queue/wakeup A/B on wall time -- MWAITX=0 is worse, HWQ=2 neutral -- and the last marker of shape (b) dies
+
+Same four configurations, measured with the fixed instrument (`X s of wall`), one launch each:
+
+| instance | config | wall per rank | majflt in window | swap at window start | draft | load |
+|---|---|---|---|---|---|---|
+| tail91 | `HWQ=1 MWAITX=1` (default) | 5.3-5.5 s | 149,532 | 908 MiB | 6.4 | 76.4 |
+| tail93 | `MWAITX=0` | **15.5-16.4 s** | 152,876 | 938 | 6.4 | 86.3 |
+| tail95 | `HWQ=2` | 5.2-5.7 s | 150,366 | 929 | 6.6 | 77.8 |
+| tail97 | default, left running | 5.5-5.7 s | 148,552 | 897 | 6.7 | **70.5** |
+
+Two things follow. `MWAITX=0` costs ~3x on the window -- the same direction the pre-fix run hinted at -- so the serve
+script's `MWAITX=1` default stays; `HWQ=2` is neutral (and so the stall in tail83's `HWQ=2` arm was a shape-(a)
+event, not caused by the queue count). n=1 per arm, so treat the magnitude as indicative; the sign is consistent
+across both runs. And the elevated regime lifted on its own between tail90 and tail91: it held from tail66 for the
+last ~15 launches, so it lasts hours rather than being a property of the code or the checkpoint.
+
+The marker of C16/C17 does not survive this table: the window's major-fault count was 9k in the clean launches of the
+afternoon and 148-153k in **all four** of these, including the two that ran in 5.4 s of wall. Same for the swap at
+window start (512-585 MiB then, 897-938 MiB now, clean or elevated alike). So those two quantities were tracking the
+day phase -- how much of the box's swap was occupied -- and not the regime. After this, shape (b) has **no marker at
+all** in anything measured so far: not gpu busy, not thread state, not io or memory pressure, not swap, not faults,
+not KV pool size, not the warm-up's own cost.
+
 ## How to reproduce the load-path analysis
 
 ```bash

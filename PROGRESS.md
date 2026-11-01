@@ -1,3 +1,16 @@
+## 2026-11-01 (end): queue knobs on wall time -- MWAITX=0 costs 3x, HWQ=2 neutral -- and shape (b) now has no marker
+
+* Wall-based re-run, one launch per arm: default **5.3-5.5 s**, `HWQ=2` **5.2-5.7 s** (neutral), `MWAITX=0`
+  **15.5-16.4 s** (~3x worse). Serve defaults stay (`HWQ=1 MWAITX=1`); n=1 per arm, but the sign matches the earlier
+  attributed-sum run. The ~65 s stall in tail83's `HWQ=2` arm was therefore a shape-(a) event, not a queue-count effect.
+* The elevated regime **lifted on its own** between tail90 and tail91 after ~15 consecutive launches -- it lasts hours,
+  and is not a property of the code or the checkpoint. tail97: load 70.5 s (fastest today), KV 494,351, windows 5.5-
+  5.7 s, GSM8K 98/100, needles 3/3, health 200, left running.
+* Final correction to C16/C17: the window's major-fault count (9k then, 148-153k now) and the swap at window start
+  (512-585 then, 897-938 now) are the **same in clean and elevated launches measured on wall time** -- they were
+  tracking the day phase, not the regime. Shape (b) now has no marker in anything measured: gpu busy, thread state,
+  io/memory pressure, swap, faults, KV pool, warm-up cost.
+
 ## 2026-11-01 (late night): re-measured on wall time the two regimes survive -- 5 s vs 13 s -- but the old magnitudes are void
 
 * New `bench/window_wall.py`: recovers each window's wall duration from the log timestamps of the window's opening and
