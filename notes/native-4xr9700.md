@@ -364,6 +364,37 @@ and the run that tested it wedged the box** (see `notes/load-oom-svm-wedge.md`):
 * The two-launch protocol still applies, and now a hard gate: no launch unless every `vllm serve|VLLM::` process
   is gone and `MemAvailable >= 55 GiB` -- see `bench/coldstart_ab.sh`, which replaces `bench/prefetch_ab.sh`.
 
+## Throughput anchor with the protocol pinned (2026-11-01, post-reboot)
+
+A 4-5% @16 deficit against the recorded 1,265 turned out to be mostly a protocol question, so the protocol is now
+written down (`bench/probe32.sh`, same `bench.aggregate(conc, max_tokens)` calls the numbers came from):
+
+| protocol | agg tok/s | per-stream median |
+|---|---|---|
+| 32 in flight, 300-token waves | 1,600.1 / 1,586.5 / 1,598.0 -> **1,598** (+-0.5%) | 51.8 |
+| 32 in flight, 1,200-token waves | 1,836.3 / 1,808.8 -> **1,823** | 58.1 |
+| 16 in flight, 300-token waves | 1,094.4 / 1,131.3 / 1,107.1 -> **1,107** | 72.6 |
+| 16 in flight, 200-token waves (`bench.py run`, the recorded protocol) | 1,210.9 / 1,231.2 / 1,168.4 / 1,185.9 -> **1,198** | 79.1 |
+
+What that says: at a fixed protocol the box repeats to +-0.5%, but **`max_tokens` moves the @32 aggregate by 15%**
+(1,598 at 300 vs 1,823 at 1,200) and the sign of the length effect flips between 16 and 32 streams. Every historical
+aggregate therefore has to be read with its `max_tokens`; the recorded MTP table ("@32 1,762 / 1,538 / 1,750 ->
+median 1,755, 57.6 a stream") sits closer to long-wave behaviour than today's 300-token waves read, which is where
+most of the apparent -9% lives. On the apples-to-apples one (`bench.py run`, 200-token waves at 16 in flight) today
+reads 1,198 against the recorded 1,265, i.e. **-5%**, with single-stream decode unchanged (171.6 median against
+170.4 recorded) and the speculative config verified in the launch line: `{'method': 'mtp',
+'num_speculative_tokens': 2}`, acceptance 148,182/99,534 = **1.49 accepted a draft** (pos0 82.6%, pos1 66.3%).
+
+The power envelope is *not* the explanation, and the earlier suspicion of it was a measurement error: sampling power
+around a 6-second wave gives a 258 W median. Gated on `gpu_busy_percent == 100` (140 samples) the cards sit at
+**299 W median, 300.0 W max on all four**, flat, with GPU busy at 100 and 44-47 C -- exactly the ~300 W ceiling
+recorded above, and no powercap is installed in this guest (`/usr/local/sbin` empty, no `r9700-*` units; the 225 W
+cap belongs to the production guests, see `host/README.md`). Other fingerprints: GPU KV cache **496,374 tokens**
+(15.15x at 32k) against 502,442 recorded for MTP=2 (-1.2%), `Available KV cache memory: 7.25 GiB`; GSM8K 98/100 and
+needles 3/3; temps and counters clean. Open, low priority: whether that -5% and the 1.2% smaller KV pool are
+instance drift or something real -- settle it by rerunning `probe32.sh` on the next launch rather than by trusting
+the single historical samples.
+
 ## How to run it again
 
 ```

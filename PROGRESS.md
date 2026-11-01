@@ -1,5 +1,25 @@
 # Progress log
 
+## 2026-11-01 (after the reboot): the throughput baseline is protocol-defined; the envelope is a flat 300.0 W
+
+* Post-reboot health on the same tree: **GSM8K 98/100, needles 3/3**, single-stream decode 169.4-181.1 (median
+  **171.6** against the recorded 170.4), speculative config confirmed live as `{'method': 'mtp',
+  'num_speculative_tokens': 2}` with acceptance **1.49 accepted a draft** (pos0 82.6%, pos1 66.3%), GPU KV cache
+  **496,374 tok** / 15.15x (recorded 502,442, -1.2%). Boot-cold load 115.67 s vs warm 120.60 s (page cache: 4%).
+* A 4-5% @16 gap against the recorded 1,265 sent me into the protocol, which was never pinned down. With
+  `bench/probe32.sh` it repeats to **+-0.5%**, but **`max_tokens` moves @32 aggregate by 15%**: 32 in flight,
+  300-token waves -> **1,598** (1,586.5-1,600.1, 51.8 a stream); 1,200-token waves -> **1,823** (58.1); 16 in
+  flight, 300-token -> **1,107** (72.6); 16 in flight at `bench.py run`'s 200 tokens -> **1,198** (79.1). The
+  length effect even flips sign between 16 and 32 streams. Only the last row is comparable with the recorded
+  1,265: **-5%**, and most of the scary -9% at @32 is the recorded table behaving like long waves.
+* The power envelope is not the cause, and suspecting it was a measurement error of my own: sampling power around a
+  6 s wave read 258 W median. Gated on `gpu_busy_percent == 100` (140 samples) all four cards sit flat at
+  **299 W median / 300.0 W max**, 44-47 C, busy 100 -- the same ~300 W ceiling the note records -- and this guest
+  has no powercap installed at all (`/usr/local/sbin` empty, no `r9700-*` units; the 225 W cap is the production
+  guests' per `host/README.md`).
+* New rule for every throughput number: state `conc` **and** `max_tokens` **and** the prompt, and gate power
+  sampling on busy==100. Historical aggregates without `max_tokens` are soft.
+
 ## 2026-11-01 (night): the prefetch question closes as a no-op, and the A/B wedges the box (OOM -> amdgpu SVM)
 
 * **The prefetch knobs are inert on this stack.** `weight_utils.py:1115` is `should_prefetch = strategy ==
