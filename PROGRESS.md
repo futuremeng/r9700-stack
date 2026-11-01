@@ -1,4 +1,24 @@
-## 2026-11-01 (evening, later): caught a slow window with its brackets -- it is spinning on the device, not waiting
+## 2026-11-01 (evening, latest): the serialization A/B kills device queueing as the explanation too; the instrument now reaches the single call
+
+* `R9K_PWAL_SERIAL=1` (cross-rank file lock across the measured window): tail46 and tail47 gave 5.5-5.9 s windows on
+  every rank with queue waits 0 / 11-15 / 14-19 / 23 s and the same 75.5 s load total -- looked like a fix.
+* tail48 refuted it: **48.2 s window with queue wait 0.00 s** -- that rank had the device to itself from the start,
+  and the three ranks that ran after it, also alone, took 5.8-5.9 s. So the tail is not ranks queueing behind
+  each other. (Knob stays, default off; it is a measured negative.)
+* What that window was: `MergedColumnParallelLinear` 44.24 s wall / **88.11 s user CPU**, one visit
+  `layers.0.mlp.shared_expert.gate_up_proj` 43.57 s / 87.08 s, sys CPU 0.8 s for the whole window, faults ~13 k
+  major, census R=27 of 29 samples with `wchan (running)`, memory pressure 0.0 s stalled. User CPU exceeding wall
+  means several threads burned it. Module-level attribution has hit its limit here.
+* New instrument: `prof.slowcall` logs any single load-path call over `R9K_SLOWCALL` (default 2 s) with the
+  arguments' device/dtype/shape/layout, wall, user/sys CPU and minor/major faults -- wrapped around
+  `permute_fragments`, `pack_scales`, `_fold_hist`, `quantize_rows_fp8`. The window census now also samples
+  `/proc/<tid>/syscall` (`(user)` when the thread is executing, otherwise the syscall it is parked in), which tells
+  spinning from sleeping.
+* `tests/test_slowcall.py` covers it (fires past the threshold, names the call, carries the CPU/fault split, flags
+  NONCONTIG, silent when fast, no wrapper at all when profiling is off) and caught a real bug: `prof` already had a
+  module-level `_SLOW` (copy outliers), so the new counter shadowed it -- renamed `_SLOWCALL`.
+
+## 2026-11-01 (evening, later): caught a slow window with its brackets -- the slow rank burns user CPU, not system CPU, and hardly faults
 
 * New tool `bench/catch_tail.sh`: relaunch until a window >= 8 s appears. Round 1 clean (5.5 s x4), round 2 (tail45)
   landed a bad one: **5.7 / 21.8 / 51.0 / 57.0 s**, KV pool 468,865 (smallest so far), and it served fine anyway

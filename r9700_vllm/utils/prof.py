@@ -47,7 +47,52 @@ def timed(name: str):
             finally:
                 record(name, time.perf_counter() - t0)
         return wrap
+
     return deco
+
+
+_SLOWCALL = {"n": 0, "t": 0.0}   # (not _SLOW: that name is the copy-outlier list below)
+
+
+def _describe(a) -> str:
+    if hasattr(a, "shape") and hasattr(a, "dtype"):
+        return (f"{getattr(a, 'device', '?')} {str(a.dtype).replace('torch.', '')} {list(a.shape)}"
+                + ("" if a.is_contiguous() else " NONCONTIG"))
+    if a is None or isinstance(a, (int, float, str, bool)):
+        return repr(a)
+    return type(a).__name__
+
+
+def slowcall(fn=None, *, name=None, thresh=None):
+    """Decorate a load-path helper so that a single slow call names *itself*: the tensor arguments' device, shape and
+    layout, the call's wall time, and the user/sys CPU and page faults it burned. Per-module attribution stops at one
+    layer (tail48: `layers.0.mlp.shared_expert.gate_up_proj`, 43.57 s wall against 87.1 s of user CPU) and a layer
+    holds several different calls. This says which call, and whether it spent its seconds executing or waiting --
+    which is the question the last two hypotheses died on. Logs any call over R9K_SLOWCALL seconds (default 2.0),
+    so it stays quiet unless something really is wrong."""
+    def deco(f):
+        if not ON:
+            return f
+        nm = name or f.__qualname__
+
+        @functools.wraps(f)
+        def wrap(*args, **kwargs):
+            th = float(os.environ.get("R9K_SLOWCALL", "2.0")) if thresh is None else thresh
+            t0 = time.perf_counter()
+            r0 = resource.getrusage(resource.RUSAGE_SELF)
+            try:
+                return f(*args, **kwargs)
+            finally:
+                wall = time.perf_counter() - t0
+                if wall >= th:
+                    r1 = resource.getrusage(resource.RUSAGE_SELF)
+                    _SLOWCALL["n"], _SLOWCALL["t"] = _SLOWCALL["n"] + 1, _SLOWCALL["t"] + wall
+                    logger.info("r9700 slow call %-24s %6.2f s cpu %6.2f/%5.2f s u/s faults +%d minor +%d major  %s",
+                                nm, wall, r1.ru_utime - r0.ru_utime, r1.ru_stime - r0.ru_stime,
+                                r1.ru_minflt - r0.ru_minflt, r1.ru_majflt - r0.ru_majflt,
+                                " ".join(_describe(a) for a in list(args)[:3] + list(kwargs.values())[:2]))
+        return wrap
+    return deco(fn) if fn is not None else deco
 
 
 def snap(tag: str) -> None:
@@ -351,7 +396,47 @@ _PWA = {"on": False, "acc": {}, "orig": None, "cur": "?"}
 # needs is a census, not an alarm: sample the load thread every quarter second for the whole window and report what
 # it was doing (leaf frame), what the kernel says it was doing (R running / S sleeping / D uninterruptible, plus
 # wchan), which module the visit belonged to, and what the machine's pressure stalls say.
-_PWS = {"on": False, "th": None, "frames": {}, "mods": {}, "states": {}, "wchans": {}, "psi": {}, "n": 0}
+_PWS = {"on": False, "th": None, "frames": {}, "mods": {}, "states": {}, "wchans": {}, "syscalls": {}, "psi": {},
+        "n": 0}
+# the handful of syscalls a load window can plausibly park in; anything else prints as its number
+_SYSCALLS = {"-1": "(user)", "0": "read", "1": "write", "7": "poll", "16": "ioctl", "23": "select",
+             "202": "futex", "232": "epoll_wait", "233": "epoll_pwait", "28": "epoll_ctl", "7?": "?"}
+
+# R9K_PWAL_SERIAL=1 runs the post-load pass one rank at a time, by holding a cross-rank file lock across exactly the
+# window the timer measures. The reason to try it is C10: in the slow version of that window wall ~= user CPU, sys is
+# 2% of it, faults are ~10 MiB and memory pressure is 0.0 s -- the rank is not waiting on anything the kernel can
+# see, it is spinning on a device that three other ranks are driving at the same time. Launching the same ops costs
+# 0.7 s of user CPU on the fastest rank and 53 s on the slowest, so the difference is queueing, not work. If the
+# hypothesis is right, serializing costs the load a few seconds and takes the 50 s windows (and the smaller KV pool
+# that has tagged along with every one of them) away.
+_PWLOCK = {"fd": None, "wait": 0.0}
+
+
+def _pwlock_acquire(tag: str) -> None:
+    import fcntl
+    path = os.environ.get("R9K_PWAL_LOCK", "/tmp/r9k-pwal.lock")
+    timeout = float(os.environ.get("R9K_PWAL_SERIAL_TO", "240"))
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+    t0 = time.perf_counter()
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            if time.perf_counter() - t0 > timeout:
+                logger.info("r9700 %s: serial-window lock timed out after %.0f s, proceeding unlocked", tag, timeout)
+                os.close(fd)
+                return
+            time.sleep(0.1)
+    _PWLOCK["fd"], _PWLOCK["wait"] = fd, time.perf_counter() - t0
+
+
+def _pwlock_release() -> None:
+    import fcntl
+    fd = _PWLOCK.pop("fd", None)
+    if fd is not None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 def _psi_read() -> dict:
@@ -373,16 +458,21 @@ def _pws_run(interval: float) -> None:
         time.sleep(interval)
         fr = sys._current_frames().get(frame_key)
         leaf = f"{fr.f_code.co_filename.rsplit('/', 1)[-1]}:{fr.f_lineno} {fr.f_code.co_name}" if fr else "?"
-        state, wchan = "?", "?"
+        state, wchan, sysc = "?", "?", "?"
+        # /proc/<tid>/syscall gives the syscall the thread is parked in, or -1 while it executes in user space: the
+        # difference between a runtime that sleeps and one that spins, which is what a window of pure user CPU turns
+        # on. (The kernel hides the file for a thread it is currently running, hence the -1/(user) test.)
         try:
             base = f"/proc/self/task/{tid}"
             state = open(base + "/stat").read().split()[2]
             wchan = open(base + "/wchan").read().strip() or "0"
-        except OSError:
+            n = open(base + "/syscall").read().split()[0]
+            sysc = "(user)" if state == "R" and n in ("-1", "0") else _SYSCALLS.get(n, n)
+        except (OSError, IndexError):
             pass
         _PWS["n"] += 1
         for key, val in (("frames", leaf), ("mods", _PWA["cur"]), ("states", state),
-                         ("wchans", wchan if state != "R" else "(running)")):
+                         ("wchans", wchan if state != "R" else "(running)"), ("syscalls", sysc)):
             _PWS[key][val] = _PWS[key].get(val, 0) + 1
         for name, v in _psi_read().items():
             if v is not None:
@@ -393,6 +483,7 @@ def start_pwsamp(interval: float = 0.25) -> None:
     import threading
     _PWS["on"], _PWS["frames"], _PWS["mods"], _PWS["states"] = True, {}, {}, {}
     _PWS["wchans"], _PWS["psi"], _PWS["n"] = {}, {}, 0
+    _PWS["syscalls"] = {}
     _PWS["th"] = threading.Thread(target=_pws_run, args=(interval,), name="r9700-window-sampler", daemon=True)
     _PWS["th"].start()
 
@@ -412,7 +503,7 @@ def stop_pwsamp(tag: str = "window") -> None:
         stalled = (samples[-1][1] - samples[0][1]) / 1e6
         logger.info("r9700 %s   psi %-6s avg10 mean %5.1f%% max %5.1f%%   pressure-stalled %5.1f s during the window",
                     tag, name, sum(avg) / len(avg), max(avg), stalled)
-    for what, label in (("mods", "module"), ("frames", "leaf frame"), ("wchans", "wchan")):
+    for what, label in (("mods", "module"), ("frames", "leaf frame"), ("wchans", "wchan"), ("syscalls", "syscall")):
         for k, v in sorted(_PWS[what].items(), key=lambda kv: -kv[1])[:5]:
             if v * 0.25 < 1.0:
                 break
@@ -477,6 +568,8 @@ def start_pwal() -> None:
         start_watchdog()                 # the slow version of this window is blocked, not computed: name the line
         _PWA["wd"] = True
     start_pwsamp()                       # ... and count what the whole window is made of, not just one stuck frame
+    if os.environ.get("R9K_PWAL_SERIAL", "0") == "1":
+        _pwlock_acquire("post-load")               # one rank's window at a time (see the note above)
     logger.info("r9700 post-load timer on (gaps between named_modules yields)")
 
 
@@ -508,6 +601,10 @@ def stop_pwal(tag: str = "post-load") -> None:
         logger.info("r9700 %s   %7.2f s  %-52s cpu %6.2f/%6.2f s u/s  faults +%d minor +%d major",
                     tag, s, k[1:], uc, sc, mnfl, mjfl)
     stop_pwsamp(tag)
+    if _PWLOCK["fd"] is not None or _PWLOCK["wait"]:
+        logger.info("r9700 %s: serial window held %.1f s (queue wait %.2f s)", tag,
+                    sum(v[1] for k, v in acc.items() if not k.startswith("@")), _PWLOCK["wait"])
+        _pwlock_release()
     # the post-load pass is where the fold guard runs for dense/shared-expert tensors, so print the @timed section
     # totals here too -- by now they cover both the stream and this window, which is the only complete picture a
     # server process (which never exits, so atexit never fires) gives

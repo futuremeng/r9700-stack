@@ -956,7 +956,7 @@ r9700 target post-load census: 5 samples -- thread state R=4 S=1     psi memory 
 The catch we still need is a slow instance *with* the rusage brackets: in final41/42 the attribution existed but the
 brackets did not. Two or three relaunches catch one (4 of the last 10 had one).
 
-## C10: caught one -- the slow window is not waiting for anything, it is spinning, and the same work costs 75x the CPU
+## C10: caught one -- the slow window is user CPU, not system CPU and not page faults (the "spinning on the device" reading it suggested is refuted in C11)
 
 `bench/catch_tail.sh` relaunches until a window >= 8 s shows up. It took two rounds (tail44 clean at 5.5 s, tail45
 with 5.7 / 21.8 / 51.0 / 57.0 s), and the brackets say what the slow ranks are doing:
@@ -986,6 +986,39 @@ problem. The fix to try is not making the code faster -- it is not having all fo
 repacks at the same time (`R9K_PWAL_SERIAL`, which holds a cross-rank file lock across the window the timer
 measures). tail45 served fine meanwhile (GSM8K 97/100, needles 3/3), and again it has the smallest KV pool of any
 instance so far: 468,865 tokens.
+
+## C11: the serialization A/B kills the queueing reading too -- the slow rank had the device to itself and still took 48 s
+
+`R9K_PWAL_SERIAL=1` holds a file lock across exactly the measured window, so the four ranks do their post-load
+repacks one at a time. tail46 and tail47 looked like the answer: windows 5.5-5.9 s on every rank, queue waits
+0 / 11-15 / 14-19 / 23 s (so they really did run alone, one after the other), load total unchanged at 75.5 s.
+tail48 was the counter-example:
+
+```
+r9700 target post-load: 48.2 s over 33691 module visits
+r9700 target post-load     44.24 s   5592  MergedColumnParallelLinear  cpu  88.11/  0.81 s u/s  faults +12647 minor +13428 major
+r9700 target post-load     43.57 s  language_model.model.layers.0.mlp.shared_expert.gate_up_proj  cpu  87.08/  0.54 s u/s
+r9700 target post-load: serial window held 48.2 s (queue wait 0.00 s)
+r9700 target post-load census: 29 samples -- thread state R=27 D=1 S=1   psi memory 1.5% avg10, 0.0 s stalled
+r9700 target post-load      6.00 s  leaf frame moe.py:226 _fold_hist     6.75 s  wchan (running)
+```
+
+That rank held the lock from the start (queue wait 0.00 s): **the device was its own for the whole 48 s**, and the
+three ranks that ran after it, also alone, took 5.8-5.9 s. So the tail is not ranks queueing behind each other. What
+it is, is one call inside one layer that burned **87 s of user CPU in 43.6 s of wall** -- more CPU seconds than wall
+means more than one thread -- in a process whose system CPU for the whole window was 0.8 s and which took no page
+faults worth naming. Two of my own readings have now died to measurements: the fold guard as a steady cost (C7/C8)
+and device queueing (here). Module attribution has reached its limit: it names the layer, and a layer holds several
+calls.
+
+So the next instrument is the call, not the module: `prof.slowcall` decorates a load-path helper and logs any single
+call over `R9K_SLOWCALL` (default 2 s) with its tensor arguments' device/dtype/shape/layout (and NONCONTIG when the
+layout is odd), its wall, and the user/sys CPU and minor/major faults it burned; it now wraps `permute_fragments`,
+`pack_scales`, `_fold_hist` and `quantize_rows_fp8`. The window census also records `/proc/<tid>/syscall`, which is
+-1 (`(user)`) while the thread executes and otherwise the number of the syscall it is parked in -- the difference
+between a runtime that spins and one that sleeps, which is exactly what a window of pure user CPU needs answered.
+Tests in `tests/test_slowcall.py`; they also caught a name collision, since `prof` already had a `_SLOW` (the copy
+outlier list) and the new counter had to become `_SLOWCALL`.
 
 
 ## How to reproduce the load-path analysis

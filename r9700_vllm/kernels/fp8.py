@@ -9,6 +9,7 @@ import os
 import torch
 
 from .moe import lib as _lib, _stream
+from ..utils import prof
 
 _BOUND = False
 FP8_MAX = 448.0
@@ -54,6 +55,7 @@ def permute_fp8(w8: torch.Tensor) -> torch.Tensor:
     return w.permute(0, 2, 3, 1, 4).contiguous().reshape(-1).view(torch.int32)  # [nt, ks, h, r, 8]
 
 
+@prof.slowcall
 def quantize_rows_fp8(w: torch.Tensor, rows_per_chunk: int = 8192) -> Fp8Weight:
     """bf16/fp32 [N, K] -> per-row-scaled e4m3 weight in the kernel layout."""
     N, Kd = w.shape

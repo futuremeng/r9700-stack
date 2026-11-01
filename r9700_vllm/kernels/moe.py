@@ -106,6 +106,7 @@ def prepare_nvfp4_weights(packed: torch.Tensor, scale16: torch.Tensor, row_mult:
                         row_mult.float().reshape(E, N).contiguous(), N, K)
 
 
+@prof.slowcall
 def permute_fragments(packed: torch.Tensor) -> torch.Tensor:
     """[E, N, K/2] uint8 checkpoint order -> [E, N/16*K/16*32] int32 fragment order.
 
@@ -134,6 +135,7 @@ def prepare_mxfp4_weights(packed: torch.Tensor, scale: torch.Tensor) -> Mxfp4Exp
     return Mxfp4Experts(permute_fragments(packed.view(torch.uint8)), pack_scales(scale), N, K)
 
 
+@prof.slowcall
 def pack_scales(scale: torch.Tensor) -> torch.Tensor:
     """[E, N, K/32] E8M0 -> [E, K/32 + 1, N]: transposed block exponents plus the per-row max as the last row."""
     scale = scale.view(torch.uint8)
@@ -212,6 +214,7 @@ def fold_k(wsr: torch.Tensor) -> int:
     return (wsr.shape[1] - 1) * GROUP
 
 
+@prof.slowcall
 def _fold_hist(wsr: torch.Tensor, chunk: int, idx: tuple) -> list:
     """The 17-bin d histogram over the sampled blocks `idx` = (flat block index, its column); (None, None) = every
     block. Accumulated on the tensor's own device, so the host synchronises once per tensor, not once per chunk."""
