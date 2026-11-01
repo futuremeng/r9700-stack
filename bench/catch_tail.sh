@@ -19,11 +19,16 @@ for r in $(seq 1 "$ROUNDS"); do
         n=$(grep -c "target post-load:" "$LOG" 2>/dev/null)
         [ "${n:-0}" -ge 4 ] && break
     done
+    for _ in $(seq 1 6); do                             # the KV line lands a little after the window lines
+        grep -q "KV cache size" "$LOG" 2>/dev/null && break
+        sleep 10
+    done
     windows=$(grep -h "target post-load:" "$LOG" 2>/dev/null | sed -E 's/.*: ([0-9.]+) s.*/\1/' | sort -rn | tr '\n' ' ')
     worst=$(echo "$windows" | awk '{print $1}')
-    kv=$(grep -m1 -oE "GPU KV cache size: [0-9,]+ tokens" "$LOG" | grep -oE "[0-9,]+ tokens")
+    kv=$(grep -m1 -oE "KV cache size: [0-9,]+ tokens" "$LOG" | grep -oE "[0-9,]+ tokens")
+    swap=$(grep -h "self VmSwap" "$LOG" | grep -oE "VmSwap +[0-9]+" | awk '{s+=$2; if($2>m)m=$2} END {print s/NR" MiB mean, "m" MiB max"}')
     load=$(grep -m1 -oE "Model loading took [0-9.]+ GiB memory and [0-9.]+ seconds" "$LOG" | grep -oE "and [0-9.]+ seconds")
-    echo "== $LABEL: windows (s) [$windows] worst=${worst:-?} KV=${kv:-?} ${load:-}"
+    echo "== $LABEL: windows (s) [$windows] worst=${worst:-?} KV=${kv:-?} ${load:-} worker-swap-at-window: ${swap:-?}"
     awk -v w="${worst:-0}" -v t="$THRESH" 'BEGIN { exit !(w + 0 >= t) }' && {
         echo "caught a window >= ${THRESH} s on $LABEL; attribution:"
         grep -h "post-load" "$LOG" | sed 's/.*\] //' | cut -c1-140

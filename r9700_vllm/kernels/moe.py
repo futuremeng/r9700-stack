@@ -208,6 +208,30 @@ class FoldStats:
                 f"inexact(d>{FOLD_EXACT})={100 * self.p_inexact:.3f}% flushed(d>{FOLD_REACH})={100 * self.p_flush:.4f}%")
 
 
+def warm_post_load(device: torch.device | None = None) -> float:
+    """Run each post-load helper once, on a coin-sized dummy, before the real pass is timed. Returns the seconds it
+    took.
+
+    Why: in both tailed instances the whole window sits in one visit, and it is the same visit both times --
+    `language_model.model.layers.0.mlp.shared_expert.gate_up_proj`, which is the **first tensor the fold guard ever
+    runs in the process** (43.57 s / 87.1 CPU-s in tail48, 69.30 s / 141.4 CPU-s in tail57). Inside it `_fold_hist`
+    costs 4.8-9.9 s and 10-20 CPU-seconds on a 26 KB tensor, the thread is in state R with `syscall running`, and
+    nothing is swapped or faulted in worth naming. That is the shape of first-call work on the device path (first
+    kernel image, first allocation of that size, first queue wakeup) landing inside the window we measure. Warming
+    it outside the window is the experiment: if the tail goes away the term was first-call cost; if it does not,
+    it was not, and that is just as useful a fact."""
+    import time
+    from .fp8 import quantize_rows_fp8
+    dev = device or torch.device(f"cuda{torch.cuda.current_device()}")
+    t0 = time.perf_counter()
+    N, K = 16, 2560                                        # the shape class of the first guarded tensor
+    permute_fragments(torch.zeros((1, N, K // 2), dtype=torch.uint8, device=dev))
+    wsr = pack_scales(torch.zeros((1, N, K // 32), dtype=torch.uint8, device=dev))
+    _fold_hist(wsr, 64 << 20, (None, None))                # first zeros/bincount/.cpu() on this device
+    quantize_rows_fp8(torch.zeros((16, 16), dtype=torch.bfloat16, device=dev))
+    return time.perf_counter() - t0
+
+
 def fold_k(wsr: torch.Tensor) -> int:
     """The GEMM's K that a packed [E, K/32 + 1, N] scale tensor belongs to -- shape only, and shape alone is all the
     short-K refusal needs: it is the one guard reason that costs nothing to answer."""
