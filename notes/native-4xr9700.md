@@ -1422,6 +1422,36 @@ off switch clears every list, a probe that raises cannot break the pass, `named_
 Left running: **tail110** -- load 74.58 s, KV **483,024 tokens**, post-load windows **5.1-5.6 s** on all four ranks,
 draft pass 6.x s, health 200, GSM8K no-think **98/100**, needles **3/3** (3.8k/15.2k/30.4k tokens).
 
+### C22.1 the branch resolves against "the host got slower": the same interpreter loop costs the same in a 5 s window and in a 16 s one
+
+Four more launches with the host loop in place, and the elevated regime came back on its own:
+
+| launch | windows (wall) | host loop ns/iter p50 |
+|---|---|---|
+| tail114 | 5.1-5.2 s | 42.1 |
+| tail113 | 4.9-5.1 s | 42.4 |
+| tail111 | 9.8 / 13.0 / 13.0 / 13.2 s | 42.9 |
+| tail112 | **15.6-16.3 s** | **43.9** |
+
+A window that triples in wall time, with the load thread's own fixed loop **4% slower**. So the P-state story (the
+1.5 GHz floor against the 2.4 GHz `bios_limit` cap) is not the mechanism either, and neither is host contention or
+steal: the machine this thread runs on is the same machine in both regimes.
+
+Everything now narrows to one of two things, both inside `MergedColumnParallelLinear` and `RoutedExperts`:
+
+* the path **executes more** for the same tensors (a fallback branch, an extra pass, allocator/churn work) -- which is
+  a counting question, answerable with per-tensor iteration/byte counters rather than timers; or
+* the path **spins in user space waiting** -- which would produce exactly the recorded signature: user CPU x3-7 with
+  wall x2-3 (more than one waiter per process), thread state `R` with `syscall=running`, the watchdog parked at
+  `_fold_hist`'s readback, `sys` CPU unchanged, the card at full boost but seen busy *less* often, and a 4-byte
+  submission answered in 0.1 ms at the sample moments because the queue is empty between the calls.
+
+The measurement that separates them is already half in the tree: the fold guard records **issuing time separately from
+waiting time** (`fold guard: X s issuing + Y s waiting on the device`), but the note only prints above the
+`R9K_SLOWCALL` 2 s threshold and the elevated launches never cross it per call. Dropping that note threshold to ~0.2 s
+and putting the same issue/wait split around the repack calls themselves (quantize, pack, permute) settles it: if the
+grow is in `waiting`, it is the spin/completion story; if it is in `issuing`, the path is doing more host work.
+
 ## How to reproduce the load-path analysis
 
 ```bash

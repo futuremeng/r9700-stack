@@ -177,9 +177,48 @@ def _gpu_clocks() -> tuple[int, int]:
 def slow_note(seconds: float, fmt: str, *args) -> None:
     """Log a measured split inside a load-path call -- how many seconds were spent *issuing* work and how many
     *waiting for the device to have done it*. Only the second kind can be a stalled queue rather than a slow
-    kernel, and the two need different fixes. Quiet below half of R9K_SLOWCALL."""
-    if ON and seconds >= float(os.environ.get("R9K_SLOWCALL", "2.0")) / 2:
+    kernel, and the two need different fixes. Quiet below R9K_SPLIT_MS (default 50 ms)."""
+    if ON and seconds * 1000.0 >= float(os.environ.get("R9K_SPLIT_MS", "50")):
         logger.info("r9700 " + fmt, *args)
+
+
+def split(issued: float, wait: float, tag: str = "") -> None:
+    """Report an issue/wait split inside one load-path call: seconds spent handing kernels over, and seconds spent
+    waiting for the device to have done them. Quiet below ``R9K_SPLIT_MS`` (default 50 ms). This is the last branch
+    standing after C22: with the device answering 4-byte submissions in 0.1 ms, the cards at full boost, the visit
+    counts equal and the host running its own interpreter loop at the same 42-44 ns/iter in both regimes, either the
+    requant path issues more work for the same tensors or it waits for work that was already issued. Only one of
+    those needs a code change."""
+    if ON and (issued + wait) * 1000.0 >= float(os.environ.get("R9K_SPLIT_MS", "50")):
+        logger.info("r9700 split %-20s %8.3f s issuing + %8.3f s waiting on the device (gpu busy %d%%)",
+                    tag, issued, wait, _gpu_busy())
+
+
+def splitcall(name: str | None = None):
+    """Decorator: time one helper as *issuing* plus *waiting*, by syncing after it and charging that wait separately.
+
+    The sync is not free -- it costs about 0.1 ms per call, which over ~8k repack calls is well under a second per
+    rank -- but it is not a distortion of what is being asked: the consumer of these tensors was going to wait for
+    the same kernels anyway, this just moves the wait to a place where it can be named. ``R9K_SPLIT=0`` removes both
+    the sync and the report.
+    """
+    def deco(fn):
+        def wrap(*args, **kw):
+            if not ON or os.environ.get("R9K_SPLIT", "1") != "1":
+                return fn(*args, **kw)
+            import torch
+            t0 = time.perf_counter()
+            out = fn(*args, **kw)
+            issued = time.perf_counter() - t0
+            try:
+                torch.cuda.synchronize()
+            except Exception:                     # a failed probe must not change what the call returned
+                pass
+            split(issued, time.perf_counter() - t0 - issued, name or fn.__name__)
+            return out
+        wrap.__doc__, wrap.__name__ = fn.__doc__, fn.__name__
+        return wrap
+    return deco
 
 
 def slowcall(fn=None, *, name=None, thresh=None):

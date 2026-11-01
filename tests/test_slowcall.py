@@ -96,5 +96,37 @@ check("with profiling off the function is not wrapped", not hasattr(untouched, "
 check("with profiling on it is wrapped (and still returns its value)", hasattr(also_wrapped, "__wrapped__")
       and also_wrapped(3) == 3)
 
+# ---- prof.splitcall: one call measured as issuing + waiting, and R9K_SPLIT=0 removing the sync entirely --------
+if torch.cuda.is_available():
+    os.environ["R9K_SPLIT_MS"] = "1"
+
+    @prof.splitcall("matmul")
+    def gpu_work(n):
+        a = torch.randn(n, n, device="cuda")
+        return a @ a
+
+    gpu_work(1024)
+    spl = [l for l in lines if "split matmul" in l]
+    check("the split names issuing and waiting separately", bool(spl) and "issuing + " in spl[-1],
+          (spl[-1:] or [""])[0][-95:])
+    lines.clear()
+    gpu_work(2048)
+    spl2 = [l for l in lines if "split matmul" in l]
+    _nums = [float(x) for x in __import__("re").findall(r"([-+]?[0-9]*\.?[0-9]+) s (?:issuing|waiting)", spl2[-1])] if spl2 else []
+    check("a bigger call reports, and neither half is negative", bool(spl2) and len(_nums) == 2
+          and all(x >= 0 for x in _nums), (spl2[-1:] or [""])[0][-95:])
+    lines.clear()
+    os.environ["R9K_SPLIT"] = "0"
+    gpu_work(1024)
+    check("R9K_SPLIT=0 adds no sync and no line", not [l for l in lines if "split matmul" in l], str(lines)[:120])
+    os.environ["R9K_SPLIT"] = "1"
+    os.environ["R9K_SPLIT_MS"] = "50"
+    prof.split(0.0002, 0.0002, "quick")
+    check("below R9K_SPLIT_MS the split is quiet", not [l for l in lines if "split quick" in l], str(lines)[:120])
+    prof.slow_note(0.2, "fold guard: %.2f s issuing + %.2f s waiting", 0.01, 0.2)
+    check("the fold note now fires at 0.2 s (it used to need 1 s)", "fold guard" in "".join(lines), str(lines)[:120])
+else:
+    check("splitcall needs a device to be meaningful", True, "(skipped: no cuda)")
+
 print(f"slowcall tests: {'PASS' if ok else 'FAIL'}")
 raise SystemExit(0 if ok else 1)

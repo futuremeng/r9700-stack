@@ -56,6 +56,7 @@ def permute_fp8(w8: torch.Tensor) -> torch.Tensor:
 
 
 @prof.slowcall
+@prof.splitcall("quantize_rows_fp8")
 def quantize_rows_fp8(w: torch.Tensor, rows_per_chunk: int = 8192) -> Fp8Weight:
     """bf16/fp32 [N, K] -> per-row-scaled e4m3 weight in the kernel layout."""
     N, Kd = w.shape

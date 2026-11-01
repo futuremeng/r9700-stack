@@ -108,6 +108,7 @@ def prepare_nvfp4_weights(packed: torch.Tensor, scale16: torch.Tensor, row_mult:
 
 
 @prof.slowcall
+@prof.splitcall("permute_fragments")
 def permute_fragments(packed: torch.Tensor) -> torch.Tensor:
     """[E, N, K/2] uint8 checkpoint order -> [E, N/16*K/16*32] int32 fragment order.
 
@@ -137,6 +138,7 @@ def prepare_mxfp4_weights(packed: torch.Tensor, scale: torch.Tensor) -> Mxfp4Exp
 
 
 @prof.slowcall
+@prof.splitcall("pack_scales")
 def pack_scales(scale: torch.Tensor) -> torch.Tensor:
     """[E, N, K/32] E8M0 -> [E, K/32 + 1, N]: transposed block exponents plus the per-row max as the last row."""
     scale = scale.view(torch.uint8)
