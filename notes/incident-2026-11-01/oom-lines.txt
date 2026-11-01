@@ -1,0 +1,2 @@
+=== /var/log/kern.log oom lines ===
+=== /var/log/syslog oom lines ===

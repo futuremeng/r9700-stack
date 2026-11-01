@@ -1,0 +1,2 @@
+bench/prefetch_ab.sh: line 10: 94900 Killed                  R9K_LOAD_PROF=1 EXTRA="$extra" GPUS=0,1,2,3 TP=4 OFFLOAD_GB=0 MAXLEN=32768 setsid bash serve/native-flashnext.sh > "$log" 2>&1
+bench/prefetch_ab.sh: line 10: 96330 Killed                  R9K_LOAD_PROF=1 EXTRA="$extra" GPUS=0,1,2,3 TP=4 OFFLOAD_GB=0 MAXLEN=32768 setsid bash serve/native-flashnext.sh > "$log" 2>&1

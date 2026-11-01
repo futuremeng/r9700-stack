@@ -1,0 +1,3 @@
+== sshd 3290 ==
+state=D wchan=0 ppid=3168
+== children of 3290 ==

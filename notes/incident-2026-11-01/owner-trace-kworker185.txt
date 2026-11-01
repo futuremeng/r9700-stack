@@ -1,0 +1,27 @@
+INFO: task kworker/185:3:64157 blocked for more than 122 seconds.
+      Tainted: G S         OE       7.0.0-42-generic #42~24.04.1-Ubuntu
+"echo 0 > /proc/sys/kernel/hung_task_timeout_secs" disables this message.
+task:kworker/185:3   state:D stack:0     pid:64157 tgid:64157 ppid:2      task_flags:0x4208860 flags:0x00080000
+Workqueue: events_freezable svm_range_restore_work [amdgpu]
+Call Trace:
+ <TASK>
+ __schedule+0x2b5/0x640
+ schedule+0x27/0xb0
+ schedule_timeout+0x104/0x110
+ dma_fence_default_wait+0x215/0x2c0
+ ? srso_alias_return_thunk+0x5/0xfbef5
+ ? __pfx_dma_fence_default_wait_cb+0x10/0x10
+ dma_fence_wait_timeout+0x12d/0x1b0
+ svm_range_validate_and_map+0x1086/0x1d00 [amdgpu]
+ svm_range_restore_work+0xe5/0x390 [amdgpu]
+ process_one_work+0x1af/0x430
+ worker_thread+0x1bf/0x350
+ ? srso_alias_return_thunk+0x5/0xfbef5
+ ? __pfx_worker_thread+0x10/0x10
+ kthread+0xfb/0x140
+ ? __pfx_kthread+0x10/0x10
+ ret_from_fork+0x1f8/0x2b0
+ ? __pfx_kthread+0x10/0x10
+ ret_from_fork_asm+0x1a/0x30
+ </TASK>
+INFO: task kworker/106:1:81325 blocked for more than 122 seconds.

@@ -1,0 +1,6 @@
+(Worker_TP0 pid=97851) WARNING 11-01 01:36:43 [compilation.py:1348] Op 'sparse_attn_indexer' not present in model, enabling with '+sparse_attn_indexer' has no effect
+(Worker_TP0 pid=97851) INFO 11-01 01:36:43 [base_loader.py:82] Initializing model took 6.625691 seconds
+(Worker_TP0 pid=97851) INFO 11-01 01:36:43 [weight_utils.py:1108] Filesystem type for checkpoints: EXT4. Checkpoint size: 110.60 GiB. Available RAM: 40.74 GiB.
+(Worker_TP0 pid=97851) INFO 11-01 01:36:43 [weight_utils.py:1138] Auto-prefetch is disabled because the filesystem (EXT4) is not a recognized network FS (NFS/Lustre) and the checkpoint size (110.60 GiB) exceeds 90% of available RAM (40.74 GiB).
+Loading safetensors checkpoint shards:   0% Completed | 0/23 [00:00<?, ?it/s]
+Loading safetensors checkpoint shards:   4% Completed | 1/23 [00:04<01:49,  4.99s/it]

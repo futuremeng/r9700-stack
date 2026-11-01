@@ -1,0 +1,2 @@
+01:32:54 variant='default 8x16MiB' run=1 load_s=208.409128 experts_place_s=137.6
+01:35:39 variant='default 8x16MiB' run=2 load_s=103.246627 experts_place_s=34.5

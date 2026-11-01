@@ -1,0 +1,13 @@
+2026-11-01T03:05:44+00:00
+1423 state=D wchan=0 rss_kB=0 cmd=
+3290 state=D wchan=0 rss_kB=11036 cmd=sshd: jiulu@pts/0    
+94761 state=D wchan=svm_range_cpu_invalidate_pagetables rss_kB=3140 cmd=bash bench/prefetch_ab.sh 
+97500 state=Z wchan=0 rss_kB=0 cmd=
+97851 state=D wchan=exit_mm rss_kB=10669688 cmd=
+97852 state=D wchan=exit_mm rss_kB=12278192 cmd=
+97853 state=D wchan=exit_mm rss_kB=18790852 cmd=
+97854 state=D wchan=exit_mm rss_kB=13076676 cmd=
+loadavg: 396.74 367.29 247.72 1/2331 110539
+MemAvailable:   50020524 kB
+SwapFree:        2132760 kB
+Committed_AS:   122609404 kB

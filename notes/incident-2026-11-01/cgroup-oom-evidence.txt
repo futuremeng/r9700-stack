@@ -1,0 +1,46 @@
+== cgroup v2 paths ==
+cgroup.controllers
+cgroup.events
+cgroup.freeze
+cgroup.kill
+cgroup.max.depth
+cgroup.max.descendants
+cgroup.pressure
+cgroup.procs
+cgroup.stat
+cgroup.stat.local
+-- /sys/fs/cgroup/user.slice/memory.events
+low 0
+high 0
+max 0
+oom 0
+oom_kill 8
+oom_group_kill 0
+sock_throttled 51123
+-- /sys/fs/cgroup/user.slice/user-1000.slice/memory.events
+low 0
+high 0
+max 0
+oom 0
+oom_kill 8
+oom_group_kill 0
+sock_throttled 51123
+-- /sys/fs/cgroup/user.slice/user-1000.slice/session-96.scope/memory.events
+low 0
+high 0
+max 0
+oom 0
+oom_kill 0
+oom_group_kill 0
+sock_throttled 0
+== memory.max/current for this scope ==
+/sys/fs/cgroup/user.slice/user-1000.slice/memory.max: max
+/sys/fs/cgroup/user.slice/user-1000.slice/session-96.scope/memory.max: max
+/sys/fs/cgroup/user.slice/user-1000.slice/session-96.scope/memory.events: low 0
+high 0
+max 0
+oom 0
+oom_kill 0
+oom_group_kill 0
+sock_throttled 0
+== oomd/earlyoom running? ==

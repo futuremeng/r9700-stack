@@ -1,0 +1,80 @@
+2026-11-01T03:02:32+00:00
+== uname ==
+Linux jiulu-9700 7.0.0-42-generic #42~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Mon Oct 19 14:43:01 UTC 2 x86_64 x86_64 x86_64 GNU/Linux
+== amdgpu version ==
+7.1.9.31600000
+== cmdline ==
+BOOT_IMAGE=/vmlinuz-7.0.0-42-generic root=/dev/mapper/ubuntu--vg-ubuntu--lv ro amdgpu.ppfeaturemask=0xffffffff
+== cgroup for this shell (oom_kill counter if v2) ==
+0::/user.slice/user-1000.slice/session-96.scope
+== vmstat oom ==
+oom_kill 8
+== meminfo ==
+MemTotal:       98389932 kB
+MemFree:         1136160 kB
+MemAvailable:   50033264 kB
+Buffers:           56264 kB
+Cached:         50515208 kB
+SwapCached:       164448 kB
+Active:          5450764 kB
+Inactive:       84549752 kB
+Active(anon):    5227352 kB
+Inactive(anon): 35115352 kB
+Active(file):     223412 kB
+Inactive(file): 49434400 kB
+Unevictable:       30412 kB
+Mlocked:           27340 kB
+SwapTotal:       8388604 kB
+SwapFree:        2132760 kB
+Zswap:                 0 kB
+Zswapped:              0 kB
+Dirty:                20 kB
+Writeback:             0 kB
+AnonPages:      39538904 kB
+Mapped:         13672020 kB
+Shmem:            904676 kB
+KReclaimable:     802828 kB
+Slab:            2160636 kB
+SReclaimable:     802828 kB
+SUnreclaim:      1357808 kB
+KernelStack:       40288 kB
+PageTables:       154812 kB
+SecPageTables:     18512 kB
+NFS_Unstable:          0 kB
+Bounce:                0 kB
+WritebackTmp:          0 kB
+CommitLimit:    57583568 kB
+Committed_AS:   122605860 kB
+VmallocTotal:   13743895347199 kB
+VmallocUsed:      234984 kB
+VmallocChunk:          0 kB
+Percpu:           215808 kB
+HardwareCorrupted:     0 kB
+AnonHugePages:         0 kB
+ShmemHugePages:        0 kB
+ShmemPmdMapped:        0 kB
+FileHugePages:         0 kB
+FilePmdMapped:         0 kB
+CmaTotal:              0 kB
+CmaFree:          120916 kB
+Unaccepted:            0 kB
+Balloon:               0 kB
+GPUActive:             0 kB
+GPUReclaim:       116108 kB
+HugePages_Total:       0
+HugePages_Free:        0
+HugePages_Rsvd:        0
+HugePages_Surp:        0
+Hugepagesize:       2048 kB
+Hugetlb:               0 kB
+DirectMap4k:     2072364 kB
+DirectMap2M:    89196544 kB
+DirectMap1G:    143654912 kB
+== swap devices ==
+Filename				Type		Size		Used		Priority
+/swap.img                               file		8388604		6255844		-1
+== hung task sysctl ==
+kernel.hung_task_timeout_secs = 120
+kernel.hung_task_panic = 0
+== loadavg ==
+395.84 338.15 210.87 1/2331 110404

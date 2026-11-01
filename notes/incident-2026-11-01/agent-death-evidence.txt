@@ -1,0 +1,24 @@
+== who (old connections never closed) ==
+jiulu    pts/0        2026-10-31 12:50 (192.168.1.200)
+jiulu    pts/1        2026-10-31 12:57 (192.168.1.200)
+jiulu    pts/2        2026-11-01 01:45 (192.168.1.200)
+
+== auth.log: any clean close of the OLD jiulu ssh sessions? ==
+0
+== last 3 lines mentioning old sessions 31/32-ish ==
+2026-11-01T01:45:05.535520+00:00 jiulu-9700 sshd[98440]: pam_unix(sshd:session): session opened for user jiulu(uid=1000) by jiulu(uid=0)
+2026-11-01T01:45:05.547573+00:00 jiulu-9700 systemd-logind[2902]: New session 96 of user jiulu.
+2026-11-01T01:45:05.572120+00:00 jiulu-9700 (systemd): pam_unix(systemd-user:session): session opened for user jiulu(uid=1000) by jiulu(uid=0)
+
+== apport crash dumps for node? ==
+total 5072
+drwxrwsrwt  2 root  root    4096 Oct 31 12:51 .
+drwxr-xr-x 13 root  root    4096 Oct 31 06:49 ..
+-rw-r-----  1 jiulu root 5183781 Oct 31 12:51 _usr_libexec_rocm_smi_rocm_smi.py.1000.crash
+
+== pi session files ==
+total 2180
+drwxrwxr-x 2 jiulu jiulu    4096 2026-11-01 01:46:02.751579736 +0000 .
+drwxrwxr-x 4 jiulu jiulu    4096 2026-10-31 15:09:19.172189545 +0000 ..
+-rw-rw-r-- 1 jiulu jiulu 1990304 2026-11-01 01:32:50.972076154 +0000 2026-10-31T15-09-19-173Z_01a19282-0dc4-7393-ae5b-f170dfa7ab54.jsonl
+-rw-rw-r-- 1 jiulu jiulu  223203 2026-11-01 03:03:39.452418830 +0000 2026-11-01T01-45-46-943Z_01a194c8-c0be-707a-8456-be48f14600e6.jsonl

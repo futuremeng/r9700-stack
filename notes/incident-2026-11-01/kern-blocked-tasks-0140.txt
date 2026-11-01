@@ -1,0 +1,515 @@
+2026-11-01T01:40:49.945478+00:00 jiulu-9700 kernel: INFO: task kswapd0:1423 blocked for more than 122 seconds.
+2026-11-01T01:40:49.945500+00:00 jiulu-9700 kernel:       Tainted: G S         OE       7.0.0-42-generic #42~24.04.1-Ubuntu
+2026-11-01T01:40:49.945501+00:00 jiulu-9700 kernel: "echo 0 > /proc/sys/kernel/hung_task_timeout_secs" disables this message.
+2026-11-01T01:40:49.945502+00:00 jiulu-9700 kernel: task:kswapd0         state:D stack:0     pid:1423  tgid:1423  ppid:2      task_flags:0x220840 flags:0x00080000
+2026-11-01T01:40:49.945503+00:00 jiulu-9700 kernel: Call Trace:
+2026-11-01T01:40:49.945506+00:00 jiulu-9700 kernel:  <TASK>
+2026-11-01T01:40:49.945507+00:00 jiulu-9700 kernel:  __schedule+0x2b5/0x640
+2026-11-01T01:40:49.945507+00:00 jiulu-9700 kernel:  schedule+0x27/0xb0
+2026-11-01T01:40:49.945508+00:00 jiulu-9700 kernel:  schedule_preempt_disabled+0x15/0x30
+2026-11-01T01:40:49.945509+00:00 jiulu-9700 kernel:  __mutex_lock.constprop.0+0x4d3/0x9d0
+2026-11-01T01:40:49.945509+00:00 jiulu-9700 kernel:  __mutex_lock_slowpath+0x13/0x20
+2026-11-01T01:40:49.945510+00:00 jiulu-9700 kernel:  mutex_lock+0x3b/0x50
+2026-11-01T01:40:49.945511+00:00 jiulu-9700 kernel:  svm_range_cpu_invalidate_pagetables+0x7b/0x7d0 [amdgpu]
+2026-11-01T01:40:49.945523+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.946339+00:00 jiulu-9700 kernel:  __mmu_notifier_invalidate_range_start+0x19a/0x200
+2026-11-01T01:40:49.946352+00:00 jiulu-9700 kernel:  ? lru_gen_look_around+0x454/0x4e0
+2026-11-01T01:40:49.946353+00:00 jiulu-9700 kernel:  try_to_unmap_one+0xf8d/0x12c0
+2026-11-01T01:40:49.946354+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.946355+00:00 jiulu-9700 kernel:  ? lruvec_stat_mod_folio+0x8b/0xf0
+2026-11-01T01:40:49.946355+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.946356+00:00 jiulu-9700 kernel:  rmap_walk_anon+0xdc/0x220
+2026-11-01T01:40:49.946356+00:00 jiulu-9700 kernel:  rmap_walk+0x60/0xa0
+2026-11-01T01:40:49.946358+00:00 jiulu-9700 kernel:  try_to_unmap+0x79/0x80
+2026-11-01T01:40:49.946359+00:00 jiulu-9700 kernel:  ? __pfx_try_to_unmap_one+0x10/0x10
+2026-11-01T01:40:49.946359+00:00 jiulu-9700 kernel:  ? __pfx_folio_not_mapped+0x10/0x10
+2026-11-01T01:40:49.946360+00:00 jiulu-9700 kernel:  ? __pfx_folio_lock_anon_vma_read+0x10/0x10
+2026-11-01T01:40:49.946361+00:00 jiulu-9700 kernel:  shrink_folio_list+0x68c/0x1060
+2026-11-01T01:40:49.946361+00:00 jiulu-9700 kernel:  evict_folios+0x3bc/0xbc0
+2026-11-01T01:40:49.946362+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.946362+00:00 jiulu-9700 kernel:  ? dma_map_page_attrs+0x32/0x60
+2026-11-01T01:40:49.946363+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.946364+00:00 jiulu-9700 kernel:  ? mod_memcg_lruvec_state+0x105/0x290
+2026-11-01T01:40:49.946365+00:00 jiulu-9700 kernel:  try_to_shrink_lruvec+0x36/0xb0
+2026-11-01T01:40:49.946366+00:00 jiulu-9700 kernel:  shrink_one+0xcf/0x1c0
+2026-11-01T01:40:49.946366+00:00 jiulu-9700 kernel:  shrink_many+0x17b/0x310
+2026-11-01T01:40:49.946367+00:00 jiulu-9700 kernel:  shrink_node+0x4e1/0x590
+2026-11-01T01:40:49.946367+00:00 jiulu-9700 kernel:  balance_pgdat+0x2fa/0x980
+2026-11-01T01:40:49.946368+00:00 jiulu-9700 kernel:  kswapd+0xf1/0x1a0
+2026-11-01T01:40:49.946368+00:00 jiulu-9700 kernel:  ? __pfx_kswapd+0x10/0x10
+2026-11-01T01:40:49.946369+00:00 jiulu-9700 kernel:  kthread+0xfb/0x140
+2026-11-01T01:40:49.946369+00:00 jiulu-9700 kernel:  ? __pfx_kthread+0x10/0x10
+2026-11-01T01:40:49.946370+00:00 jiulu-9700 kernel:  ret_from_fork+0x1f8/0x2b0
+2026-11-01T01:40:49.946370+00:00 jiulu-9700 kernel:  ? __pfx_kthread+0x10/0x10
+2026-11-01T01:40:49.946371+00:00 jiulu-9700 kernel:  ret_from_fork_asm+0x1a/0x30
+2026-11-01T01:40:49.946371+00:00 jiulu-9700 kernel:  </TASK>
+2026-11-01T01:40:49.946379+00:00 jiulu-9700 kernel: INFO: task kswapd0:1423 is blocked on a mutex likely owned by task kworker/185:3:64157.
+2026-11-01T01:40:49.947343+00:00 jiulu-9700 kernel: INFO: task sshd:3290 blocked for more than 122 seconds.
+2026-11-01T01:40:49.947356+00:00 jiulu-9700 kernel:       Tainted: G S         OE       7.0.0-42-generic #42~24.04.1-Ubuntu
+2026-11-01T01:40:49.947357+00:00 jiulu-9700 kernel: "echo 0 > /proc/sys/kernel/hung_task_timeout_secs" disables this message.
+2026-11-01T01:40:49.947388+00:00 jiulu-9700 kernel: task:sshd            state:D stack:0     pid:3290  tgid:3290  ppid:3168   task_flags:0x400940 flags:0x00080000
+2026-11-01T01:40:49.947389+00:00 jiulu-9700 kernel: Call Trace:
+2026-11-01T01:40:49.947389+00:00 jiulu-9700 kernel:  <TASK>
+2026-11-01T01:40:49.947390+00:00 jiulu-9700 kernel:  __schedule+0x2b5/0x640
+2026-11-01T01:40:49.947390+00:00 jiulu-9700 kernel:  schedule+0x27/0xb0
+2026-11-01T01:40:49.947391+00:00 jiulu-9700 kernel:  schedule_preempt_disabled+0x15/0x30
+2026-11-01T01:40:49.947392+00:00 jiulu-9700 kernel:  __mutex_lock.constprop.0+0x4d3/0x9d0
+2026-11-01T01:40:49.947392+00:00 jiulu-9700 kernel:  __mutex_lock_slowpath+0x13/0x20
+2026-11-01T01:40:49.947393+00:00 jiulu-9700 kernel:  mutex_lock+0x3b/0x50
+2026-11-01T01:40:49.947414+00:00 jiulu-9700 kernel:  svm_range_cpu_invalidate_pagetables+0x7b/0x7d0 [amdgpu]
+2026-11-01T01:40:49.947415+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.947415+00:00 jiulu-9700 kernel:  __mmu_notifier_invalidate_range_start+0x19a/0x200
+2026-11-01T01:40:49.947416+00:00 jiulu-9700 kernel:  ? lru_gen_look_around+0x454/0x4e0
+2026-11-01T01:40:49.947417+00:00 jiulu-9700 kernel:  try_to_unmap_one+0xf8d/0x12c0
+2026-11-01T01:40:49.947417+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.947439+00:00 jiulu-9700 kernel:  ? move_cluster+0x64/0xf0
+2026-11-01T01:40:49.947439+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.947440+00:00 jiulu-9700 kernel:  rmap_walk_anon+0xdc/0x220
+2026-11-01T01:40:49.947441+00:00 jiulu-9700 kernel:  rmap_walk+0x60/0xa0
+2026-11-01T01:40:49.947441+00:00 jiulu-9700 kernel:  try_to_unmap+0x79/0x80
+2026-11-01T01:40:49.947442+00:00 jiulu-9700 kernel:  ? __pfx_try_to_unmap_one+0x10/0x10
+2026-11-01T01:40:49.947443+00:00 jiulu-9700 kernel:  ? __pfx_folio_not_mapped+0x10/0x10
+2026-11-01T01:40:49.947443+00:00 jiulu-9700 kernel:  ? __pfx_folio_lock_anon_vma_read+0x10/0x10
+2026-11-01T01:40:49.947459+00:00 jiulu-9700 kernel:  shrink_folio_list+0x68c/0x1060
+2026-11-01T01:40:49.947460+00:00 jiulu-9700 kernel:  evict_folios+0x3bc/0xbc0
+2026-11-01T01:40:49.947460+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.947468+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.952229+00:00 jiulu-9700 kernel:  try_to_shrink_lruvec+0x36/0xb0
+2026-11-01T01:40:49.952379+00:00 jiulu-9700 kernel:  shrink_one+0xcf/0x1c0
+2026-11-01T01:40:49.952386+00:00 jiulu-9700 kernel:  shrink_many+0x17b/0x310
+2026-11-01T01:40:49.952387+00:00 jiulu-9700 kernel:  shrink_node+0x4e1/0x590
+2026-11-01T01:40:49.952388+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.952389+00:00 jiulu-9700 kernel:  ? zone_reclaimable_pages+0x1b0/0x260
+2026-11-01T01:40:49.952389+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.952390+00:00 jiulu-9700 kernel:  shrink_zones.constprop.0+0x8f/0x290
+2026-11-01T01:40:49.952390+00:00 jiulu-9700 kernel:  do_try_to_free_pages+0x4c/0x2f0
+2026-11-01T01:40:49.952391+00:00 jiulu-9700 kernel:  try_to_free_pages+0xd4/0x220
+2026-11-01T01:40:49.952392+00:00 jiulu-9700 kernel:  __alloc_pages_slowpath.constprop.0+0x305/0xa40
+2026-11-01T01:40:49.952392+00:00 jiulu-9700 kernel:  __alloc_frozen_pages_noprof+0x34a/0x370
+2026-11-01T01:40:49.952393+00:00 jiulu-9700 kernel:  alloc_pages_mpol+0x7e/0x1a0
+2026-11-01T01:40:49.952393+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.952394+00:00 jiulu-9700 kernel:  alloc_pages_noprof+0x5c/0xd0
+2026-11-01T01:40:49.952394+00:00 jiulu-9700 kernel:  skb_page_frag_refill+0xa3/0x110
+2026-11-01T01:40:49.952395+00:00 jiulu-9700 kernel:  sk_page_frag_refill+0x21/0xb0
+2026-11-01T01:40:49.952395+00:00 jiulu-9700 kernel:  tcp_sendmsg_locked+0x647/0x1170
+2026-11-01T01:40:49.952396+00:00 jiulu-9700 kernel:  tcp_sendmsg+0x2c/0x50
+2026-11-01T01:40:49.952396+00:00 jiulu-9700 kernel:  inet_sendmsg+0x42/0x80
+2026-11-01T01:40:49.952397+00:00 jiulu-9700 kernel:  sock_write_iter+0x171/0x190
+2026-11-01T01:40:49.952398+00:00 jiulu-9700 kernel:  vfs_write+0x3cd/0x480
+2026-11-01T01:40:49.952398+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.952399+00:00 jiulu-9700 kernel:  ksys_write+0xce/0xf0
+2026-11-01T01:40:49.952401+00:00 jiulu-9700 kernel:  __x64_sys_write+0x19/0x30
+2026-11-01T01:40:49.952402+00:00 jiulu-9700 kernel:  x64_sys_call+0x259/0x26e0
+2026-11-01T01:40:49.952403+00:00 jiulu-9700 kernel:  do_syscall_64+0xd9/0x5a0
+2026-11-01T01:40:49.952403+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.952404+00:00 jiulu-9700 kernel:  ? arch_exit_to_user_mode_prepare.isra.0+0xd/0xe0
+2026-11-01T01:40:49.952405+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.952405+00:00 jiulu-9700 kernel:  ? do_syscall_64+0x116/0x5a0
+2026-11-01T01:40:49.952406+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.952406+00:00 jiulu-9700 kernel:  ? get_random_bytes_user+0x148/0x160
+2026-11-01T01:40:49.952407+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.952407+00:00 jiulu-9700 kernel:  ? __x64_sys_getrandom+0x77/0xe0
+2026-11-01T01:40:49.952408+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.952409+00:00 jiulu-9700 kernel:  ? sigprocmask+0x80/0xd0
+2026-11-01T01:40:49.952410+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.952411+00:00 jiulu-9700 kernel:  ? arch_exit_to_user_mode_prepare.isra.0+0xd/0xe0
+2026-11-01T01:40:49.952412+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.952412+00:00 jiulu-9700 kernel:  ? do_syscall_64+0x116/0x5a0
+2026-11-01T01:40:49.952413+00:00 jiulu-9700 kernel:  ? arch_exit_to_user_mode_prepare.isra.0+0xd/0xe0
+2026-11-01T01:40:49.952414+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.952414+00:00 jiulu-9700 kernel:  ? do_syscall_64+0x116/0x5a0
+2026-11-01T01:40:49.952415+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.952416+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.952418+00:00 jiulu-9700 kernel:  ? arch_exit_to_user_mode_prepare.isra.0+0xd/0xe0
+2026-11-01T01:40:49.952419+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.952420+00:00 jiulu-9700 kernel:  ? do_syscall_64+0x116/0x5a0
+2026-11-01T01:40:49.952420+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.952421+00:00 jiulu-9700 kernel:  ? do_syscall_64+0x116/0x5a0
+2026-11-01T01:40:49.952422+00:00 jiulu-9700 kernel:  entry_SYSCALL_64_after_hwframe+0x76/0x7e
+2026-11-01T01:40:49.952422+00:00 jiulu-9700 kernel: RIP: 0033:0x73fe7151c844
+2026-11-01T01:40:49.952423+00:00 jiulu-9700 kernel: RSP: 002b:00007ffedaaf9708 EFLAGS: 00000202 ORIG_RAX: 0000000000000001
+2026-11-01T01:40:49.952424+00:00 jiulu-9700 kernel: RAX: ffffffffffffffda RBX: 0000000000000154 RCX: 000073fe7151c844
+2026-11-01T01:40:49.952425+00:00 jiulu-9700 kernel: RDX: 0000000000000154 RSI: 00006025ede52720 RDI: 0000000000000004
+2026-11-01T01:40:49.952426+00:00 jiulu-9700 kernel: RBP: 00007ffedaaf9720 R08: 000000000000b43d R09: 0000000000000000
+2026-11-01T01:40:49.952426+00:00 jiulu-9700 kernel: R10: 0000000000000001 R11: 0000000000000202 R12: 00006025edde8050
+2026-11-01T01:40:49.952427+00:00 jiulu-9700 kernel: R13: 0000000000000000 R14: 000000000000000a R15: 0000000000000001
+2026-11-01T01:40:49.952427+00:00 jiulu-9700 kernel:  </TASK>
+2026-11-01T01:40:49.952428+00:00 jiulu-9700 kernel: INFO: task sshd:3290 is blocked on a mutex likely owned by task kworker/185:3:64157.
+2026-11-01T01:40:49.952429+00:00 jiulu-9700 kernel: INFO: task kworker/185:3:64157 blocked for more than 122 seconds.
+2026-11-01T01:40:49.952429+00:00 jiulu-9700 kernel:       Tainted: G S         OE       7.0.0-42-generic #42~24.04.1-Ubuntu
+2026-11-01T01:40:49.952430+00:00 jiulu-9700 kernel: "echo 0 > /proc/sys/kernel/hung_task_timeout_secs" disables this message.
+2026-11-01T01:40:49.952430+00:00 jiulu-9700 kernel: task:kworker/185:3   state:D stack:0     pid:64157 tgid:64157 ppid:2      task_flags:0x4208860 flags:0x00080000
+2026-11-01T01:40:49.952431+00:00 jiulu-9700 kernel: Workqueue: events_freezable svm_range_restore_work [amdgpu]
+2026-11-01T01:40:49.952432+00:00 jiulu-9700 kernel: Call Trace:
+2026-11-01T01:40:49.952432+00:00 jiulu-9700 kernel:  <TASK>
+2026-11-01T01:40:49.952433+00:00 jiulu-9700 kernel:  __schedule+0x2b5/0x640
+2026-11-01T01:40:49.952433+00:00 jiulu-9700 kernel:  schedule+0x27/0xb0
+2026-11-01T01:40:49.952434+00:00 jiulu-9700 kernel:  schedule_timeout+0x104/0x110
+2026-11-01T01:40:49.952435+00:00 jiulu-9700 kernel:  dma_fence_default_wait+0x215/0x2c0
+2026-11-01T01:40:49.952435+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.952436+00:00 jiulu-9700 kernel:  ? __pfx_dma_fence_default_wait_cb+0x10/0x10
+2026-11-01T01:40:49.952437+00:00 jiulu-9700 kernel:  dma_fence_wait_timeout+0x12d/0x1b0
+2026-11-01T01:40:49.952437+00:00 jiulu-9700 kernel:  svm_range_validate_and_map+0x1086/0x1d00 [amdgpu]
+2026-11-01T01:40:49.952438+00:00 jiulu-9700 kernel:  svm_range_restore_work+0xe5/0x390 [amdgpu]
+2026-11-01T01:40:49.952438+00:00 jiulu-9700 kernel:  process_one_work+0x1af/0x430
+2026-11-01T01:40:49.952439+00:00 jiulu-9700 kernel:  worker_thread+0x1bf/0x350
+2026-11-01T01:40:49.952439+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.952440+00:00 jiulu-9700 kernel:  ? __pfx_worker_thread+0x10/0x10
+2026-11-01T01:40:49.952440+00:00 jiulu-9700 kernel:  kthread+0xfb/0x140
+2026-11-01T01:40:49.952441+00:00 jiulu-9700 kernel:  ? __pfx_kthread+0x10/0x10
+2026-11-01T01:40:49.952441+00:00 jiulu-9700 kernel:  ret_from_fork+0x1f8/0x2b0
+2026-11-01T01:40:49.952442+00:00 jiulu-9700 kernel:  ? __pfx_kthread+0x10/0x10
+2026-11-01T01:40:49.952442+00:00 jiulu-9700 kernel:  ret_from_fork_asm+0x1a/0x30
+2026-11-01T01:40:49.952443+00:00 jiulu-9700 kernel:  </TASK>
+2026-11-01T01:40:49.952443+00:00 jiulu-9700 kernel: INFO: task kworker/106:1:81325 blocked for more than 122 seconds.
+2026-11-01T01:40:49.952444+00:00 jiulu-9700 kernel:       Tainted: G S         OE       7.0.0-42-generic #42~24.04.1-Ubuntu
+2026-11-01T01:40:49.952445+00:00 jiulu-9700 kernel: "echo 0 > /proc/sys/kernel/hung_task_timeout_secs" disables this message.
+2026-11-01T01:40:49.952445+00:00 jiulu-9700 kernel: task:kworker/106:1   state:D stack:0     pid:81325 tgid:81325 ppid:2      task_flags:0x4208860 flags:0x00080000
+2026-11-01T01:40:49.952469+00:00 jiulu-9700 kernel: Workqueue: events_freezable svm_range_restore_work [amdgpu]
+2026-11-01T01:40:49.952470+00:00 jiulu-9700 kernel: Call Trace:
+2026-11-01T01:40:49.952471+00:00 jiulu-9700 kernel:  <TASK>
+2026-11-01T01:40:49.952471+00:00 jiulu-9700 kernel:  __schedule+0x2b5/0x640
+2026-11-01T01:40:49.952472+00:00 jiulu-9700 kernel:  schedule+0x27/0xb0
+2026-11-01T01:40:49.952472+00:00 jiulu-9700 kernel:  schedule_preempt_disabled+0x15/0x30
+2026-11-01T01:40:49.952473+00:00 jiulu-9700 kernel:  __mutex_lock.constprop.0+0x4d3/0x9d0
+2026-11-01T01:40:49.952474+00:00 jiulu-9700 kernel:  __mutex_lock_slowpath+0x13/0x20
+2026-11-01T01:40:49.952475+00:00 jiulu-9700 kernel:  mutex_lock+0x3b/0x50
+2026-11-01T01:40:49.952658+00:00 jiulu-9700 kernel:  svm_range_cpu_invalidate_pagetables+0x7b/0x7d0 [amdgpu]
+2026-11-01T01:40:49.953284+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.953289+00:00 jiulu-9700 kernel:  __mmu_notifier_invalidate_range_start+0x19a/0x200
+2026-11-01T01:40:49.953290+00:00 jiulu-9700 kernel:  ? lru_gen_look_around+0x454/0x4e0
+2026-11-01T01:40:49.953290+00:00 jiulu-9700 kernel:  try_to_unmap_one+0xf8d/0x12c0
+2026-11-01T01:40:49.953291+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.953292+00:00 jiulu-9700 kernel:  ? lruvec_stat_mod_folio+0x8b/0xf0
+2026-11-01T01:40:49.953292+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.953293+00:00 jiulu-9700 kernel:  rmap_walk_anon+0xdc/0x220
+2026-11-01T01:40:49.953294+00:00 jiulu-9700 kernel:  rmap_walk+0x60/0xa0
+2026-11-01T01:40:49.953294+00:00 jiulu-9700 kernel:  try_to_unmap+0x79/0x80
+2026-11-01T01:40:49.953295+00:00 jiulu-9700 kernel:  ? __pfx_try_to_unmap_one+0x10/0x10
+2026-11-01T01:40:49.953296+00:00 jiulu-9700 kernel:  ? __pfx_folio_not_mapped+0x10/0x10
+2026-11-01T01:40:49.953296+00:00 jiulu-9700 kernel:  ? __pfx_folio_lock_anon_vma_read+0x10/0x10
+2026-11-01T01:40:49.953297+00:00 jiulu-9700 kernel:  shrink_folio_list+0x68c/0x1060
+2026-11-01T01:40:49.953297+00:00 jiulu-9700 kernel:  evict_folios+0x3bc/0xbc0
+2026-11-01T01:40:49.953298+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.953299+00:00 jiulu-9700 kernel:  ? __map_range+0xe1/0x2b0
+2026-11-01T01:40:49.953299+00:00 jiulu-9700 kernel:  try_to_shrink_lruvec+0x36/0xb0
+2026-11-01T01:40:49.953305+00:00 jiulu-9700 kernel:  shrink_one+0xcf/0x1c0
+2026-11-01T01:40:49.953306+00:00 jiulu-9700 kernel:  shrink_many+0x17b/0x310
+2026-11-01T01:40:49.953306+00:00 jiulu-9700 kernel:  shrink_node+0x4e1/0x590
+2026-11-01T01:40:49.953307+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.953307+00:00 jiulu-9700 kernel:  ? __submit_bio_noacct+0x210/0x220
+2026-11-01T01:40:49.953316+00:00 jiulu-9700 kernel:  shrink_zones.constprop.0+0x8f/0x290
+2026-11-01T01:40:49.953318+00:00 jiulu-9700 kernel:  do_try_to_free_pages+0x4c/0x2f0
+2026-11-01T01:40:49.953318+00:00 jiulu-9700 kernel:  try_to_free_pages+0xd4/0x220
+2026-11-01T01:40:49.954753+00:00 jiulu-9700 kernel:  __alloc_pages_slowpath.constprop.0+0x305/0xa40
+2026-11-01T01:40:49.954758+00:00 jiulu-9700 kernel:  __alloc_frozen_pages_noprof+0x34a/0x370
+2026-11-01T01:40:49.954759+00:00 jiulu-9700 kernel:  alloc_pages_mpol+0x7e/0x1a0
+2026-11-01T01:40:49.954759+00:00 jiulu-9700 kernel:  folio_alloc_mpol_noprof+0x14/0x40
+2026-11-01T01:40:49.954760+00:00 jiulu-9700 kernel:  swap_cache_alloc_folio+0x9a/0xf0
+2026-11-01T01:40:49.954761+00:00 jiulu-9700 kernel:  swap_vma_readahead+0x42c/0x520
+2026-11-01T01:40:49.954761+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.954763+00:00 jiulu-9700 kernel:  swapin_readahead+0xcc/0xe0
+2026-11-01T01:40:49.954763+00:00 jiulu-9700 kernel:  do_swap_page+0x3ba/0xe70
+2026-11-01T01:40:49.954764+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.954764+00:00 jiulu-9700 kernel:  ? __pte_offset_map+0x1c/0x140
+2026-11-01T01:40:49.954765+00:00 jiulu-9700 kernel:  handle_pte_fault+0x1c1/0x200
+2026-11-01T01:40:49.954766+00:00 jiulu-9700 kernel:  __handle_mm_fault+0x56a/0x760
+2026-11-01T01:40:49.954766+00:00 jiulu-9700 kernel:  handle_mm_fault+0x13d/0x3a0
+2026-11-01T01:40:49.954767+00:00 jiulu-9700 kernel:  hmm_vma_fault.isra.0+0x67/0xd0
+2026-11-01T01:40:49.954768+00:00 jiulu-9700 kernel:  hmm_vma_handle_pte+0x7b/0x470
+2026-11-01T01:40:49.954773+00:00 jiulu-9700 kernel:  hmm_vma_walk_pmd+0x379/0x3d0
+2026-11-01T01:40:49.954774+00:00 jiulu-9700 kernel:  walk_pmd_range+0x12b/0x360
+2026-11-01T01:40:49.954775+00:00 jiulu-9700 kernel:  walk_pud_range.isra.0+0x149/0x2e0
+2026-11-01T01:40:49.954775+00:00 jiulu-9700 kernel:  walk_p4d_range+0x171/0x210
+2026-11-01T01:40:49.954776+00:00 jiulu-9700 kernel:  walk_pgd_range+0xd4/0x280
+2026-11-01T01:40:49.954777+00:00 jiulu-9700 kernel:  __walk_page_range+0xb8/0x230
+2026-11-01T01:40:49.954777+00:00 jiulu-9700 kernel:  walk_page_range_mm_unsafe+0x1aa/0x210
+2026-11-01T01:40:49.954778+00:00 jiulu-9700 kernel:  walk_page_range+0x2a/0x40
+2026-11-01T01:40:49.954779+00:00 jiulu-9700 kernel:  hmm_range_fault+0x5e/0xb0
+2026-11-01T01:40:49.954780+00:00 jiulu-9700 kernel:  amdgpu_hmm_range_get_pages+0xf3/0x1c0 [amdgpu]
+2026-11-01T01:40:49.954780+00:00 jiulu-9700 kernel:  svm_range_validate_and_map+0x422/0x1d00 [amdgpu]
+2026-11-01T01:40:49.955260+00:00 jiulu-9700 kernel:  svm_range_restore_work+0xe5/0x390 [amdgpu]
+2026-11-01T01:40:49.955270+00:00 jiulu-9700 kernel:  process_one_work+0x1af/0x430
+2026-11-01T01:40:49.956707+00:00 jiulu-9700 kernel:  worker_thread+0x1bf/0x350
+2026-11-01T01:40:49.956712+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.956713+00:00 jiulu-9700 kernel:  ? __pfx_worker_thread+0x10/0x10
+2026-11-01T01:40:49.956713+00:00 jiulu-9700 kernel:  kthread+0xfb/0x140
+2026-11-01T01:40:49.956715+00:00 jiulu-9700 kernel:  ? __pfx_kthread+0x10/0x10
+2026-11-01T01:40:49.956715+00:00 jiulu-9700 kernel:  ret_from_fork+0x1f8/0x2b0
+2026-11-01T01:40:49.956716+00:00 jiulu-9700 kernel:  ? __pfx_kthread+0x10/0x10
+2026-11-01T01:40:49.956717+00:00 jiulu-9700 kernel:  ret_from_fork_asm+0x1a/0x30
+2026-11-01T01:40:49.956717+00:00 jiulu-9700 kernel:  </TASK>
+2026-11-01T01:40:49.956718+00:00 jiulu-9700 kernel: INFO: task kworker/106:1:81325 is blocked on a mutex likely owned by task kworker/185:3:64157.
+2026-11-01T01:40:49.956719+00:00 jiulu-9700 kernel: INFO: task kworker/57:0:90846 blocked for more than 122 seconds.
+2026-11-01T01:40:49.956719+00:00 jiulu-9700 kernel:       Tainted: G S         OE       7.0.0-42-generic #42~24.04.1-Ubuntu
+2026-11-01T01:40:49.956725+00:00 jiulu-9700 kernel: "echo 0 > /proc/sys/kernel/hung_task_timeout_secs" disables this message.
+2026-11-01T01:40:49.956726+00:00 jiulu-9700 kernel: task:kworker/57:0    state:D stack:0     pid:90846 tgid:90846 ppid:2      task_flags:0x4208860 flags:0x00080000
+2026-11-01T01:40:49.956727+00:00 jiulu-9700 kernel: Workqueue: events_freezable svm_range_restore_work [amdgpu]
+2026-11-01T01:40:49.956728+00:00 jiulu-9700 kernel: Call Trace:
+2026-11-01T01:40:49.956728+00:00 jiulu-9700 kernel:  <TASK>
+2026-11-01T01:40:49.956729+00:00 jiulu-9700 kernel:  __schedule+0x2b5/0x640
+2026-11-01T01:40:49.956729+00:00 jiulu-9700 kernel:  schedule+0x27/0xb0
+2026-11-01T01:40:49.956730+00:00 jiulu-9700 kernel:  schedule_preempt_disabled+0x15/0x30
+2026-11-01T01:40:49.956731+00:00 jiulu-9700 kernel:  __mutex_lock.constprop.0+0x4d3/0x9d0
+2026-11-01T01:40:49.956732+00:00 jiulu-9700 kernel:  ? sbitmap_get+0x73/0x180
+2026-11-01T01:40:49.956732+00:00 jiulu-9700 kernel:  ? bdev_count_inflight_rw.part.0+0x84/0x120
+2026-11-01T01:40:49.956733+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.956733+00:00 jiulu-9700 kernel:  __mutex_lock_slowpath+0x13/0x20
+2026-11-01T01:40:49.956734+00:00 jiulu-9700 kernel:  mutex_lock+0x3b/0x50
+2026-11-01T01:40:49.956734+00:00 jiulu-9700 kernel:  svm_range_cpu_invalidate_pagetables+0x7b/0x7d0 [amdgpu]
+2026-11-01T01:40:49.956735+00:00 jiulu-9700 kernel:  ? update_io_ticks+0x74/0x80
+2026-11-01T01:40:49.956736+00:00 jiulu-9700 kernel:  __mmu_notifier_invalidate_range_start+0x19a/0x200
+2026-11-01T01:40:49.956736+00:00 jiulu-9700 kernel:  ? lru_gen_look_around+0x454/0x4e0
+2026-11-01T01:40:49.956737+00:00 jiulu-9700 kernel:  try_to_unmap_one+0xf8d/0x12c0
+2026-11-01T01:40:49.956748+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.956749+00:00 jiulu-9700 kernel:  ? lruvec_stat_mod_folio+0x8b/0xf0
+2026-11-01T01:40:49.956750+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.956750+00:00 jiulu-9700 kernel:  rmap_walk_anon+0xdc/0x220
+2026-11-01T01:40:49.957780+00:00 jiulu-9700 kernel:  rmap_walk+0x60/0xa0
+2026-11-01T01:40:49.957785+00:00 jiulu-9700 kernel:  try_to_unmap+0x79/0x80
+2026-11-01T01:40:49.957786+00:00 jiulu-9700 kernel:  ? __pfx_try_to_unmap_one+0x10/0x10
+2026-11-01T01:40:49.957787+00:00 jiulu-9700 kernel:  ? __pfx_folio_not_mapped+0x10/0x10
+2026-11-01T01:40:49.957787+00:00 jiulu-9700 kernel:  ? __pfx_folio_lock_anon_vma_read+0x10/0x10
+2026-11-01T01:40:49.957788+00:00 jiulu-9700 kernel:  shrink_folio_list+0x68c/0x1060
+2026-11-01T01:40:49.957789+00:00 jiulu-9700 kernel:  evict_folios+0x3bc/0xbc0
+2026-11-01T01:40:49.957789+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.957790+00:00 jiulu-9700 kernel:  ? __map_range+0xe1/0x2b0
+2026-11-01T01:40:49.957791+00:00 jiulu-9700 kernel:  try_to_shrink_lruvec+0x36/0xb0
+2026-11-01T01:40:49.957791+00:00 jiulu-9700 kernel:  shrink_one+0xcf/0x1c0
+2026-11-01T01:40:49.957792+00:00 jiulu-9700 kernel:  shrink_many+0x17b/0x310
+2026-11-01T01:40:49.957793+00:00 jiulu-9700 kernel:  shrink_node+0x4e1/0x590
+2026-11-01T01:40:49.957793+00:00 jiulu-9700 kernel:  shrink_zones.constprop.0+0x8f/0x290
+2026-11-01T01:40:49.957798+00:00 jiulu-9700 kernel:  do_try_to_free_pages+0x4c/0x2f0
+2026-11-01T01:40:49.957799+00:00 jiulu-9700 kernel:  try_to_free_pages+0xd4/0x220
+2026-11-01T01:40:49.957800+00:00 jiulu-9700 kernel:  __alloc_pages_slowpath.constprop.0+0x305/0xa40
+2026-11-01T01:40:49.957800+00:00 jiulu-9700 kernel:  __alloc_frozen_pages_noprof+0x34a/0x370
+2026-11-01T01:40:49.957801+00:00 jiulu-9700 kernel:  alloc_pages_mpol+0x7e/0x1a0
+2026-11-01T01:40:49.957802+00:00 jiulu-9700 kernel:  folio_alloc_mpol_noprof+0x14/0x40
+2026-11-01T01:40:49.957802+00:00 jiulu-9700 kernel:  swap_cache_alloc_folio+0x9a/0xf0
+2026-11-01T01:40:49.957803+00:00 jiulu-9700 kernel:  swap_vma_readahead+0x42c/0x520
+2026-11-01T01:40:49.957803+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.957804+00:00 jiulu-9700 kernel:  swapin_readahead+0xcc/0xe0
+2026-11-01T01:40:49.957805+00:00 jiulu-9700 kernel:  do_swap_page+0x3ba/0xe70
+2026-11-01T01:40:49.957806+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.957806+00:00 jiulu-9700 kernel:  ? __pte_offset_map+0x1c/0x140
+2026-11-01T01:40:49.957807+00:00 jiulu-9700 kernel:  handle_pte_fault+0x1c1/0x200
+2026-11-01T01:40:49.957808+00:00 jiulu-9700 kernel:  __handle_mm_fault+0x56a/0x760
+2026-11-01T01:40:49.957808+00:00 jiulu-9700 kernel:  handle_mm_fault+0x13d/0x3a0
+2026-11-01T01:40:49.957809+00:00 jiulu-9700 kernel:  hmm_vma_fault.isra.0+0x67/0xd0
+2026-11-01T01:40:49.957809+00:00 jiulu-9700 kernel:  hmm_vma_handle_pte+0x7b/0x470
+2026-11-01T01:40:49.957810+00:00 jiulu-9700 kernel:  hmm_vma_walk_pmd+0x379/0x3d0
+2026-11-01T01:40:49.957811+00:00 jiulu-9700 kernel:  walk_pmd_range+0x12b/0x360
+2026-11-01T01:40:49.957811+00:00 jiulu-9700 kernel:  walk_pud_range.isra.0+0x149/0x2e0
+2026-11-01T01:40:49.957812+00:00 jiulu-9700 kernel:  walk_p4d_range+0x171/0x210
+2026-11-01T01:40:49.957813+00:00 jiulu-9700 kernel:  walk_pgd_range+0xd4/0x280
+2026-11-01T01:40:49.957814+00:00 jiulu-9700 kernel:  __walk_page_range+0xb8/0x230
+2026-11-01T01:40:49.957814+00:00 jiulu-9700 kernel:  walk_page_range_mm_unsafe+0x1aa/0x210
+2026-11-01T01:40:49.957815+00:00 jiulu-9700 kernel:  walk_page_range+0x2a/0x40
+2026-11-01T01:40:49.957815+00:00 jiulu-9700 kernel:  hmm_range_fault+0x5e/0xb0
+2026-11-01T01:40:49.957816+00:00 jiulu-9700 kernel:  amdgpu_hmm_range_get_pages+0xf3/0x1c0 [amdgpu]
+2026-11-01T01:40:49.958898+00:00 jiulu-9700 kernel:  svm_range_validate_and_map+0x422/0x1d00 [amdgpu]
+2026-11-01T01:40:49.958907+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.958913+00:00 jiulu-9700 kernel:  ? raw_spin_rq_lock_nested+0x23/0xb0
+2026-11-01T01:40:49.959415+00:00 jiulu-9700 kernel:  svm_range_restore_work+0xe5/0x390 [amdgpu]
+2026-11-01T01:40:49.960636+00:00 jiulu-9700 kernel:  process_one_work+0x1af/0x430
+2026-11-01T01:40:49.960641+00:00 jiulu-9700 kernel:  worker_thread+0x1bf/0x350
+2026-11-01T01:40:49.960642+00:00 jiulu-9700 kernel:  ? __pfx_worker_thread+0x10/0x10
+2026-11-01T01:40:49.960643+00:00 jiulu-9700 kernel:  kthread+0xfb/0x140
+2026-11-01T01:40:49.960643+00:00 jiulu-9700 kernel:  ? __pfx_kthread+0x10/0x10
+2026-11-01T01:40:49.960644+00:00 jiulu-9700 kernel:  ret_from_fork+0x1f8/0x2b0
+2026-11-01T01:40:49.960645+00:00 jiulu-9700 kernel:  ? __pfx_kthread+0x10/0x10
+2026-11-01T01:40:49.960646+00:00 jiulu-9700 kernel:  ret_from_fork_asm+0x1a/0x30
+2026-11-01T01:40:49.960646+00:00 jiulu-9700 kernel:  </TASK>
+2026-11-01T01:40:49.960647+00:00 jiulu-9700 kernel: INFO: task kworker/57:0:90846 is blocked on a mutex likely owned by task kworker/185:3:64157.
+2026-11-01T01:40:49.960648+00:00 jiulu-9700 kernel: INFO: task kworker/u793:48:92395 blocked for more than 122 seconds.
+2026-11-01T01:40:49.960648+00:00 jiulu-9700 kernel:       Tainted: G S         OE       7.0.0-42-generic #42~24.04.1-Ubuntu
+2026-11-01T01:40:49.960649+00:00 jiulu-9700 kernel: "echo 0 > /proc/sys/kernel/hung_task_timeout_secs" disables this message.
+2026-11-01T01:40:49.960649+00:00 jiulu-9700 kernel: task:kworker/u793:48 state:D stack:0     pid:92395 tgid:92395 ppid:2      task_flags:0x4208060 flags:0x00080000
+2026-11-01T01:40:49.960650+00:00 jiulu-9700 kernel: Workqueue: ttm ttm_bo_delayed_delete [amdttm]
+2026-11-01T01:40:49.960655+00:00 jiulu-9700 kernel: Call Trace:
+2026-11-01T01:40:49.960656+00:00 jiulu-9700 kernel:  <TASK>
+2026-11-01T01:40:49.960657+00:00 jiulu-9700 kernel:  __schedule+0x2b5/0x640
+2026-11-01T01:40:49.960657+00:00 jiulu-9700 kernel:  schedule+0x27/0xb0
+2026-11-01T01:40:49.960658+00:00 jiulu-9700 kernel:  schedule_timeout+0x104/0x110
+2026-11-01T01:40:49.960659+00:00 jiulu-9700 kernel:  dma_fence_default_wait+0x215/0x2c0
+2026-11-01T01:40:49.960659+00:00 jiulu-9700 kernel:  ? __pfx_dma_fence_default_wait_cb+0x10/0x10
+2026-11-01T01:40:49.960660+00:00 jiulu-9700 kernel:  dma_fence_wait_timeout+0x12d/0x1b0
+2026-11-01T01:40:49.960661+00:00 jiulu-9700 kernel:  amddma_resv_wait_timeout+0x85/0x110 [amdkcl]
+2026-11-01T01:40:49.960662+00:00 jiulu-9700 kernel:  ttm_bo_delayed_delete+0x33/0xc0 [amdttm]
+2026-11-01T01:40:49.960662+00:00 jiulu-9700 kernel:  process_one_work+0x1af/0x430
+2026-11-01T01:40:49.960663+00:00 jiulu-9700 kernel:  worker_thread+0x1bf/0x350
+2026-11-01T01:40:49.960664+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.960664+00:00 jiulu-9700 kernel:  ? __pfx_worker_thread+0x10/0x10
+2026-11-01T01:40:49.960665+00:00 jiulu-9700 kernel:  kthread+0xfb/0x140
+2026-11-01T01:40:49.960666+00:00 jiulu-9700 kernel:  ? __pfx_kthread+0x10/0x10
+2026-11-01T01:40:49.960667+00:00 jiulu-9700 kernel:  ret_from_fork+0x1f8/0x2b0
+2026-11-01T01:40:49.960667+00:00 jiulu-9700 kernel:  ? __pfx_kthread+0x10/0x10
+2026-11-01T01:40:49.960668+00:00 jiulu-9700 kernel:  ret_from_fork_asm+0x1a/0x30
+2026-11-01T01:40:49.960668+00:00 jiulu-9700 kernel:  </TASK>
+2026-11-01T01:40:49.960669+00:00 jiulu-9700 kernel: INFO: task bash:94761 blocked for more than 122 seconds.
+2026-11-01T01:40:49.960669+00:00 jiulu-9700 kernel:       Tainted: G S         OE       7.0.0-42-generic #42~24.04.1-Ubuntu
+2026-11-01T01:40:49.960670+00:00 jiulu-9700 kernel: "echo 0 > /proc/sys/kernel/hung_task_timeout_secs" disables this message.
+2026-11-01T01:40:49.960671+00:00 jiulu-9700 kernel: task:bash            state:D stack:0     pid:94761 tgid:94761 ppid:94758  task_flags:0x400800 flags:0x00080000
+2026-11-01T01:40:49.960672+00:00 jiulu-9700 kernel: Call Trace:
+2026-11-01T01:40:49.960673+00:00 jiulu-9700 kernel:  <TASK>
+2026-11-01T01:40:49.960673+00:00 jiulu-9700 kernel:  __schedule+0x2b5/0x640
+2026-11-01T01:40:49.960674+00:00 jiulu-9700 kernel:  schedule+0x27/0xb0
+2026-11-01T01:40:49.960675+00:00 jiulu-9700 kernel:  schedule_preempt_disabled+0x15/0x30
+2026-11-01T01:40:49.960675+00:00 jiulu-9700 kernel:  __mutex_lock.constprop.0+0x4d3/0x9d0
+2026-11-01T01:40:49.960676+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.960676+00:00 jiulu-9700 kernel:  __mutex_lock_slowpath+0x13/0x20
+2026-11-01T01:40:49.960677+00:00 jiulu-9700 kernel:  mutex_lock+0x3b/0x50
+2026-11-01T01:40:49.960678+00:00 jiulu-9700 kernel:  svm_range_cpu_invalidate_pagetables+0x7b/0x7d0 [amdgpu]
+2026-11-01T01:40:49.960679+00:00 jiulu-9700 kernel:  ? __srcu_read_lock+0x10/0x30
+2026-11-01T01:40:49.960679+00:00 jiulu-9700 kernel:  __mmu_notifier_invalidate_range_start+0x19a/0x200
+2026-11-01T01:40:49.960696+00:00 jiulu-9700 kernel:  ? lru_gen_look_around+0x454/0x4e0
+2026-11-01T01:40:49.960696+00:00 jiulu-9700 kernel:  try_to_unmap_one+0xf8d/0x12c0
+2026-11-01T01:40:49.960697+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.960698+00:00 jiulu-9700 kernel:  ? lruvec_stat_mod_folio+0x8b/0xf0
+2026-11-01T01:40:49.960699+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.960717+00:00 jiulu-9700 kernel:  rmap_walk_anon+0xdc/0x220
+2026-11-01T01:40:49.960717+00:00 jiulu-9700 kernel:  rmap_walk+0x60/0xa0
+2026-11-01T01:40:49.960718+00:00 jiulu-9700 kernel:  try_to_unmap+0x79/0x80
+2026-11-01T01:40:49.960719+00:00 jiulu-9700 kernel:  ? __pfx_try_to_unmap_one+0x10/0x10
+2026-11-01T01:40:49.960719+00:00 jiulu-9700 kernel:  ? __pfx_folio_not_mapped+0x10/0x10
+2026-11-01T01:40:49.960720+00:00 jiulu-9700 kernel:  ? __pfx_folio_lock_anon_vma_read+0x10/0x10
+2026-11-01T01:40:49.960720+00:00 jiulu-9700 kernel:  shrink_folio_list+0x68c/0x1060
+2026-11-01T01:40:49.960721+00:00 jiulu-9700 kernel:  evict_folios+0x3bc/0xbc0
+2026-11-01T01:40:49.960728+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.960729+00:00 jiulu-9700 kernel:  ? list_lru_count_one+0x62/0xd0
+2026-11-01T01:40:49.961321+00:00 jiulu-9700 kernel:  try_to_shrink_lruvec+0x36/0xb0
+2026-11-01T01:40:49.961326+00:00 jiulu-9700 kernel:  shrink_one+0xcf/0x1c0
+2026-11-01T01:40:49.961327+00:00 jiulu-9700 kernel:  shrink_many+0x17b/0x310
+2026-11-01T01:40:49.961327+00:00 jiulu-9700 kernel:  shrink_node+0x4e1/0x590
+2026-11-01T01:40:49.961328+00:00 jiulu-9700 kernel:  ? zone_reclaimable_pages+0x1b0/0x260
+2026-11-01T01:40:49.961329+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.961329+00:00 jiulu-9700 kernel:  shrink_zones.constprop.0+0x8f/0x290
+2026-11-01T01:40:49.961330+00:00 jiulu-9700 kernel:  do_try_to_free_pages+0x4c/0x2f0
+2026-11-01T01:40:49.961331+00:00 jiulu-9700 kernel:  try_to_free_pages+0xd4/0x220
+2026-11-01T01:40:49.961332+00:00 jiulu-9700 kernel:  __alloc_pages_slowpath.constprop.0+0x305/0xa40
+2026-11-01T01:40:49.961332+00:00 jiulu-9700 kernel:  __alloc_frozen_pages_noprof+0x34a/0x370
+2026-11-01T01:40:49.961333+00:00 jiulu-9700 kernel:  alloc_pages_bulk_noprof+0x390/0x750
+2026-11-01T01:40:49.961333+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.961334+00:00 jiulu-9700 kernel:  ? __alloc_frozen_pages_noprof+0x34a/0x370
+2026-11-01T01:40:49.961336+00:00 jiulu-9700 kernel:  alloc_pages_bulk_mempolicy_noprof+0xbf/0x280
+2026-11-01T01:40:49.961342+00:00 jiulu-9700 kernel:  vm_area_alloc_pages+0x1e0/0x390
+2026-11-01T01:40:49.961344+00:00 jiulu-9700 kernel:  __vmalloc_area_node+0xfa/0x350
+2026-11-01T01:40:49.961344+00:00 jiulu-9700 kernel:  __vmalloc_node_range_noprof+0xda/0x1f0
+2026-11-01T01:40:49.961345+00:00 jiulu-9700 kernel:  __vmalloc_node_noprof+0x4e/0x80
+2026-11-01T01:40:49.961345+00:00 jiulu-9700 kernel:  ? copy_process+0x1cc/0x1760
+2026-11-01T01:40:49.961346+00:00 jiulu-9700 kernel:  alloc_thread_stack_node+0x99/0x180
+2026-11-01T01:40:49.961347+00:00 jiulu-9700 kernel:  copy_process+0x1cc/0x1760
+2026-11-01T01:40:49.961347+00:00 jiulu-9700 kernel:  ? do_syscall_64+0x116/0x5a0
+2026-11-01T01:40:49.961348+00:00 jiulu-9700 kernel:  kernel_clone+0xb8/0x4a0
+2026-11-01T01:40:49.961349+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.961350+00:00 jiulu-9700 kernel:  __do_sys_clone+0x68/0xa0
+2026-11-01T01:40:49.961350+00:00 jiulu-9700 kernel:  __x64_sys_clone+0x25/0x40
+2026-11-01T01:40:49.961351+00:00 jiulu-9700 kernel:  x64_sys_call+0x1718/0x26e0
+2026-11-01T01:40:49.961351+00:00 jiulu-9700 kernel:  do_syscall_64+0xd9/0x5a0
+2026-11-01T01:40:49.961352+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.961352+00:00 jiulu-9700 kernel:  ? wp_page_reuse+0x97/0xc0
+2026-11-01T01:40:49.961353+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.961354+00:00 jiulu-9700 kernel:  ? __set_task_blocked+0x29/0x80
+2026-11-01T01:40:49.961354+00:00 jiulu-9700 kernel:  ? do_wp_page+0x513/0x6f0
+2026-11-01T01:40:49.961355+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.961355+00:00 jiulu-9700 kernel:  ? sigprocmask+0x80/0xd0
+2026-11-01T01:40:49.961356+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.961357+00:00 jiulu-9700 kernel:  ? __x64_sys_rt_sigprocmask+0x7d/0xe0
+2026-11-01T01:40:49.961358+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.961358+00:00 jiulu-9700 kernel:  ? arch_exit_to_user_mode_prepare.isra.0+0xd/0xe0
+2026-11-01T01:40:49.961359+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.961360+00:00 jiulu-9700 kernel:  ? do_syscall_64+0x116/0x5a0
+2026-11-01T01:40:49.961360+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.961361+00:00 jiulu-9700 kernel:  ? count_memcg_events+0x101/0x1d0
+2026-11-01T01:40:49.961362+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.961362+00:00 jiulu-9700 kernel:  ? handle_mm_fault+0x272/0x3a0
+2026-11-01T01:40:49.961363+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.961363+00:00 jiulu-9700 kernel:  ? arch_exit_to_user_mode_prepare.isra.0+0xd/0x100
+2026-11-01T01:40:49.961364+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.961365+00:00 jiulu-9700 kernel:  ? irqentry_exit+0x9d/0x640
+2026-11-01T01:40:49.961365+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.961366+00:00 jiulu-9700 kernel:  ? exc_page_fault+0x92/0x1c0
+2026-11-01T01:40:49.961367+00:00 jiulu-9700 kernel:  entry_SYSCALL_64_after_hwframe+0x76/0x7e
+2026-11-01T01:40:49.961368+00:00 jiulu-9700 kernel: RIP: 0033:0x728b662ee2a7
+2026-11-01T01:40:49.961368+00:00 jiulu-9700 kernel: RSP: 002b:00007ffc00ab0f18 EFLAGS: 00000246 ORIG_RAX: 0000000000000038
+2026-11-01T01:40:49.961369+00:00 jiulu-9700 kernel: RAX: ffffffffffffffda RBX: 0000000000000000 RCX: 0000728b662ee2a7
+2026-11-01T01:40:49.961384+00:00 jiulu-9700 kernel: RDX: 0000000000000000 RSI: 0000000000000000 RDI: 0000000001200011
+2026-11-01T01:40:49.962304+00:00 jiulu-9700 kernel: RBP: 00007ffc00ab1020 R08: 0000000000000000 R09: 0000000000000007
+2026-11-01T01:40:49.962309+00:00 jiulu-9700 kernel: R10: 0000728b665f6a10 R11: 0000000000000246 R12: 0000000000000000
+2026-11-01T01:40:49.962310+00:00 jiulu-9700 kernel: R13: 0000000000000001 R14: 00007ffc00ab1070 R15: 0000000000017cdc
+2026-11-01T01:40:49.962310+00:00 jiulu-9700 kernel:  </TASK>
+2026-11-01T01:40:49.963630+00:00 jiulu-9700 kernel: INFO: task bash:94761 is blocked on a mutex likely owned by task kworker/185:3:64157.
+2026-11-01T01:40:49.963635+00:00 jiulu-9700 kernel: INFO: task kworker/u793:4:95765 blocked for more than 122 seconds.
+2026-11-01T01:40:49.963636+00:00 jiulu-9700 kernel:       Tainted: G S         OE       7.0.0-42-generic #42~24.04.1-Ubuntu
+2026-11-01T01:40:49.963636+00:00 jiulu-9700 kernel: "echo 0 > /proc/sys/kernel/hung_task_timeout_secs" disables this message.
+2026-11-01T01:40:49.964262+00:00 jiulu-9700 kernel: task:kworker/u793:4  state:D stack:0     pid:95765 tgid:95765 ppid:2      task_flags:0x4208060 flags:0x00080000
+2026-11-01T01:40:49.964267+00:00 jiulu-9700 kernel: Workqueue: ttm ttm_bo_delayed_delete [amdttm]
+2026-11-01T01:40:49.964268+00:00 jiulu-9700 kernel: Call Trace:
+2026-11-01T01:40:49.964269+00:00 jiulu-9700 kernel:  <TASK>
+2026-11-01T01:40:49.964270+00:00 jiulu-9700 kernel:  __schedule+0x2b5/0x640
+2026-11-01T01:40:49.964270+00:00 jiulu-9700 kernel:  schedule+0x27/0xb0
+2026-11-01T01:40:49.964271+00:00 jiulu-9700 kernel:  schedule_timeout+0x104/0x110
+2026-11-01T01:40:49.964272+00:00 jiulu-9700 kernel:  dma_fence_default_wait+0x215/0x2c0
+2026-11-01T01:40:49.966280+00:00 jiulu-9700 kernel:  ? __pfx_dma_fence_default_wait_cb+0x10/0x10
+2026-11-01T01:40:49.967546+00:00 jiulu-9700 kernel:  dma_fence_wait_timeout+0x12d/0x1b0
+2026-11-01T01:40:49.967550+00:00 jiulu-9700 kernel:  amddma_resv_wait_timeout+0x85/0x110 [amdkcl]
+2026-11-01T01:40:49.967551+00:00 jiulu-9700 kernel:  ttm_bo_delayed_delete+0x33/0xc0 [amdttm]
+2026-11-01T01:40:49.968361+00:00 jiulu-9700 kernel:  process_one_work+0x1af/0x430
+2026-11-01T01:40:49.968366+00:00 jiulu-9700 kernel:  worker_thread+0x1bf/0x350
+2026-11-01T01:40:49.968366+00:00 jiulu-9700 kernel:  ? srso_alias_return_thunk+0x5/0xfbef5
+2026-11-01T01:40:49.968367+00:00 jiulu-9700 kernel:  ? __pfx_worker_thread+0x10/0x10
+2026-11-01T01:40:49.968368+00:00 jiulu-9700 kernel:  kthread+0xfb/0x140
+2026-11-01T01:40:49.968368+00:00 jiulu-9700 kernel:  ? __pfx_kthread+0x10/0x10
+2026-11-01T01:40:49.981027+00:00 jiulu-9700 kernel:  ret_from_fork+0x1f8/0x2b0
+2026-11-01T01:40:49.981034+00:00 jiulu-9700 kernel:  ? __pfx_kthread+0x10/0x10
+2026-11-01T01:40:49.981034+00:00 jiulu-9700 kernel:  ret_from_fork_asm+0x1a/0x30
+2026-11-01T01:40:49.981036+00:00 jiulu-9700 kernel:  </TASK>
+2026-11-01T01:40:49.981037+00:00 jiulu-9700 kernel: INFO: task kworker/u793:6:95767 blocked for more than 122 seconds.
+2026-11-01T01:40:49.981328+00:00 jiulu-9700 kernel:       Tainted: G S         OE       7.0.0-42-generic #42~24.04.1-Ubuntu
+2026-11-01T01:40:49.994314+00:00 jiulu-9700 kernel: "echo 0 > /proc/sys/kernel/hung_task_timeout_secs" disables this message.
+2026-11-01T01:40:49.995404+00:00 jiulu-9700 kernel: task:kworker/u793:6  state:D stack:0     pid:95767 tgid:95767 ppid:2      task_flags:0x4208060 flags:0x00080000
+2026-11-01T01:40:49.995417+00:00 jiulu-9700 kernel: Workqueue: ttm ttm_bo_delayed_delete [amdttm]
+2026-11-01T01:40:49.995418+00:00 jiulu-9700 kernel: Call Trace:
+2026-11-01T01:40:49.995419+00:00 jiulu-9700 kernel:  <TASK>
+2026-11-01T01:40:49.995419+00:00 jiulu-9700 kernel:  __schedule+0x2b5/0x640
+2026-11-01T01:40:49.995420+00:00 jiulu-9700 kernel:  schedule+0x27/0xb0
+2026-11-01T01:40:49.995421+00:00 jiulu-9700 kernel:  schedule_timeout+0x104/0x110
+2026-11-01T01:40:49.995423+00:00 jiulu-9700 kernel:  dma_fence_default_wait+0x215/0x2c0
+2026-11-01T01:40:49.995424+00:00 jiulu-9700 kernel:  ? __pfx_dma_fence_default_wait_cb+0x10/0x10
+2026-11-01T01:40:49.995425+00:00 jiulu-9700 kernel:  dma_fence_wait_timeout+0x12d/0x1b0
+2026-11-01T01:40:50.001256+00:00 jiulu-9700 kernel:  amddma_resv_wait_timeout+0x85/0x110 [amdkcl]
+2026-11-01T01:40:50.001269+00:00 jiulu-9700 kernel:  ttm_bo_delayed_delete+0x33/0xc0 [amdttm]
+2026-11-01T01:40:50.001270+00:00 jiulu-9700 kernel:  process_one_work+0x1af/0x430
+2026-11-01T01:40:50.001271+00:00 jiulu-9700 kernel:  worker_thread+0x1bf/0x350
+2026-11-01T01:40:50.001272+00:00 jiulu-9700 kernel:  ? __pfx_worker_thread+0x10/0x10
+2026-11-01T01:40:50.001272+00:00 jiulu-9700 kernel:  kthread+0xfb/0x140
+2026-11-01T01:40:50.001274+00:00 jiulu-9700 kernel:  ? __pfx_kthread+0x10/0x10
+2026-11-01T01:40:50.001275+00:00 jiulu-9700 kernel:  ret_from_fork+0x1f8/0x2b0
+2026-11-01T01:40:50.001275+00:00 jiulu-9700 kernel:  ? __pfx_kthread+0x10/0x10
+2026-11-01T01:40:50.001276+00:00 jiulu-9700 kernel:  ret_from_fork_asm+0x1a/0x30
+2026-11-01T01:40:50.001276+00:00 jiulu-9700 kernel:  </TASK>
+2026-11-01T01:40:50.001277+00:00 jiulu-9700 kernel: INFO: task kworker/u793:13:95786 blocked for more than 122 seconds.
+2026-11-01T01:40:50.001285+00:00 jiulu-9700 kernel:       Tainted: G S         OE       7.0.0-42-generic #42~24.04.1-Ubuntu
+2026-11-01T01:40:50.011450+00:00 jiulu-9700 kernel: "echo 0 > /proc/sys/kernel/hung_task_timeout_secs" disables this message.
+2026-11-01T01:40:50.012459+00:00 jiulu-9700 kernel: task:kworker/u793:13 state:D stack:0     pid:95786 tgid:95786 ppid:2      task_flags:0x4208060 flags:0x00080000
+2026-11-01T01:40:50.012472+00:00 jiulu-9700 kernel: Workqueue: ttm ttm_bo_delayed_delete [amdttm]
+2026-11-01T01:40:50.012474+00:00 jiulu-9700 kernel: Call Trace:
+2026-11-01T01:40:50.012475+00:00 jiulu-9700 kernel:  <TASK>
+2026-11-01T01:40:50.012475+00:00 jiulu-9700 kernel:  __schedule+0x2b5/0x640
+2026-11-01T01:40:50.012476+00:00 jiulu-9700 kernel:  schedule+0x27/0xb0
+2026-11-01T01:40:50.012476+00:00 jiulu-9700 kernel:  schedule_timeout+0x104/0x110
+2026-11-01T01:40:50.012477+00:00 jiulu-9700 kernel:  dma_fence_default_wait+0x215/0x2c0
+2026-11-01T01:40:50.012478+00:00 jiulu-9700 kernel:  ? __pfx_dma_fence_default_wait_cb+0x10/0x10
+2026-11-01T01:40:50.012478+00:00 jiulu-9700 kernel:  dma_fence_wait_timeout+0x12d/0x1b0
+2026-11-01T01:40:50.012479+00:00 jiulu-9700 kernel:  amddma_resv_wait_timeout+0x85/0x110 [amdkcl]
+2026-11-01T01:40:50.012480+00:00 jiulu-9700 kernel:  ttm_bo_delayed_delete+0x33/0xc0 [amdttm]
+2026-11-01T01:40:50.013403+00:00 jiulu-9700 kernel:  process_one_work+0x1af/0x430
+2026-11-01T01:40:50.013416+00:00 jiulu-9700 kernel:  worker_thread+0x1bf/0x350
+2026-11-01T01:40:50.013417+00:00 jiulu-9700 kernel:  ? __pfx_worker_thread+0x10/0x10
+2026-11-01T01:40:50.013418+00:00 jiulu-9700 kernel:  kthread+0xfb/0x140
+2026-11-01T01:40:50.013419+00:00 jiulu-9700 kernel:  ? __pfx_kthread+0x10/0x10
+2026-11-01T01:40:50.013419+00:00 jiulu-9700 kernel:  ret_from_fork+0x1f8/0x2b0
+2026-11-01T01:40:50.013420+00:00 jiulu-9700 kernel:  ? __pfx_kthread+0x10/0x10
+2026-11-01T01:40:50.013422+00:00 jiulu-9700 kernel:  ret_from_fork_asm+0x1a/0x30
+2026-11-01T01:40:50.013422+00:00 jiulu-9700 kernel:  </TASK>
+2026-11-01T01:40:50.013425+00:00 jiulu-9700 kernel: Future hung task reports are suppressed, see sysctl kernel.hung_task_warnings
