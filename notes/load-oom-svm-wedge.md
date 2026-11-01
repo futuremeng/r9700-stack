@@ -112,10 +112,11 @@ Auto-prefetch is disabled because the filesystem (EXT4) is not a recognized netw
 and the checkpoint size (110.60 GiB) exceeds 90% of available RAM (40.74 GiB).
 ```
 
-Only two launches ever produced data, same config, page cache the only difference:
-`load_s=208.4 / experts_place_s=137.6` (cold) vs `load_s=103.2 / experts_place_s=34.5` (warm) -- 2.02x
-(`driver-results.txt`). The prefetch arms were identical code anyway: `weight_utils.py:1115`
-`should_prefetch = safetensors_load_strategy == "prefetch"`; see `bench/prefetch_ab.sh` header.
+Only two launches ever produced data: `load_s=208.4 / experts_place_s=137.6` then `load_s=103.2 /
+experts_place_s=34.5`, same config, which read as a 2.02x page-cache effect (`driver-results.txt`). **That reading
+is retracted** -- see "Superseded" below; with a verified teardown gate the two arms are within 4%. The prefetch
+arms were identical code anyway: `weight_utils.py:1115` `should_prefetch = safetensors_load_strategy ==
+"prefetch"`; see `bench/prefetch_ab.sh` header.
 
 ## Rules going forward (encoded in `bench/coldstart_ab.sh`)
 
@@ -125,8 +126,42 @@ Only two launches ever produced data, same config, page cache the only differenc
    pages of GPU-attached processes. `Committed_AS > MemTotal` is the red flag to stop on.
 3. One 4-rank load at a time, and "STOP" means verified teardown, not "signal sent".
 4. Poll with short tool calls, never `sleep 600`: when the box or the session goes, a long blocking call loses
-   context; short calls cost one call.
+   context; short calls cost one call. (And keep the `VLLM`-shaped patterns out of the polling command -- see 6.)
 5. Numbers taken under memory pressure are junk anyway -- reboot before measuring, not after.
+6. Do not inline the STOP patterns in a tool call: `serve/native-flashnext.sh`'s STOP path runs
+   `pkill -9 -f 'VLLM[::]'`, and if the calling command line itself contains the literal `VLLM::` (as soon as you
+   type a `pgrep -c 'VLLM::'` probe in the same command) pkill matches the caller and SIGKILLs it -- observed as
+   exit 137 with the STOP itself succeeding. Use `bench/gate.sh`, which keeps those patterns inside a file.
+
+## Superseded: post-reboot re-measurement with the gate (2026-11-01 03:31-03:39)
+
+Clean box (up 3 min, `Cached` 0.35 GiB, `oom_kill 0`, swap untouched), `bench/gate.sh` PASS between launches, one
+4-rank load at a time, `R9K_LOAD_PROF=1`, NSEQ=32 / MAXLEN=32768 / OFFLOAD_GB=0:
+
+| arm | load s | place s | experts (192t/59.8 GiB) | engine init |
+|---|---|---|---|---|
+| boot-cold (`Cached` 0.35 GiB) | **115.67** | 98.0 | 87.8 s | 20.3 s |
+| warm (`Cached` 39.3 GiB of the 110.6 GiB) | **120.60** | 100.7 | 88.2 s | -- |
+
+So page-cache state is worth **+4.9 s (4%)**, not 2.02x, and the expert term that dominates is the same to within
+0.4 s (87.8 vs 88.2). The incident's 208 s / 103 s pair was taken inside a degrading machine (launches overlapping
+an unmapped 54 GiB, swap already half consumed) -- another load-path number that was an artifact of machine state,
+the fourth in this line of work.
+
+The memory profile of one healthy load, now measured rather than inferred:
+
+* at loader start every rank reports `Available RAM: 39.8 GiB` -- the four ranks take **~50 GiB of anon before a
+  single shard is read** (worker RSS 10.7-18.8 GiB each, seen again post-mortem);
+* at load end, identically in both arms: `MemAvailable` 39.5-40.0 GiB, `Cached` 42.1 GiB, **swap 4.2 GiB used of
+  8.0** -- a single healthy load always leaves half of swap dirty;
+* a warm cache makes the *streaming* slower (10.1 s a shard vs 2.7 s boot-cold) because the cache and the ranks'
+  anon fight, i.e. warm-cache is exactly the regime that puts reclaim -- and therefore the amdgpu SVM notifier --
+  under work; it buys nothing (total +4.9 s) and it is the direction to stop pushing;
+* verified teardown returns everything: `MemAvailable` 87.4-91.5 GiB, `SwapFree` 8.0-8.35 GiB, 0 processes.
+
+Which leaves the cold start as what the earlier anatomy said it is: ~116 s, of which **87.8 s is stock vLLM
+iterating 59.8 GiB of fused expert tensors a rank** (4 ranks, whole checkpoint each), 20.3 s engine init/warmup,
+~1.3 s of this plugin's own load work. Neither prefetch (inert) nor page cache (4%) is on that path.
 
 ## Worth reporting upstream (ROCm / amdgpu)
 

@@ -355,9 +355,12 @@ and the run that tested it wedged the box** (see `notes/load-oom-svm-wedge.md`):
 * Forcing `--safetensors-load-strategy=prefetch` on this stack would stage later shards into the same RAM that is
   already 40 GiB short of the 110.6 GiB the four ranks stream -- vLLM logs `This may cause out-of-memory errors`.
   Not attempted, and it should not be.
-* The two arms that *do* exist are page-cache cold and warm, and they are worth 2.02x on an identical config:
-  `load_s=208.4 / experts_place_s=137.6` cold vs `load_s=103.2 / experts_place_s=34.5` warm. This is also the
-  third time a load-path number turned out to be a page-cache artifact in disguise.
+* Page-cache cold vs warm is **not** worth 2.02x -- that pair (`208.4 / 103.2 s`) was read off a machine that was
+  already degrading under an unmapped previous attempt. Re-measured 2026-11-01 03:31-03:39 on a clean boot with
+  `bench/gate.sh` verifying teardown between launches: boot-cold (`Cached` 0.35 GiB) **115.67 s**, warm (`Cached`
+  39.3 GiB) **120.60 s**, experts term 87.8 s vs 88.2 s. Page cache is worth 4%, and a warm cache actually slows
+  the shard stream (10.1 s/it vs 2.7 s) by fighting the ranks' ~50 GiB of anon for RAM. Fourth load-path number in
+  this line of work that turned out to be machine state, not the config under test.
 * The two-launch protocol still applies, and now a hard gate: no launch unless every `vllm serve|VLLM::` process
   is gone and `MemAvailable >= 55 GiB` -- see `bench/coldstart_ab.sh`, which replaces `bench/prefetch_ab.sh`.
 

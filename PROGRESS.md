@@ -8,10 +8,14 @@
   `Auto-prefetch is disabled ...`, so `--safetensors-prefetch-num-threads 1` and the default arm ran **identical
   code**. Forcing the strategy would stage later shards into RAM that is already 70 GiB short of the 110.6 GiB
   each rank streams; vLLM warns `This may cause out-of-memory errors`. Not attempted.
-* What the two launches did give, identical config, page cache alone: **load 208.4 s / experts place 137.6 s cold
-  vs 103.2 s / 34.5 s warm (2.02x)**. Third load-path number in a row that turned out to be a page-cache artifact
-  (after the `R9K_FOLD` 27 s and the 143.8-179.9 s spread). New protocol `bench/coldstart_ab.sh` measures that
-  axis with `drop_caches` / pre-read arms; `bench/prefetch_ab.sh` is neutered with the reasoning in its header.
+* **Page cache is worth 4%, not 2.02x.** The 208.4 s vs 103.2 s pair came from inside a degrading machine. Re-run
+  after the reboot with a verified teardown gate (`bench/gate.sh`): boot-cold `Cached` 0.35 GiB -> **load 115.67 s,
+  place 98.0 s, experts 87.8 s**; warm `Cached` 39.3 GiB -> **120.60 s / 100.7 s / 88.2 s**. One healthy load takes
+  ~50 GiB of anon across the four ranks *before reading a shard* (`Available RAM: 39.8 GiB` at loader start) and
+  always leaves **4.2 GiB of swap used**; verified teardown gives it all back (MemAvailable 87-91 GiB, SwapFree
+  8.0/8.0). Warm cache slows the shard stream (10.1 s/it vs 2.7 s) and buys nothing -- that direction is closed.
+  `bench/prefetch_ab.sh` is neutered (reasoning in its header); `bench/coldstart_ab.sh` + `bench/gate.sh` are the
+  only sanctioned way to relaunch.
 * **The box died for it, and the cause is not vLLM.** `STOP` returns before teardown is verified, so run 3 of the
   loop started a 4-rank load while the previous 53.7 GiB of worker RSS (10.6/11.8/18.4/12.9) was still mapped --
   vLLM was already at `Available RAM: 40.74 GiB`, buff/cache 47 GiB, `SwapFree` down to 1.5 GiB of 8. The OOM

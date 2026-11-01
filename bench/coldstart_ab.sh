@@ -5,6 +5,13 @@
 #   warm : read the 23 shards into the page cache immediately before launch
 # Protocol: two launches per arm, only the second one is reported (one config alone spans 143.8-179.9 s).
 #
+# STATUS 2026-11-01: measured with this protocol's gate and the result is already in -- boot-cold 115.67 s vs warm
+# 120.60 s, experts term 87.8 vs 88.2 s, i.e. page cache is worth 4% (notes/load-oom-svm-wedge.md, Superseded).
+# Two practical notes before anyone reruns it: (a) `echo 3 > /proc/sys/vm/drop_caches` needs root, so the clean
+# cold point is normally the first launch after a boot, not a cached drop; (b) the gate here is subsumed by
+# bench/gate.sh, which is the thing to call between launches (it also checks SwapFree and never puts the VLLM
+# patterns in the caller's argv, where serve's own STOP pkill would match them).
+#
 # HARD RULE -- the memory gate in wait_down() is not cosmetic. On 2026-11-01 a variant loop launched the next
 # 4-rank load while the previous server's ~54 GiB of worker RSS was still unreclaimed (its processes were stuck
 # in exit_mm on the amdgpu SVM notifier). RAM exhausted, kswapd0 blocked in svm_range_cpu_invalidate_pagetables
@@ -14,6 +21,7 @@ cd /home/jiulu/r9700-stack || exit 1
 OUT=$HOME/logs/coldstart-ab.txt
 CKPT=/home/jiulu/models/Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ
 MIN_AVAIL_GIB=55          # gate: refuse to launch below this (4 ranks x ~14 GiB peak against 93.8 GiB total)
+MIN_SWAPFREE_GIB=6        # a single healthy load leaves 4.2 GiB of swap used; anything below this is ratcheting
 MIN_TEARDOWN_S=20
 : > "$OUT"
 
@@ -31,12 +39,12 @@ wait_down () {
   fi
   sleep "$MIN_TEARDOWN_S"
   for _ in $(seq 1 36); do
-    awk -v m="$MIN_AVAIL_GIB" '/MemAvailable/{if ($2/1048576) >= m) exit 0}' /proc/meminfo && break
-    echo "  waiting for RAM: MemAvailable=$(avail_gib) GiB"
+    awk -v m="$MIN_AVAIL_GIB" -v s="$MIN_SWAPFREE_GIB" '/MemAvailable/{a=$2/1048576} /SwapFree/{f=$2/1048576} END{exit !(a>=m && f>=s)}' /proc/meminfo && break
+    echo "  waiting for RAM: MemAvailable=$(avail_gib) GiB swapfree=$(awk '/SwapFree/{printf "%.1f", $2/1048576}' /proc/meminfo) GiB"
     sleep 5
   done
-  awk -v m="$MIN_AVAIL_GIB" '/MemAvailable/{if ($2/1048576) >= m) exit 0}' /proc/meminfo || {
-    echo "ABORT: MemAvailable=$(avail_gib) GiB below gate ${MIN_AVAIL_GIB} GiB"; exit 3; }
+  awk -v m="$MIN_AVAIL_GIB" -v s="$MIN_SWAPFREE_GIB" '/MemAvailable/{a=$2/1048576} /SwapFree/{f=$2/1048576} END{exit !(a>=m && f>=s)}' /proc/meminfo || {
+    echo "ABORT: MemAvailable=$(avail_gib) GiB / SwapFree=$(awk '/SwapFree/{printf "%.1f",$2/1048576}' /proc/meminfo) GiB below gate ${MIN_AVAIL_GIB}/${MIN_SWAPFREE_GIB} GiB"; exit 3; }
 }
 
 run_once () {
