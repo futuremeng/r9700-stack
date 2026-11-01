@@ -862,6 +862,63 @@ dump only fires on a 15 s call-driven cadence, so a server that never exits usua
 none): `prof.report()` now also runs at the end of the target pass, which is what made the fold cost comparable
 across instances.
 
+## C8: the fold guard was 8 s a rank of load work; cutting it 20x did not move the load, and did not move the tail either
+
+`serve/native-flashnext.sh` runs with `R9K_FOLD:=1`, so every rank guards every MXFP4 tensor by histogramming the
+row-reference-minus-block exponent distribution of its packed scales: 196 tensors and **965 M blocks a rank**
+(965 MiB of uint8), of which the timer (now printed at target/post-load end, `R9K_LOAD_PROF=1`) charged
+
+```
+warm4      load timer:      8.5 s on kernels fold_decide   (192 calls)     == 8.1 s on kernels fold_stats (193)
+final41    load timer:      0.4 s on kernels fold_decide   ( 96 calls)     == 0.4 s on kernels fold_stats (96)
+```
+
+Three pieces of waste, all fixed in `kernels/moe.py`:
+
+* **98 of the 196 tensors are refused on shape alone** (`K = (nb1-1)*32 = 160 < R9K_FOLD_MIN_K`): `fold_k` reads that
+  from the scale tensor's shape and the guard never touches the bytes. A third of the blocks, for free.
+* The rest is a *statistical* guard (fold unless > 5% of blocks are rounded or > 0.1% flushed) being answered by
+  walking every block. It now walks at most `R9K_FOLD_SAMPLE` = 1 M blocks: a uniform random sample of the
+  (block, column) plane, the same set for every expert, from a fixed seed so four ranks cannot disagree.
+  Uniform over blocks, not whole columns: `tests/test_fold_sample.py` caught that sampling 8% of the columns can
+  walk past a channel that is entirely bad, while a block-uniform sample of a tensor sitting *at* the 0.1% threshold
+  expects ~1000 flushed hits and sees it essentially always.
+* A sample that lands within `R9K_FOLD_MARGIN` (3x) of either threshold, or that sees a single flushed block,
+  re-walks the whole tensor exactly, so a borderline tensor is never decided on a sample. One host sync per tensor
+  instead of one per 64 MiB chunk, and the histogram accumulates on the tensor's device.
+
+On the checkpoint: decisions are identical (392 fold ON / 392 fold OFF in final40 with the exact walk and in final41
+with the sample; sampled `mean_d` 0.47-0.48 matches the exact 0.47-0.48, though a sampled `max_d` of 4-5 is a lower
+bound on the exact 5-6 by construction), and serving is unchanged (GSM8K 98/100, needles 3/3).
+
+**What it did not do: make the load faster, or fix the window's tail.** final41 loaded in 79.31 s -- inside the day's
+67.9-115.3 s spread for one config -- and two of its four ranks still spent 29.4 s and 55.9 s in the post-load window
+that other instances finish in 4.6 s. So the guard's 8 s was real work that is now gone, and it was not on the
+critical path. The tail's shape changed, which is its own clue: warm4's slow rank sat in one call (`fold_stats`,
+watchdog caught it), final41's slowest rank spread 48.6 s over 2460 `GatedResidual` visits -- including 35.4 s inside
+a single `layers.29.mlp_hyper_connection` visit, which the watchdog did **not** catch, because it only reports a
+frame it sees unchanged for 2 s and that visit was moving through frames the whole time. Naming that wait is the next
+measurement: sample the load thread's frame *and its kernel state* across the whole window instead of looking for one
+stuck frame.
+
+The window and the KV pool also move together, which no explanation of the window should ignore (every instance that
+has measured the window, worst rank):
+
+| instance | worst rank | mean of 4 ranks | KV pool |
+|---|---|---|---|
+| warm4 | 61.8 s | 33.0 s | 490,306 |
+| final41 | 55.9 s | 23.6 s | 478,979 |
+| pwal3 | 24.9 s | 10.5 s | 468,865 |
+| pwal2 | 5.9 s | 5.8 s | 492,329 |
+| warm3 | 5.6 s | 5.1 s | 493,542 |
+| final40 | 5.1 s | 5.0 s | 493,542 |
+| warm2 | 4.5 s | 4.4 s | 492,329 |
+| warm1 | 4.4 s | 4.4 s | 495,160 |
+
+Every instance with a tail has a smaller KV pool than every instance without one: the slow window and the shrunken
+pool look like two symptoms of the same memory-side event at the end of the load, not one of our code paths being
+slow. And a smaller pool is not free: 468,865 tokens is 5.5% less concurrency than 495,160.
+
 ## How to reproduce the load-path analysis
 
 ```bash
@@ -882,6 +939,9 @@ MODE=pread NPROC=1 CHUNK=16777216 F=model-00018.safetensors ~/venv-r9700/bin/pyt
 awk -F: '/^0::/{print $3}' /proc/$(pgrep -f VLLM::Worker | head -1)/cgroup   # where the workers' memory is accounted
 R9K_LOAD_PROF=1 setsid bash bench/relaunch.sh instN && grep "target post-load" ~/logs/relaunch-instN.log
                                                          #   per-module attribution of the post-load window
+LD_LIBRARY_PATH=$HOME/opt/openmpi/usr/lib/x86_64-linux-gnu \
+  ~/venv-r9700/bin/python3 tests/test_fold_sample.py     # the fold guard's sampling: short-K walks nothing, a near
+                                                         #   threshold re-walks everything, every rank samples alike
 ~/venv-r9700/bin/python3 bench/expertcopy_probe.py            # 106 KiB/51 KiB expert copies: per-call vs combined
 LD_LIBRARY_PATH=$HOME/opt/openmpi/usr/lib/x86_64-linux-gnu R9K_MOE_BATCH_H2D=1 \
   ~/venv-r9700/bin/python3 tests/test_moe_h2dbatch.py         # the C4 batcher: byte-exact, and still slower

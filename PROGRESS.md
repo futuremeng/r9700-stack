@@ -1,3 +1,25 @@
+## 2026-11-01 (late): the fold guard cost 8 s a rank -- cut to 0.4 s; the load total and the post-load tail did not move
+
+* `kernels/moe.py`: the guard now refuses short-K tensors from the shape (`fold_k`, no bytes touched: 98 of the 196
+  tensors a rank), samples at most `R9K_FOLD_SAMPLE`=1 M blocks per tensor (uniform over the (block, column) plane,
+  fixed seed so four ranks sample the same blocks), re-walks a tensor exactly when the sample lands within
+  `R9K_FOLD_MARGIN` (3x) of a threshold or sees any flushed block, and syncs once per tensor instead of per chunk.
+* Measured in the load, not in isolation: `kernels fold_stats` **8.1-8.5 s a rank over 192 calls (warm4) -> 0.4 s
+  over 96 calls (final41)**. Decisions are unchanged (392 fold ON / 392 fold OFF both ways; sampled mean_d 0.47-0.48
+  == exact; sampled max_d 4-5 is a lower bound on 5-6 by construction), GSM8K 98/100, needles 3/3.
+* New `tests/test_fold_sample.py` killed my first design: sampling whole columns (8% of them) can walk past a
+  channel that is entirely bad. The guard counts blocks, so the sample has to be over blocks.
+* **The 8 s was real work and it was not on the critical path**: final41 loaded in 79.31 s (inside the day's
+  67.9-115.3 s spread) and two ranks still spent 29.4 s / 55.9 s in the post-load window that others finish in 4.6 s.
+* The tail changed shape, which is the clue for the next step: warm4's slow rank was stuck in one call (the watchdog
+  caught `fold_stats`); final41's slowest rank spread 48.6 s over 2460 `GatedResidual` visits, 35.4 s of it inside a
+  single `layers.29.mlp_hyper_connection` visit -- and the watchdog saw nothing, because it only reports a frame it
+  finds unchanged for 2 s. Next instrument: sample the load thread's frame **and kernel state** across the whole
+  window, and count each module's slow visits directly.
+* Tail instances hold the three smallest KV pools measured (468,865 / 478,979 / 490,306 against 492,329+ for every
+  clean instance): the slow window and a smaller pool look like one memory-side event, and a smaller pool is itself
+  a 5% concurrency loss.
+
 ## 2026-11-01 (evening): the post-load window is named per module; warm-ups kill one term, the fold guard is the cost that is really there
 
 * New tool: `prof.start_pwal()` / `stop_pwal()` attributes the stream -> draft window to module classes by timing the

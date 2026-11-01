@@ -163,6 +163,19 @@ FOLD_MAX_FLUSH = float(os.environ.get("R9K_FOLD_MAX_FLUSH", "0.001"))      # max
 # lane permutes cost more than the FMAs they remove: measured on the Flash-Next routed down GEMM (K=320, cfg 11:
 # 1010 -> 1048 us @2048 tokens, 1659 -> 1696 @4096), while every K >= 2560 shape gained 6-16%.
 FOLD_MIN_K = int(os.environ.get("R9K_FOLD_MIN_K", "1024"))
+# The guard's walk is a load cost, not a free one: with R9K_LOAD_PROF=1 the timer charges `kernels fold_stats`
+# 8.1-8.5 s a rank on Flash-Next (196 tensors, 965 M scale blocks a rank = 965 MiB of uint8, and the int16
+# difference makes it some GiB more on the device). Much of that is waste: the K < FOLD_MIN_K class -- 98 of the 196
+# tensors, a third of the blocks -- is refused by shape and needs no walk at all, and a question as coarse as "is
+# p_flush under 0.1%" does not need 13.1 M blocks when the answer is nowhere near the line (every Flash-Next tensor
+# measured: max_d <= 6 against FOLD_EXACT = 8, p_flush exactly 0 against 1e-3). So the guard samples at most
+# R9K_FOLD_SAMPLE blocks per tensor -- a uniform random set of blocks, deterministic from a fixed seed so all four
+# ranks sample the same blocks and cannot disagree -- and re-walks a tensor exactly when the sample comes within
+# R9K_FOLD_MARGIN of a threshold or sees a single flushed block, so a borderline call is never made on a sample.
+# 0 turns sampling off (the old exact walk).
+FOLD_SAMPLE = int(os.environ.get("R9K_FOLD_SAMPLE", str(1 << 20)))
+FOLD_MARGIN = float(os.environ.get("R9K_FOLD_MARGIN", "3"))
+FOLD_SAMPLE_SEED = 0x5EED
 
 
 @dataclass
@@ -171,6 +184,8 @@ class FoldStats:
     hist: list            # hist[d] = blocks with d = ref - block exponent (d clamped to 0..16; 16 = ">15")
     max_d: int
     K: int = 0            # the GEMM's K (folding is not worth it below FOLD_MIN_K)
+    total: int = 0        # blocks in the tensor; blocks < total means the histogram is a sample
+    exact: bool = True    # False when a sample decided it and no exact re-walk followed
 
     @property
     def p_inexact(self) -> float:
@@ -185,23 +200,91 @@ class FoldStats:
         return sum(d * n for d, n in enumerate(self.hist)) / max(1, self.blocks)
 
     def __str__(self):
-        return (f"K={self.K} blocks={self.blocks} mean_d={self.mean_d:.2f} max_d={self.max_d} "
+        return (f"K={self.K} blocks={self.blocks}"
+                + (f"/{self.total} sampled" if self.total > self.blocks else "")
+                + f" mean_d={self.mean_d:.2f} max_d={self.max_d} "
                 f"inexact(d>{FOLD_EXACT})={100 * self.p_inexact:.3f}% flushed(d>{FOLD_REACH})={100 * self.p_flush:.4f}%")
 
 
-@prof.timed("kernels fold_stats")
-def fold_stats(wsr: torch.Tensor, chunk: int = 64 << 20) -> FoldStats:
-    """Distribution of d = row reference exponent - block exponent over a packed [E, K/32 + 1, N] scale tensor
-    (pack_scales layout; the last row is the reference). Chunked over experts, any device."""
+def fold_k(wsr: torch.Tensor) -> int:
+    """The GEMM's K that a packed [E, K/32 + 1, N] scale tensor belongs to -- shape only, and shape alone is all the
+    short-K refusal needs: it is the one guard reason that costs nothing to answer."""
+    return (wsr.shape[1] - 1) * GROUP
+
+
+def _fold_hist(wsr: torch.Tensor, chunk: int, idx: tuple) -> list:
+    """The 17-bin d histogram over the sampled blocks `idx` = (flat block index, its column); (None, None) = every
+    block. Accumulated on the tensor's own device, so the host synchronises once per tensor, not once per chunk."""
     E, nb1, N = wsr.shape
-    hist = torch.zeros(17, dtype=torch.int64)
-    step = max(1, chunk // (nb1 * N))
-    for e0 in range(0, E, step):
-        w = wsr[e0:e0 + step].to(torch.int16)
-        d = (w[:, -1:, :] - w[:, :-1, :]).clamp_(0, 16)
-        hist += torch.bincount(d.reshape(-1), minlength=17).cpu()
-    h = hist.tolist()
-    return FoldStats(E * (nb1 - 1) * N, h, max(i for i, n in enumerate(h) if n) if any(h) else 0, (nb1 - 1) * GROUP)
+    flat, col = idx
+    hist = torch.zeros(17, dtype=torch.int64, device=wsr.device)
+    if flat is None:
+        step = max(1, chunk // (nb1 * N))
+        for e0 in range(0, E, step):
+            w = wsr[e0:e0 + step]
+            d = (w[:, -1:, :].to(torch.int16) - w[:, :-1, :].to(torch.int16)).clamp_(0, 16)
+            hist += torch.bincount(d.reshape(-1), minlength=17)
+    else:
+        flat, col = flat.to(wsr.device), col.to(wsr.device)
+        step = max(1, chunk // max(2, 2 * flat.numel()))        # two gathers and an int16 difference per block
+        for e0 in range(0, E, step):
+            w = wsr[e0:e0 + step]
+            b = w.reshape(w.shape[0], -1).index_select(1, flat)         # the sampled blocks
+            r = w[:, -1, :].index_select(1, col)                        # the reference exponent of their rows
+            hist += torch.bincount((r.to(torch.int16) - b.to(torch.int16)).clamp_(0, 16).reshape(-1), minlength=17)
+    return hist.cpu().tolist()
+
+
+def _fold_sample_idx(wsr: torch.Tensor, budget: int):
+    """Which blocks to walk when the tensor is bigger than the budget: a uniform random sample of one expert's
+    (block, column) plane, the same set for every expert, from a fixed seed.
+
+    Uniform over blocks rather than whole columns because the block is what the guard counts: 1 M blocks drawn as 8%
+    of the columns can walk straight past a channel that is entirely bad, while 1 M blocks spread over the plane see
+    a 0.1%-of-blocks failure ~always. Fixed seed because four ranks sample the same tensor and must not reach
+    different decisions."""
+    E, nb1, N = wsr.shape
+    plane = (nb1 - 1) * N
+    nsel = max(1, min(plane, budget // max(1, E)))
+    if nsel >= plane:
+        return None, None
+    gen = torch.Generator(device="cpu").manual_seed(FOLD_SAMPLE_SEED)
+    flat = torch.randperm(plane, generator=gen)[:nsel].sort().values.to(torch.int64)
+    return flat, torch.remainder(flat, N)
+
+
+def _fold_near(st: FoldStats) -> bool:
+    """True when a sampled guard is close enough to a threshold that only the exact walk may decide it. One flushed
+    block in the sample also escalates: with a 0.1% threshold and a million-block sample, "the sample saw one" says
+    nothing, while "the sample saw none" would be read as "far under 0.1%"."""
+    if not FOLD_MARGIN or st.exact:
+        return False
+    if sum(st.hist[FOLD_REACH + 1:]):
+        return True
+    for p, thr in ((st.p_inexact, FOLD_MAX_INEXACT), (st.p_flush, FOLD_MAX_FLUSH)):
+        if thr / FOLD_MARGIN < p <= thr * FOLD_MARGIN:
+            return True
+    return False
+
+
+@prof.timed("kernels fold_stats")
+def fold_stats(wsr: torch.Tensor, chunk: int = 64 << 20, sample: int | None = None) -> FoldStats:
+    """Distribution of d = row reference exponent - block exponent over a packed [E, K/32 + 1, N] scale tensor
+    (pack_scales layout; the last row is the reference). Chunked over experts, any device. Samples at most
+    R9K_FOLD_SAMPLE blocks (``sample`` overrides; 0 walks every block) and re-walks exactly when the sample lands
+    near a threshold, so a borderline tensor is never decided on a sample."""
+    budget = FOLD_SAMPLE if sample is None else sample
+    E, nb1, N = wsr.shape
+    total = E * (nb1 - 1) * N
+    idx = _fold_sample_idx(wsr, budget) if budget and total > budget else (None, None)
+    h = _fold_hist(wsr, chunk, idx)
+    nwalked = total if idx[0] is None else E * idx[0].numel()
+    st = FoldStats(nwalked, h, max(i for i, n in enumerate(h) if n) if any(h) else 0, (nb1 - 1) * GROUP, total,
+                   exact=idx[0] is None)
+    if _fold_near(st):
+        h = _fold_hist(wsr, chunk, (None, None))
+        st = FoldStats(total, h, max(i for i, n in enumerate(h) if n) if any(h) else 0, (nb1 - 1) * GROUP, total)
+    return st
 
 
 def fold_ok(st: FoldStats) -> bool:
@@ -229,9 +312,15 @@ def fold_decide(wsr: torch.Tensor, name: str = "", log=None) -> bool:
         return False
     if not fold_supported():
         return False
-    st = fold_stats(wsr)
-    why = fold_why(st)
-    fold = not why or FOLD_MODE == "force"
+    k = fold_k(wsr)
+    if k < FOLD_MIN_K and FOLD_MODE != "force":
+        st = FoldStats(0, [0] * 17, 0, k)                    # the cheap refusal: no bytes walked
+        why = f"K={k} < R9K_FOLD_MIN_K={FOLD_MIN_K}: no gain on short K (scales not walked)"
+        fold = False
+    else:
+        st = fold_stats(wsr)
+        why = fold_why(st)
+        fold = not why or FOLD_MODE == "force"
     _FOLD_LOG.append((name, fold, st))
     n_on = sum(1 for _, f, _ in _FOLD_LOG if f)
     msg = (f"r9700: fold {'ON ' if fold else 'OFF'} {name or 'mxfp4'}: {st}"
