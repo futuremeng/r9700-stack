@@ -64,6 +64,38 @@ def _describe(a) -> str:
     return type(a).__name__
 
 
+def _gpu_cards() -> list[tuple[str, int, int]]:
+    """Per card, in card order: ``(card name, busy_percent, current SM clock MHz)`` from sysfs.
+
+    Pairing the two per card, rather than taking a max over cards, is what makes the number attributable: the
+    question is what clock *this* card was running at while it was doing work, not whether some card somewhere was
+    boosted. On this part the sleep level is 41 MHz and the boost levels sit near 2.8-3.3 GHz, so a card that is
+    busy at tens of MHz is a different machine from one that is busy at 2.8 GHz.
+    """
+    out: list[tuple[str, int, int]] = []
+    for p in sorted(_glob.glob("/sys/class/drm/card*/device/gpu_busy_percent")):
+        busy, clk = -1, 0
+        try:
+            busy = int(open(p).read().strip())
+        except (OSError, ValueError):
+            pass
+        try:
+            for line in open(p.replace("gpu_busy_percent", "pp_dpm_sclk")):
+                if not line.rstrip().endswith("*"):
+                    continue
+                for tok in line.split():
+                    low = tok.lower()
+                    if "mhz" in low:
+                        try:
+                            clk = int(low.replace("mhz", ""))
+                        except ValueError:
+                            clk = 0
+        except OSError:
+            pass
+        out.append((p.split("/")[4], busy, clk))
+    return out
+
+
 def _gpu_busy() -> int:
     """Max `gpu_busy_percent` over the GPUs, from sysfs. It is the one device-side number readable without root, without
     ROCm tooling and without perturbing the process, and it is what separates the two remaining readings of a
@@ -583,9 +615,7 @@ def _pws_run(interval: float) -> None:
         except (OSError, IndexError, ValueError):
             sw, mn, mj, vm = 0, 0, 0, {}
         _PWS["busy"].append(_gpu_busy())
-        lo, hi = _gpu_clocks()
-        _PWS["clk_lo"].append(lo)
-        _PWS["clk_hi"].append(hi)
+        _PWS["cards"].append(_gpu_cards())
         m = _PWS["mem"]
         if not m:
             m.update(swap0=sw, swapmax=sw, min0=mn, maj0=mj, psw=vm)
@@ -603,7 +633,7 @@ def start_pwsamp(interval: float = 0.25) -> None:
     _PWS["on"], _PWS["frames"], _PWS["mods"], _PWS["states"] = True, {}, {}, {}
     _PWS["wchans"], _PWS["psi"], _PWS["n"] = {}, {}, 0
     _PWS["syscalls"], _PWS["mem"], _PWS["busy"] = {}, {}, []
-    _PWS["clk_lo"], _PWS["clk_hi"] = [], []
+    _PWS["cards"] = []
     _PWS["th"] = threading.Thread(target=_pws_run, args=(interval,), name="r9700-window-sampler", daemon=True)
     _PWS["th"].start()
 
@@ -629,13 +659,22 @@ def stop_pwsamp(tag: str = "window") -> None:
         spark = "".join("." if b < 5 else ("-" if b < 25 else ("+" if b < 60 else "#")) for b in busy)
         logger.info("r9700 %s   gpu busy mean %4.0f%% max %4.0f%% over %d samples: %s",
                     tag, sum(busy) / len(busy), max(busy), len(busy), spark)
-    lo, hi = [c for c in _PWS["clk_lo"] if c], [c for c in _PWS["clk_hi"] if c]
-    if lo:
+    lo, hi = [], []
+    cols = [c for c in _PWS["cards"] if c]
+    if cols:
         def _hist(xs: list) -> str:
             return " ".join(f"{v}MHz x{xs.count(v)}" for v in sorted(set(xs)))
-        # the question this answers: were the requant kernels running at 2350 MHz, or at a fraction of it?
-        logger.info("r9700 %s   SM clock (level marked *): slowest card %s | fastest card %s", tag, _hist(lo),
-                    _hist(hi))
+        width = max(len(c) for c in cols)
+        for i in range(width):
+            nm = next((c[i][0] for c in cols if len(c) > i), f"card{i}")
+            busy_i = [c[i][1] for c in cols if len(c) > i and c[i][1] >= 0]
+            if not any(c[i][2] for c in cols if len(c) > i):
+                continue
+            work = [c[i][2] for c in cols if len(c) > i and c[i][2] and c[i][1] > 5]
+            idle = [c[i][2] for c in cols if len(c) > i and c[i][2] and c[i][1] <= 5]
+            logger.info("r9700 %s   %s busy mean %3.0f%% | SM clock while busy %s | while idle %s",
+                        tag, nm, sum(busy_i) / max(1, len(busy_i)), _hist(work) if work else "never sampled busy",
+                        _hist(idle) if idle else "never sampled idle")
     m = _PWS["mem"]
     if m:
         logger.info("r9700 %s   self VmSwap %5.0f -> %5.0f MiB (max %5.0f)  faults +%d minor +%d major"
