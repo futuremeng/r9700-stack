@@ -130,6 +130,9 @@ def target_weights(weights):
         if _PROF:
             prof.dump_stacks("target pass")      # which functions, not just which tensor group
             prof.report_copies("target pass")
+            prof.report()                        # the @timed totals: a server never exits, and the 15 s dump inside
+                                                 # record() only fires when a timed call happens to land on it, so
+                                                 # without this the fold/repack totals are missing from most instances
             prof.stop_stacks()
             parts = ", ".join(f"{k} {v[0]}t/{v[1] / 2**30:.1f}GiB/{v[2]:.1f}s" for k, v in sorted(seen.items()))
             logger.info("r9700 load profile (target): pull %.1f s, place %.1f s | %s", pull, place, parts)

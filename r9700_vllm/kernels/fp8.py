@@ -237,7 +237,7 @@ def gemm_fp8_tiled(a_q: torch.Tensor, a_s: torch.Tensor, w: Fp8Weight, out: torc
     return out
 
 
-def warmup(rows: int = 2048, cols: int = 2048) -> float:
+def warmup(rows: int = 512, cols: int = 512) -> float:
     """Pay for the first ``quantize_rows_fp8`` call while the load is still quiet.
 
     Measured (``target post-load`` window, ``prof.start_pwal``): the whole window is 5.8 s when the first

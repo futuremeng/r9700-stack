@@ -796,6 +796,72 @@ the kernel could resolve differently, it is the price of the tables; that is als
 why more swap (C3) made things worse rather than better. Off by default; kept as the cheap way to check the
 re-read risk if the host footprint ever shrinks.
 
+## C7: both variable windows are one-time first-call costs -- warm the requant paths before the crunch
+
+`prof.start_pwal()` / `stop_pwal()` attributes the window between the weight stream and the draft pass to module
+classes by timing the gaps between `named_modules` yields (the stock pass is one synchronous loop, so this needs no
+copy of its body, and blocked time counts as well as CPU). It named the swing:
+
+| instance | post-load window | `layers.0.attn_hyper_connection` |
+|---|---|---|
+| final38 | 6 s | 1.57 s |
+| pwal1 / pwal2 | 5.9 / 5.8 s | 1.57 s |
+| pwal3 | **24.9 s** | **17.38 s** |
+| final39 | 31 s (unattributed) | -- |
+
+```
+r9700 target post-load     17.66 s   2460  GatedResidual
+r9700 target post-load     17.38 s  language_model.model.layers.0.attn_hyper_connection
+r9700 watchdog: main thread stuck in fp8.py:65 quantize_rows_fp8 for 2.0 s  state=R wchan=lock_mm_and_find_vma
+```
+
+The quantization itself is fast: isolated, `quantize_rows_fp8` on 8192x2048 bf16 takes **0.002 s (16-22 GiB/s)**, while
+the **first call in the process costs 0.107 s** even on an idle device. So what is paid is first-call work (kernels,
+allocator block growth, driver mappings -- hence `lock_mm_and_find_vma`), and paying it inside the window where four
+ranks fault at once turns 1.5 s into 17 s.
+
+Paying that first-call cost early (`kernels/fp8.py:warmup()` + `quant/nvfp4.py:warmup()` at the start of the weight
+stream, `R9K_QUANT_WARMUP=1`, 0.33-0.38 s a rank; 512x512, not 2048x2048 -- the point is the first call, not the
+working set) removes **that** term: `layers.0.attn_hyper_connection` never reappears above the 0.2 s threshold
+afterwards. It does **not** remove the window's tail, and it did not cause it either -- after warm4's 59/61 s the
+next instance (final40) was clean on all four ranks:
+
+| instance | warm-up | post-load window, 4 ranks | load | KV pool |
+|---|---|---|---|---|
+| warm2 | off | 4.3 / 4.4 / 4.4 / 4.5 s | 75.18 s | 492,329 |
+| warm3 | on 2048 | 4.9 / 5.0 / 5.0 / 5.6 s | 80.76 s | 493,542 |
+| warm4 | on 2048 | 5.2 / 6.2 / **59.0** / **61.8** s | 90.77 s | 490,306 |
+| final40 | on 512 | 4.9 / 4.9 / 5.0 / 5.1 s | 75.51 s | 493,542 |
+| pwal3 | off | 5.7 / 5.7 / 5.8 / **24.9** s | 75.38 s | 468,865 |
+
+final40's clean window is fully accounted for and looks like ordinary work: `RoutedExperts` 2.72 s (1413 visits),
+`MergedColumnParallelLinear` 1.40 s (5592), `GatedResidual` 0.35 s, `RowParallelLinear` 0.23 s, `QKVParallelLinear`
+0.08 s; quality unchanged (GSM8K 98/100, needles 3/3). So the tail is **intermittent, not a fixed cost** -- 2 of the
+8 instances that have measured the window had one (pwal3, warm4), and those two had the two smallest KV pools ever
+recorded (490,306 and 468,865 against 492,329+ for every instance without a tail). The tail and the KV shrink are
+plausibly the same memory-side event; warm4's slow rank was inside our own fold guard when it happened:
+
+```
+r9700 target post-load     54.97 s   5592  MergedColumnParallelLinear
+r9700 target post-load     54.49 s  language_model.model.layers.0.mlp.shared_expert.gate_up_proj   (1.89 s on a fast rank)
+r9700 watchdog: main thread stuck in moe.py:202 fold_stats for 2.0 s  state=R wchan=0 syscall=running
+```
+
+That is a suspicion about the tail, not a measurement of its cost -- but the fold guard **does** have a steady cost
+that every instance pays, visible in warm4's timer dump (`R9K_LOAD_PROF=1`):
+
+```
+r9700 load timer:      8.5 s on kernels fold_decide   (192 calls)     == 8.5 s on kernels fold_stats (193)
+```
+
+`serve/native-flashnext.sh` sets `R9K_FOLD:=1`, so every rank histograms every MXFP4 tensor's packed scales:
+196 tensors and **965 M blocks a rank** (~0.95 GiB of int8, doubled by the `int16` cast) for a decision that is a
+statistical guard -- about 10% of the load, times four ranks contending, one host sync per 64 MiB chunk. Two things
+follow: the histogram should stay on the device and the guard does not need every block. Note also that the timer
+dump only fires on a 15 s call-driven cadence, so a server that never exits usually never prints it (final40 printed
+none): `prof.report()` now also runs at the end of the target pass, which is what made the fold cost comparable
+across instances.
+
 ## How to reproduce the load-path analysis
 
 ```bash
@@ -814,6 +880,8 @@ MODE=mmap NPROC=1 F=model-00018.safetensors ~/venv-r9700/bin/python3 bench/mmapr
 MODE=pread NPROC=1 CHUNK=16777216 F=model-00018.safetensors ~/venv-r9700/bin/python3 bench/mmapread_probe.py
                                                          #   cold shard: mmap-fault 0.57 GiB/s vs pread 3.49 GiB/s
 awk -F: '/^0::/{print $3}' /proc/$(pgrep -f VLLM::Worker | head -1)/cgroup   # where the workers' memory is accounted
+R9K_LOAD_PROF=1 setsid bash bench/relaunch.sh instN && grep "target post-load" ~/logs/relaunch-instN.log
+                                                         #   per-module attribution of the post-load window
 ~/venv-r9700/bin/python3 bench/expertcopy_probe.py            # 106 KiB/51 KiB expert copies: per-call vs combined
 LD_LIBRARY_PATH=$HOME/opt/openmpi/usr/lib/x86_64-linux-gnu R9K_MOE_BATCH_H2D=1 \
   ~/venv-r9700/bin/python3 tests/test_moe_h2dbatch.py         # the C4 batcher: byte-exact, and still slower

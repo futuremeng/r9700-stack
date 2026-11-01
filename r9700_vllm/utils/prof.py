@@ -412,3 +412,7 @@ def stop_pwal(tag: str = "post-load") -> None:
         logger.info("r9700 %s   %7.2f s  %5d  %s", tag, s, c, k)
     for k, (c, s) in sorted(((k, v) for k, v in acc.items() if k.startswith("@")), key=lambda kv: -kv[1][1])[:8]:
         logger.info("r9700 %s   %7.2f s  %s", tag, s, k[1:])
+    # the post-load pass is where the fold guard runs for dense/shared-expert tensors, so print the @timed section
+    # totals here too -- by now they cover both the stream and this window, which is the only complete picture a
+    # server process (which never exits, so atexit never fires) gives
+    report()

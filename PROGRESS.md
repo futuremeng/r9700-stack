@@ -1,3 +1,26 @@
+## 2026-11-01 (evening): the post-load window is named per module; warm-ups kill one term, the fold guard is the cost that is really there
+
+* New tool: `prof.start_pwal()` / `stop_pwal()` attributes the stream -> draft window to module classes by timing the
+  gaps between `named_modules` yields, so blocked time counts and no stock loop body is duplicated.
+* It named one term exactly: `layers.0.attn_hyper_connection` costs 1.57 s in a fast rank and **17.38 s** in a slow
+  one, with the watchdog catching `fp8.py:65 quantize_rows_fp8` at `wchan=lock_mm_and_find_vma`. The quantization is
+  not slow (isolated: 16 MiB of bf16 in 2 ms, 16-22 GiB/s) -- the *first call in the process* costs 0.107 s.
+  `kernels/fp8.py:warmup()` + `quant/nvfp4.py:warmup()` at stream start (`R9K_QUANT_WARMUP=1`, 0.33 s, 512x512) remove it.
+* **warm4 falsified the first-call explanation for the window as a whole** (post-load 5.2 / 6.2 s on two ranks and
+  **59.0 / 61.8 s** on two others, `layers.0.mlp.shared_expert.gate_up_proj` 54.49 s against 1.89 s on a fast rank,
+  watchdog `moe.py:202 fold_stats` `state=R`), and the next instance (final40) was clean: 4.9 / 4.9 / 5.0 / 5.1 s on
+  four ranks, 75.51 s load, GSM8K 98/100, needles 3/3. Of the 8 instances that measured the window, 2 had a tail --
+  and those two (warm4, pwal3) also have the two smallest KV pools ever recorded (490,306 / 468,865 against
+  492,329+): tail and KV shrink look like the same memory-side event, not a fixed cost.
+* What *is* there every time, and big: the fold guard. `serve/native-flashnext.sh` sets `R9K_FOLD:=1`, so every rank
+  histograms every MXFP4 tensor's packed scales: 196 tensors, **965 M blocks a rank** (965 MiB of int8) for a
+  statistical guard, and warm4's timer dump charges it **8.1-8.5 s a rank** (`load timer: kernels fold_stats`) --
+  114 M blocks/s, i.e. host-side traffic, not device work. It also sits inside the post-load window for the dense
+  tensors, which is where warm4's slow ranks were stuck. `prof.report()` now runs at target-end and post-load-end,
+  because a server never exits and the timer's 15 s dump only fires if a timed call lands on it (final40 printed none).
+* Load totals across the day, one config: **67.85 / 71.89 / 72.61 / 73.03 / 74.63 / 75.18 / 75.51 / 75.80 / 79.71 /
+  80.76 / 90.77 / 96.82 / 115.30 s**; serving numbers never moved with them.
+
 ## 2026-11-01 (later still): the load's read path is fault-bound but readahead-proof; the leftover is draft-pass variance
 
 * `bench/mmapread_probe.py` (cold shard, `fadvise(DONTNEED)` to reset, no root needed): streaming `pread` **3.49 GiB/s**,
