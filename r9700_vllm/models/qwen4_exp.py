@@ -145,9 +145,14 @@ def target_weights(weights):
             prof.snap("target end")     # majflt here = bytes the target pass took from disk rather than cache
             if os.environ.get("R9K_PWAL_WARM", "1") == "1":
                 # warm the post-load helpers outside the window (kernels/moe.py:warm_post_load says why): the first
-                # guarded tensor is the one every tail so far has landed in
-                from ..kernels import moe as _KM
-                logger.info("r9700: post-load helpers warmed in %.0f ms before the window", 1000 * _KM.warm_post_load())
+                # guarded tensor is the one every tail so far has landed in. Guarded, because a warm-up is only
+                # allowed to cost time: a bad device string in it took down four launches before this line existed.
+                try:
+                    from ..kernels import moe as _KM
+                    logger.info("r9700: post-load helpers warmed in %.0f ms before the window",
+                                1000 * _KM.warm_post_load())
+                except Exception as e:                       # noqa: BLE001
+                    logger.warning("r9700: post-load warm-up failed (%s); continuing unwarmed", e)
             prof.start_pwal()           # attribute the window between the stream and the draft pass, per module class
         # E1: the draft pass is about to re-read its bf16 MTP weights, which four ranks' anon (~50 GiB, 9.7 GiB a
         # rank of it pinned PLE table) have in general just evicted. Queue the readahead while the target pass is

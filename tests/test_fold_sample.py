@@ -131,6 +131,12 @@ if torch.cuda.is_available():
     ga, gb = K._fold_sample_idx(w, 4096), K._fold_sample_idx(w.cuda(), 4096)
     say("and they sample the same blocks", torch.equal(ga[0], gb[0].cpu()) and torch.equal(ga[1], gb[1].cpu()))
 
+# ---- 6b. the warm-up the server runs before the timed window, called exactly as the server calls it (no argument,
+# current device). A bad device string in it took down four launches, which is what this line is really guarding.
+if torch.cuda.is_available():
+    tw = K.warm_post_load()
+    say("warm_post_load() runs on the current CUDA device", isinstance(tw, float) and tw >= 0.0, f"{1000 * tw:.0f} ms")
+
 # ---- 7. what the guard costs a rank, on the shapes the load actually walks (965 M blocks, 8.1-8.5 s measured)
 print("  the load's own guard, one rank's worth of tensors (Flash-Next):")
 tot = {"exact": 0.0, "new": 0.0}

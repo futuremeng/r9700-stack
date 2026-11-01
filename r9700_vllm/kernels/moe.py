@@ -222,7 +222,7 @@ def warm_post_load(device: torch.device | None = None) -> float:
     it was not, and that is just as useful a fact."""
     import time
     from .fp8 import quantize_rows_fp8
-    dev = device or torch.device(f"cuda{torch.cuda.current_device()}")
+    dev = device or torch.device("cuda", torch.cuda.current_device())
     t0 = time.perf_counter()
     N, K = 16, 2560                                        # the shape class of the first guarded tensor
     permute_fragments(torch.zeros((1, N, K // 2), dtype=torch.uint8, device=dev))

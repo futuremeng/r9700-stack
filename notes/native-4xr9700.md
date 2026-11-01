@@ -917,10 +917,12 @@ has measured the window, worst rank; ten instances):
 | warm2 | 4.5 s | 492,329 | 75.2 s |
 | warm1 | 4.4 s | 495,160 | 81.3 s |
 
-That separation is now complete: all four instances with a tail have a KV pool of 490,306 tokens or less, all six
-without one have 492,329 or more. The slow window and the shrunken pool look like two symptoms of one memory-side
-event at the end of the load, not a code path of ours being slow -- and the pool difference is itself a cost: 468,865
-tokens is 5.7% less concurrency than 497,588.
+**Correction (later the same day).** Over those ten instances every tailed one had a pool of 490,306 or fewer and
+every clean one 492,329 or more, and that looked like a law. It is not: three more tailed instances arrived with
+their KV pools measured, and two of them break the separation -- tail48 (48.2 s window, **492,329**), tail51 (68.7 s,
+476,551) and tail57 (73.8 s, **495,160**, one of the largest pools seen). So the KV pool is not a marker of the tail
+and the tail does not reliably cost pool size; the earlier reading was an artifact of a ten-instance sample. What the
+tail does cost is the 40-75 s of extra wall before the server is ready.
 
 ## C9: the census of a slow window -- it is CPU work, not a wait, and the tool that sees it is rusage, not a sampler
 
