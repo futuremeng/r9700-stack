@@ -187,6 +187,7 @@ _SLOW: list[tuple] = []          # (seconds, nbytes, key, t_start) -- the outlie
 _BUCK = [0, 0, 0, 0, 0]          # <1 ms, 1-10 ms, 10-100 ms, 0.1-1 s, >1 s
 _BUCKT = [0.0, 0.0, 0.0, 0.0, 0.0]
 _T0 = [0.0]                     # perf_counter at probe install, to place slow calls on the load timeline
+_W0 = [0.0]                     # wall clock at the same instant, to line the slow calls up with loadsample.sh
 _CURRENT = [""]                 # tensor name the load stream is currently placing, set by models/qwen4_exp.py
 
 
@@ -209,8 +210,13 @@ def install_copy_probe() -> None:
 
     def copy_(self, src, *a, **k):
         t0 = time.perf_counter()
+        f0 = resource.getrusage(resource.RUSAGE_SELF)      # one getrusage a call, ~0.6 us; 148k calls cost 0.1 s
         r = orig(self, src, *a, **k)
         dt = time.perf_counter() - t0
+        fl = (0, 0)
+        if dt > 0.05:                                      # only the interesting ones pay for the second sample
+            f1 = resource.getrusage(resource.RUSAGE_SELF)
+            fl = (f1.ru_minflt - f0.ru_minflt, f1.ru_majflt - f0.ru_majflt)
         key = (str(self.device), str(getattr(getattr(src, "device", None), "type", "?")), str(self.dtype),
                "dstcontig" if self.is_contiguous() else "dststrided",
                "srccontig" if getattr(src, "is_contiguous", _true)() else "srcstrided")
@@ -224,7 +230,7 @@ def install_copy_probe() -> None:
         _BUCK[i] += 1
         _BUCKT[i] += dt
         if dt > 0.2:
-            _SLOW.append((dt, self.numel() * self.element_size(), key, t0, _CURRENT[0]))
+            _SLOW.append((dt, self.numel() * self.element_size(), key, t0, _CURRENT[0], fl))
             _SLOW.sort(reverse=True)
             del _SLOW[8:]
         return r
@@ -232,6 +238,8 @@ def install_copy_probe() -> None:
     torch.Tensor.copy_ = copy_
     torch.Tensor._r9k_copy_probe = True
     _T0[0] = time.perf_counter()
+    _W0[0] = time.time()
+    start_watchdog()
     logger.info("r9700 copy probe on (Tensor.copy_)")
 
 
@@ -242,10 +250,12 @@ def _true() -> bool:
 def report_copies(tag: str) -> None:
     if not COPIES:
         return
+    stop_watchdog()
     tot = sum(v[2] for v in _CPY.values())
     n = sum(v[0] for v in _CPY.values())
-    logger.info("r9700 copies (%s): %d copy_ calls, %.1f GiB written, %.1f s total copy wall",
-                tag, n, sum(v[1] for v in _CPY.values()) / 2**30, tot)
+    logger.info("r9700 copies (%s): %d copy_ calls, %.1f GiB written, %.1f s total copy wall; probe at %s",
+                tag, n, sum(v[1] for v in _CPY.values()) / 2**30, tot,
+                time.strftime("%H:%M:%S", time.localtime(_W0[0])))
     for k, v in sorted(_CPY.items(), key=lambda kv: -kv[1][2])[:8]:
         logger.info("r9700 copies %6d calls %7.2f GiB %8.2f s (max %6.3f s, %5.2f GB/s)  %s",
                     v[0], v[1] / 2**30, v[2], v[3], (v[1] / 2**30) / max(v[2], 1e-9), " ".join(k))
@@ -253,6 +263,59 @@ def report_copies(tag: str) -> None:
                 "0.1-1s=%d (%.1f s) >1s=%d (%.1f s)",
                 _BUCK[0], _BUCKT[0], _BUCK[1], _BUCKT[1], _BUCK[2], _BUCKT[2], _BUCK[3], _BUCKT[3],
                 _BUCK[4], _BUCKT[4])
-    for dt, nb, key, t0, name in _SLOW[:6]:
-        logger.info("r9700 copies slow call %7.2f s  %8.1f MiB  +%6.1f s into the load  on [%s]  %s",
-                    dt, nb / 2**20, t0 - _T0[0], name, " ".join(key))
+    for dt, nb, key, t0, name, fl in _SLOW[:6]:
+        logger.info("r9700 copies slow call %7.2f s  %8.1f MiB  +%6.1f s into the load  minflt+%-6d majflt+%-5d "
+                    "on [%s] %s", dt, nb / 2**20, t0 - _T0[0], fl[0], fl[1], name, " ".join(key))
+
+
+# --------------------------------------------------------------------------------------
+# Stuck-thread watchdog. The copy probe says a 0.2 MiB copy_ blocked 55 s with minflt+4 / majflt+2 (inst15) -- so
+# it is neither bandwidth, nor disk, nor reclaim (GPU busy 3 %, cached/swap flat). The next question is what it is
+# waiting ON, and only the kernel's own wait channel answers that. A helper thread watches the main thread: when
+# its Python frame has not moved for `after` seconds, it logs the frame, the thread state and /proc/self/task/TID/
+# wchan. futex_wait says a userspace runtime lock; anything amdgpu/kfd-ish says the driver.
+_WD: list = []
+
+
+def start_watchdog(interval: float = 0.5, after: float = 2.0, lifespan: float = 900.0) -> None:
+    import threading
+
+    # Two different ids are needed and they are not interchangeable: sys._current_frames() is keyed by CPython
+    # thread id, which for the main thread is the pthread_self handle (observed 127864336392320), while
+    # /proc/self/task/<tid>/ wants the kernel TID, which for the main thread equals the PID. Using one for both
+    # fails in two different ways: PID-as-frame-key never matches (silent, no output), pthread-handle-as-/proc-tid
+    # gives ENOENT on every read (observed as state=? wchan=?).
+    frame_key = threading.main_thread().ident
+    main_tid = os.getpid()
+
+    def run() -> None:
+        last, same, t_end = None, 0.0, time.perf_counter() + lifespan
+        while _WD and time.perf_counter() < t_end:
+            time.sleep(interval)
+            fr = sys._current_frames().get(frame_key)
+            key = (fr.f_code.co_filename.rsplit("/", 1)[-1], fr.f_lineno, fr.f_code.co_name) if fr else None
+            if key is not None and key == last:
+                same += interval
+                if same >= after:
+                    state = wchan = syscall = "?"
+                    try:
+                        base = f"/proc/self/task/{main_tid}"
+                        wchan = open(base + "/wchan").read().strip() or "0"
+                        state = open(base + "/stat").read().split()[2]
+                        syscall = (open(base + "/syscall").read().split() or ["?"])[0]
+                    except OSError:
+                        pass
+                    logger.info("r9700 watchdog: main thread stuck in %s:%d %s for %.1f s  state=%s wchan=%s "
+                                "syscall=%s", key[0], key[1], key[2], same, state, wchan, syscall)
+                    same = 0.0                                  # re-arm: catch the next episode too
+            else:
+                last, same = key, 0.0
+
+    t = threading.Thread(target=run, name="r9700-watchdog", daemon=True)
+    _WD.append(t)
+    t.start()
+    logger.info("r9700 watchdog on (main thread, >%.0f s in one frame)", after)
+
+
+def stop_watchdog() -> None:
+    _WD.clear()

@@ -4,7 +4,7 @@
 #   usage: bash bench/loadsample.sh [outdir]      (run alongside bench/relaunch.sh; stop with pkill -f loadsample)
 OUT=${1:-$HOME/logs}
 F=$OUT/loadsample-$(date +%H%M%S).csv
-echo "ts,memavail_gib,cached_gib,mlocked_mib,swapused_mib,workers,rss_sum_gib,rss_max_gib" > "$F"
+echo "ts,memavail_gib,cached_gib,mlocked_mib,swapused_mib,workers,rss_sum_gib,rss_max_gib,busy" > "$F"
 while :; do
   avail=$(awk '/MemAvailable/{print $2/1048576}' /proc/meminfo)
   cached=$(awk '/^Cached:/{print $2/1048576}' /proc/meminfo)
@@ -16,6 +16,7 @@ while :; do
   read -r nw sum mx < <(pgrep -f 'VLLM[:][:]Worker' | while read -r p; do
       awk '/^VmRSS/{print $2}' /proc/$p/status 2>/dev/null | awk -v OFS=' ' '{print 1, $1, $1}'
     done | awk '{n+=$1; s+=$2; if($3>m) m=$3} END {printf "%d %.1f %.1f\n", n, s/1048576, m/1048576}')
-  printf "%s,%s,%s,%s,%s,%s,%s,%s\n" "$(date +%H:%M:%S)" "$avail" "$cached" "$mlocked" "$swapused" "${nw:-0}" "${sum:-0}" "${mx:-0}" >> "$F"
+  busy=$(timeout 3 sh -c 'for f in /sys/class/drm/card*/device/gpu_busy_percent; do printf "%s " "$(cat $f 2>/dev/null)"; done' | tr ' ' '+' )
+  printf "%s,%s,%s,%s,%s,%s,%s,%s,%s\n" "$(date +%H:%M:%S)" "$avail" "$cached" "$mlocked" "$swapused" "${nw:-0}" "${sum:-0}" "${mx:-0}" "$busy" >> "$F"
   sleep 2
 done
