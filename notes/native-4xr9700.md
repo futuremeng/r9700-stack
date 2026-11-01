@@ -1020,6 +1020,38 @@ between a runtime that spins and one that sleeps, which is exactly what a window
 Tests in `tests/test_slowcall.py`; they also caught a name collision, since `prof` already had a `_SLOW` (the copy
 outlier list) and the new counter had to become `_SLOWCALL`.
 
+## C12: the kernel log answers "is it the known MES bug?" -- no -- and points at remapping of host pages instead
+
+This is a known-MES box (`notes/mes-timeouts.md`: `MES(1) failed to respond to msg=INVALIDATE_TLBS`, always during
+weight loading or graph capture, never during serving, silenced by `amdgpu.mes_log_enable=1`), and this guest does
+not carry that parameter: its cmdline is only `amdgpu.ppfeaturemask=0xffffffff` and
+`/sys/module/amdgpu/parameters/mes_log_enable` reads 0. We are in group `adm`, so whether it is firing is directly
+answerable, and the answer is: **zero MES timeouts in today's kern.log**, across launches that carried 45-69 s
+tails. The known MES failure is not the tail.
+
+What the kernel does log, minutes before tail51's 68.7 s window (the counter is cumulative, and it doubles between
+07:35 and 11:01):
+
+```
+2026-11-01T07:35:59 kernel: workqueue: amdgpu_amdkfd_restore_userptr_worker [amdgpu] hogged CPU for >10000us 1027 times
+2026-11-01T11:01:09 kernel: workqueue: amdgpu_amdkfd_restore_userptr_worker [amdgpu] hogged CPU for >10000us 2051 times
+```
+
+That worker re-establishes GPU visibility of **host** pages (userptr): the driver repairing GPU mappings of system
+memory. Its cost is charged to a kworker, not to us, which is the shape the census showed -- our own sys CPU ~2%,
+`wchan (running)`, no PSI-memory stall -- while our thread waits. The box has 8 GiB of swap with ~4 GiB in use and
+lifetime counters of 273 M pages swapped in / 318 M out.
+
+And the calls that `slowcall` named are too small to be work: `_fold_hist` 4.82-5.45 s with 9.8-11.1 CPU-seconds on
+a **26 KB** tensor (`cuda:N uint8 [1, 81, 320]`, chunk 64 MiB), `quantize_rows_fp8` 6.19 s on `[10240, 320]` and
+7.11 s on the same shape on another rank, 2.28 s on `[336, 10240]`. A handful of kernel launches each; the smallest
+thing that crossed the 2 s threshold was 2.28 s. That is a wait being paid for, in a window where the same code on a
+neighbouring rank costs 0.4 s.
+
+So the census now also samples our own `VmSwap`, our minor/major fault counters and the box's `pswpin`/`pswpout`
+across the window (plus `/proc/<tid>/syscall`, which is how we can tell the self-test's `clock_nanosleep` from a
+thread spinning in user space).
+
 
 ## How to reproduce the load-path analysis
 

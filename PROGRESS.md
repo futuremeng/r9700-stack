@@ -1,3 +1,21 @@
+## 2026-11-01 (night): the known MES bug is ruled out by the kernel log; the census now samples swap, and `slowcall` says the slow calls are waits, not work
+
+* We are in group `adm`, so `/var/log/kern.log` is readable: **zero `MES(...) failed to respond` lines today**, on
+  launches that carried 45-69 s tails. Notable because this is the known-MES box (`notes/mes-timeouts.md`) and this
+  guest does *not* have the documented `amdgpu.mes_log_enable=1` (cmdline is only `amdgpu.ppfeaturemask=0xffffffff`,
+  `/sys/module/amdgpu/parameters/mes_log_enable` = 0) -- worth fixing anyway, but it is not the tail.
+* What the kernel does log near the tails: `workqueue: amdgpu_amdkfd_restore_userptr_worker [amdgpu] hogged CPU for
+  >10000us` at 07:35 (1027 times) and 11:01 (2051 times) -- the driver's worker that re-maps GPU visibility of
+  **host** pages. That cost lands in a kworker, not in our process, which matches the census shape (our sys CPU
+  ~2%, no PSI-memory stall, thread `R` with `wchan (running)`).
+* tail51 (68.7 / 45.5 / 5.6 / 6.3 s, load 98.5 s, KV 476,551) is where `prof.slowcall` fired, and the named calls
+  are far too small to be work: `_fold_hist` 4.82-5.45 s / 9.8-11.1 CPU-s on a **26 KB** tensor
+  (`cuda:N uint8 [1, 81, 320]`), `quantize_rows_fp8` 7.11 s on `[10240, 320]`, 6.19 s on another rank, 2.28 s on
+  `[336, 10240]`. A handful of launches each, while the same code costs 0.4 s on the rank next to it.
+* Census now also samples our `VmSwap`, our minor/major faults and the box's `pswpin`/`pswpout` across the window,
+  and `/proc/<tid>/syscall` (self-tested: `clock_nanosleep` for a sleeping thread, `(user)` for one running).
+  The box: 8 GiB swap, ~4 GiB in use, 273 M pages swapped in and 318 M out over its life.
+
 ## 2026-11-01 (evening, latest): the serialization A/B kills device queueing as the explanation too; the instrument now reaches the single call
 
 * `R9K_PWAL_SERIAL=1` (cross-rank file lock across the measured window): tail46 and tail47 gave 5.5-5.9 s windows on

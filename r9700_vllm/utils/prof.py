@@ -397,10 +397,11 @@ _PWA = {"on": False, "acc": {}, "orig": None, "cur": "?"}
 # it was doing (leaf frame), what the kernel says it was doing (R running / S sleeping / D uninterruptible, plus
 # wchan), which module the visit belonged to, and what the machine's pressure stalls say.
 _PWS = {"on": False, "th": None, "frames": {}, "mods": {}, "states": {}, "wchans": {}, "syscalls": {}, "psi": {},
-        "n": 0}
+        "mem": {}, "n": 0}
 # the handful of syscalls a load window can plausibly park in; anything else prints as its number
 _SYSCALLS = {"-1": "(user)", "0": "read", "1": "write", "7": "poll", "16": "ioctl", "23": "select",
-             "202": "futex", "232": "epoll_wait", "233": "epoll_pwait", "28": "epoll_ctl", "7?": "?"}
+             "202": "futex", "230": "clock_nanosleep", "232": "epoll_wait", "233": "epoll_pwait",
+             "28": "epoll_ctl"}
 
 # R9K_PWAL_SERIAL=1 runs the post-load pass one rank at a time, by holding a cross-rank file lock across exactly the
 # window the timer measures. The reason to try it is C10: in the slow version of that window wall ~= user CPU, sys is
@@ -471,6 +472,22 @@ def _pws_run(interval: float) -> None:
         except (OSError, IndexError):
             pass
         _PWS["n"] += 1
+        # Our own swap footprint and fault counts, and the box's paging counters, sampled across the window. PSI
+        # memory says how long the kernel stalled; it does not say that the pages were already gone and are being
+        # read back one at a time -- and the driver's userptr-restore worker, the one the kernel logs as hogging
+        # CPU, works on GPU mappings of host pages, a cost that lands in our window as wait and in kworkers, not
+        # in our own system CPU.
+        try:
+            sw = int(open("/proc/self/status").read().split("VmSwap:")[1].split()[0]) // 1024      # MiB
+            f = open("/proc/self/stat").read().split(")")[1].split()
+            mn, mj = int(f[7]), int(f[9])
+            vm = {k: int(v) for k, v in (l.split() for l in open("/proc/vmstat")) if k in ("pswpin", "pswpout")}
+        except (OSError, IndexError, ValueError):
+            sw, mn, mj, vm = 0, 0, 0, {}
+        m = _PWS["mem"]
+        if not m:
+            m.update(swap0=sw, swapmax=sw, min0=mn, maj0=mj, psw=vm)
+        m["swap1"], m["min1"], m["maj1"], m["psw1"], m["swapmax"] = sw, mn, mj, vm, max(m["swapmax"], sw)
         for key, val in (("frames", leaf), ("mods", _PWA["cur"]), ("states", state),
                          ("wchans", wchan if state != "R" else "(running)"), ("syscalls", sysc)):
             _PWS[key][val] = _PWS[key].get(val, 0) + 1
@@ -483,7 +500,7 @@ def start_pwsamp(interval: float = 0.25) -> None:
     import threading
     _PWS["on"], _PWS["frames"], _PWS["mods"], _PWS["states"] = True, {}, {}, {}
     _PWS["wchans"], _PWS["psi"], _PWS["n"] = {}, {}, 0
-    _PWS["syscalls"] = {}
+    _PWS["syscalls"], _PWS["mem"] = {}, {}
     _PWS["th"] = threading.Thread(target=_pws_run, args=(interval,), name="r9700-window-sampler", daemon=True)
     _PWS["th"].start()
 
@@ -503,6 +520,14 @@ def stop_pwsamp(tag: str = "window") -> None:
         stalled = (samples[-1][1] - samples[0][1]) / 1e6
         logger.info("r9700 %s   psi %-6s avg10 mean %5.1f%% max %5.1f%%   pressure-stalled %5.1f s during the window",
                     tag, name, sum(avg) / len(avg), max(avg), stalled)
+    m = _PWS["mem"]
+    if m:
+        logger.info("r9700 %s   self VmSwap %5.0f -> %5.0f MiB (max %5.0f)  faults +%d minor +%d major"
+                    "   box pswpin +%d pswout +%d pages",
+                    tag, m["swap0"], m.get("swap1", m["swap0"]), m["swapmax"],
+                    m.get("min1", 0) - m["min0"], m.get("maj1", 0) - m["maj0"],
+                    m.get("psw1", {}).get("pswpin", 0) - m["psw"].get("pswpin", 0),
+                    m.get("psw1", {}).get("pswpout", 0) - m["psw"].get("pswpout", 0))
     for what, label in (("mods", "module"), ("frames", "leaf frame"), ("wchans", "wchan"), ("syscalls", "syscall")):
         for k, v in sorted(_PWS[what].items(), key=lambda kv: -kv[1])[:5]:
             if v * 0.25 < 1.0:
