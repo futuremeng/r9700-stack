@@ -16,8 +16,16 @@ _REGISTER_PORTABLE_MAPPED = 3
 
 
 def pinned_empty(shape, dtype) -> torch.Tensor:
+    import time
+    from vllm.logger import init_logger
+    _lg = init_logger("vllm.r9700.hostmem")
+    t0 = time.perf_counter()
     t = torch.empty(shape, dtype=dtype, device="cpu")
     n = t.numel() * t.element_size()
+    _lg.info("r9700 hostmem: %s %s alloc'd (%.2f GiB) in %.2f s at %s, registering...",
+             tuple(shape), dtype, n / 2**30, time.perf_counter() - t0,
+             time.strftime("%H:%M:%S"))
+    t1 = time.perf_counter()
     if n:
         rc = torch.cuda.cudart().cudaHostRegister(t.data_ptr(), n, _REGISTER_PORTABLE_MAPPED)
         if int(rc) != 0:  # fall back to torch's (rounding) allocator rather than fail
@@ -26,6 +34,8 @@ def pinned_empty(shape, dtype) -> torch.Tensor:
             t = torch.empty(shape, dtype=dtype, device="cpu", pin_memory=True)
     if n and not t.is_pinned():
         raise RuntimeError("r9700: host buffer is not recognised as pinned; a UVA view would silently be a copy")
+    _lg.info("r9700 hostmem: hipHostRegister of %.2f GiB took %.2f s (ends %s)",
+             n / 2**30, time.perf_counter() - t1, time.strftime("%H:%M:%S"))
     _KEEP.append(t)       # registered memory must outlive every view; these are process-lifetime buffers
     return t
 
