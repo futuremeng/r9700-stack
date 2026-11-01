@@ -64,6 +64,40 @@ def _describe(a) -> str:
     return type(a).__name__
 
 
+def _host_speed() -> float:
+    """Nanoseconds per iteration of a fixed interpreter loop, timed on the calling thread.
+
+    The device probes can only say the card answered; they cannot say what the host cost. This measures the host on
+    the same thread that runs the load path. It matters on this box because ``bios_limit`` caps the CPUs at 2.4 GHz
+    against a 3.71 GHz peak, and ``stats/time_in_state`` shows most of their life at the 1500 MHz floor -- while the
+    per-class user CPU of a slow pass grows 8-14x only in the classes whose repack work runs on the host. If this
+    loop is slower in the same window, the machine itself was slower.
+    """
+    t = time.perf_counter()
+    s = 0
+    for i in range(4000):
+        s += i * i
+    return (time.perf_counter() - t) / 4000 * 1e9
+
+
+def _freq_time() -> dict:
+    """CPU-time spent in each frequency state, summed over every cpu: ``{MHz: milliseconds}``.
+
+    Read at window start and window end and differenced, this says which P-states the box actually ran in while the
+    pass was running, without root and without perturbing anything.
+    """
+    out: dict = {}
+    for p in _glob.glob("/sys/devices/system/cpu/cpu*/cpufreq/stats/time_in_state"):
+        try:
+            for line in open(p):
+                parts = line.split()
+                if len(parts) >= 2:
+                    out[int(parts[0])] = out.get(int(parts[0]), 0) + int(parts[1])
+        except (OSError, ValueError):
+            pass
+    return out
+
+
 def _gpu_cards() -> list[tuple[str, int, int]]:
     """Per card, in card order: ``(card name, busy_percent, current SM clock MHz)`` from sysfs.
 
@@ -634,6 +668,7 @@ def start_pwsamp(interval: float = 0.25) -> None:
     _PWS["wchans"], _PWS["psi"], _PWS["n"] = {}, {}, 0
     _PWS["syscalls"], _PWS["mem"], _PWS["busy"] = {}, {}, []
     _PWS["cards"] = []
+    _PWS["freq0"] = _freq_time()
     _PWS["th"] = threading.Thread(target=_pws_run, args=(interval,), name="r9700-window-sampler", daemon=True)
     _PWS["th"].start()
 
@@ -660,6 +695,13 @@ def stop_pwsamp(tag: str = "window") -> None:
         logger.info("r9700 %s   gpu busy mean %4.0f%% max %4.0f%% over %d samples: %s",
                     tag, sum(busy) / len(busy), max(busy), len(busy), spark)
     lo, hi = [], []
+    f0, f1 = _PWS.pop("freq0", {}), _freq_time()
+    if f0:
+        spent = {k: (f1.get(k, 0) - f0.get(k, 0)) / 1000.0 for k in sorted(set(f0) | set(f1))}
+        spent = {k: v for k, v in spent.items() if v > 0.05}
+        if spent:
+            logger.info("r9700 %s   host CPU time by frequency state during the window: %s", tag,
+                        "  ".join(f"{k}MHz {v:.1f}s" for k, v in sorted(spent.items(), reverse=True)))
     cols = [c for c in _PWS["cards"] if c]
     if cols:
         def _hist(xs: list) -> str:
@@ -691,7 +733,7 @@ def stop_pwsamp(tag: str = "window") -> None:
 
 
 _PWPR = {"on": False, "n": 0, "sub": [], "tot": [], "sync_only": [], "cost": 0.0, "last": 0.0,
-         "budget": 0, "why": "", "buf": None, "dev_str": ""}
+         "budget": 0, "why": "", "buf": None, "dev_str": "", "host": []}
 
 
 def _probe_start() -> None:
@@ -737,6 +779,7 @@ def _probe_tick(interval: float | None = None) -> None:
         _PWPR["why"] = f"budget of {_PWPR['budget']} samples reached"
         _PWPR["on"] = False
         return
+    _PWPR["host"].append(_host_speed())            # how fast is this host, right now, on this very thread
     t0 = time.perf_counter()
     try:
         import torch
@@ -783,6 +826,11 @@ def _probe_report(tag: str = "post-load") -> None:
                 "max %.2f", tag, _PWPR["n"], want, int(1000 * _PWPR.get("iv", 0.2)), _PWPR["cost"],
                 _pct(sub, 0.5), _pct(sub, 0.95), max(sub or [0.0]),
                 _pct(tot, 0.5), _pct(tot, 0.95), max(tot or [0.0]), _pct(idle, 0.5), max(idle or [0.0]))
+    host = _PWPR.get("host") or []
+    if host:
+        # the host half of the same window: the same fixed loop, on the thread that does the loading
+        logger.info("r9700 %s probe: host loop ns/iter p50 %.1f p95 %.1f max %.1f over %d samples",
+                    tag, _pct(host, 0.5), _pct(host, 0.95), max(host), len(host))
     s, t = _pct(sub, 0.95), _pct(tot, 0.95)
     if max(tot or [0.0]) > 1000.0:
         logger.info("r9700 %s probe: one sample spent %.2f s between handing the work over and the device finishing "
