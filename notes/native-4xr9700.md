@@ -1452,6 +1452,59 @@ waiting time** (`fold guard: X s issuing + Y s waiting on the device`), but the 
 and putting the same issue/wait split around the repack calls themselves (quantize, pack, permute) settles it: if the
 grow is in `waiting`, it is the spin/completion story; if it is in `issuing`, the path is doing more host work.
 
+That is now in the tree: `prof.splitcall` brackets `permute_fragments`, `pack_scales` and `quantize_rows_fp8` with a
+sync and prints `split <name> X s issuing + Y s waiting` above `R9K_SPLIT_MS` (default 50 ms; `R9K_SPLIT=0` removes
+both the sync and the line), and the fold guard's note now fires at that same threshold. Outputs are bit-identical
+with the split on and off for all three helpers (checked in-process on the real tensors), and `tests/test_slowcall.py`
+covers firing, threshold quietness, the off switch and the non-negativity of both halves.
+
+One more magnitude from this batch, because it is the fastest post-load window ever recorded here: **tail115 ran all
+four ranks at 2.5 s** (attributed 10.8-11.4 s, weights phase 51.6 s) -- but its warm-up cost 1.6-2.4 s on three ranks
+where a clean launch pays 190-290 ms, so the first-touch cost moved out of the window rather than away. The round
+after it, tail116, was back to 6.2-6.3 s windows and a 90.3 s load. Neither of those two launches carried the split
+instrument (the grep for `split` in tail115 only matches the router's "split 2" line), so the 2.5 s is not the syncs.
+The window is still bimodal and still has no marker; what changed is that the two surviving readings -- more issued
+work vs waiting on issued work -- can now be told apart from the log of the next elevated launch.
+
+## C23: the split answers on its first run -- the window is one drain-wait at its head, paid at a sync with the SMs idle
+
+tail118 (`R9K_LOAD_PROF=1`, so `prof.splitcall` active, threshold 50 ms) -- window **5.3 s of wall** on all four
+ranks, opened 16:53:26 and closed 16:53:31:
+
+| call | n | sum issuing | sum waiting | max single wait | gpu busy at the note |
+|---|---|---|---|---|---|
+| `permute_fragments` | 4 | 0.00 s | **14.40 s** | **5.69 s** | 4-6% (one at 36%) |
+| `pack_scales` | 2 | 0.08 s | **10.89 s** | 5.52 s | 4-5% |
+| `quantize_rows_fp8` | 4 | 0.28 s | 0.00 s | 0.00 s | 6% |
+
+and the timestamps say *when* those waits land:
+
+```
+TP1 TP2  16:53:26  permute_fragments  issue 0.001 s  wait 4.36 / 4.29 s   gpu busy 4%
+TP0 TP1 TP3 16:53:44  pack_scales / permute_fragments  issue 0.000-0.077 s  wait 5.38 / 5.69 / 5.52 s   gpu busy 4-6%
+```
+
+16:53:26 is the moment the window opens; 16:53:44 is 13 s after it closed, i.e. inside the **draft** pass. So:
+
+* the issuing half is **zero to three digits of milliseconds**. The path is not doing more host work.
+* the cost is one or two **multi-second waits at the head of each phase**, at the first point the pass asks the
+  device for an answer -- and `gpu_busy_percent` is 4-6% while they run, so the SMs are not computing.
+* the earlier per-class picture (`MergedColumnParallelLinear` 14x, `RoutedExperts` 8.5x, everything else 1.0x) is
+  then an artifact of attribution, not of those classes being slow: those are simply the first calls in a phase that
+  **synchronise**, so they are the ones that get charged for whatever was already in flight.
+* the syncs themselves are neutral: with the instrument in, the wall is 5.3 s, the same 5.1-5.6 s as before it.
+
+That leaves one question, and it is a different question from the one the last ten sections were asking: **what is
+already queued on the device at the head of each phase, that takes 4-6 s to drain while the SMs sit idle?** The
+candidates are the DMA/copy backlog (weights and PLE/expert tables stream in over PCIe from pinned host memory, and
+`gpu_busy_percent` counts SM activity, not copy engines), the pinned-memory registrations, or work that another
+thread of the same worker put on the device. The instrument to answer it is the copy accounting that already exists
+but is not switched on in these launches: `R9K_LOAD_COPIES=1` with the per-call byte/fault log, read against the
+split timestamps -- or, more cheaply, `prof.split`'s note extended with "copies +N (+X GiB) since the last note".
+
+Left running: **tail118** -- weights 61.36 s + draft requant 6.51 s, KV **495,160 tokens**, all four windows **5.3 s**
+of wall, health 200, GSM8K no-think **98/100**, needles **3/3**.
+
 ## How to reproduce the load-path analysis
 
 ```bash

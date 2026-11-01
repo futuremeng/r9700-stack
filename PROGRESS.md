@@ -2329,3 +2329,17 @@ sample, off-switch reset, a raising probe cannot break the pass, `named_modules`
 Left running: **tail110** -- load 74.58 s, KV **483,024 tokens**, all four post-load windows **5.1-5.6 s**, health
 200, GSM8K no-think **98/100**, needles **3/3**. Serve defaults unchanged (warm on, prestage on, `GPU_MAX_HW_QUEUES=1`,
 `HSA_ENABLE_MWAITX=1`); no default behaviour changed this round, all new instruments are read-only observers.
+
+**And the split answers on its first run (notes C23), which retires the per-class reading too.** tail118 with
+`prof.splitcall` active: window 5.3 s wall, and the three repack helpers show issuing **0.00-0.28 s** against waiting
+**25.3 s**, max single wait **5.69 s**, with `gpu_busy_percent` at **4-6%**. Timestamps put those waits at
+16:53:26 -- the instant the window opens -- and at 16:53:44, inside the draft pass. So the post-load window is mostly
+**one drain-wait at its head**, paid by the first call that asks the device for an answer, while the SMs sit idle;
+the 14x/8.5x per-class user CPU from earlier this session is attribution, not slowness (`MergedColumnParallelLinear`
+and `RoutedExperts` are just the first synchronising calls in a phase). The syncs cost nothing measurable: wall 5.3 s
+with the instrument as against 5.1-5.6 s without. The question is now what is already in flight on the device at the
+head of each phase -- DMA/copy backlog from pinned host tables, pin registrations, or another thread's work -- and
+the instrument for it is the copy accounting that exists but is not switched on in these launches
+(`R9K_LOAD_COPIES=1`), or `prof.split` extended with "copies +N (+X GiB) since the last note". Left running instead:
+**tail118** -- weights 61.36 s + draft requant 6.51 s, KV **495,160 tokens**, all four windows 5.3 s, health 200,
+GSM8K **98/100**, needles **3/3**.
