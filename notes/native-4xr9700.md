@@ -730,6 +730,43 @@ read ~110-119 GiB from disk, i.e. the amplification is mostly absorbed by the sh
 the staging buffer, or `tensor.to()` cannot touch that; a single-pass reader per rank could, and that is where the
 remaining ~35 s lives. The patch stays in the tree, off by default, as the cheap re-test if that ever changes.
 
+## C5: the read path is fault-bound, but readahead-ahead does not buy anything; the swing left is the draft pass
+
+`bench/mmapread_probe.py` measures cold reads of real shards (each config starts by `fadvise(DONTNEED)`-ing the files
+it is about to read, so no root and no global cache drop):
+
+| how the same 5.2 GiB cold shard is read | rate |
+|---|---|
+| streaming `pread`, 16 MiB | **3.49 GiB/s** |
+| mmap, one byte touched per 4 KiB page | **0.57 GiB/s** |
+| mmap, 4 processes on the same file | 1.01 GiB/s each = 4.02 GiB/s aggregate |
+| `fadvise(WILLNEED)` then the same mmap pass | **4.12 GiB/s** |
+
+So mmap page faults get no readahead of their own (0.57 GiB/s is exactly the 0.5-0.6 GiB/s a rank's expert placement
+measures), and queueing readahead fixes the *rate*. Acting on that, `utils/prestage.py` grew a stream-ahead mode
+(`R9K_PRESTAGE_AHEAD=<bytes>`): while the consumer places tensor *i*, `fadvise(WILLNEED)` covers the next
+`R9K_PRESTAGE_AHEAD` bytes of tensors in header order, merged per shard and never queued twice (0.15 s of fadvise
+wall a rank, so the mechanism is nearly free). **It changes nothing on the target pass**: with 256 MiB depth,
+place 47.6 s / experts 35.8 s / 115.5 GiB read by the four ranks, against 47.8 / 35.9 / 115.2 GiB without (ah256 vs
+ah0). The ranks' own concurrent faults already give the shared-cache rate (row 3 above), and the checkpoint (110.6 GiB)
+is bigger than the cache the load can hold, so pages are read once, used once and evicted: readahead can only
+overlap I/O that is already overlapped. Left in the tree, **off by default**.
+
+What that leaves is variance, and it is all in one place. Same config, six instances this session:
+**67.85 / 72.61 / 73.03 / 74.63 / 79.71 / 115.30 s** -- and the spread is the draft pass, whose wall runs
+**5.3-48.3 s** while its own parts barely move (`to-GPU 0.7-3.4 s`, `search 1.5-1.6 s`, `cat 0.0 s`).
+The counters around the window (per rank, `draft end` minus `target end`):
+
+- `majflt` +45k to +52k, `minflt` +~500k, `Cached` +6 GiB, `VmSwap` 0.8 -> 0.5 GiB (it does read back ~0.3 GiB of its
+  own parked pages), PSI memory stall +1.2 s;
+- **disk reads only +0.9 to +3.2 GiB** -- so the faults are not a byte-volume problem: at 135 us/fault (fast arm,
+  52k in 7 s) they cost 7 s, at 1.0 ms/fault (slow arm, 45k in 48 s) they cost 45 s for the *same* work;
+- the SIGPROF stack sampler takes only 685 samples for a 6 s pass (~1.4 s of CPU) and they land on
+  `routed_experts.py:572 _load_w13` 13.0%, `torch.cuda.synchronize` 11.7%, `routed_experts.py:623 _load_w2` 10.7%,
+  `qwen4_exp.py:188 mtp_weights` 9.9%, `nvfp4.py:51 _encode` 8.0%, `weight_utils.py:1212 safetensors_weights_iterator`
+  4.8% -- the pass also places the draft's own 512-expert MoE through the stock path. Most of the slow case is
+  **blocked, not computed**, which is why stack sampling cannot name it and why the fix is not on the read side.
+
 ## How to reproduce the load-path analysis
 
 ```bash
@@ -744,6 +781,9 @@ LD_LIBRARY_PATH=$HOME/opt/openmpi/usr/lib/x86_64-linux-gnu \
 ~/venv-r9700/bin/python3 bench/loadstats.py ~/logs/relaunch-cold-late25.log ~/logs/relaunch-cold-early26.log
                                                          #   resource stats windowed by the launch's own stamps
 PIN_GIB=9.7 COPIES=4000 DEV=0 ~/venv-r9700/bin/python3 bench/svm_probe.py # does a 9.7 GiB pin stall small copies?
+MODE=mmap NPROC=1 F=model-00018.safetensors ~/venv-r9700/bin/python3 bench/mmapread_probe.py
+MODE=pread NPROC=1 CHUNK=16777216 F=model-00018.safetensors ~/venv-r9700/bin/python3 bench/mmapread_probe.py
+                                                         #   cold shard: mmap-fault 0.57 GiB/s vs pread 3.49 GiB/s
 ~/venv-r9700/bin/python3 bench/expertcopy_probe.py            # 106 KiB/51 KiB expert copies: per-call vs combined
 LD_LIBRARY_PATH=$HOME/opt/openmpi/usr/lib/x86_64-linux-gnu R9K_MOE_BATCH_H2D=1 \
   ~/venv-r9700/bin/python3 tests/test_moe_h2dbatch.py         # the C4 batcher: byte-exact, and still slower
@@ -752,7 +792,8 @@ LD_LIBRARY_PATH=$HOME/opt/openmpi/usr/lib/x86_64-linux-gnu R9K_MOE_BATCH_H2D=1 \
 Switches: `R9K_LOAD_PROF=1` (group timers + phase snapshots), `R9K_LOAD_STACKS=1` (SIGPROF stack sampler: which
 function), `R9K_LOAD_COPIES=1` (`copy_` accounting, fault deltas, slow-call names, watchdog wchan),
 `R9K_PRESTAGE_MTP=0|1` (the E1 control), `R9K_PLE_PIN_LATE=0|1` (default 1: register the PLE tables after the stream),
-`R9K_MOE_BATCH_H2D=0|1` (the C4 batcher, default 0: slower, see above).
+`R9K_MOE_BATCH_H2D=0|1` (the C4 batcher, default 0: slower, see above), `R9K_PRESTAGE_AHEAD=<bytes>` (the C5
+stream-ahead readahead, default 0: no effect on the target pass, see above).
 Read the pair: the log's `slow call` offsets (`+N s into the load`, with `probe at HH:MM:SS` in the header line) line up
 with the sampler CSV's clock columns.
 

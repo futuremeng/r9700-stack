@@ -90,9 +90,22 @@ def snap(tag: str) -> None:
                        f" full={rows['full'][0].split('=')[1]:>5}%/{int(rows['full'][3].split('=')[1]) / 1e6:6.1f}s")
         except OSError:
             pass
+        rss = swap = pin = -1.0
+        try:
+            with open("/proc/self/status") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        rss = int(line.split()[1]) / 2**20
+                    elif line.startswith("VmSwap:"):
+                        swap = int(line.split()[1]) / 2**20
+                    elif line.startswith("VmPin:"):
+                        pin = int(line.split()[1]) / 2**20
+        except OSError:
+            pass
         logger.info("r9700 load snap %-12s Cached=%4d GiB  SwapFree=%3d GiB  majflt=%9d  minflt=%9d  "
-                    "rchar=%7.1f GiB  disk reads=%6.1f GiB%s",
-                    tag, cached, swapfree, ru.ru_majflt, ru.ru_minflt, rchar / 2**30, rd_bytes / 2**30, psi)
+                    "rchar=%7.1f GiB  disk reads=%6.1f GiB  self rss/swap/pin=%5.1f/%5.1f/%5.1f%s",
+                    tag, cached, swapfree, ru.ru_majflt, ru.ru_minflt, rchar / 2**30, rd_bytes / 2**30, rss, swap,
+                    pin, psi)
     except OSError as e:
         logger.info("r9700 load snap %-12s unavailable: %s", tag, e)
 
@@ -148,6 +161,13 @@ def _sample(signum, frame) -> None:
         _TICKS[0] += 1
     except Exception:                               # a profiler must never take down a load
         pass
+
+
+def reset_stacks() -> None:
+    """Drop the accumulated samples so the next window is measured on its own."""
+    _TICKS[0] = 0
+    _LEAF.clear()
+    _INCL.clear()
 
 
 def start_stacks() -> None:

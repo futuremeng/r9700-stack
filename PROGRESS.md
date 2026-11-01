@@ -1,3 +1,29 @@
+## 2026-11-01 (later still): the load's read path is fault-bound but readahead-proof; the leftover is draft-pass variance
+
+* `bench/mmapread_probe.py` (cold shard, `fadvise(DONTNEED)` to reset, no root needed): streaming `pread` **3.49 GiB/s**,
+  mmap touching one byte per 4 KiB page **0.57 GiB/s** (= exactly what a rank's expert placement measures), 4 processes
+  on the same file **1.01 GiB/s each**, and `fadvise(WILLNEED)` + the same mmap pass **4.12 GiB/s**. mmap faults get no
+  readahead; queueing it works.
+* **C5: stream-ahead readahead in the loader** (`utils/prestage.py`, `R9K_PRESTAGE_AHEAD=<bytes>`: while the consumer
+  places tensor *i*, WILLNEED the next N bytes of tensors in header order; 0.15 s of fadvise wall a rank) --
+  **no effect on the target pass**: place 47.6 s / experts 35.8 s / 115.5 GiB read vs 47.8 / 35.9 / 115.2 without
+  (ah256 vs ah0). The four ranks already share the cache, and 110.6 GiB does not fit in it, so pages are read once,
+  used once, evicted: nothing left to overlap. Off by default.
+* The remaining load variance is **entirely the draft pass**: six instances of one config give
+  **67.85 / 72.61 / 73.03 / 74.63 / 79.71 / 115.30 s** and its wall alone spans **5.3-48.3 s** while its parts do not
+  move (`to-GPU 0.7-3.4 s`, `search 1.5-1.6 s`, `cat 0.0`). Around the window (per rank): `majflt` +45k to +52k,
+  `Cached` +6 GiB, `VmSwap` 0.8 -> 0.5 GiB, but **disk reads only +0.9 to +3.2 GiB** -- same faults, 135 us each in the
+  fast arm and 1.0 ms each in the slow one. Stack samples (685 for a 6 s pass = 1.4 s CPU) land on
+  `_load_w13` 13%, `cuda.synchronize` 11.7%, `_load_w2` 10.7%, `mtp_weights` 9.9%, `_encode` 8%: the pass also places
+  the draft's own 512-expert MoE, and the slow case is blocked rather than computed.
+* Added counters to make that visible: `prof.snap` now reports per-process `VmRSS/VmSwap/VmPin`, and the stack sampler
+  can be reset and re-armed per window (`prof.reset_stacks`, `draft start`/`draft end` snaps).
+* Load path stands at **67.9-79.7 s typical** (from 174.8/189.6 s before late pinning), with the draft pass as the one
+  unbounded term. Both new knobs stay in the tree, off by default, with their measurements in the notes.
+* Online instance now: **final38** -- load **71.89 s** (place 47.1, experts 36.2, draft 6.1-6.7 s on all four ranks),
+  GSM8K **100/100**, needles 3/3, KV 496,374 tokens, and on the fixed probe protocol `@32 x300` 1578.3-1621.9,
+  `@32 x1200` 1807.5-1816.0, `@16 x300` 1117.4-1151.3 tok/s, 299 W median per card at busy==100.
+
 ## 2026-11-01 (later): the experts term is source-side reads (C4, negative); throughput baseline locked on the online instance
 
 * Anatomy of what is left after late pinning (final31, per rank): the experts term is **148,998 `copy_` calls,

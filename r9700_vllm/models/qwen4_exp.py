@@ -92,6 +92,7 @@ def target_weights(weights):
             prof.install_copy_probe()     # must be installed before any weight is placed
         from ..moe import h2dbatch
         h2dbatch.install()                # batch stock's per-expert H2D copies (off unless R9K_MOE_BATCH_H2D=1)
+        from ..utils import prestage
         t = time.perf_counter()
         tstream = t                            # stream clock, for reporting when each group arrives
         for n, w in weights:
@@ -103,6 +104,7 @@ def target_weights(weights):
             last[0] = n
             if _PROF:
                 prof.set_current(n)
+            prestage.ahead(n)             # queue the readahead for what the consumer will fault in (depth 0 = no-op)
             yield n, w
             now = time.perf_counter(); place += now - t      # weight_loader: fold repack, int6 PLE copy, ... 
             if _PROF:
@@ -113,6 +115,7 @@ def target_weights(weights):
                 g[4] = now - tstream
             t = now
         h2dbatch.flush_all()              # every staged byte has to reach the device before the stream ends
+        prestage.ahead_done()
         from ..utils import hostmem          # late pinning: register the PLE tables now, not at construction
         hostmem.finalize_late_pins()
         if _PROF:
@@ -155,6 +158,10 @@ def mtp_weights(weights, mtp_mxfp4: bool):
     requant = 0.0
     rq = [0.0, 0.0, 0.0, 0.0]      # _PROF only: [to-GPU (pageable H2D from the mmap'd pages), search, cat+to-CPU, calls]
     n_t, n_b, t_all = 0, 0, time.perf_counter()
+    if _PROF:
+        prof.snap("draft start")
+        prof.reset_stacks()
+        prof.start_stacks()          # the requant timers below do not cover this window; sample it, do not infer it
     for name, w in weights:
         if _DROP_MTP_HEAD.search(name):
             dropped.append(name)
@@ -217,6 +224,8 @@ def mtp_weights(weights, mtp_mxfp4: bool):
         logger.info("r9700 load profile (draft requant): to-GPU %.1f s, search %.1f s, cat %.1f s over %d calls "
                     "(a lone quantize_mxfp4_search costs 0.39 s of launch + 4.3 GiB/s; the to-CPU transfer lands in pull, not "
                     "here)", *rq[:3], int(rq[3]))
+        prof.dump_stacks("draft pass")     # which function, not which tensor group
+        prof.stop_stacks()
         prof.snap("draft end")          # majflt delta vs "target end" = the duplicate read, measured
     if dropped:
         logger.info_once("r9700: ignored fork-private MTP draft head tensors: %s", ", ".join(dropped))
