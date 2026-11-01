@@ -1,3 +1,26 @@
+## 2026-11-01 (later): the experts term is source-side reads (C4, negative); throughput baseline locked on the online instance
+
+* Anatomy of what is left after late pinning (final31, per rank): the experts term is **148,998 `copy_` calls,
+  27.3 GiB, 45.7 s** -- 98,496 x 106 KiB contiguous (19.3 s, w13), 49,248 x 51 KiB strided (15.2 s, w2), 64 x 151 MiB
+  cpu->cpu PLE fills (8.5 s). `bench/expertcopy_probe.py` made that look like per-transfer overhead (512 resident
+  106 KiB slices: 75 ms; one combined copy: 10.7 ms; `tensor.to(device)`: 0.3 ms).
+* **C4 built and measured negative**: `r9700_vllm/moe/h2dbatch.py` stages runs of adjacent destination slices into a
+  64 MiB pinned buffer and issues one `copy_` per run (`tests/test_moe_h2dbatch.py`: byte-exact for the per-expert,
+  strided and interleaved patterns, 2.8x faster on resident data). On the real load it is **slower: 80.6 s vs
+  73.6 s** (h2db36 vs final31). Its own counters: 98,496 slices -> 98,496 copies (runs never join, stock writes the
+  w1 and w3 halves alternately into two storages), and **the host staging read alone costs 18.35 s / 10.0 GiB
+  (0.56 GB/s) against 19.56 s (0.51 GB/s) for the copies it replaces** -- same bytes at the same rate, so the cost is
+  touching the mmap'd pages, and the H2D part is only ~5 s. Left in the tree off by default (`R9K_MOE_BATCH_H2D=0`).
+* Where the remaining ~35 s actually is: a rank *walks* ~110 GiB of shard pages to place 27.3 GiB of weights. No
+  amount of copy batching, pinning or faster transfer paths touches that; only reading fewer bytes would.
+* **Throughput baseline now recorded as a fixed protocol** on the instance left online (final37, same config as
+  final31): `@32 x300` **1572.4-1575.1**, `@32 x1200` **1818.6-1831.8**, `@16 x300` **1112.6-1126.3** tok/s, 299 W
+  median per card at busy==100. Three-sample spread on `@32 x300` is 2.7 tok/s (0.2%). Older MTP=2 aggregates quoted
+  without a protocol should be read as soft.
+* Still open: E1 prestage was *not* re-tested A/B under late pinning (its headroom is now small -- the whole draft
+  pass is already 5.4-6.7 s, of which the MXFP4 search is 1.5-1.7 s); a single-pass expert reader; `MemorySwapMax`
+  capping if more swap is ever wanted; `@16 x200` vs the recorded 1,265.
+
 ## 2026-11-01 (end of day): swap capacity A/B says *less* swap is better for this load; sampler tooling fixed
 
 * Added a 24 GiB swapfile (SwapTotal 8 -> 32 GiB) and re-ran late pinning both ways: **cold 68.7 -> 103.2 s, warm

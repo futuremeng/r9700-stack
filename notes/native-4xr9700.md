@@ -694,6 +694,42 @@ Caveat to keep in mind when reading the older rows: samplers started before the 
 `memavail_gib`, `rank_rd_mbs` and `rss_sum_gib` columns are unaffected, and every swap-size comparison above was
 done with post-fix samplers.
 
+## C4: the experts term is source-side reads, not per-transfer overhead (negative result)
+
+After late pinning the experts term is 35.5-37.8 s and the copy probe says what it is made of (final31, one rank):
+**148,998 `copy_` calls, 27.3 GiB, 45.7 s of copy wall** in three classes --
+
+| calls | bytes | wall | what |
+|---|---|---|---|
+| 98,496 | 9.98 GiB | 19.3 s | `cuda <- cpu uint8 dstcontig srccontig`, 106 KiB each (w13, 512 experts x 192 fused tensors a rank) |
+| 49,248 | 4.99 GiB | 15.2 s | same but `srcstrided` (w2, 51 KiB each) |
+| 64 | 9.69 GiB | 8.5 s | cpu -> cpu `dststrided`: filling the PLE host tables |
+
+`bench/expertcopy_probe.py` reproduces the pattern against an **already resident** source and looks damning:
+512 separate 106 KiB copies take 75 ms while one combined copy takes 10.7 ms and `tensor.to(device)` 0.3 ms. So
+`moe/h2dbatch.py` (`R9K_MOE_BATCH_H2D=1`) stages runs of adjacent destination slices into a 64 MiB pinned buffer and
+issues one copy per run; `tests/test_moe_h2dbatch.py` proves it byte-exact for the per-expert, strided and
+interleaved patterns and 2.8x faster on resident data.
+
+On the real load it is **7 s slower: 80.6 s vs 73.6 s** (h2db36 vs final31). Its own counters say why:
+
+```
+r9700 moe h2d batch: 98496 expert slices staged into 98496 large copies (10.0 GiB):
+                     18.35 s host staging + 5.51 s device writes
+```
+
+* the runs never joined: stock loads the w1 and w3 halves of one expert alternately (two different storages), so
+  every call broke the active run -- fixable with a run per storage, which brings the next point into relief;
+* **the host-side staging read alone cost 18.35 s for 10.0 GiB (0.56 GB/s), against 19.56 s (0.51 GB/s) for the
+  `copy_`s it replaced** -- same bytes, same rate. The transfer itself is the cheap part (~5 s, 10.0 GiB at
+  2.0 GB/s with four ranks on one device); what costs is touching the mmap'd checkpoint pages.
+
+So the experts term is ordinary placement work bounded by source-side page reads, and the only lever left that could
+move it is reading *fewer* bytes: a rank walks ~110 GiB of shard pages to place 27.3 GiB (the four ranks together
+read ~110-119 GiB from disk, i.e. the amplification is mostly absorbed by the shared page cache). Batching, pinning
+the staging buffer, or `tensor.to()` cannot touch that; a single-pass reader per rank could, and that is where the
+remaining ~35 s lives. The patch stays in the tree, off by default, as the cheap re-test if that ever changes.
+
 ## How to reproduce the load-path analysis
 
 ```bash
@@ -708,11 +744,15 @@ LD_LIBRARY_PATH=$HOME/opt/openmpi/usr/lib/x86_64-linux-gnu \
 ~/venv-r9700/bin/python3 bench/loadstats.py ~/logs/relaunch-cold-late25.log ~/logs/relaunch-cold-early26.log
                                                          #   resource stats windowed by the launch's own stamps
 PIN_GIB=9.7 COPIES=4000 DEV=0 ~/venv-r9700/bin/python3 bench/svm_probe.py # does a 9.7 GiB pin stall small copies?
+~/venv-r9700/bin/python3 bench/expertcopy_probe.py            # 106 KiB/51 KiB expert copies: per-call vs combined
+LD_LIBRARY_PATH=$HOME/opt/openmpi/usr/lib/x86_64-linux-gnu R9K_MOE_BATCH_H2D=1 \
+  ~/venv-r9700/bin/python3 tests/test_moe_h2dbatch.py         # the C4 batcher: byte-exact, and still slower
 ```
 
 Switches: `R9K_LOAD_PROF=1` (group timers + phase snapshots), `R9K_LOAD_STACKS=1` (SIGPROF stack sampler: which
 function), `R9K_LOAD_COPIES=1` (`copy_` accounting, fault deltas, slow-call names, watchdog wchan),
-`R9K_PRESTAGE_MTP=0|1` (the E1 control), `R9K_PLE_PIN_LATE=0|1` (default 1: register the PLE tables after the stream).
+`R9K_PRESTAGE_MTP=0|1` (the E1 control), `R9K_PLE_PIN_LATE=0|1` (default 1: register the PLE tables after the stream),
+`R9K_MOE_BATCH_H2D=0|1` (the C4 batcher, default 0: slower, see above).
 Read the pair: the log's `slow call` offsets (`+N s into the load`, with `probe at HH:MM:SS` in the header line) line up
 with the sampler CSV's clock columns.
 
