@@ -1207,6 +1207,36 @@ Same amount swapped, different amount touched: which is exactly why the operatio
 launches) looks weak and the process-side levers (keep the pages the pass writes to resident; shrink the anon that
 is alive during the stream) are the ones left standing.
 
+## C18: paying the paging up front does not make the pass faster -- the paging marks shape (b), it does not cause it
+
+`r9700_vllm/utils/pin.py` (env `R9K_PWAL_PRESTAGE=populate|lock` with `R9K_PWAL_GIB=<n>`, off by default; unit test
+`tests/test_prestage_anon.py`) runs before the window and either `madvise(MADV_POPULATE_WRITE)`s or `mlock`s the
+worker's largest private anonymous mappings, reporting its own cost -- because a mitigation that only moves a cost is
+worth nothing. `lock` is the decisive variant but needs care on this box: the model already pins ~50 GiB of host
+memory across four ranks (the PLE int6 n-gram table in `ple/int6.py` and the routed-expert UVA tables in
+`moe/cache.py`), so adding 4 x 8 GiB of unreclaimable memory is not free.
+
+The first attempt was mis-budgeted and the log said so at once: `0.3 s on prestage anon (populate): 1 ranges,
+8.00 GiB` -- one 8 GiB range of a 13 GiB anon set, reading back essentially nothing, because the ~1 GiB that had
+been evicted was not in that mapping. Redone over the whole set (budget 20 GiB):
+
+| launch | windows (s) | majflt inside windows | swap at window start | populate cost |
+|---|---|---|---|---|
+| tail74 (control) | 33.5 23.8 12.0 10.4 | 154,821 | 1094 MiB | - |
+| tail76 (control) | 11.5 11.3 10.8 10.7 | 151,091 | 911 | - |
+| tail79 (populate 13.25 GiB over 105-108 ranges) | 12.2 12.1 12.1 11.2 | **90,723** | **636** | 10.1 s |
+| tail80 (populate) | 12.9 12.5 12.5 12.0 | - | **624** | 6.8-9.9 s |
+
+The mechanism works as designed: ~450 MiB of swapped memory read back per worker and ~40% fewer major faults inside
+the window. **The window does not move** -- 11.2-12.9 s with the paging paid for up front, against 10.4-11.5 s typical
+in the controls, with the same 24-34 s outliers appearing in both arms. Together with the earlier finding that io
+pressure stalls only ~1 s during a 30-70 s window, that settles it: the page-ins **mark** the slow regime, they are
+not what eats the wall clock. The 18:1 fault separation of C16/C17 stands as a diagnostic; it is not a lever.
+
+So the whole "keep it out of swap" family (populate, and by extension mlock) is closed for shape (b). Where the day
+ends: shape (a) -- the one enormous first visit -- is fixed by the warm-up (7/7 warmed launches with no window over
+20 s, clean window down from 5.4-5.9 s to 4.4-4.8 s), and shape (b) is a state the box sits in, 2-3x across the whole
+pass with host threads in R and the device idle, for which nothing has yet been demonstrated as the cause.
 
 ## How to reproduce the load-path analysis
 

@@ -1,3 +1,19 @@
+## 2026-11-01 (end): populate-vs-control A/B closes the swap family -- paging marks shape (b), it does not cause it
+
+* New: `r9700_vllm/utils/pin.py` (`R9K_PWAL_PRESTAGE=populate|lock`, `R9K_PWAL_GIB=<n>`, off by default) faults in or
+  pins the worker's biggest private anon mappings before the post-load window, and reports its own cost. Unit test
+  `tests/test_prestage_anon.py` (16 checks: range selection, off-by-default, populate locks nothing, lock raises
+  VmLck or honestly reports why, junk budget cannot raise).
+* First run was mis-budgeted and the log exposed it: `0.3 s on prestage anon (populate): 1 ranges, 8.00 GiB` -- the
+  evicted ~1 GiB was not in that mapping. Over the whole set (105-108 ranges, 13.25 GiB) it costs **6.8-10.1 s**.
+* Result: swap at window start 911-1094 → **624-636 MiB**, majflt inside the window 151-155k → **90,723** (-40%),
+  and the window **does not move** (11.2-12.9 s vs 10.4-11.5 s controls, same 24-34 s outliers in both arms).
+* With io pressure measured at ~1 s inside 30-70 s windows, that is two independent readings saying the page-ins are a
+  marker of the slow regime rather than its cost. The "keep it out of swap" family (populate, mlock, draining swap)
+  is closed as a fix; the fault counts stay useful as a diagnostic of which regime a launch landed in.
+* Left standing after today: warm-up fixes shape (a) (7/7 warmed launches with no window >20 s; clean window 5.4-5.9
+  → 4.4-4.8 s). Shape (b) -- 2-3x across the whole pass, host threads in R, device idle -- has no demonstrated cause.
+
 ## 2026-11-01 (final, later): prestage A/B is a clean negative -- and the two regimes differ by what the pass pages in, 18:1
 
 * New tool `bench/ab_report.py`: windows, major faults inside the windows, worker swap at window start, draft-pass

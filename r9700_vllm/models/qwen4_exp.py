@@ -153,6 +153,14 @@ def target_weights(weights):
                                 1000 * _KM.warm_post_load())
                 except Exception as e:                       # noqa: BLE001
                     logger.warning("r9700: post-load warm-up failed (%s); continuing unwarmed", e)
+            # utils/pin.py: the pass pages ~380 MiB of its own swapped-out memory back in while the device waits
+            # (40k major faults a rank when it runs 11-75 s, 2.2k when it runs 4.5 s). Pay for that in one measured
+            # step instead. Off by default: R9K_PWAL_PRESTAGE=populate|lock with R9K_PWAL_GIB=<n> to arm it.
+            try:
+                from ..utils.pin import prestage_anon
+                prestage_anon()
+            except Exception as e:                       # noqa: BLE001
+                logger.warning("r9700: anon prestage failed (%s); continuing", e)
             prof.start_pwal()           # attribute the window between the stream and the draft pass, per module class
         # E1: the draft pass is about to re-read its bf16 MTP weights, which four ranks' anon (~50 GiB, 9.7 GiB a
         # rank of it pinned PLE table) have in general just evicted. Queue the readahead while the target pass is
