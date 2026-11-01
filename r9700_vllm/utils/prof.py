@@ -6,6 +6,7 @@ open that box: wrap a load-path function with @timed("name") and it reports tota
 process exit. Zero cost when the switch is off."""
 import atexit
 import functools
+import glob as _glob
 import os
 import resource
 import signal
@@ -63,6 +64,28 @@ def _describe(a) -> str:
     return type(a).__name__
 
 
+def _gpu_busy() -> int:
+    """Max `gpu_busy_percent` over the GPUs, from sysfs. It is the one device-side number readable without root, without
+    ROCm tooling and without perturbing the process, and it is what separates the two remaining readings of a
+    multi-second load call: the device computed something for 44 s, or nothing computed and the host waited 44 s for
+    a queue to start."""
+    hi = -1
+    for p in _glob.glob("/sys/class/drm/card*/device/gpu_busy_percent"):
+        try:
+            hi = max(hi, int(open(p).read().strip()))
+        except (OSError, ValueError):
+            pass
+    return hi
+
+
+def slow_note(seconds: float, fmt: str, *args) -> None:
+    """Log a measured split inside a load-path call -- how many seconds were spent *issuing* work and how many
+    *waiting for the device to have done it*. Only the second kind can be a stalled queue rather than a slow
+    kernel, and the two need different fixes. Quiet below half of R9K_SLOWCALL."""
+    if ON and seconds >= float(os.environ.get("R9K_SLOWCALL", "2.0")) / 2:
+        logger.info("r9700 " + fmt, *args)
+
+
 def slowcall(fn=None, *, name=None, thresh=None):
     """Decorate a load-path helper so that a single slow call names *itself*: the tensor arguments' device, shape and
     layout, the call's wall time, and the user/sys CPU and page faults it burned. Per-module attribution stops at one
@@ -79,6 +102,7 @@ def slowcall(fn=None, *, name=None, thresh=None):
         def wrap(*args, **kwargs):
             th = float(os.environ.get("R9K_SLOWCALL", "2.0")) if thresh is None else thresh
             t0 = time.perf_counter()
+            busy0 = _gpu_busy()
             r0 = resource.getrusage(resource.RUSAGE_SELF)
             try:
                 return f(*args, **kwargs)
@@ -87,9 +111,10 @@ def slowcall(fn=None, *, name=None, thresh=None):
                 if wall >= th:
                     r1 = resource.getrusage(resource.RUSAGE_SELF)
                     _SLOWCALL["n"], _SLOWCALL["t"] = _SLOWCALL["n"] + 1, _SLOWCALL["t"] + wall
-                    logger.info("r9700 slow call %-24s %6.2f s cpu %6.2f/%5.2f s u/s faults +%d minor +%d major  %s",
+                    logger.info("r9700 slow call %-24s %6.2f s cpu %6.2f/%5.2f s u/s faults +%d minor +%d major"
+                                "  gpu %d%% -> %d%%  %s",
                                 nm, wall, r1.ru_utime - r0.ru_utime, r1.ru_stime - r0.ru_stime,
-                                r1.ru_minflt - r0.ru_minflt, r1.ru_majflt - r0.ru_majflt,
+                                r1.ru_minflt - r0.ru_minflt, r1.ru_majflt - r0.ru_majflt, busy0, _gpu_busy(),
                                 " ".join(_describe(a) for a in list(args)[:3] + list(kwargs.values())[:2]))
         return wrap
     return deco(fn) if fn is not None else deco
@@ -484,6 +509,7 @@ def _pws_run(interval: float) -> None:
             vm = {k: int(v) for k, v in (l.split() for l in open("/proc/vmstat")) if k in ("pswpin", "pswpout")}
         except (OSError, IndexError, ValueError):
             sw, mn, mj, vm = 0, 0, 0, {}
+        _PWS["busy"].append(_gpu_busy())
         m = _PWS["mem"]
         if not m:
             m.update(swap0=sw, swapmax=sw, min0=mn, maj0=mj, psw=vm)
@@ -500,7 +526,7 @@ def start_pwsamp(interval: float = 0.25) -> None:
     import threading
     _PWS["on"], _PWS["frames"], _PWS["mods"], _PWS["states"] = True, {}, {}, {}
     _PWS["wchans"], _PWS["psi"], _PWS["n"] = {}, {}, 0
-    _PWS["syscalls"], _PWS["mem"] = {}, {}
+    _PWS["syscalls"], _PWS["mem"], _PWS["busy"] = {}, {}, []
     _PWS["th"] = threading.Thread(target=_pws_run, args=(interval,), name="r9700-window-sampler", daemon=True)
     _PWS["th"].start()
 
@@ -520,6 +546,12 @@ def stop_pwsamp(tag: str = "window") -> None:
         stalled = (samples[-1][1] - samples[0][1]) / 1e6
         logger.info("r9700 %s   psi %-6s avg10 mean %5.1f%% max %5.1f%%   pressure-stalled %5.1f s during the window",
                     tag, name, sum(avg) / len(avg), max(avg), stalled)
+    busy = [b for b in _PWS["busy"] if b >= 0]
+    if busy:
+        # one character per 0.25 s sample: was the device lit for the whole window, or idle while we waited on it?
+        spark = "".join("." if b < 5 else ("-" if b < 25 else ("+" if b < 60 else "#")) for b in busy)
+        logger.info("r9700 %s   gpu busy mean %4.0f%% max %4.0f%% over %d samples: %s",
+                    tag, sum(busy) / len(busy), max(busy), len(busy), spark)
     m = _PWS["mem"]
     if m:
         logger.info("r9700 %s   self VmSwap %5.0f -> %5.0f MiB (max %5.0f)  faults +%d minor +%d major"

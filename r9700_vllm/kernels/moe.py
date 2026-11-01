@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import time
 from dataclasses import dataclass
 
 import torch
@@ -244,6 +245,7 @@ def _fold_hist(wsr: torch.Tensor, chunk: int, idx: tuple) -> list:
     block. Accumulated on the tensor's own device, so the host synchronises once per tensor, not once per chunk."""
     E, nb1, N = wsr.shape
     flat, col = idx
+    t0 = time.perf_counter()
     hist = torch.zeros(17, dtype=torch.int64, device=wsr.device)
     if flat is None:
         step = max(1, chunk // (nb1 * N))
@@ -259,7 +261,14 @@ def _fold_hist(wsr: torch.Tensor, chunk: int, idx: tuple) -> list:
             b = w.reshape(w.shape[0], -1).index_select(1, flat)         # the sampled blocks
             r = w[:, -1, :].index_select(1, col)                        # the reference exponent of their rows
             hist += torch.bincount((r.to(torch.int16) - b.to(torch.int16)).clamp_(0, 16).reshape(-1), minlength=17)
-    return hist.cpu().tolist()
+    # Everything above is only *issued*: the readback below is where the device is either found to have worked or
+    # found to have been asleep, and a 44 s wait on a 26 KB tensor is a different bug from a 44 s kernel.
+    issued = time.perf_counter() - t0
+    h = hist.cpu().tolist()
+    wait = time.perf_counter() - t0 - issued
+    prof.slow_note(wait, "fold guard: %.2f s issuing + %.2f s waiting on the device (gpu busy %d%%, %d blocks)",
+                   issued, wait, prof._gpu_busy(), sum(h))
+    return h
 
 
 def _fold_sample_idx(wsr: torch.Tensor, budget: int):
