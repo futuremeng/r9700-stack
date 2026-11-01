@@ -493,6 +493,63 @@ Which leaves the transformation itself: 59.8 GiB of expert checkpoint bytes a ra
 (not yet run) is splitting the experts group's `place` time into plugin repack (`_prep_mxfp4` / fold), stock
 `weight_loader` copy, and the H2D submit.
 
+## The load's stalls are swap I/O, not the checkpoint (inst11-20, 2026-11-01)
+
+Nine launches with the copy probe, the stack sampler, the watchdog and the extended footprint sampler. Each step
+killed a hypothesis:
+
+1. **`Tensor.copy_` accounting.** Per rank the target pass makes **148,998 copy_ calls that write only 27.3 GiB but
+   spend 136-163 s of wall**. Split by call size: `n<1ms=148,122 (22-30 s)` and **`>1s = 12-25 calls = 83-121 s`**.
+   So the load's cost is ~15 pathological copies, not the 10^5 small ones (those average 0.18 ms).
+2. **Which copies.** 0.2 MiB copies of `model.language_model.layers.N.mlp.experts.{gate_up,down}_proj_packed`
+   (uint8 = MXFP4 packed) inside stock `_load_w13`/`_load_w2`; slowest 59 s; **all four ranks stall in the same
+   window** (+58.2 / +58.5 / +63.6 / +88.3 s), and it is a different layer each time.
+3. **Not PCIe.** `bench/h2d_probe.py`: a 0.2 MiB pageable copy is **0.049 ms** (3.9 GiB/s), 16-64 MiB copies run at
+   **27-47 GiB/s**, pinned is only 1.3-1.6x better. All 70 GiB of aggregate H2D is a few seconds of PCIe.
+4. **Not the pinned tables by themselves.** `bench/svm_probe.py`: 1, then 4 processes each `hipHostRegister`-ing
+   **9.69 GiB** and hammering 0.2 MiB copies: p50 0.022 ms, p99 0.032-0.055 ms, max 3.6 ms. No stalls at all.
+5. **Not page-ins by the copying thread either.** getrusage around each slow call: the 54.9 s and 50.4 s calls show
+   **minflt+4..9, majflt+2..26** -- essentially no faults of their own.
+6. **What it really waits on** (watchdog thread reading `/proc/self/task/<pid>/{wchan,syscall,stat}` every 0.5 s):
+   `state=D wchan=lock_mm_and_find_vma syscall=-1`, `state=D wchan=folio_wait_bit_common`, plus
+   `state=S wchan=futex_do_wait syscall=202`. A page fault waiting on the mm's mmap_lock, and a wait on a page whose
+   PG_locked is set -- i.e. a read in flight somewhere else in the process.
+7. **Who owns the device then** (2 s sampler with PSI-io, diskstats deltas and per-worker `read_bytes`), in the
+   window that contains the 59 s stall:
+
+   | gpu busy | device read | device write | worker `read_bytes` | swap in use | PSI io / mem |
+   |---|---|---|---|---|---|
+   | **3 %** | 1.2-1.5 GB/s | 1.2-1.5 GB/s | **0 MiB/s** | 5611 -> 5975 MiB | 5-7 % / 2-3 % |
+
+   The device is saturated by the kernel's own swap churn, and the ranks are *not* the ones reading. The pins are
+   not the blocked window either: `hipHostRegister` of 9.69 GiB takes 4.66-4.71 s and finishes before the stalls
+   begin (hostmem now logs those windows).
+
+Mechanism: the load over-commits RAM -- **4 x 9.69 GiB of registered (hence unswappable) host memory allocated
+before the first byte is read**, plus ~15 GiB of anon and ~46 GiB of page cache on a 93.8 GiB box with only
+8.39 GiB of swap. The kernel therefore writes ~5.9 GiB of swap at ~1.4 GB/s on the same NVMe that holds the
+mmap'd checkpoint; every `copy_` that touches a non-resident page queues behind that, GPU idle. Whether and when
+the kernel decides to do this is what makes a load 115.7 s or 186.1 s.
+
+Fix candidates, cheapest first (none run yet):
+
+* **C1 (system, one line, needs root) -- stop the kernel from swapping during the load**: `vm.swappiness=1`, or
+  `swapoff -a` for the harsher A/B. Prediction: the `>1s` bucket collapses from 83-121 s to a few seconds and the
+  total falls toward 70-100 s, because the cost moves to checkpoint re-reads, which are sequential and measured at
+  5.8 GB/s. Falsified if the `>1s` bucket stays large while swap stays unwritten.
+* **C2 (plugin, medium) -- shrink the unswappable footprint**: allocate the PLE table as ordinary anon, fill it
+  during the stream, and `hipHostRegister` it at stream end (4.7 s a rank). Gives reclaim ~39 GiB of options back.
+  Needs the UVA view created after registration, so `ple/int6.py` has to be restructured.
+* **C3 (plugin, small) -- cut the transient staging**: RSS peaks at 68 GiB against 50 GiB steady; the 64 x 286 MiB
+  `cpu->cpu dststrided` copies and vLLM's own "a strided CPU-to-CUDA copy can allocate a full-shard CUDA
+  temporary" path are the candidates.
+
+Two tool bugs found on the way, both worth remembering: `sys._current_frames()` is keyed by the CPython thread id
+(which for the main thread is the pthread handle, e.g. 127864336392320), **not** the kernel TID, while
+`/proc/self/task/<tid>/` wants the PID -- using one id for both fails silently one way and with ENOENT the other.
+And a sampler that ran `pgrep -f 'VLLM::Worker'` put that literal in a child's argv, where `serve/native-flashnext.sh`'s
+own guard (`pgrep -cf 'VLLM[::]'`) matched it and refused a launch that had just passed the gate.
+
 ## How to run it again
 
 ```
@@ -510,3 +567,20 @@ cd ~/r9700-stack && GPUS=0,1,2,3 TP=4 OFFLOAD_GB=0 NSEQ=16 MAXLEN=32768 UTIL=0.9
 Not done here: the 2-card offloaded-experts recipe (needs ~120 GiB of host RAM, this box has 93), the
 27B and GLM configs, `--kv-cache-dtype fp8`, the P2P communicator A/B, and a power-capped run for a
 like-for-like decode comparison against the 210 W gate numbers.
+
+## How to reproduce the load-path analysis
+
+```bash
+bash bench/gate.sh                                   # verified stop + memory-return gate
+cd ~/r9700-stack && setsid bash bench/loadsample.sh &    # 2 s series: RAM, cache, swap, gpu busy, PSI io,
+                                                         #   device rd/wr, per-worker read_bytes
+R9K_LOAD_COPIES=1 R9K_LOAD_STACKS=1 setsid bash bench/relaunch.sh instN   # gate, launch, then print fingerprints
+                                                         #   + load anatomy (copy classes, slow calls, snaps)
+~/venv-r9700/bin/python3 bench/h2d_probe.py 0            # pageable vs pinned H2D, per size
+PIN_GIB=9.7 COPIES=4000 DEV=0 ~/venv-r9700/bin/python3 bench/svm_probe.py # does a 9.7 GiB pin stall small copies?
+```
+
+Switches: `R9K_LOAD_PROF=1` (group timers + phase snapshots), `R9K_LOAD_STACKS=1` (SIGPROF stack sampler: which
+function), `R9K_LOAD_COPIES=1` (`copy_` accounting, fault deltas, slow-call names, watchdog wchan),
+`R9K_PRESTAGE_MTP=0|1` (the E1 control). Read the pair: the log's `slow call` offsets (`+N s into the load`, with
+`probe at HH:MM:SS` in the header line) line up with the sampler CSV's clock columns.

@@ -1,5 +1,36 @@
 # Progress log
 
+## 2026-11-01 (later): the load's stalls are swap I/O -- found by nine instrumented launches
+
+* `Tensor.copy_` accounting (`R9K_LOAD_COPIES=1`): the target pass makes **148,998 copy_ calls per rank writing
+  27.3 GiB and spending 136-163 s**. By call size: 148k calls under 1 ms cost only 22-30 s, while **12-25 calls
+  over 1 s cost 83-121 s**. So the load's variance is ~15 pathological copies, each 0.2 MiB, of
+  `mlp.experts.{gate_up,down}_proj_packed` inside stock `_load_w13`/`_load_w2`, slowest 59 s, and all four ranks
+  stall in the same window.
+* Hypotheses killed one instrument at a time: **PCIe** (`bench/h2d_probe.py`: 0.2 MiB pageable copy = 0.049 ms;
+  16-64 MiB = 27-47 GiB/s; pinned only 1.3-1.6x better), **the pins themselves** (`bench/svm_probe.py`: 4 processes
+  each registering 9.69 GiB and hammering 0.2 MiB copies give p99 0.03 ms, no stalls), and **page-ins by the
+  copying thread** (getrusage around the slow calls: minflt+4..9, majflt+2..26 for a 55 s call).
+* Where it waits (watchdog on `/proc/self/task/<pid>/{wchan,syscall,stat}`): `state=D wchan=lock_mm_and_find_vma`,
+  `state=D wchan=folio_wait_bit_common`, `state=S wchan=futex_do_wait syscall=202`. And who owns the device then
+  (sampler with PSI-io + diskstats + per-worker `read_bytes`): **gpu busy 3 %, disk 1.2-1.5 GB/s read AND
+  1.2-1.5 GB/s write, worker read_bytes 0 MiB/s, swap 5611->5975 MiB, PSI io 5-7 %**. The kernel's swap churn owns
+  the NVMe; vLLM is not the reader.
+* Mechanism: 4 x 9.69 GiB of registered (unswappable) host memory allocated before the first byte is read + ~15 GiB
+  anon + ~46 GiB cache on a 93.8 GiB box with 8.39 GiB swap -> the kernel writes ~5.9 GiB of swap at ~1.4 GB/s on
+  the device that holds the mmap'd checkpoint, and every copy that touches a non-resident page queues behind it,
+  GPU idle. That is the 115.7-186.1 s spread (inst18/19/20: 181.7 / 151.3 / 174.5 s).
+* Next, cheapest first (none run yet): **C1** `vm.swappiness=1` or `swapoff -a` (needs root, one line) -- prediction
+  the `>1s` bucket collapses and the total drops toward 70-100 s, since checkpoint re-reads are sequential at
+  5.8 GB/s; **C2** register the PLE table after the stream instead of at construction (gives reclaim ~39 GiB back,
+  needs the UVA view created post-registration); **C3** cut transient staging (RSS peaks 68 vs 50 GiB steady).
+* Tools fixed along the way, each of which had silently wrong output before: the stack sampler charged the handler
+  itself as the leaf of every sample (`sys._current_frames()` returns the handler's frame for the current thread)
+  and charged idle threads to the denominator; `sys._current_frames()` keys are CPython ids (pthread handles), not
+  kernel TIDs, so `/proc/self/task/<tid>/` needs `os.getpid()` instead; and the footprint sampler's
+  `pgrep -f 'VLLM::Worker'` child matched `serve/native-flashnext.sh`'s own guard and refused a launch that had
+  just passed the gate.
+
 ## 2026-11-01 (same day, five gated relaunches): what the 116-155 s cold start actually is
 
 * Reloading five times behind `bench/gate.sh` (new: `bench/relaunch.sh` prints the fingerprints -- load seconds,
