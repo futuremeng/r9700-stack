@@ -66,8 +66,29 @@ def snap(tag: str) -> None:
                 elif line.startswith("SwapFree:"):
                     swapfree = int(line.split()[1]) // 2**20
         ru = resource.getrusage(resource.RUSAGE_SELF)
-        logger.info("r9700 load snap %-12s Cached=%4d GiB  SwapFree=%3d GiB  majflt=%9d  minflt=%9d",
-                    tag, cached, swapfree, ru.ru_majflt, ru.ru_minflt)
+        rchar = rd_bytes = -1
+        try:
+            io = dict()
+            with open("/proc/self/io") as f:
+                for line in f:
+                    k, v = line.split(":")
+                    io[k] = int(v)
+            rchar, rd_bytes = io.get("rchar", -1), io.get("read_bytes", -1)
+        except OSError:
+            pass
+        psi = ""
+        try:
+            with open("/proc/pressure/memory") as f:
+                rows = dict((l.split()[0], l.split()[1:]) for l in f if l.split())
+            if "some" in rows and "full" in rows:
+                # avg10 is the percent of the last 10 s with tasks stalled; total is microseconds of stall.
+                psi = (f" psi some={rows['some'][0].split('=')[1]:>5}%/{int(rows['some'][3].split('=')[1]) / 1e6:6.1f}s"
+                       f" full={rows['full'][0].split('=')[1]:>5}%/{int(rows['full'][3].split('=')[1]) / 1e6:6.1f}s")
+        except OSError:
+            pass
+        logger.info("r9700 load snap %-12s Cached=%4d GiB  SwapFree=%3d GiB  majflt=%9d  minflt=%9d  "
+                    "rchar=%7.1f GiB  disk reads=%6.1f GiB%s",
+                    tag, cached, swapfree, ru.ru_majflt, ru.ru_minflt, rchar / 2**30, rd_bytes / 2**30, psi)
     except OSError as e:
         logger.info("r9700 load snap %-12s unavailable: %s", tag, e)
 
