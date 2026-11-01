@@ -437,6 +437,49 @@ _SYSCALLS = {"-1": "(user)", "0": "read", "1": "write", "7": "poll", "16": "ioct
 # that has tagged along with every one of them) away.
 _PWLOCK = {"fd": None, "wait": 0.0}
 
+# R9K_PWAL_BEAT=1 submits one trivial kernel every R9K_PWAL_BEAT_S (default 50 ms) on this rank's device for as long
+# as the post-load window is open. What it tests: in tail66 the whole 74.9 s window was spread over dozens of visits
+# with no single call over 2 s, the thread in state R, and the GPUs idle in 1-2 s stretches -- the shape of a device
+# queue that goes to sleep between bursts of submissions and costs a slow wakeup each time, rather than of one slow
+# kernel. If keeping the queue awake removes the window, the window was wakeups. It also separates that from the
+# first-call effect the warm-up covers: run this one with the warm-up off.
+_BEAT = {"on": False, "th": None, "n": 0}
+
+
+def _beat_run(dev: int, interval: float) -> None:
+    import torch
+    x = torch.zeros(4, dtype=torch.float32, device=torch.device("cuda", dev))
+    while _BEAT["on"]:
+        try:
+            x.add_(1)                    # one submission; async, so it cannot block this thread on the device
+            _BEAT["n"] += 1
+        except Exception:                # noqa: BLE001 -- a heartbeat must never break a load
+            _BEAT["on"] = False
+            return
+        time.sleep(interval)
+
+
+def start_beat() -> None:
+    if os.environ.get("R9K_PWAL_BEAT", "0") != "1" or _BEAT["th"] is not None:
+        return
+    import threading
+    import torch
+    dev = torch.cuda.current_device()
+    _BEAT["on"], _BEAT["n"] = True, 0
+    _BEAT["th"] = threading.Thread(target=_beat_run, args=(dev, float(os.environ.get("R9K_PWAL_BEAT_S", "0.05"))),
+                                   name="r9700-queue-heartbeat", daemon=True)
+    _BEAT["th"].start()
+
+
+def stop_beat(tag: str = "window") -> None:
+    if _BEAT["th"] is None:
+        return
+    _BEAT["on"] = False
+    _BEAT["th"].join(timeout=2.0)
+    logger.info("r9700 %s: queue heartbeat %d submissions every %.0f ms", tag, _BEAT["n"],
+                1000 * float(os.environ.get("R9K_PWAL_BEAT_S", "0.05")))
+    _BEAT["th"] = None
+
 
 def _pwlock_acquire(tag: str) -> None:
     import fcntl
@@ -625,6 +668,7 @@ def start_pwal() -> None:
         start_watchdog()                 # the slow version of this window is blocked, not computed: name the line
         _PWA["wd"] = True
     start_pwsamp()                       # ... and count what the whole window is made of, not just one stuck frame
+    start_beat()
     if os.environ.get("R9K_PWAL_SERIAL", "0") == "1":
         _pwlock_acquire("post-load")               # one rank's window at a time (see the note above)
     logger.info("r9700 post-load timer on (gaps between named_modules yields)")
@@ -658,6 +702,7 @@ def stop_pwal(tag: str = "post-load") -> None:
         logger.info("r9700 %s   %7.2f s  %-52s cpu %6.2f/%6.2f s u/s  faults +%d minor +%d major",
                     tag, s, k[1:], uc, sc, mnfl, mjfl)
     stop_pwsamp(tag)
+    stop_beat(tag)
     if _PWLOCK["fd"] is not None or _PWLOCK["wait"]:
         logger.info("r9700 %s: serial window held %.1f s (queue wait %.2f s)", tag,
                     sum(v[1] for k, v in acc.items() if not k.startswith("@")), _PWLOCK["wait"])
