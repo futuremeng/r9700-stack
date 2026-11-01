@@ -1305,6 +1305,12 @@ sum is independent of which regime a launch lands in (1.0x, 2.3x, 2.4x, 4.0x, an
    because time outside the yield-to-yield gaps is not counted at all. Read regime *labels* from the old entries,
    never their sizes.
 
+One more magnitude worth having down, from the same three launches: tail90's **draft** pass (bf16->MXFP4 requant, a
+completely different code path from the post-load repack) took **95.7 s against the usual 6.1-6.6 s** -- 16x, against
+the 2.5x the post-load window showed -- and it did so with `prestage mtp` on and only 1.0 GiB of disk reads, i.e. with
+the bytes already cached. So the slow state is neither code-path-specific nor of constant severity: the same launch
+can pay 2.5x in one phase and 16x in another. `tail83`'s arm showed the same thing (draft 74.5 s).
+
 ## How to reproduce the load-path analysis
 
 ```bash
