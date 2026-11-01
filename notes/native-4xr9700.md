@@ -412,10 +412,11 @@ Same config every time (TP4, NSEQ=32, MAXLEN=32768, OFFLOAD_GB=0), every relaunc
 What that buys, in order of confidence:
 
 1. **The total is a bad metric and my earlier "page cache is worth 4%" understates the picture.** Cold start spans
-   **115.7-155.3 s (34%)**, made of two large components that move in *opposite* directions: target `experts`
-   (32.8-108.0 s) and the draft pass (5.5-76 s). Cache state at launch biases one down and the other up, which is
-   why the sums looked stable across a 40 s spread. Every number in this section is per rank; ranks agree with
-   each other to ~5% inside an instance except the draft pass (inst4: one rank 5.2 s, another 47.7 s -- they race).
+   **115.7-155.3 s (34%)** over the first five instances, and **115.7-186.1 s** counting the E1 runs below, made of
+   two large components that move in *opposite* directions: target `experts` (32.8-121.5 s) and the draft pass
+   (5.5-76 s). Cache state at launch biases one down and the other up, which is why the sums looked stable across a
+   40 s spread. Every number in this section is per rank; ranks agree with each other to ~5% inside an instance
+   except the draft pass (inst4: one rank 5.2 s, another 47.7 s -- they race).
 2. **The target pass re-reads the checkpoint from the block device: 23-28 GiB a rank** (`/proc/self/io`
    `read_bytes` at target end; 0.0 GiB at target start) even though `Cached` sits at 38-46 GiB. The reason is our
    own footprint: four ranks take ~50 GiB of anon, of which **9.7 GiB a rank is the pinned int6 PLE table**
@@ -434,17 +435,63 @@ What that buys, in order of confidence:
    bytes are still resident it costs 5-8 s; when they have been evicted it costs 60-76 s. That is the single most
    avoidable term on this path.
 
-Ranked experiments, cheapest first (none run yet):
+Ranked experiments, cheapest first (E1 run, negative; E2/E3 not run):
 
-* **E1 pre-stage the draft's bf16 ranges.** The safetensors index gives the byte ranges of the MTP tensors; pull
-  them once (a few GiB) before the four ranks start the draft pass, or keep the target pass's copies. Removes up
-  to ~70 s on bad instances and the whole 5-76 s variance. Low risk, plugin-local.
-* **E2 cut the 4x read amplification on the fused experts.** Four ranks stream all 59.8 GiB each (442 GiB of
-  page-cache work a rank) and then narrow to their slice. Rank-sliced reads attack the largest single term
-  (32.8-108 s). More invasive: it touches how the fused-expert weight_loader gets its bytes.
-* **E3 lower the load-time footprint.** Stop writing ~5 GiB of swap per load (defer the 9.7 GiB pinned PLE table
-  per rank until after the expert stream, or stagger the ranks). Stability win first -- it is the incident's
-  precondition -- and it should also cut the 23-28 GiB of re-reads by leaving more cache for the stream.
+* **E1 -- RUN 2026-11-01, NEGATIVE** (see "E1 measured"): pre-reading the draft's 4.86 GiB of bf16 MTP spans
+  (34 tensors, 3 contiguous ranges) never fires, because they are still resident when the target pass ends. The
+  duplicate read happens during consumption, which readahead cannot prevent.
+* **E2 (now top) split the experts `place` time** into plugin repack (`_prep_mxfp4` / fold), stock `weight_loader`
+  copy, and H2D. The term is 32.8-121.5 s for the same 59.8 GiB a rank, and disk bandwidth, PCIe and reclaim stall
+  are each ruled out above, so the ~0.5 GB/s is most likely the format transformation itself. If so the fix is a
+  faster repack path (or doing the fold once per checkpoint rather than once per rank), not an I/O fix.
+* **E3 lower the load-time footprint.** ~40 GiB of pinned PLE table lands before the first byte is read, the pass
+  then runs at `MemAvailable` ~= `Cached`, and 5.4 GiB of swap is written in an 11 s burst. Cutting that is a
+  stability win first (it is the incident's precondition) and should also cut the 22-29 GiB of re-reads. Harder
+  than it looks: the PLE table is allocated at model construction and the weight loader writes into it during the
+  stream, so deferring it means buffering 38.8 GiB of PLE bytes instead.
+
+### E1 measured: prestage does not fire (2026-11-01 04:32-04:48)
+
+| run | R9K_PRESTAGE_MTP | load | `place` | `experts` | draft wall | disk reads charged to the prestage window |
+|---|---|---|---|---|---|---|
+| ctrl6 | 0 (off) | 149.8 s | 124.7 | 92.4 | 12.8-13.6 s | -- |
+| on7 | 1 (on) | 186.1 s | 155.9 | 112.8 | 9.4-17.5 s | **+0.00 GiB, all four ranks** |
+| inst8 | 1 (on) | 161.9 s | 137.6 | 121.5 | 8.7-9.3 s | +0.00 GiB |
+
+The hypothesis is dead on its own instrument: the fadvise queues fine (`prestage mtp: 4.9 GiB in 3 ranges ... 0.01 s
+to queue`) but issues **zero** I/O, because at the end of the target pass the MTP span is still resident (`Cached`
+46 GiB). The duplicate read nevertheless shows up per rank in the *draft* window (+1.7 to +5.7 GiB), i.e. the pages
+are evicted **while** the draft pass consumes them -- and pre-reading cannot prevent eviction. The control's
+per-rank pairing also dulls the earlier story: pid 15192 re-read +5.70 GiB (the whole span) and still finished in
+12.9 s, the same as the ranks that read +1.10 GiB. So the 60-76 s draft instances (inst2, inst4) are a rarer, still
+uncaught regime, and there is no measurable total win here (the on7/inst8 totals are the target pass moving, not
+the draft). E1 stays in the tree as a 0.01 s probe that fires only in the case it was written for.
+
+### Footprint time series during a load (`bench/loadsample.sh`, inst8)
+
+* **04:44:40 -> 04:44:45: worker RSS 6.3 -> 45.9 GiB before the checkpoint stream starts** (target stream opens at
+  04:44:48). ~40 GiB of it is the pinned int6 PLE table, 9.7 GiB a rank, allocated by `ple/int6.py` at model
+  construction -- i.e. the footprint is already there when the first byte is read.
+* The whole target pass then runs with `MemAvailable` pinned at **40.8 GiB** and `Cached` at 37-41 GiB: available
+  RAM ~= page cache, knife-edge. Worker RSS oscillates 48-68 GiB (`rss_max` up to 19.8 GiB against a 12.5 GiB
+  steady state), so ~18 GiB of transient staging buffers ride on top.
+* Swap is not a creep but a burst: 0.1 GiB until 04:45:46, then **0.7 -> 4.2 -> 5.4 GiB inside 11 s**
+  (04:45:48-04:45:59), in the middle of the experts phase. This is the same regime that made the amdgpu SVM
+  deadlock reachable.
+* `Mlocked` reports 25.9 MiB: `hipHostRegister` memory is not counted there, so locked RAM is invisible to that
+  counter. Use worker RSS plus what the plugin knows it allocated.
+
+What that rules out for the experts term (92-121 s to place 59.8 GiB a rank = 0.5-0.65 GB/s a rank):
+
+* **not disk bandwidth** -- 22-29 GiB of re-reads over ~130 s is 0.2 GB/s a rank, 0.8 GB/s aggregate, while the raw
+  checkpoint streams at 5.8 GB/s (110.6 GiB in 19 s, measured earlier in this line of work);
+* **not PCIe** -- each rank moves 19.65 GiB to its GPU, ~4-10 s of H2D for all four;
+* **not reclaim stall** -- PSI memory grows ~2.7 s across the entire pass.
+
+Which leaves the transformation itself: 59.8 GiB of expert checkpoint bytes a rank come in, the per-rank model is
+19.65 GiB, so the loader is rewriting ~3x of data on the way in at ~0.5 GB/s. The measurement that would settle it
+(not yet run) is splitting the experts group's `place` time into plugin repack (`_prep_mxfp4` / fold), stock
+`weight_loader` copy, and the H2D submit.
 
 ## How to run it again
 

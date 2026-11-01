@@ -21,11 +21,24 @@
   requantize them; 5-8 s when those bytes are still resident, 60-76 s when they are not, and inside one instance
   one rank paid 5.2 s while another paid 47.7 s (they race). KV pool 496,374 tok is identical on every instance,
   so it is not the variable.
-* Ranked next experiments (none run yet, all in `notes/native-4xr9700.md`): **E1** pre-stage the draft's bf16 byte
-  ranges once (kills up to ~70 s and the whole variance, plugin-local); **E3** lower the load-time footprint -- no
-  more ~5 GiB of swap written per load, which is also the incident's precondition; **E2** attack the 4x read
-  amplification of the 192 fused expert tensors (4 ranks x 59.8 GiB streamed = 442 GiB of page-cache work), the
-  biggest term but the most invasive.
+* **E1 (prestage the draft's byte ranges) is negative, and died on its own instrument.** The draft consumes 34 MTP
+  tensors, 4.86 GiB, sitting in **3 contiguous spans** (4.82 GiB of them one span of model-00020.safetensors:
+  `mtp.layers.0.mlp.experts.gate_up_proj` 3.2 GiB bf16 + `down_proj` 1.6 GiB). fadvise(WILLNEED) queues them in
+  0.01 s but reads **0.00 GiB on all four ranks** -- at the end of the target pass the span is still resident. The
+  duplicate read still shows up per rank *during* the draft window (+1.7 to +5.7 GiB): pages are evicted while they
+  are being consumed, which readahead cannot prevent. Control vs treatment: 149.8 s (off) vs 186.1 / 161.9 s (on),
+  and the difference lives in the target pass, not the draft. Code stays as a 0.01 s probe.
+* **Footprint time series (`bench/loadsample.sh`) says where the pressure comes from:** worker RSS goes 6.3 ->
+  45.9 GiB in 5 s **before the checkpoint stream opens** (the pinned int6 PLE table, 9.7 GiB a rank, is allocated
+  at model construction), the pass then runs at `MemAvailable` 40.8 GiB with `Cached` 37-41 GiB (available ~=
+  cache), RSS oscillates 48-68 GiB (up to 19.8 GiB a worker against 12.5 steady), and swap jumps 0.1 -> 5.4 GiB
+  inside 11 s mid-pass. `Mlocked` shows only 25.9 MiB -- `hipHostRegister` is not counted there.
+* **That rules the usual suspects out for the experts term** (92-121 s per rank for 59.8 GiB = 0.5-0.65 GB/s):
+  re-reads are only 0.2 GB/s a rank against a 5.8 GB/s raw checkpoint stream; H2D is 19.65 GiB a rank (~4-10 s for
+  all four); PSI stall is ~2.7 s across the whole pass. What is left is the transformation: 59.8 GiB in, 19.65 GiB
+  of model out per rank, ~3x rewriting at ~0.5 GB/s. Next measurement: split the experts `place` into plugin repack
+  (`_prep_mxfp4`/fold) vs stock `weight_loader` copy vs H2D submit -- if it is the repack, the fix is a faster
+  repack (or one fold per checkpoint instead of one per rank), not an I/O fix.
 
 ## 2026-11-01 (after the reboot): the throughput baseline is protocol-defined; the envelope is a flat 300.0 W
 
