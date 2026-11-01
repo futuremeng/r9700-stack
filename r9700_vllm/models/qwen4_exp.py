@@ -88,6 +88,8 @@ def target_weights(weights):
         seen: dict[str, list] = {}
         if _PROF:
             prof.snap("target start")
+            prof.start_stacks()
+            prof.install_copy_probe()     # must be installed before any weight is placed
         t = time.perf_counter()
         for n, w in weights:
             now = time.perf_counter(); pull += now - t
@@ -105,6 +107,9 @@ def target_weights(weights):
                 g[2] += now - t
             t = now
         if _PROF:
+            prof.dump_stacks("target pass")      # which functions, not just which tensor group
+            prof.report_copies("target pass")
+            prof.stop_stacks()
             parts = ", ".join(f"{k} {v[0]}t/{v[1] / 2**30:.1f}GiB/{v[2]:.1f}s" for k, v in sorted(seen.items()))
             logger.info("r9700 load profile (target): pull %.1f s, place %.1f s | %s", pull, place, parts)
             for k, v in sorted(seen.items(), key=lambda kv: -kv[1][2])[:4]:

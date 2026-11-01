@@ -12,7 +12,7 @@ bash bench/gate.sh > "$GATE" 2>&1
 tail -2 "$GATE"
 grep -q "^gate: PASS" "$GATE" || { echo "refusing to launch: gate failed"; exit 3; }
 
-R9K_LOAD_PROF=1 R9K_PRESTAGE_MTP=${R9K_PRESTAGE_MTP:-1} GPUS=0,1,2,3 TP=4 OFFLOAD_GB=0 NSEQ=32 MAXLEN=32768 \
+R9K_LOAD_PROF=1 R9K_PRESTAGE_MTP=${R9K_PRESTAGE_MTP:-1} R9K_LOAD_STACKS=${R9K_LOAD_STACKS:-0} R9K_LOAD_COPIES=${R9K_LOAD_COPIES:-0} GPUS=0,1,2,3 TP=4 OFFLOAD_GB=0 NSEQ=32 MAXLEN=32768 \
   setsid bash serve/native-flashnext.sh > "$LOG" 2>&1 &
 
 load=""
@@ -41,5 +41,7 @@ done
 echo "== load anatomy ($LABEL) =="
 grep -oE "r9700 prestage mtp.*" "$LOG" | sed -E 's/.*(r9700)/  \1/' | sort -u
 grep -oE "load profile .draft.*" "$LOG" | sed 's/^/  draft: /'
+grep -oE "r9700 copies +[0-9]+ calls.*" "$LOG" | sed 's/^/  /' | sort -u | cut -c1-165
+grep -oE "r9700 stacks leaf +[0-9.]+%.*" "$LOG" | sed 's/^/  /' | sort -u | head -5 | cut -c1-125
 grep -oE "snap (target end|prestage mtp end|draft end).*" "$LOG" | sed -E 's/.*(snap )/  \1/' | sort -u | cut -c1-170
 [ "${PROBE32:-0}" = 1 ] && PROBE_OUT=$HOME/logs/probe-$LABEL.txt bash bench/probe32.sh
