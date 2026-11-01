@@ -1,3 +1,17 @@
+## 2026-11-01 (final): the diffuse slow window IS a paging event -- major faults inside the window separate the shapes 17:1
+
+* final44 launched with the warm-up on and still took 11.1-11.8 s a rank, and its census said why: each worker went
+  `VmSwap 921 -> 586 MiB` with **+38,158 major faults** in an 11 s window; the box swapped in ~1.1 GiB while the four
+  ranks did it.
+* Summing major faults over the four workers' windows: clean warmed runs **8.8-9.0k**; shape (a) (tail57, one 73.8 s
+  visit) **16.1k**; diffuse slow runs (tail66/67/68, final44) **150-162k**. No overlap, 17:1.
+* Correction to C13 ("the swap reading is dead"): I had compared VmSwap *at window start* (578 vs 616 MiB, no
+  separation). The separating variable is faults *during* the window. Shape (a) is not a paging event; shape (b) is.
+* That makes the lever host-memory peak, not the device: workers end the load with 0.6-0.9 GiB of themselves in an
+  8 GiB swap that is never drained between launches, and the elevated launches all came late in a day of ~25
+  relaunches. Next candidates: release host staging right after each tensor is placed; keep the post-load
+  destination buffers resident; drain/enlarge swap between heavy launches.
+
 ## 2026-11-01 (later night): two shapes of tail; the device is idle while the host waits; a heartbeat does not help
 
 * New instrument: `gpu_busy_percent` from sysfs (no root, no ROCm tooling) sampled at 0.25 s -- the window census now

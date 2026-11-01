@@ -1143,6 +1143,38 @@ calling it a rule (shape (a) at 578 MiB), so it stays a correlation: **the more 
 the post-load pass starts, the more of the pass is spent waiting on a device that is not computing.** Nothing here
 says why the wait is charged as user CPU and not as iowait, which is the part a fix would want.
 
+## C16: the paging reading is not dead -- I had the wrong variable; major faults *inside* the window separate the shapes 17:1
+
+final44 was launched with the warm-up on and still took 11.1-11.8 s on every rank, and its census said why:
+
+```
+r9700 target post-load   self VmSwap  921 ->   586 MiB (max 921)  faults +48290 minor +38158 major   box pswpin +272442 pswout +0 pages
+```
+
+Each worker walked ~330 MiB of its own memory back in during an 11 s window, and the box swapped in ~1.1 GiB while
+the four of them did it. Summing major faults over the four workers' windows, every instance measured today:
+
+| instance | windows (s) | major faults during the windows |
+|---|---|---|
+| tail61 / tail63 / tail65 (clean, warmed) | 4.4-4.8 | 8,839 / 9,036 / 8,765 |
+| tail57 (shape (a): one 73.8 s visit) | 73.8 73.4 5.4 5.4 | 16,063 |
+| tail67 / final44 | 11.1-12.2 | 158,946 / 150,145 |
+| tail66 / tail68 | 12-75 | 162,264 / 159,925 |
+
+So C13's "the swap reading is dead" was wrong, and the reason matters: I compared **VmSwap at the start of the
+window** (578 vs 616 MiB -- no separation) when the separating variable is **faults taken during the window** -- a
+17:1 separation (9k vs 150-162k) with no overlap. Shape (a) sits near the clean value (16k), which is why it survived
+the warm-up reasoning, and shape (b) is entirely a paging event: the pass is writing into (or reading) hundreds of
+megabytes of the worker's own anonymous memory that the load had already swapped out, and each of those pages costs a
+read from swap while the device waits doing nothing -- which is exactly what the gpu-busy sparkline showed.
+
+The lever this points at is not the device at all: it is the host-memory peak of the load. Each worker ends the load
+with 0.6-0.9 GiB of itself in an 8 GiB swap that is never drained between launches (and today's ~25 relaunches made
+it worse: the elevated launches came late in the day). Options in order of directness: release host-side staging
+as soon as each tensor is placed (so fewer anon pages are alive to be evicted), keep the destination buffers of the
+post-load pass resident (they are what the pass writes into), and -- separately, as operations -- note that this box
+would benefit from the swap being drained or enlarged between heavy launches.
+
 
 ## How to reproduce the load-path analysis
 
