@@ -11,11 +11,14 @@ import torch
 
 from vllm.logger import init_logger
 
+from ..utils import prof
+
 logger = init_logger("vllm." + __name__)
 
 _CHUNK_BYTES = 256 << 20
 
 
+@prof.timed("moe prep.permute_in_place")
 def permute_in_place(packed: torch.Tensor) -> torch.Tensor:
     """packed [E, N, K/2] uint8 (GPU or UVA) -> same storage viewed as [E, N/16*K/16*32] int32 fragment order."""
     from ..kernels.moe import permute_fragments
@@ -30,6 +33,7 @@ def permute_in_place(packed: torch.Tensor) -> torch.Tensor:
     return packed.view(E, -1).view(torch.int32)
 
 
+@prof.timed("moe prep.pack_scales_gpu")
 def pack_scales_gpu(scale: torch.Tensor, device) -> torch.Tensor:
     from ..kernels.moe import pack_scales
     E = scale.shape[0]
@@ -61,6 +65,7 @@ def as_param(t: torch.Tensor, like: torch.nn.Parameter) -> torch.nn.Parameter:
     return p
 
 
+@prof.timed("moe prep.maybe_attach_cache")
 def maybe_attach_cache(method, layer) -> None:
     import re
     from . import cache as C

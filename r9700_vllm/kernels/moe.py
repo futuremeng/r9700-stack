@@ -13,6 +13,8 @@ from dataclasses import dataclass
 
 import torch
 
+from ..utils import prof
+
 GROUP = 32
 MOE_BLOCK = 16
 
@@ -187,6 +189,7 @@ class FoldStats:
                 f"inexact(d>{FOLD_EXACT})={100 * self.p_inexact:.3f}% flushed(d>{FOLD_REACH})={100 * self.p_flush:.4f}%")
 
 
+@prof.timed("kernels fold_stats")
 def fold_stats(wsr: torch.Tensor, chunk: int = 64 << 20) -> FoldStats:
     """Distribution of d = row reference exponent - block exponent over a packed [E, K/32 + 1, N] scale tensor
     (pack_scales layout; the last row is the reference). Chunked over experts, any device."""
@@ -217,6 +220,7 @@ def fold_why(st: FoldStats) -> str:
 _FOLD_LOG: list[tuple[str, bool, FoldStats]] = []
 
 
+@prof.timed("kernels fold_decide")
 def fold_decide(wsr: torch.Tensor, name: str = "", log=None) -> bool:
     """Whether the MXFP4 tensor `wsr` (pack_scales layout) is served with the folded-exponent kernels: R9K_FOLD off
     -> False without looking; on -> fold_ok(fold_stats); force -> True. Every decision is logged (with the stats and

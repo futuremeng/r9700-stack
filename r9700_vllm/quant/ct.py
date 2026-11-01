@@ -51,6 +51,7 @@ from vllm.model_executor.layers.quantization.compressed_tensors.schemes.compress
 
 from ..moe.experts import R9700Mxfp4Experts, r9k_available
 from ..moe import fold, prep
+from ..utils import prof
 
 logger = init_logger("vllm." + __name__)
 
@@ -74,11 +75,13 @@ class R9kMxfp4MoEMethod(CompressedTensorsW4A4Mxfp4MoEMethod):
         self.experts_cls = R9700Mxfp4Experts
         logger.info_once("r9700: CT MXFP4 MoE -> R9700Mxfp4Experts (libr9k grouped MXFP4xFP8)")
 
+    @prof.timed("ct moe process_weights_after_loading")
     def process_weights_after_loading(self, layer) -> None:
         self._prep_mxfp4(layer)
         self._install_kernel(layer)
         prep.maybe_attach_cache(self, layer)
 
+    @prof.timed("ct moe _prep_mxfp4")
     def _prep_mxfp4(self, layer) -> None:
         dev = torch.device("cuda", torch.cuda.current_device())
         w13p, w2p = layer.w13_weight_packed, layer.w2_weight_packed
@@ -121,6 +124,7 @@ class R9kW8A8Fp8(CompressedTensorsW8A8Fp8):
 
     r9k_mode = "block"
 
+    @prof.timed("ct linear _to_mxfp4")
     def _to_mxfp4(self, layer, w, bs) -> bool:
         """R9K_FP8_TO_MXFP4=<regex|1>: requantize this fp8 linear to MXFP4 (half the weight bytes; GGZ14 serves the
         27B this way by default -- same GSM8K). Exact dequant (per-channel or 128x128 block scales), MSE-searched
@@ -160,6 +164,7 @@ class R9kW8A8Fp8(CompressedTensorsW8A8Fp8):
         logger.info_once("r9700: fp8 linears requantized to MXFP4 (R9K_FP8_TO_MXFP4=%s)", pat)
         return True
 
+    @prof.timed("ct linear process_weights_after_loading")
     def process_weights_after_loading(self, layer) -> None:
         from ..kernels import fp8 as F8
         from compressed_tensors.quantization import QuantizationStrategy
