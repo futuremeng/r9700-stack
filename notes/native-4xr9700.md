@@ -568,6 +568,53 @@ Not done here: the 2-card offloaded-experts recipe (needs ~120 GiB of host RAM, 
 27B and GLM configs, `--kv-cache-dtype fp8`, the P2P communicator A/B, and a power-capped run for a
 like-for-like decode comparison against the 210 W gate numbers.
 
+## C1 was inert, C2 (late pinning) fixed it (inst sw1-21, late22-24)
+
+First a correction to the table above: the sampler's device counter summed `/proc/diskstats` whole-disk lines *and*
+their partition lines, which report the same sectors twice, so "1.2-1.5 GB/s read + 1.2-1.5 GB/s write" was about
+**2x too high** (real: ~0.6-0.75 GB/s each way). The qualitative finding is unchanged -- the device was doing swap
+writes concurrently with reads while the ranks' own `read_bytes` stood still and the GPUs sat at 3 %.
+
+* **C1 `vm.swappiness=1` (applied by the operator) did nothing, and that is itself the result.** With the knob at 1
+  the kernel still wrote the same ~5.9 GiB of swap (peak 5982 MiB) and the `>1s` bucket was unchanged (sw1-21: 14-19
+  calls, 117-127 s; place 169.9 s, total 189.6 s). A swappiness knob steers the *balance* between anon and page-cache
+  reclaim, but 38.8 GiB of the anon is **registered**, so it is not in the anon reclaim set at all: the kernel's only
+  levers were the ~15 GiB of ordinary anon and the checkpoint cache. The fix has to change what is *unswappable*.
+* **C2 late pinning works.** `R9K_PLE_PIN_LATE=1` allocates the int6 PLE table as ordinary host memory, fills it
+  during the stream (`load_int6_shard` writes through `_r9k_host.narrow`, which does not care about pinning) and
+  calls `hipHostRegister` + rebuilds the UVA view at the end of the target stream -- still before the first forward,
+  the dummy run and graph capture.
+
+  | instance | pin | total load | place | experts | `>1s` copies | hipHostRegister |
+  |---|---|---|---|---|---|---|
+  | sw1-21 | early | 189.6 s | 169.9 s | 138.3 s | 14-19 calls, 117-127 s | 4.7 s, before the stream |
+  | late22 | early | 174.8 s | 151.6 s | 113.1 s | 16-22 calls, 103-110 s | 5.0 s |
+  | **late23** | **late** | 118.6 s | **48.6 s** | **37.3 s** | **0 calls, 0.0 s** | 7.8-8.2 s, after the stream |
+  | **late24** | **late** | **72.5 s** | 47.1 s | 37.4 s | **0 calls, 0.0 s** | 6.4-6.6 s, after the stream |
+
+  Registration is ~1.4-1.7x more expensive late (it has to pull the table's pages back off swap: 39 GiB in ~8 s =
+  ~5 GB/s) and swap peaks at **all 8 GiB** during the load instead of 5.9 GiB -- the tables are now the pressure
+  valve -- but `MemAvailable` never fell below 36.2 GiB, kern.log shows no new blocked tasks, nothing was OOM-killed,
+  and the four-rank simultaneous 5-60 s `copy_` stalls disappeared completely. Steady state afterwards is unchanged:
+  swap back to ~4 GiB free, KV cache 496,374 tokens (which is the recorded value; late23's 487,879 was instance
+  drift), GSM8K 98/100, needles 3/3, `@32 x300` 1574 tok/s, `@32 x1200` 1804, `@16 x300` 1134, 300 W median at
+  busy==100.
+* **With the stalls gone, the load's shape is finally legible.** late24: place 47.1 s = experts 37.4 s + other 8.6 s,
+  and the copy histogram is now `n<1ms=147,366 (29.7 s) 1-10ms=1,513 (3.7 s) 10-100ms=82 (2.5 s) 0.1-1s=37 (7.4 s)
+  >1s=0`. So essentially *all* remaining place time is the 147k small copies doing real work (27.3 GiB), the draft
+  pass is 3.3-6.1 s, and there is no I/O anomaly left in the target pass.
+* **The draft pass's "44 s requant" was not the requant.** Splitting it (to-GPU / search / cat) gives search
+  **1.5-1.6 s over 5 calls** and to-GPU 0.7 s in late24, while a standalone `quantize_mxfp4_search` microbench
+  (`bench/mtpquant_probe.py`, run with the GPUs free) settles at **4.3 GiB-of-bf16/s** plus a fixed **0.39 s** of
+  launch overhead. late23's 44.1 s was almost entirely `x.cuda()` paging in the draft's bf16 bytes from a device
+  that was busy swapping. So the draft pass's 3.5-48.8 s swing is a page-cache question, not a quantization one --
+  and it is the last big swing left in the load.
+* Next, in order: (i) re-test **E1 prestage with late pinning** -- it failed before because the MTP span was evicted
+  during consumption, but the tables are now swappable, so the readahead may actually survive; (ii) a **cold-cache**
+  A/B (`sync; echo 3 > /proc/sys/vm/drop_caches` before the launch, needs root) to get the boot-cold number for late
+  vs early pinning, which is the number that matters on first boot; (iii) more swap (needs root) -- late pinning now
+  deliberately uses all 8 GiB, and that is the one sharp edge left.
+
 ## How to reproduce the load-path analysis
 
 ```bash

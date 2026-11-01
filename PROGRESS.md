@@ -20,10 +20,28 @@
   anon + ~46 GiB cache on a 93.8 GiB box with 8.39 GiB swap -> the kernel writes ~5.9 GiB of swap at ~1.4 GB/s on
   the device that holds the mmap'd checkpoint, and every copy that touches a non-resident page queues behind it,
   GPU idle. That is the 115.7-186.1 s spread (inst18/19/20: 181.7 / 151.3 / 174.5 s).
-* Next, cheapest first (none run yet): **C1** `vm.swappiness=1` or `swapoff -a` (needs root, one line) -- prediction
-  the `>1s` bucket collapses and the total drops toward 70-100 s, since checkpoint re-reads are sequential at
-  5.8 GB/s; **C2** register the PLE table after the stream instead of at construction (gives reclaim ~39 GiB back,
-  needs the UVA view created post-registration); **C3** cut transient staging (RSS peaks 68 vs 50 GiB steady).
+* Ran the two candidates: **C1 `vm.swappiness=1` is inert** (the kernel still wrote the same 5.9 GiB of swap and the
+  `>1s` bucket was unchanged) -- which makes sense, because the 38.8 GiB is *registered* and therefore not in the
+  anon-reclaim set the knob steers. **C2 late pinning works**: with `R9K_PLE_PIN_LATE=1` the PLE table is allocated as
+  ordinary memory, filled during the stream and registered at the end of the target stream (before the first
+  forward); the `>1s` copy bucket goes to **zero on all four ranks**, place falls from 151.6-169.9 s to **47-49 s**,
+  experts from 113-138 s to **37.3-37.4 s**, and the total from 174.8/189.6 s to **118.6/72.5 s** (late23/late24).
+  Cost: `hipHostRegister` 4.7 -> 6.4-8.2 s and swap now peaks at all 8 GiB during the load (the tables became the
+  pressure valve); MemAvailable trough 36.2 GiB, no OOM, no new blocked tasks.
+* Runtime after late pinning is unchanged: KV cache 496,374 tokens (late23's 487,879 was drift -- that closes the
+  earlier -1.2% question), GSM8K 98/100, needles 3/3, `@32 x300` 1574, `@32 x1200` 1804, `@16 x300` 1134 tok/s,
+  300 W median at busy==100.
+* With stalls gone the load is legible at last: place 47.1 s is experts 37.4 s + other 8.6 s, and the copy histogram is
+  147,366 calls under 1 ms for 29.7 s -- real work, no anomaly. The draft pass's scary-looking "44.1 s bf16->MXFP4
+  requant" is **not** the requant: split, the search is 1.5-1.6 s over 5 calls and to-GPU 0.7 s; a standalone
+  `quantize_mxfp4_search` (`bench/mtpquant_probe.py`) runs at 4.3 GiB-of-bf16/s plus 0.39 s of launch. The 44 s was
+  `x.cuda()` paging the draft's bf16 in from a swapping device. Last big swing left = the draft pass (3.5-48.8 s).
+* Corrected my own earlier number: the sampler summed `/proc/diskstats` whole-disk *and* partition lines, so the
+  "1.2-1.5 GB/s read + write" in the stall window was 2x too high (~0.6-0.75 GB/s each). Conclusion unaffected.
+* Next: re-test **E1 prestage with late pinning** (it failed before because the MTP span was evicted during
+  consumption; now the tables are swappable so the readahead may survive), a **cold-cache** A/B
+  (`sync; echo 3 > /proc/sys/vm/drop_caches`, needs root) for the first-boot number, and more swap (needs root),
+  since late pinning now intentionally uses all 8 GiB.
 * Tools fixed along the way, each of which had silently wrong output before: the stack sampler charged the handler
   itself as the leaf of every sample (`sys._current_frames()` returns the handler's frame for the current thread)
   and charged idle threads to the denominator; `sys._current_frames()` keys are CPython ids (pthread handles), not
