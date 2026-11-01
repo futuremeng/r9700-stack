@@ -2,6 +2,10 @@
 # Footprint time series during a load, to size the load-time memory fix (E3). prof.snap only gives phase
 # boundaries; what matters here is WHEN the ranks take RAM and when Cached falls, on the same clock.
 #   usage: bash bench/loadsample.sh [outdir]      (run alongside bench/relaunch.sh; stop with pkill -f loadsample)
+# single instance: a second sampler would write a second CSV and double the CPU of the first
+exec 9>/tmp/r9k-loadsample.lock 2>/dev/null || exit 0
+flock -n 9 || { echo "loadsample: another sampler already holds the lock; exiting" >&2; exit 0; }
+
 OUT=${1:-$HOME/logs}
 F=$OUT/loadsample-$(date +%H%M%S).csv
 rank_prev=0

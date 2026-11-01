@@ -1,4 +1,20 @@
-# Progress log
+## 2026-11-01 (end of day): swap capacity A/B says *less* swap is better for this load; sampler tooling fixed
+
+* Added a 24 GiB swapfile (SwapTotal 8 -> 32 GiB) and re-ran late pinning both ways: **cold 68.7 -> 103.2 s, warm
+  72.3/72.5 -> 98.3 s**, `hipHostRegister` 5-8 s -> **20-30 s**, swap peak 8.2 GiB (saturated) -> 25-28 GiB. With room
+  to move, the kernel parks the not-yet-registered PLE tables in swap and that debt is paid back at registration.
+  So the 8 GiB swap was acting as a **budget that protects the load**, and my recommendation to widen it was wrong --
+  measured twice, then reverted (`swapoff`, `rm`, fstab cleaned) and confirmed: **final31 = 73.6 s, `>1s` copies 0**.
+* Cleaner metric came out of it: the four workers' total disk reads per load, **109.5-118.6 GiB at 8 GiB swap** against
+  **134.8-137.5 GiB at 32 GiB swap** (+17%) -- same stalls either way (zero), just more page-in work.
+* Two of my own measurement bugs found and fixed, both of which had produced numbers I quoted:
+  13 `loadsample.sh` instances were still running (one continuous CSV, so a whole-file `max swap` reported 25 GiB on
+  an 8 GiB box), and samplers started before the diskstats partition fix double-count `disk_rd_mbs`/`disk_wr_mbs`.
+  New: `bench/loadstats.py` (per-instance windows taken from the launch log's own timestamps) and a `flock` in
+  `bench/loadsample.sh` so only one sampler can run. The corrected per-instance table is in `notes/native-4xr9700.md`.
+* Open for next time: E1 prestage re-tested under late pinning; the draft pass's 3.4-48.8 s swing (data movement into
+  the draft, the search itself is 1.5-1.7 s of it); and if more swap is ever wanted, cap vLLM's own swap budget
+  (e.g. `MemorySwapMax=8G` in a slice) rather than widening what the load may use.
 
 ## 2026-11-01 (later still): cold-cache A/B done, late pinning is now the default
 

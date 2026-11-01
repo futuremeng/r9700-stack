@@ -660,6 +660,40 @@ may move memory that we are about to pin. My earlier recommendation to add swap 
 is (e.g. a systemd slice with `MemorySwapMax=8G` around the server, untested here) rather than widening what the load
 may use.
 
+## Per-instance resource table, windowed by each launch's own log (`bench/loadstats.py`)
+
+A whole-CSV maximum is meaningless when one sampler outlives several launches (that is how I first read "max swap
+25265 MiB" on a box with 8 GiB of swap), so `bench/loadstats.py` takes the launch logs, reads the wall-clock stamps
+that bracket the load out of them, and reports only the rows inside that window. `bench/loadsample.sh` is now
+single-instance (`flock` on `/tmp/r9k-loadsample.lock`) because 13 samplers had accumulated.
+
+| instance | swap | PLE pin | load | min MemAvailable | max swap | disk read by the 4 workers | peak RSS sum |
+|---|---|---|---|---|---|---|---|
+| sw1-21 | 8 GiB | early | 189.6 s | 40.1 GiB | 5982 MiB | 110.9 GiB | 63.2 GiB |
+| late22 | 8 GiB | early | 174.8 s | 39.9 | 6002 | 109.5 | 63.4 |
+| late23 | 8 GiB | late | 118.6 s | 41.1 | 8188 (saturated) | 114.0 | 72.0 |
+| late24 | 8 GiB | late | 72.5 s | 38.4 | 8190 (saturated) | 112.0 | 74.6 |
+| cold-late25 | 8 GiB, cold | late | 68.7 s | 39.3 | 8191 (saturated) | 118.6 | 83.0 |
+| cold-early26 | 8 GiB, cold | early | 114.5 s | 40.0 | 6287 | 115.5 | 77.6 |
+| swap32-warm29 | 32 GiB | late | 98.3 s | 39.7 | 28074 | **134.8** | 73.1 |
+| swap32-cold30 | 32 GiB, cold | late | 103.2 s | 40.4 | 25265 | **137.5** | 78.3 |
+| final31 | 8 GiB | late | 73.6 s | 40.2 | 8191 (saturated) | 115.5 | 67.6 |
+
+Three things this makes clear that prose did not:
+
+* Pinning early never *saturated* the 8 GiB of swap (5982-6287 MiB used); late pinning always did (8188-8191). The
+  small swap is the budget that stops the kernel from relocating the tables, and the budget only bites when the
+  tables are swappable.
+* The 32 GiB-swap runs read **+17%** more from disk (134.8-137.5 GiB against 109.5-118.6) -- the tables and other anon
+  come back from swap as page-in work. Slower load, more I/O, same stalls.
+* `MemAvailable` never goes below ~38 GiB in any variant, so none of this is close to an OOM: the difference between
+  68.7 s and 103.2 s is entirely about *where* the kernel puts memory, not about running out of it.
+
+Caveat to keep in mind when reading the older rows: samplers started before the diskstats partition fix
+(~06:20) double-count `disk_rd_mbs` / `disk_wr_mbs` (whole disk plus its partitions). The `swapused_mib`,
+`memavail_gib`, `rank_rd_mbs` and `rss_sum_gib` columns are unaffected, and every swap-size comparison above was
+done with post-fix samplers.
+
 ## How to reproduce the load-path analysis
 
 ```bash
@@ -669,6 +703,10 @@ cd ~/r9700-stack && setsid bash bench/loadsample.sh &    # 2 s series: RAM, cach
 R9K_LOAD_COPIES=1 R9K_LOAD_STACKS=1 setsid bash bench/relaunch.sh instN   # gate, launch, then print fingerprints
                                                          #   + load anatomy (copy classes, slow calls, snaps)
 ~/venv-r9700/bin/python3 bench/h2d_probe.py 0            # pageable vs pinned H2D, per size
+LD_LIBRARY_PATH=$HOME/opt/openmpi/usr/lib/x86_64-linux-gnu \
+  ~/venv-r9700/bin/python3 bench/mtpquant_probe.py       # what one MXFP4 requant chunk costs with the GPUs free
+~/venv-r9700/bin/python3 bench/loadstats.py ~/logs/relaunch-cold-late25.log ~/logs/relaunch-cold-early26.log
+                                                         #   resource stats windowed by the launch's own stamps
 PIN_GIB=9.7 COPIES=4000 DEV=0 ~/venv-r9700/bin/python3 bench/svm_probe.py # does a 9.7 GiB pin stall small copies?
 ```
 
