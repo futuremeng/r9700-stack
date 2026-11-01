@@ -66,7 +66,19 @@ ARGS=(--served-model-name "${SERVED_NAME:-Qwen3.8}" --host 0.0.0.0 --port "${POR
 [ -n "${KVDTYPE:-}" ] && ARGS+=(--kv-cache-dtype "$KVDTYPE")
 [ "${PREFIX_CACHE:-0}" = 0 ] && ARGS+=(--no-enable-prefix-caching)
 [ "${EAGER:-0}" = 1 ] && ARGS+=(--enforce-eager)
-MTP=${MTP:-3}
+# Draft depth, measured 2026-11-01 on this box (fresh instances, 3 x 300-token @32 samples each side, plus ITL):
+#   MTP=2: @32 1,762 / 1,538 / 1,750 -> median 1,755 aggregate at 57.6 tok/s a stream; @16 1,265 / 83.4;
+#          median ITL 13.0 ms (1 stream), 20.8 (8), 37.1 (32); single-stream 179.8 tok/s; GSM8K 98/100, needles 3/3
+#   MTP=3: @32 1,385 / 1,488 / 1,509 -> median 1,488 at 48.8 a stream; @16 1,202 / 80.7;
+#          median ITL 14.0 / 23.4 / 49.8 ms; single-stream 197.6 tok/s; GSM8K 97/100, needles 3/3
+# So 2 wins everything except one-stream latency: +18% aggregate and +18% per-stream at 32 in flight, ITL at 32
+# down 26%, and it frees 10,922 KV tokens (491,520 -> 502,442). It costs ~9% of single-stream decode (197.6 ->
+# 179.8; bench.py's decode-only metric reads 180.1 -> 170.4). The mechanism is the row budget: a decode step runs
+# NSEQ x (MTP+1) rows -- 128 at MTP=3, 96 at MTP=2 -- while the third draft row only adds ~0.3 accepted tokens a
+# step (2.54 -> 2.21 accepted at conc 1). Above ~16 streams the four cards are sitting on the ~300 W envelope, so
+# those 32 rows a step are exactly what is scarce. MTP=3 is the better choice for a single interactive stream:
+# MTP=3 bash serve/native-flashnext.sh.
+MTP=${MTP:-2}
 [ -n "$MTP" ] && ARGS+=(--speculative-config "{\"method\": \"mtp\", \"num_speculative_tokens\": $MTP${SPEC_EXTRA:+, $SPEC_EXTRA}}")
 [ -n "${ATTN:-}" ] && ARGS+=(--attention-backend "$ATTN")
 CC=()

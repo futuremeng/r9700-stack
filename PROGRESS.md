@@ -1,5 +1,23 @@
 # Progress log
 
+## 2026-11-01: draft depth is a concurrency question; the native default becomes MTP=2
+
+* Measured on two fresh instances (3 x 300-token samples at 32 in flight each, plus ITL, plus the quality gate):
+  **MTP=2 median 1,755 tok/s aggregate at 57.6 tok/s a stream, against 1,488 at 48.8 for MTP=3** -- +18% both
+  ways, with median ITL at 32 streams **37.1 ms against 49.8**. It costs single-stream decode: 197.6 -> 179.8
+  tok/s (bench.py's decode-only metric 180.1 -> 170.4). GSM8K 98/100 and needles 3/3 at MTP=2, and it frees
+  10,922 KV tokens (491,520 -> 502,442).
+* Why: a decode step is NSEQ x (MTP+1) rows (128 -> 96 at NSEQ=32) while the third draft token only adds
+  ~0.30 accepted tokens a step (2.52 -> 2.22 at one stream). Above ~16 streams the cards sit on the ~300 W
+  envelope, so rows are the scarce resource; with one stream they are free, which is why MTP=3 stays the
+  single-interactive-stream setting.
+* Method notes for every future A/B here: @32 samples are bimodal (1,54x vs 1,75x, tracking 2.0 vs 3.1 GHz DPM
+  states) so take medians of >=3; and low-concurrency aggregates swing 10% (first @4 328, repeat 471), so A/B on
+  @8/@16/@32 with ITL as the tie-breaker.
+* Also today: the quality gate caches GSM8K locally (GitHub reach is intermittent here, and a mid-A/B gate died
+  on a 60 s fetch), the launcher refuses to start on top of leftover ranks (`STOP=1` / `FORCE=1`), NSEQ/NBT
+  defaults are TP-aware, `harness.py --conc`, and bench reports per-stream speed.
+
 ## 2026-10-31: the stack, installed natively on a second 4x R9700 box
 
 * No docker, no root, ROCm 10.1 host packages: the release tree runs in a **venv** (`vllm 0.32.0+rocm723`,

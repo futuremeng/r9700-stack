@@ -265,6 +265,41 @@ One more operational trap, hit twice while probing: **SIGTERM does not stop the 
 (and even SIGTERM to the ranks) leaves `VLLM::Worker_TP*` alive holding ~27-31 GiB a card, and the next launch
 fails with `Free memory on device cuda:0 (0.0/31.86 GiB)`. Use `kill -9` on the PIDs from `rocm-smi --showpids`.
 
+## Draft depth: the default on this box is now MTP=2 (was 3), and the reason is the row budget
+
+Two fresh instances, 3 x 300-token samples at 32 in flight each side, plus ITL and the quality gate:
+
+| | MTP=3 | MTP=2 |
+|---|---|---|
+| rows per decode step at NSEQ=32 | 32 x 4 = **128** | 32 x 3 = **96** |
+| accepted tokens a step (1 stream) | 2.52 of a possible 4 | 2.22 of a possible 3 |
+| single-stream decode (bench.py, TTFT excluded) | **180.1** | 170.4 |
+| single-stream, 300-tok request incl. TTFT | **197.6** | 179.8 |
+| median ITL @1 / @8 / @32 | 14.0 / 23.4 / 49.8 ms | 13.0 / 20.8 / **37.1 ms** |
+| @16 aggregate / per stream | 1,202 / 80.7 | **1,265 / 83.4** |
+| @32 aggregate, 3 samples -> median | 1,385, 1,488, 1,509 -> 1,488 | 1,762, 1,538, 1,750 -> **1,755** |
+| @32 per stream | 45.8 - 49.6 | **51.0 - 57.8** |
+| GPU KV cache | 491,520 tok | **502,442 tok** |
+| prefill 7.8k / 31k | 9,741 / 8,932 | 9,832 / 9,208 |
+| GSM8K / needles | 97/100, 3/3 | 98/100, 3/3 |
+
+So MTP=2 wins everywhere except one-stream latency: **+18% aggregate and +18% per-stream at 32 in flight, ITL at
+32 down 26%**, and 10,922 more KV tokens -- for **9% of single-stream decode**. The mechanism is the same wall the
+utilization section found: above ~16 streams the cards sit at ~300 W, and a decode step costs NSEQ x (MTP+1)
+rows. The third draft row buys ~0.30 accepted tokens a step and costs 32 rows a step, so it is worth paying for
+only when the box is otherwise idle. `MTP=3 bash serve/native-flashnext.sh` is the single-interactive-stream setting.
+
+Two things this measurement exposed about the method, worth keeping in mind for every future A/B here:
+
+* @32 samples are **bimodal** -- 1,538/1,564 against 1,750/1,762/1,755 for the same config, tracking whether the
+  DPM is holding ~2.0 GHz or ~3.1 GHz. Medians of at least three samples, never a single number.
+* low-concurrency aggregates are noisy at the 10% level (the first @4 run read 328, its repeat 471); prefer
+  @8/@16/@32 for A/B and use ITL as the tie-breaker since it is per-step and much tighter.
+
+Queued follow-ups from this result: **MTP=1** (96 -> 64 rows a step: does the aggregate keep climbing?), and
+**NSEQ=48 with MTP=2** (144 rows a step, still above the old MTP=3/NSEQ=32's 128 -- the admission knee may have
+moved once each step got cheaper).
+
 ## How to run it again
 
 ```
