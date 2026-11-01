@@ -78,6 +78,36 @@ def _gpu_busy() -> int:
     return hi
 
 
+def _gpu_clocks() -> tuple[int, int]:
+    """(min, max) current SM clock over the cards, in MHz, from ``pp_dpm_sclk``.
+
+    The line carrying the ``*`` is the level the card is actually at: ``S: 41Mhz *`` while idle, and the boost levels
+    on this part are 500 and 2350 MHz. This is the instrument that tells whether a slow pass is slow because the
+    device was running its kernels at a fraction of boost -- which is what an 8-14x growth in user CPU spent inside
+    the requant path, with the device answering tiny submissions in 0.1 ms in the gaps, would point to.
+    """
+    vals = []
+    for p in _glob.glob("/sys/class/drm/card*/device/pp_dpm_sclk"):
+        try:
+            cur = 0
+            for line in open(p):
+                # lines read like "S: 41Mhz *" / "1: 500Mhz" / "2: 2350Mhz": the one ending in * is active
+                if not line.rstrip().endswith("*"):
+                    continue
+                for tok in line.split():
+                    low = tok.lower()
+                    if "mhz" in low:
+                        try:
+                            cur = int(low.replace("mhz", ""))
+                        except ValueError:
+                            cur = 0
+            if cur:
+                vals.append(cur)
+        except OSError:
+            pass
+    return (min(vals), max(vals)) if vals else (0, 0)
+
+
 def slow_note(seconds: float, fmt: str, *args) -> None:
     """Log a measured split inside a load-path call -- how many seconds were spent *issuing* work and how many
     *waiting for the device to have done it*. Only the second kind can be a stalled queue rather than a slow
@@ -553,6 +583,9 @@ def _pws_run(interval: float) -> None:
         except (OSError, IndexError, ValueError):
             sw, mn, mj, vm = 0, 0, 0, {}
         _PWS["busy"].append(_gpu_busy())
+        lo, hi = _gpu_clocks()
+        _PWS["clk_lo"].append(lo)
+        _PWS["clk_hi"].append(hi)
         m = _PWS["mem"]
         if not m:
             m.update(swap0=sw, swapmax=sw, min0=mn, maj0=mj, psw=vm)
@@ -570,6 +603,7 @@ def start_pwsamp(interval: float = 0.25) -> None:
     _PWS["on"], _PWS["frames"], _PWS["mods"], _PWS["states"] = True, {}, {}, {}
     _PWS["wchans"], _PWS["psi"], _PWS["n"] = {}, {}, 0
     _PWS["syscalls"], _PWS["mem"], _PWS["busy"] = {}, {}, []
+    _PWS["clk_lo"], _PWS["clk_hi"] = [], []
     _PWS["th"] = threading.Thread(target=_pws_run, args=(interval,), name="r9700-window-sampler", daemon=True)
     _PWS["th"].start()
 
@@ -595,6 +629,13 @@ def stop_pwsamp(tag: str = "window") -> None:
         spark = "".join("." if b < 5 else ("-" if b < 25 else ("+" if b < 60 else "#")) for b in busy)
         logger.info("r9700 %s   gpu busy mean %4.0f%% max %4.0f%% over %d samples: %s",
                     tag, sum(busy) / len(busy), max(busy), len(busy), spark)
+    lo, hi = [c for c in _PWS["clk_lo"] if c], [c for c in _PWS["clk_hi"] if c]
+    if lo:
+        def _hist(xs: list) -> str:
+            return " ".join(f"{v}MHz x{xs.count(v)}" for v in sorted(set(xs)))
+        # the question this answers: were the requant kernels running at 2350 MHz, or at a fraction of it?
+        logger.info("r9700 %s   SM clock (level marked *): slowest card %s | fastest card %s", tag, _hist(lo),
+                    _hist(hi))
     m = _PWS["mem"]
     if m:
         logger.info("r9700 %s   self VmSwap %5.0f -> %5.0f MiB (max %5.0f)  faults +%d minor +%d major"
@@ -695,18 +736,22 @@ def _probe_report(tag: str = "post-load") -> None:
             logger.info("r9700 %s probe: no samples (%s)", tag, _PWPR["why"])
         return
     sub, tot, idle = _PWPR["sub"], _PWPR["tot"], _PWPR["sync_only"]
-    logger.info("r9700 %s probe: %d samples (probe cost %.2f s) submit ms p50 %.3f p95 %.3f max %.2f | "
-                "submit+sync ms p50 %.2f p95 %.2f max %.2f | sync-only (nothing submitted) p50 %.2f max %.2f",
-                tag, _PWPR["n"], _PWPR["cost"], _pct(sub, 0.5), _pct(sub, 0.95), max(sub or [0.0]),
+    # how many samples the spacing would have allowed: a deficit says the thread spent the window inside long calls
+    # rather than circulating the loop (tail98: 11 samples in 13.4-14.1 s at 200 ms = ~70 expected)
+    want = int(_PWPR.get("wall", 0.0) / max(1e-6, _PWPR.get("iv", 0.2))) + 1
+    logger.info("r9700 %s probe: %d/%d samples at %d ms spacing (probe cost %.2f s) submit ms p50 %.3f p95 %.3f "
+                "max %.2f | submit+sync ms p50 %.2f p95 %.2f max %.2f | sync-only (nothing submitted) p50 %.2f "
+                "max %.2f", tag, _PWPR["n"], want, int(1000 * _PWPR.get("iv", 0.2)), _PWPR["cost"],
+                _pct(sub, 0.5), _pct(sub, 0.95), max(sub or [0.0]),
                 _pct(tot, 0.5), _pct(tot, 0.95), max(tot or [0.0]), _pct(idle, 0.5), max(idle or [0.0]))
-    # the discriminator: handing the work over stays fast while waiting for the device is what stretches
     s, t = _pct(sub, 0.95), _pct(tot, 0.95)
-    if t > 0 and s > 0 and t > 20.0 * s:
-        logger.info("r9700 %s probe: handing work to the driver costs %.3f ms at p95 but waiting for the device to "
-                    "finish costs %.2f ms -- the wait is on the device side, not in the submission path", tag, s, t)
-    elif t > 0 and s > 5.0 * _pct(tot, 0.5):
-        logger.info("r9700 %s probe: the submission call itself costs %.2f ms at p95 (sync p50 %.2f ms) -- the wait "
-                    "is in the host's submission path", tag, s, _pct(tot, 0.5))
+    if max(tot or [0.0]) > 1000.0:
+        logger.info("r9700 %s probe: one sample spent %.2f s between handing the work over and the device finishing "
+                    "it (submit cost %.3f ms) -- that wait is device-side and it is inside this window",
+                    tag, max(tot) / 1000.0, s)
+    elif t > 0 and s > 0.5 * t and t > 20.0:
+        logger.info("r9700 %s probe: the submission call itself costs %.2f ms at p95 of %.2f ms -- the wait is in the "
+                    "host's submission path", tag, s, t)
     _PWPR["on"] = False
 
 
@@ -790,12 +835,13 @@ def stop_pwal(tag: str = "post-load") -> None:
     if _PWA["orig"] is not None:
         torch.nn.Module.named_modules = _PWA["orig"]
         _PWA["orig"] = None
+    wall = time.perf_counter() - _PWA.get("t0", time.perf_counter())
+    _PWPR["wall"] = wall
     _probe_report(tag)
     acc = _PWA["acc"]
     if not acc:
         logger.info("r9700 %s: the timer saw no named_modules loop", tag)
         return
-    wall = time.perf_counter() - _PWA.get("t0", time.perf_counter())
     total = sum(v[1] for k, v in acc.items() if not k.startswith("@"))
     logger.info("r9700 %s: %.1f s of wall (%.1f s attributed) over %s module visits%s", tag, wall, total,
                 sum(v[0] for k, v in acc.items() if not k.startswith("@")),
