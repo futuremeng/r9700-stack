@@ -235,3 +235,26 @@ def gemm_fp8_tiled(a_q: torch.Tensor, a_s: torch.Tensor, w: Fp8Weight, out: torc
     t, _ = _identity_tables(a_q, M, KM.prefill_block(cfg) // KM.MOE_BLOCK)
     KM.moe_gemm(a_q, a_s, w, out, *t, M, 1, None, num_experts=1, prefill=cfg)
     return out
+
+
+def warmup(rows: int = 2048, cols: int = 2048) -> float:
+    """Pay for the first ``quantize_rows_fp8`` call while the load is still quiet.
+
+    Measured (``target post-load`` window, ``prof.start_pwal``): the whole window is 5.8 s when the first
+    ``layers.0.attn_hyper_connection`` post-load costs 1.57 s, and 24.9 s when that one module costs 17.38 s --
+    one module, one-time cost, landing in the crunch where four ranks are faulting at once (watchdog caught
+    ``fp8.py:65 quantize_rows_fp8`` at ``wchan=lock_mm_and_find_vma``). The quantization itself is not the problem:
+    an isolated call on 16 MiB of bf16 runs in 2 ms (16-22 GiB/s); it is the first call in the process that costs
+    0.1 s on an idle device. So make that first call here, ~0.1 s a rank, before the memory pressure.
+    """
+    import time
+    t0 = time.perf_counter()
+    try:
+        w = torch.randn((rows, cols), dtype=torch.bfloat16, device="cuda")
+        quantize_rows_fp8(w)
+        torch.cuda.synchronize()
+        del w
+    except Exception as e:                                    # a warm-up must never break a load
+        from vllm.logger import init_logger
+        init_logger("vllm." + __name__).info("r9700 fp8 warmup skipped: %s", e)
+    return time.perf_counter() - t0

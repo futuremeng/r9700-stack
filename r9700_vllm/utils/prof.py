@@ -339,3 +339,76 @@ def start_watchdog(interval: float = 0.5, after: float = 2.0, lifespan: float = 
 
 def stop_watchdog() -> None:
     _WD.clear()
+
+
+# --------------------------------------------------------------------------- post-load pass, per module class
+
+_PWA = {"on": False, "acc": {}, "orig": None}
+
+
+def start_pwal() -> None:
+    """Attribute the loader's post-load pass (``process_weights_after_loading``) to module classes.
+
+    The stock pass is one synchronous ``for name, module in model.named_modules()`` loop, so the time between two
+    consecutive yields belongs to the module yielded before it. Wrapping ``named_modules`` measures that without
+    duplicating -- and therefore version-pinning -- the body of the loop, and it counts blocked time too, which is
+    what the window is made of (6 s in final38 against 31 s in final39, notes/native-4xr9700.md).
+    """
+    if _PWA["on"]:
+        return
+    import torch
+    _PWA["acc"].clear()
+    _PWA["orig"] = torch.nn.Module.named_modules
+
+    def timed(self, *a, **kw):
+        orig = _PWA["orig"]
+        if not _PWA["on"]:
+            yield from orig(self, *a, **kw)
+            return
+        prev, tprev = None, time.perf_counter()
+        for m in orig(self, *a, **kw):
+            now = time.perf_counter()
+            if prev is not None:
+                # some callers iterate (name, module) pairs rather than modules; normalize both forms
+                nm, mod = (prev[0], prev[1]) if isinstance(prev, tuple) and len(prev) == 2 else (None, prev)
+                cls = type(mod).__name__
+                e = _PWA["acc"].setdefault(cls, [0, 0.0])
+                e[0] += 1
+                e[1] += now - tprev
+                if nm and now - tprev > 0.2:
+                    d = _PWA["acc"].setdefault("@" + nm, [0, 0.0])
+                    d[1] += now - tprev
+            prev, tprev = m, now
+            yield m
+
+    _PWA["on"] = True
+    torch.nn.Module.named_modules = timed
+    if not _WD:
+        start_watchdog()                 # the slow version of this window is blocked, not computed: name the line
+        _PWA["wd"] = True
+    logger.info("r9700 post-load timer on (gaps between named_modules yields)")
+
+
+def stop_pwal(tag: str = "post-load") -> None:
+    """Restore ``named_modules`` and report the accumulated per-class totals."""
+    if not _PWA["on"]:
+        return
+    import torch
+    _PWA["on"] = False
+    if _PWA.pop("wd", False):
+        stop_watchdog()
+    if _PWA["orig"] is not None:
+        torch.nn.Module.named_modules = _PWA["orig"]
+        _PWA["orig"] = None
+    acc = _PWA["acc"]
+    if not acc:
+        logger.info("r9700 %s: the timer saw no named_modules loop", tag)
+        return
+    logger.info("r9700 %s: %.1f s over %s module visits", tag, sum(v[1] for k, v in acc.items()
+                if not k.startswith("@")), sum(v[0] for k, v in acc.items() if not k.startswith("@")))
+    for k, (c, s) in sorted(((k, v) for k, v in acc.items() if not k.startswith("@")), key=lambda kv: -kv[1][1])[:8]:
+        if s < 0.05:
+            break
+        logger.info("r9700 %s   %7.2f s  %5d  %s", tag, s, c, k)
+    for k, (c, s) in sorted(((k, v) for k, v in acc.items() if k.startswith("@")), key=lambda kv: -kv[1][1])[:8]:
+        logger.info("r9700 %s   %7.2f s  %s", tag, s, k[1:])

@@ -93,6 +93,15 @@ def target_weights(weights):
         from ..moe import h2dbatch
         h2dbatch.install()                # batch stock's per-expert H2D copies (off unless R9K_MOE_BATCH_H2D=1)
         from ..utils import prestage
+        if os.environ.get("R9K_QUANT_WARMUP", "1") == "1":
+            # pay the first-call cost of both requant paths here, where the machine is still quiet, rather than
+            # inside the post-load / draft crunch where those one-time costs have measured 17-20 s
+            from ..kernels.fp8 import warmup as _fp8_warmup
+            from ..quant.nvfp4 import warmup as _mxfp4_warmup
+            t_w = _fp8_warmup() + _mxfp4_warmup()
+            torch.cuda.empty_cache()          # the warm-up blocks must not shrink the KV cache (they cost ~0.6%)
+            if _PROF:
+                logger.info("r9700 requant paths warmed in %.2f s", t_w)
         t = time.perf_counter()
         tstream = t                            # stream clock, for reporting when each group arrives
         for n, w in weights:
@@ -131,6 +140,7 @@ def target_weights(weights):
                 logger.info("r9700 load profile: %-8s first tensor at +%5.1f s of the stream, last at +%5.1f s",
                             k, v[3], v[4])
             prof.snap("target end")     # majflt here = bytes the target pass took from disk rather than cache
+            prof.start_pwal()           # attribute the window between the stream and the draft pass, per module class
         # E1: the draft pass is about to re-read its bf16 MTP weights, which four ranks' anon (~50 GiB, 9.7 GiB a
         # rank of it pinned PLE table) have in general just evicted. Queue the readahead while the target pass is
         # still finishing, once per rank; the page cache is shared, so three of the four are no-ops.
@@ -160,6 +170,7 @@ def mtp_weights(weights, mtp_mxfp4: bool):
     n_t, n_b, t_all = 0, 0, time.perf_counter()
     if _PROF:
         prof.snap("draft start")
+        prof.stop_pwal("target post-load")   # the 6 s vs 31 s window, named
         prof.reset_stacks()
         prof.start_stacks()          # the requant timers below do not cover this window; sample it, do not infer it
     for name, w in weights:

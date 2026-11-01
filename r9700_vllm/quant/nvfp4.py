@@ -273,3 +273,25 @@ def make_moe_method_cls(mxfp4_method_cls):
                 super().process_weights_after_loading(layer)
 
     return R9kNvfp4MoEMethod
+
+
+def warmup() -> float:
+    """First-call cost of the MXFP4 requant path, paid where it is cheap.
+
+    Same reasoning as ``kernels.fp8.warmup``: the draft pass's wall runs 5.6-48.3 s for the same 2182 tensors, its
+    own parts (to-GPU 0.7-3.4 s, search 1.5-1.6 s, cat 0.0) do not move, and an isolated ``quantize_mxfp4_search``
+    costs 0.39 s of launch overhead on top of 4.3 GiB/s (``bench/mtpquant_probe.py``). Warm the kernels and the
+    allocator here, at the start of the weight stream, instead of inside the post-load/draft crunch.
+    """
+    import time
+    t0 = time.perf_counter()
+    try:
+        x = torch.randn((64, 128), dtype=torch.bfloat16, device="cuda")
+        quantize_mxfp4_search(x.cuda().float())
+        torch.cat([x[:1], x[1:2]])
+        torch.cuda.synchronize()
+        del x
+    except Exception as e:                                    # a warm-up must never break a load
+        from vllm.logger import init_logger
+        init_logger("vllm." + __name__).info("r9700 mxfp4 warmup skipped: %s", e)
+    return time.perf_counter() - t0
