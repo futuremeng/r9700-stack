@@ -1238,6 +1238,14 @@ ends: shape (a) -- the one enormous first visit -- is fixed by the warm-up (7/7 
 20 s, clean window down from 5.4-5.9 s to 4.4-4.8 s), and shape (b) is a state the box sits in, 2-3x across the whole
 pass with host threads in R and the device idle, for which nothing has yet been demonstrated as the cause.
 
+One more reading from the same day, because it constrains what shape (b) can be: the warm-up runs **before** the
+window, on four tiny dummy calls, and logs its own cost. Clean launches: 190-208 ms, every rank, every time. Elevated
+launches swing from 167 ms to **7,158 ms** (tail70, final45) -- four tiny kernel launches taking 7 s instead of 0.2 s.
+So the slow state is not about the post-load pass's tensors or sizes at all; it can land on a handful of trivial calls
+before the pass has even started. It is not a reliable predictor in either direction (tail77 warmed in 167 ms and then
+took 86 s; tail71 warmed in 199 ms and took 12 s), but it rules out "big tensor, big allocation, first touch of that
+shape" as the whole story.
+
 ## How to reproduce the load-path analysis
 
 ```bash
