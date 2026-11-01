@@ -12,7 +12,7 @@ bash bench/gate.sh > "$GATE" 2>&1
 tail -2 "$GATE"
 grep -q "^gate: PASS" "$GATE" || { echo "refusing to launch: gate failed"; exit 3; }
 
-R9K_LOAD_PROF=1 GPUS=0,1,2,3 TP=4 OFFLOAD_GB=0 NSEQ=32 MAXLEN=32768 \
+R9K_LOAD_PROF=1 R9K_PRESTAGE_MTP=${R9K_PRESTAGE_MTP:-1} GPUS=0,1,2,3 TP=4 OFFLOAD_GB=0 NSEQ=32 MAXLEN=32768 \
   setsid bash serve/native-flashnext.sh > "$LOG" 2>&1 &
 
 load=""
@@ -35,4 +35,11 @@ for _ in $(seq 1 30); do
   timeout 15 curl -s -o /dev/null -w "" http://localhost:8080/health && { echo "  health: 200"; break; }
   sleep 5
 done
+# Load anatomy, printed once the service is up so every worker has finished both passes. This is what the
+# load-path experiments are measured on: prestage queueing, the draft pass's own bytes and wall time, and the
+# phase snapshots whose read_bytes deltas say who re-read the checkpoint from disk.
+echo "== load anatomy ($LABEL) =="
+grep -oE "r9700 prestage mtp.*" "$LOG" | sed -E 's/.*(r9700)/  \1/' | sort -u
+grep -oE "load profile .draft.*" "$LOG" | sed 's/^/  draft: /'
+grep -oE "snap (target end|prestage mtp end|draft end).*" "$LOG" | sed -E 's/.*(snap )/  \1/' | sort -u | cut -c1-170
 [ "${PROBE32:-0}" = 1 ] && PROBE_OUT=$HOME/logs/probe-$LABEL.txt bash bench/probe32.sh

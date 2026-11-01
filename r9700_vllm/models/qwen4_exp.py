@@ -35,7 +35,7 @@ from vllm.models.qwen4_exp.amd.mtp import Qwen4ExpMTP
 
 from . import lm_heads
 from ..quant.nvfp4 import quantize_mxfp4_search
-from ..utils import prof
+from ..utils import prof, prestage
 from ..attn import qsa as _qsa
 from ..ple import short_conv as _ple_conv
 from .. import hc as _hc
@@ -111,6 +111,10 @@ def target_weights(weights):
                 logger.info("r9700 load profile: %7.1f s on %s (%s tensors, %.1f GiB checkpoint bytes a rank)",
                             v[2], k, v[0], v[1] / 2**30)
             prof.snap("target end")     # majflt here = bytes the target pass took from disk rather than cache
+        # E1: the draft pass is about to re-read its bf16 MTP weights, which four ranks' anon (~50 GiB, 9.7 GiB a
+        # rank of it pinned PLE table) have in general just evicted. Queue the readahead while the target pass is
+        # still finishing, once per rank; the page cache is shared, so three of the four are no-ops.
+        prestage.prestage()
     return gen(), last
 
 
