@@ -1,3 +1,20 @@
+## 2026-11-01 (final, later): prestage A/B is a clean negative -- and the two regimes differ by what the pass pages in, 18:1
+
+* New tool `bench/ab_report.py`: windows, major faults inside the windows, worker swap at window start, draft-pass
+  wall, box disk reads, load and KV -- one line per launch, so an A/B is one command.
+* Four alternating launches with `R9K_PRESTAGE_MTP=0/1/0/1`: windows (11-13 s, one 35 s), majflt (~147-152k) and
+  swap (~0.9 GiB) are the same in both arms -- **prestage is not the eviction source**. Its benefit is real but
+  cache-dependent: off costs 16.1 s of draft requant when the draft bytes are cold, 6.5 s when the previous launch
+  already left them in the page cache. Keep it.
+* Confound worth remembering on this box: **page cache carries across launches**, which can erase one arm of a paired
+  test. (Same reason the notes' 5.5-8 s prestage number was measured on gated relaunches.)
+* Per worker inside the window: clean 506-588 → 495-577 MiB swapped, ~12 MiB paged in, ~2.2k major faults; elevated
+  969-992 → 590-621 MiB, ~380 MiB paged in, ~40k major faults, 1.5 GiB swap traffic box-wide. 18:1, no overlap.
+* But the box state at the end of the weight stream is identical in both regimes (self rss/swap 12.0/0.9 GiB,
+  SwapFree 2 GiB): same amount swapped, different amount touched. So the operational lever (drain swap) is weak and
+  the process-side ones (keep the pass's destination pages resident; shrink the anon alive during the stream) remain,
+  with `mlock` available up to `ulimit -l` = 11.7 GiB per process.
+
 ## 2026-11-01 (final): the diffuse slow window IS a paging event -- major faults inside the window separate the shapes 17:1
 
 * final44 launched with the warm-up on and still took 11.1-11.8 s a rank, and its census said why: each worker went

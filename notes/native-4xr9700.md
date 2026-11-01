@@ -1175,6 +1175,38 @@ as soon as each tensor is placed (so fewer anon pages are alive to be evicted), 
 post-load pass resident (they are what the pass writes into), and -- separately, as operations -- note that this box
 would benefit from the swap being drained or enlarged between heavy launches.
 
+## C17: prestage is not the cause of shape (b) (and is worth its cost); the regime difference is what the pass pages in, 18:1
+
+`bench/ab_report.py` pulls the numbers an A/B needs out of the relaunch logs into one line per launch. Four
+alternating launches (`R9K_PRESTAGE_MTP=0/1/0/1`, warm-up on, so this is squarely about shape (b)):
+
+| launch | prestage | windows (s) | majflt in windows | swap at window start | draft wall | disk reads |
+|---|---|---|---|---|---|---|
+| tail69 | off | 12.4-13.3 | 150,346 | 937 MiB | **16.1 s** | 2.1 GiB |
+| tail70 | on | 11.0-35.4 | 150,467 | 916 | 6.1 | 7.2 |
+| tail71 | off | 11.4-12.1 | 147,177 | 903 | 6.5 | 1.0 |
+| tail72 | on | 13.5-16.1 | 151,690 | 861 | 6.3 | 8.2 |
+
+Window, fault and swap columns are the same with prestage off as on, so the readahead is not what evicts the pages
+the pass later needs. Its benefit is real but cache-dependent: the off-side cost (16.1 s of draft requant) only shows
+when the draft bytes are not already in the page cache from the previous launch (tail71 got them free from tail70,
+6.5 s and 1.0 GiB of disk reads). Keep it -- and note for later A/Bs on this box that **page cache carries across
+launches**, which can hide a readahead's whole effect in one arm of a paired test.
+
+Per worker, inside the window, the two regimes then read:
+
+```
+clean      (tail61/65) VmSwap 506-588 -> 495-577 MiB   faults +1.4-1.6k minor +2.1-2.3k major   box pswpin +7-12k pages
+elevated   (tail66)    VmSwap 969-992 -> 590-621 MiB   faults +55k minor +40k major             box pswpin +390k pages
+```
+
+so the pass pages ~12 MiB of its own memory back in when it runs in 4.5 s and **~380 MiB when it runs 11-75 s**
+(1.5 GiB of swap traffic box-wide across the four ranks), an 18:1 fault ratio with no overlap -- while the box state
+at the end of the weight stream is the same in both (self rss/swap 12.0/0.9 GiB, SwapFree 2 GiB, Cached 20-42 GiB).
+Same amount swapped, different amount touched: which is exactly why the operational lever (drain swap between
+launches) looks weak and the process-side levers (keep the pages the pass writes to resident; shrink the anon that
+is alive during the stream) are the ones left standing.
+
 
 ## How to reproduce the load-path analysis
 
