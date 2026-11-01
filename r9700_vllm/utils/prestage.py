@@ -118,6 +118,8 @@ def prestage(tag: str = "prestage mtp") -> None:
 # tensor run; the depth (bytes) is ``R9K_PRESTAGE_AHEAD``, 0 = off until measured.
 
 _AHEAD_DEPTH = int(os.environ.get("R9K_PRESTAGE_AHEAD", "0"))
+_CACHE_WINDOW = int(os.environ.get("R9K_CACHE_WINDOW", "0"))   # MiB of consumed shard left mapped; 0 = off
+_EVD: dict[str, int] = {}         # per shard: offset handed back so far (header end at the start)
 _ORDER: list | None = None            # (name, path, start, end) in per-shard header order = the order the loader walks
 _POS: dict[str, int] = {}
 _FDS: dict[str, int] = {}
@@ -146,8 +148,9 @@ def _index(model: str) -> None:
 
 
 def ahead(name: str) -> None:
-    """Queue readahead for the ~``R9K_PRESTAGE_AHEAD`` bytes of tensors after ``name``. Best effort."""
-    if _AHEAD_DEPTH <= 0:
+    """Queue readahead for the tensors after ``name`` (``R9K_PRESTAGE_AHEAD`` bytes deep) and, with
+    ``R9K_CACHE_WINDOW`` set, hand the shard bytes behind ``name`` back. Best effort."""
+    if _AHEAD_DEPTH <= 0 and _CACHE_WINDOW <= 0:
         return
     if _ORDER is None:
         model = _model_dir()
@@ -161,6 +164,11 @@ def ahead(name: str) -> None:
             return
     p = _POS.get(name)
     if p is None:
+        return
+    if _CACHE_WINDOW > 0:
+        _, _path, _a, _end = _ORDER[p]
+        _evict_behind(_path, _a)
+    if _AHEAD_DEPTH <= 0:
         return
     i, got = p + 1, 0
     run_start = run_end = None
@@ -182,6 +190,36 @@ def ahead(name: str) -> None:
         _queue(run_path, run_start, run_end)
         got += run_end - run_start
     _AHEAD_TOT["queue_s"] += time.perf_counter() - t0
+
+
+def _evict_behind(path: str, at: int) -> None:
+    """Give the consumed part of a shard back to the kernel.
+
+    The checkpoint (110.6 GiB) never fits in the cache this load can hold, so consumed pages are not free: keeping
+    them is what makes the kernel take anon instead (the not-yet-pinned PLE tables), and that debt is repaid at
+    ~1 ms/page in the draft pass. ``POSIX_FADV_DONTNEED`` on clean pages loses nothing; the risk is a slower rank
+    that still needs those bytes, and that would show up directly as extra ``read_bytes`` per rank.
+    """
+    start = _EVD.get(path)
+    if start is None:
+        with open(path, "rb") as f:                        # data starts after the 8-byte length + JSON header
+            start = 8 + struct.unpack("<Q", f.read(8))[0]
+    cut = at - (_CACHE_WINDOW << 20)
+    if cut <= start:
+        _EVD[path] = start
+        return
+    fd = _FDS.get(path)
+    if fd is None:
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except OSError:
+            return
+        _FDS[path] = fd
+    try:
+        os.posix_fadvise(fd, start, cut - start, os.POSIX_FADV_DONTNEED)
+    except OSError:
+        return
+    _EVD[path] = cut
 
 
 def _queue(path: str, a: int, b: int) -> None:
@@ -210,6 +248,8 @@ def _queue(path: str, a: int, b: int) -> None:
 
 def ahead_done(tag: str = "stream ahead") -> None:
     """Report and release. Called once per rank at the end of the weight stream."""
+    if _CACHE_WINDOW > 0:
+        logger.info("r9700 %s: cache window %d MiB, %s shards handed back", tag, _CACHE_WINDOW, len(_EVD))
     for path, fd in _FDS.items():
         try:
             os.close(fd)

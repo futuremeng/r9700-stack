@@ -9,20 +9,29 @@
   **no effect on the target pass**: place 47.6 s / experts 35.8 s / 115.5 GiB read vs 47.8 / 35.9 / 115.2 without
   (ah256 vs ah0). The four ranks already share the cache, and 110.6 GiB does not fit in it, so pages are read once,
   used once, evicted: nothing left to overlap. Off by default.
-* The remaining load variance is **entirely the draft pass**: six instances of one config give
-  **67.85 / 72.61 / 73.03 / 74.63 / 79.71 / 115.30 s** and its wall alone spans **5.3-48.3 s** while its parts do not
-  move (`to-GPU 0.7-3.4 s`, `search 1.5-1.6 s`, `cat 0.0`). Around the window (per rank): `majflt` +45k to +52k,
-  `Cached` +6 GiB, `VmSwap` 0.8 -> 0.5 GiB, but **disk reads only +0.9 to +3.2 GiB** -- same faults, 135 us each in the
-  fast arm and 1.0 ms each in the slow one. Stack samples (685 for a 6 s pass = 1.4 s CPU) land on
+* The remaining load variance is in **two windows, neither of them the requant**: seven instances of one config give
+  **67.85 / 72.61 / 73.03 / 74.63 / 75.80 / 79.71 / 96.82 / 115.30 s**. Snaps now separate them (`target end` ->
+  `prestage mtp end` -> `draft start` -> `draft end`): the **post-load window** (the target model's
+  `process_weights_after_loading` plus the draft loader opening its shards) is **6 s in final38 and 31 s in final39**,
+  and the **draft generator** is 5-7 s usually, 48.3 s in ah0's rank0. Around the draft window (per rank): `majflt`
+  +45k to +52k, `Cached` +6 GiB, `VmSwap` 0.8 -> 0.5 GiB, but **disk reads only +0.9 to +3.2 GiB** -- same faults, 135
+  us each in the fast arm and 1.0 ms each in the slow one. Stack samples (685 for a 6 s pass = 1.4 s CPU) land on
   `_load_w13` 13%, `cuda.synchronize` 11.7%, `_load_w2` 10.7%, `mtp_weights` 9.9%, `_encode` 8%: the pass also places
-  the draft's own 512-expert MoE, and the slow case is blocked rather than computed.
+  the draft's own 512-expert MoE, and the slow cases are blocked rather than computed.
 * Added counters to make that visible: `prof.snap` now reports per-process `VmRSS/VmSwap/VmPin`, and the stack sampler
   can be reset and re-armed per window (`prof.reset_stacks`, `draft start`/`draft end` snaps).
 * Load path stands at **67.9-79.7 s typical** (from 174.8/189.6 s before late pinning), with the draft pass as the one
   unbounded term. Both new knobs stay in the tree, off by default, with their measurements in the notes.
-* Online instance now: **final38** -- load **71.89 s** (place 47.1, experts 36.2, draft 6.1-6.7 s on all four ranks),
-  GSM8K **100/100**, needles 3/3, KV 496,374 tokens, and on the fixed probe protocol `@32 x300` 1578.3-1621.9,
-  `@32 x1200` 1807.5-1816.0, `@16 x300` 1117.4-1151.3 tok/s, 299 W median per card at busy==100.
+* **C6, neutral**: `R9K_CACHE_WINDOW=<MiB>` hands consumed shard bytes back with `fadvise(DONTNEED)` as the stream
+  passes (8 GiB window: load 75.8 s, `rankRdTot` 113.8 GiB so nobody is re-reading, `maxSwap` still 8191 MiB). The
+  swap use is structural, not a squeeze: no cgroup limit anywhere (`memory.max`/`high`/`swap.max` = `max` on
+  `session-2.scope`), `memory.current` 85.6 GiB of 93.8 GiB, and the anon set is the four 9.69 GiB PLE tables plus
+  ~6 GiB a rank before a single checkpoint page is mapped. Same reason `vm.swappiness=1` was inert.
+* Online instance now: **final39** -- load **96.82 s** (place 47.3, experts 36.6, draft 5.0-6.4 s: the extra 31 s went
+  into the post-load window), GSM8K **99/100**, needles 3/3, KV 496,374, probes `@32 x300` 1577.2-1593.1,
+  `@32 x1200` 1818.4-1825.4, `@16 x300` 1110.0-1129.5 tok/s, 300 W median at busy==100. The instance before it,
+  **final38** (identical config), loaded in **71.89 s** with GSM8K **100/100** and probes `@32 x300` 1578.3-1621.9,
+  `@32 x1200` 1807.5-1816.0, `@16 x300` 1117.4-1151.3. Serving is insensitive to which way the load went.
 
 ## 2026-11-01 (later): the experts term is source-side reads (C4, negative); throughput baseline locked on the online instance
 

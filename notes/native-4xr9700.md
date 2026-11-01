@@ -767,6 +767,35 @@ The counters around the window (per rank, `draft end` minus `target end`):
   4.8% -- the pass also places the draft's own 512-expert MoE through the stock path. Most of the slow case is
   **blocked, not computed**, which is why stack sampling cannot name it and why the fix is not on the read side.
 
+Two windows inside that spread, now separated by snaps (`target end` -> `prestage mtp end` -> `draft start` ->
+`draft end`), and neither is the requant itself:
+
+* **post-load window** (`prestage mtp end` -> `draft start`, i.e. the target model's `process_weights_after_loading`
+  -- fold repack, PLE UVA parameter rebuild, quantization transforms -- plus the draft loader opening its shards):
+  **6 s in final38, 31 s in final39**, with `prestage` itself completing in the same second as `target end`;
+* **the draft generator** (`draft start` -> `draft end`): 5-7 s in most instances, 48.3 s in ah0's rank0.
+
+Both are dominated by blocked time rather than computed time (see the majflt arithmetic above), and both land in the
+same resource regime: ~70 GiB of anon plus 30-40 GiB of page cache on a 93.8 GiB machine, with 8 GiB of swap parked.
+Splitting the post-load window per module is the next measurement if it ever matters; the serving path is unaffected
+by any of it (final39 loaded in 96.8 s and still scored GSM8K 99/100, needles 3/3).
+
+## C6: handing consumed shard bytes back changes nothing -- the swap use is structural
+
+`R9K_CACHE_WINDOW=<MiB>` (same `utils/prestage.py` hook): after the stream passes tensor *i*, `fadvise(DONTNEED)` the
+shard bytes behind it, keeping the last N MiB mapped. With 8 GiB: load **75.8 s**, place 48.5 / experts 36.8 /
+draft 5.1-5.7 s -- the same as without -- and the resource side confirms the mechanism without changing the outcome:
+`rankRdTot` **113.8 GiB** (against 115.2-115.5 without, so no rank is being made to re-read anything, which was the
+risk), `min MemAvailable` 38.8 GiB, and **`maxSwap` still 8191 MiB, saturated**.
+
+Why nothing moved, read off the cgroup: there is **no limit anywhere** (`memory.max`, `memory.high`, `memory.swap.max`
+all `max` on `user-1000.slice/session-2.scope`, where the workers live) -- `memory.current` is **85.6 GiB** of a
+93.8 GiB machine and `memory.swap.current` 4.2 GiB. The anon set alone is the four 9.69 GiB PLE tables plus ~6 GiB a
+rank of other RSS, ~70 GiB before a single checkpoint page is mapped. So the parked 8 GiB of swap is not a squeeze
+the kernel could resolve differently, it is the price of the tables; that is also why `vm.swappiness=1` was inert and
+why more swap (C3) made things worse rather than better. Off by default; kept as the cheap way to check the
+re-read risk if the host footprint ever shrinks.
+
 ## How to reproduce the load-path analysis
 
 ```bash
@@ -784,6 +813,7 @@ PIN_GIB=9.7 COPIES=4000 DEV=0 ~/venv-r9700/bin/python3 bench/svm_probe.py # does
 MODE=mmap NPROC=1 F=model-00018.safetensors ~/venv-r9700/bin/python3 bench/mmapread_probe.py
 MODE=pread NPROC=1 CHUNK=16777216 F=model-00018.safetensors ~/venv-r9700/bin/python3 bench/mmapread_probe.py
                                                          #   cold shard: mmap-fault 0.57 GiB/s vs pread 3.49 GiB/s
+awk -F: '/^0::/{print $3}' /proc/$(pgrep -f VLLM::Worker | head -1)/cgroup   # where the workers' memory is accounted
 ~/venv-r9700/bin/python3 bench/expertcopy_probe.py            # 106 KiB/51 KiB expert copies: per-call vs combined
 LD_LIBRARY_PATH=$HOME/opt/openmpi/usr/lib/x86_64-linux-gnu R9K_MOE_BATCH_H2D=1 \
   ~/venv-r9700/bin/python3 tests/test_moe_h2dbatch.py         # the C4 batcher: byte-exact, and still slower
@@ -793,7 +823,8 @@ Switches: `R9K_LOAD_PROF=1` (group timers + phase snapshots), `R9K_LOAD_STACKS=1
 function), `R9K_LOAD_COPIES=1` (`copy_` accounting, fault deltas, slow-call names, watchdog wchan),
 `R9K_PRESTAGE_MTP=0|1` (the E1 control), `R9K_PLE_PIN_LATE=0|1` (default 1: register the PLE tables after the stream),
 `R9K_MOE_BATCH_H2D=0|1` (the C4 batcher, default 0: slower, see above), `R9K_PRESTAGE_AHEAD=<bytes>` (the C5
-stream-ahead readahead, default 0: no effect on the target pass, see above).
+stream-ahead readahead, default 0: no effect on the target pass, see above), `R9K_CACHE_WINDOW=<MiB>` (the C6
+consumed-page handback, default 0: neutral, see above).
 Read the pair: the log's `slow call` offsets (`+N s into the load`, with `probe at HH:MM:SS` in the header line) line up
 with the sampler CSV's clock columns.
 
