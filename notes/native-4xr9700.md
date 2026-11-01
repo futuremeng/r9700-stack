@@ -1335,6 +1335,93 @@ day phase -- how much of the box's swap was occupied -- and not the regime. Afte
 all** in anything measured so far: not gpu busy, not thread state, not io or memory pressure, not swap, not faults,
 not KV pool size, not the warm-up's own cost.
 
+## C22: the device answers in 0.1 ms in both regimes, the cards sit at full boost, and the slowdown is confined to the two classes whose repack work runs on the host
+
+Three new instruments, one question each. All of them read the *same* window that C19-C21 measure in wall time.
+
+**1. The window probe** (`prof._probe_tick`, armed by `start_pwal`, `R9K_PWAL_PROBE=0` to silence, spacing
+`R9K_PWAL_PROBE_MS` default 200 ms). From the load thread itself, between `named_modules` yields: stamp, hand a
+1-element kernel to the driver, stamp, whole-device sync, stamp. No second CUDA context (there is no room for one at
+`--gpu-memory-utilization 0.97`), no thread that the GIL can starve. CUDA event pairs were tried first and are
+**useless here** -- an empty event pair read 6.7 ms and an event-sync sample 11.9 ms for a host call that returned in
+0.27 ms, so the probe stays on the host clock.
+
+| launch | windows (wall) | submit ms p50 / p95 | submit+sync ms p50 / p95 / max | samples taken (of ~65 possible at 200 ms) |
+|---|---|---|---|---|
+| tail98 | 13.4-14.1 s | 0.031-0.085 / 1.13-1.59 | 0.09-0.34 / 3.6-4.5 / **8506** | 11 |
+| tail99 | 11.5-12.3 s | 0.031-0.079 / 1.04-1.13 | 0.09-0.18 / 3.3-3.6 | 11-13 |
+| tail100 | **5.0 s** | 0.031-0.058 / 1.10-1.27 | 0.09-0.13 / 3.1-3.8 | 10-11 |
+| tail101 | 12.3-13.0 s | 0.036-0.046 / 0.96-1.14 | 0.09-0.33 / 3.3-3.8 | 10-11 of 62-66 |
+
+Three readings, all from this table:
+
+* a tiny submission is answered in **0.09-0.34 ms at p50 and 3-4.5 ms at p95 in the slow launches and in the clean
+  one alike**. Whatever a 13 s window is, it is not the driver refusing to accept work and not the queue being
+  asleep -- that is the same negative C19/C21 got from `GPU_MAX_HW_QUEUES`/`HSA_ENABLE_MWAITX`, now seen directly.
+* one rank of tail98 had a single sample that waited **8506 ms** between handing over a 4-byte add and the device
+  finishing it, while submitting it cost 0.031 ms. Multi-second device-side waits are real, but they are the shape (a)
+  event, not shape (b): three other ranks of that same launch never waited more than 4.5 ms and still took 13.4-13.9 s.
+* only **10-13 samples out of ~65 possible** are ever taken. The pass spends the window inside a handful of long
+  calls, not circulating the module loop -- and this is also the probe's honest limit: samples can only happen
+  *between* visits, so the probe is blind inside the calls it is trying to characterize.
+
+**2. Per-class user CPU, clean against elevated.** Same visit counts (tail100 79,253 / tail99 79,374 / tail98 77,694
+over the four ranks) and the same sys CPU (29.6 / 32.9 / 28.8 s), but the user CPU is not the same pass:
+
+| class | clean user CPU (tail100) | elevated (tail99) | ratio | visits clean/slow |
+|---|---|---|---|---|
+| `MergedColumnParallelLinear` | 14.2 s | 199.3 s | **14.07x** | 22368 / 22368 |
+| `RoutedExperts` | 22.2 s | 187.8 s | **8.47x** | 5652 / 5652 |
+| `GatedResidual` | 12.6 s | 12.7 s | 1.01x | 9840 / 9840 |
+| `RowParallelLinear` | 6.6 s | 6.9 s | 1.04x | 10532 / 10532 |
+| `ReplicatedLinear`, `QKVParallelLinear`, both RMSNorms | 0.1-0.8 s | 0.2-0.9 s | ~1x | identical |
+
+Shape (b) is **confined to the requant/repack classes**; everything that only launches kernels is untouched. That
+also retires frequency scaling or SMT contention as the whole story -- those would inflate every class together. And
+in the slow launches the watchdog repeats `main thread stuck in moe.py:255/257 _fold_hist for 2.0 s state=R
+syscall=running`, which never appears in a clean launch: the time is charged as user CPU while sitting at the fold
+guard's readback.
+
+**3. Per-card SM clock paired with per-card busy.** First version took min/max over all four cards, which tail103
+(windows 11.7 / 5.1 / 5.0 / 5.3 -- one rank slow, three clean in one launch) showed is useless: the line mixed a
+boosted card with an idle one. Now every 0.25 s sample records `(card, busy%, current MHz)` and the census reports,
+per card, the clock histogram *while that card was busy* against *while idle*. `pp_dpm_sclk` marks the active level
+with `*`; on these parts idle is 41 MHz and busy samples land at 2.83-2.89 GHz.
+
+| launch | windows | busy% mean per card | clock while busy |
+|---|---|---|---|
+| tail104 | 5.1-5.3 s | 4-35% | every sample 2845-2882 MHz (1 low sample in 64) |
+| tail106 | 5.1-5.2 s | 4-25% | 2765-2884 MHz (2 low samples in 66) |
+| tail107 | **15.5-15.8 s** | **4-13%** | 2839-2887 MHz (10 low samples in 105) |
+
+So the GPU is **not** clocked down in the elevated state -- it is at full boost whenever it is caught working, and it
+is caught working *less often* than in a clean launch. Throttling is out; "the device is the constraint" is out.
+
+**The host, though, has a ceiling and a floor.** `bios_limit=2400000` with `cpuinfo_max_freq=3709357` and
+`scaling_max_freq=2400000`: these 192 CPUs are capped by the platform at 2.4 GHz against a 3.71 GHz peak, governor
+`schedutil`, `scaling_min_freq=1500000`, and none of it is writable from this account. `stats/time_in_state`
+cumulative across all CPUs: 785.8 M ms at 1500 MHz against 91.4 M ms at 2400 MHz. Inside a clean window the box
+consumes ~93-100 CPU-seconds at the 1.5 GHz floor and ~6.5-7.5 CPU-seconds at 2.4 GHz. So the same interpreter loop
+costs 1.6x more depending on which P-state the scheduler leaves a thread in -- and the repack path is exactly the
+part of the load that runs interpreter/C++ loops on the host rather than kernels on the device.
+
+To measure that directly rather than infer it, the probe also times a **fixed interpreter loop on the load thread**
+(`prof._host_speed`, 4000 `s += i*i` iterations, reported as ns/iter p50/p95). Clean baseline over nine rank-windows
+of tail108-110: **p50 42.0-45.8 ns/iter, p95 44.9-67.8**. That is the reference line for the one measurement still
+missing, which is the same loop inside an elevated window:
+
+* host loop p50 rises with the window -> the host itself was slower (P-state, steal, contention) and the two repack
+  classes are just the ones that pay for it in cycles;
+* host loop p50 stays ~43 ns while the window doubles and tripled -> the host is the same speed and the path is doing
+  **more work** for the same tensors, which is then a code question (iteration counts, fallback branches, allocator
+  behaviour) answerable by counting, not timing.
+
+Instruments in this commit: `tests/test_window_probe.py` (19 checks: sampling, spacing, budget, host loop per sample,
+off switch clears every list, a probe that raises cannot break the pass, `named_modules` restored).
+
+Left running: **tail110** -- load 74.58 s, KV **483,024 tokens**, post-load windows **5.1-5.6 s** on all four ranks,
+draft pass 6.x s, health 200, GSM8K no-think **98/100**, needles **3/3** (3.8k/15.2k/30.4k tokens).
+
 ## How to reproduce the load-path analysis
 
 ```bash
@@ -1361,6 +1448,13 @@ LD_LIBRARY_PATH=$HOME/opt/openmpi/usr/lib/x86_64-linux-gnu \
 ~/venv-r9700/bin/python3 bench/expertcopy_probe.py            # 106 KiB/51 KiB expert copies: per-call vs combined
 LD_LIBRARY_PATH=$HOME/opt/openmpi/usr/lib/x86_64-linux-gnu R9K_MOE_BATCH_H2D=1 \
   ~/venv-r9700/bin/python3 tests/test_moe_h2dbatch.py         # the C4 batcher: byte-exact, and still slower
+BASE=110 bash bench/catch_tail.sh 3 999                      # relaunch rounds; threshold 999 = just sample the regime
+~/venv-r9700/bin/python3 bench/ab_report.py ~/logs/relaunch-tail107.log ~/logs/relaunch-tail110.log
+~/venv-r9700/bin/python3 bench/window_wall.py ~/logs/relaunch-tail107.log  # wall from the window's own timestamps
+LD_LIBRARY_PATH=$HOME/opt/openmpi/usr/lib/x86_64-linux-gnu \
+  ~/venv-r9700/bin/python3 tests/test_window_probe.py         # spacing, budget, host loop, cannot break a load
+grep "probe:\|SM clock while busy\|host CPU time by frequency" ~/logs/relaunch-tail107.log
+                                                         #   is the device answering, at what clock, in what P-state
 ```
 
 Switches: `R9K_LOAD_PROF=1` (group timers + phase snapshots), `R9K_LOAD_STACKS=1` (SIGPROF stack sampler: which
@@ -1368,7 +1462,11 @@ function), `R9K_LOAD_COPIES=1` (`copy_` accounting, fault deltas, slow-call name
 `R9K_PRESTAGE_MTP=0|1` (the E1 control), `R9K_PLE_PIN_LATE=0|1` (default 1: register the PLE tables after the stream),
 `R9K_MOE_BATCH_H2D=0|1` (the C4 batcher, default 0: slower, see above), `R9K_PRESTAGE_AHEAD=<bytes>` (the C5
 stream-ahead readahead, default 0: no effect on the target pass, see above), `R9K_CACHE_WINDOW=<MiB>` (the C6
-consumed-page handback, default 0: neutral, see above).
+consumed-page handback, default 0: neutral, see above), `R9K_PWAL_PROBE=0|1` and `R9K_PWAL_PROBE_MS=<ms>` (the window
+probe, default on at 200 ms: submission cost, whole-device latency, and a fixed host loop sampled inside the window),
+`R9K_PWAL_WARM=0|1` (warm the post-load helpers before the window, default 1: worth ~1 s per rank on a clean window).
+Read all three device/host numbers together: `submit` stays ~0.05 ms and `submit+sync` ~0.1 ms in both regimes, the
+cards sit at 2.85 GHz while busy in both regimes, and the host loop baseline is 42-46 ns/iter.
 Read the pair: the log's `slow call` offsets (`+N s into the load`, with `probe at HH:MM:SS` in the header line) line up
 with the sampler CSV's clock columns.
 

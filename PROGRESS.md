@@ -2284,3 +2284,48 @@ Also measured: a tiny node in a replayed graph costs ~3 us and forked branches d
 stands -- route + fold reran at -0.13 ms. rocprofv3 under vLLM writes nothing (workers SIGKILLed before the tool
 finalizes); the torch profiler GPU-only (PROFACT=CUDA) still stretches the step to 23 ms, so the unprofiled split
 of the remaining 2.9 ms to radiance stays an estimate. Nothing tagged; production copy untouched.
+
+
+## 2026-11-01: post-load window 5 s clean / 12-16 s elevated -- the device, the GPU clocks and the queue knobs are all cleared; it is confined to the two host-loop-bound repack classes
+
+Brian: "先发一版再继续" -- final47 went up first, then the hunt continued. notes/native-4xr9700.md C22 has the full
+data. Three instruments went in, each answering one question the census could not:
+
+**(1) the window probe** (`prof._probe_tick`, `R9K_PWAL_PROBE=0` off, `R9K_PWAL_PROBE_MS` spacing): from the load
+thread, between `named_modules` yields, hand a 1-element kernel to the driver, stamp, whole-device sync. No second
+CUDA context (0.97 util leaves no room) and no GIL-starved helper thread. CUDA event pairs are **unusable** at this
+resolution (empty pair 6.7 ms, event-sync 11.9 ms against a 0.27 ms host call), so it stays on the host clock.
+Reading: **identical in both regimes** -- submit p50 0.031-0.085 ms, submit+sync p50 0.09-0.34 / p95 3.1-4.5 ms, in a
+5.0 s launch and in 11.5-14.1 s launches alike. Only 10-13 of ~65 possible samples ever get taken: the window lives
+inside a few long calls, not in the loop, and the probe is (honestly) blind inside them. One tail98 rank paid a single
+**8506 ms** submit+sync while submitting cost 0.031 ms -- real multi-second device waits, but that is shape (a); the
+other three ranks of that launch never waited over 4.5 ms and still took 13.4-13.9 s.
+
+**(2) per-class user CPU** at identical visit counts (79,253 / 79,374 / 77,694) and identical sys CPU (29-33 s):
+`MergedColumnParallelLinear` **14.07x** (14.2 -> 199.3 s) and `RoutedExperts` **8.47x** (22.2 -> 187.8 s), while
+`GatedResidual` 1.01x, `RowParallelLinear` 1.04x, `ReplicatedLinear`/QKV/RMSNorm ~1x. Shape (b) is confined to the
+requant/repack classes, which also kills uniform explanations (frequency scaling, SMT contention would inflate
+everything). Watchdog repeats `stuck in moe.py:255/257 _fold_hist state=R syscall=running` in slow launches only.
+
+**(3) per-card SM clock paired with per-card busy** (`pp_dpm_sclk`, the `*` level; min/max-over-cards was useless --
+tail103 had one rank at 11.7 s and three at 5.0 s in one launch, so the census now reports each card separately):
+**no throttling** -- every busy sample is 2839-2887 MHz in the 15.5-15.8 s launch (tail107) exactly as in the 5.1-5.2 s
+ones (tail104/106), and busy% is *lower* when slow (4-13% vs 4-35%). GPU clock and "the device is the constraint" are out.
+
+What is left is the host: **`bios_limit=2400000` vs `cpuinfo_max_freq=3709357`** -- these 192 CPUs are platform-capped
+at 2.4 GHz against a 3.71 GHz peak (schedutil, floor 1.5 GHz, not writable from this account), and `time_in_state`
+cumulative is 785.8 M ms at 1500 MHz against 91.4 M ms at 2400 MHz. Inside a clean window the box spends ~93-100
+CPU-s at the floor and ~6.5-7.5 CPU-s at 2.4 GHz. So the probe now also times a fixed interpreter loop on the load
+thread (`prof._host_speed`): clean baseline **42.0-45.8 ns/iter p50** over nine rank-windows (tail108-110). That is
+the reference for the one measurement still missing -- the same loop inside an elevated window. If it rises, the host
+itself was slower (P-state/steal/contention) and the repack classes merely pay for it in cycles; if it holds at ~43 ns
+while the window triples, the path is doing *more work* on the same tensors and the question becomes a code-count
+question.
+
+Also fixed on the way: the probe's disabled path left stale sample lists (now clears all four), and the census line
+that mixed cards was replaced. `tests/test_window_probe.py` 19 checks (sampling, spacing, budget, host loop per
+sample, off-switch reset, a raising probe cannot break the pass, `named_modules` restored).
+
+Left running: **tail110** -- load 74.58 s, KV **483,024 tokens**, all four post-load windows **5.1-5.6 s**, health
+200, GSM8K no-think **98/100**, needles **3/3**. Serve defaults unchanged (warm on, prestage on, `GPU_MAX_HW_QUEUES=1`,
+`HSA_ENABLE_MWAITX=1`); no default behaviour changed this round, all new instruments are read-only observers.

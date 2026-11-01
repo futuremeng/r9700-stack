@@ -64,10 +64,14 @@ ck("the submission half is finite",
 ck("floor samples (sync with nothing submitted) are recorded",
    len(st["sync_only"]) >= 1 and all(x >= 0 for x in st["sync_only"]),
    f"(p50 {prof._pct(st['sync_only'], 0.5):.3f} ms)")
+ck("the host loop is timed once per sample", len(st["host"]) == st["n"] and all(1.0 < x < 1e6 for x in st["host"]),
+   f"({len(st['host'])} samples, p50 {prof._pct(st['host'], 0.5):.1f} ns/iter)")
 ck("probe cost stays small", st["cost"] / max(1, st["n"]) < 0.010,
    f"({1000 * st['cost'] / max(1, st['n']):.2f} ms per sample)")
 log = buf.getvalue()
 ck("the report names both halves", "probe:" in log and "submit ms" in log and "submit+sync ms" in log)
+ck("the report names the host loop", "host loop ns/iter" in log,
+   f"({[l.split('probe: ')[1] for l in log.splitlines() if 'host loop' in l][:1]})")
 
 # ---- interval spacing is respected --------------------------------------------------------------------------------
 fast = st["n"]
@@ -95,6 +99,8 @@ walk(model)
 prof.stop_pwal()
 ck("R9K_PWAL_PROBE=0 arms nothing", prof._PWPR["n"] == 0 and "disabled" in prof._PWPR["why"],
    f"({prof._PWPR['why']})")
+ck("off clears every sample list, host included", not any(prof._PWPR[k] for k in ("sub", "tot", "sync_only", "host")),
+   f"({ {k: len(prof._PWPR[k]) for k in ('sub', 'tot', 'sync_only', 'host')} })")
 os.environ["R9K_PWAL_PROBE"] = "1"
 
 # ---- a failing probe cannot break the pass --------------------------------------------------------------------------

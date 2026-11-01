@@ -747,14 +747,14 @@ def _probe_start() -> None:
     submit-and-wait took.
     """
     if os.environ.get("R9K_PWAL_PROBE", "1") != "1":
-        _PWPR.update(on=False, n=0, sub=[], tot=[], sync_only=[], cost=0.0, last=0.0, budget=0,
+        _PWPR.update(on=False, n=0, sub=[], tot=[], sync_only=[], host=[], cost=0.0, last=0.0, budget=0,
                      why="disabled by R9K_PWAL_PROBE", buf=None, dev_str="")
         return
     try:
         iv = max(0.0, float(os.environ.get("R9K_PWAL_PROBE_MS", "200")) / 1000.0)
     except ValueError:
         iv = 0.2
-    _PWPR.update(on=True, n=0, sub=[], tot=[], sync_only=[], cost=0.0, last=0.0, budget=800, why="",
+    _PWPR.update(on=True, n=0, sub=[], tot=[], sync_only=[], host=[], cost=0.0, last=0.0, budget=800, why="",
                  buf=None, dev_str="", iv=iv)
 
 
