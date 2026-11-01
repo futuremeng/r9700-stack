@@ -1280,6 +1280,31 @@ Two corrections to the record, both from that same launch:
    stands as what those seven launches did, not as a guarantee; across the ten warmed launches since, tail83 is one
    recurrence.
 
+## C20: re-measured on wall time, shape (b) is real -- but every pre-fix window magnitude in this file is unusable
+
+`bench/window_wall.py` recovers a window's wall duration from the timestamps of its opening and closing log lines and
+prints it beside what the profiler claimed. The method is validated where the direct measurement exists: final46
+reports `5.1-5.3 s of wall` and the timestamp pair says 5 s for all four ranks.
+
+Three launches with the fixed instrument (same default config, warm-up on):
+
+| instance | **wall, per rank** | attributed | nesting factor |
+|---|---|---|---|
+| tail88 | 5.0 5.0 5.1 5.1 | 11.4-11.8 | 2.3x |
+| tail89 | 12.1 12.3 12.9 13.0 | 12.0-12.5 | 1.0x |
+| tail90 | 12.6 12.9 13.2 13.3 | 50.3-58.6 | 4.0x |
+| final46 | 5.1 5.2 5.2 5.3 | 12.1-12.4 | 2.4x |
+
+So the two regimes survive the fix: **~5 s of wall per rank versus ~13 s**, and the nesting factor of the attributed
+sum is independent of which regime a launch lands in (1.0x, 2.3x, 2.4x, 4.0x, and 6.6x in tail83). Two consequences:
+
+1. Shape (b) -- the whole post-load pass 2.5x slower, uniformly across all four ranks -- is a real state of this box,
+   not an accounting artifact. Everything in C13-C19 that *compared* regimes still holds directionally.
+2. The pre-fix magnitudes do not. `86 s`, `75 s`, `440 s` were attributed sums: tail77's was 16 s of wall, tail83's
+   67 s. And attributed is not a bound in either direction -- tail87 printed 10-11 s while its wall was 17-18 s,
+   because time outside the yield-to-yield gaps is not counted at all. Read regime *labels* from the old entries,
+   never their sizes.
+
 ## How to reproduce the load-path analysis
 
 ```bash

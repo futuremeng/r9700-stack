@@ -1,3 +1,17 @@
+## 2026-11-01 (late night): re-measured on wall time the two regimes survive -- 5 s vs 13 s -- but the old magnitudes are void
+
+* New `bench/window_wall.py`: recovers each window's wall duration from the log timestamps of the window's opening and
+  closing lines, beside what the profiler printed. Validated against the direct measurement (final46: 5 s retro, 5.1-
+  5.3 s reported).
+* Three launches with the fixed instrument: **wall 5.0-5.1 s (tail88), 12.1-13.0 s (tail89), 12.6-13.3 s (tail90)**,
+  attributed 11.5 / 12.3 / 54 s -- nesting factor 1.0x, 2.3x, 4.0x independent of the regime.
+* So shape (b) (the whole pass ~2.5x slower, uniformly on all four ranks) is a real state of the box, and the regime
+  comparisons of C13-C19 hold directionally. But pre-fix **magnitudes** are void: tail77's "86 s" was 16 s of wall,
+  tail83's "440 s" was 67 s, and attributed is not a bound either way (tail87 printed 10-11 s against 17-18 s of
+  wall, because time outside the yield-to-yield gaps is never counted).
+* Instance state: default config (warm-up on, HWQ=1, MWAITX=1), latest launch tail90 up; today's cleanest load was
+  final46 at 5.1 s windows / 98.3 s total, and final45 measured GSM8K 100/100 with needles 3/3.
+
 ## 2026-11-01 (night): queue/wakeup A/B negative (defaults win); the window number was an attributed sum, not wall; warm-up is not a guarantee
 
 * `HWQ` / `MWAITX` are already parameterised in `serve/native-flashnext.sh`, so the A/B was env-only (worker
