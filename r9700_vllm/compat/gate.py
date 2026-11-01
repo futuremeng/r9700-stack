@@ -23,6 +23,9 @@ TESTED = {
     "layer_tail_pipe": (("e97573215",), "vllm: an all-reduce / compute overlap for row-local layer tails"),
     # GLM-5.3-Flash sparse indexer on RDNA4: is_enabled() gate + the _C top-k ops the ROCm wheel lacks (models/glm5next.py)
     "glm5next_rdna4": (("fe4df3df0", "e4a5b5537"), "vllm: RDNA4 (is_rdna_aiter_enabled) support in models/glm5next/amd + ROCm top_k_per_row kernels"),
+    # stock's per-expert MoE placement batched into runs of adjacent slices (moe/h2dbatch.py): RoutedExperts._load_w13
+    # and _load_w2 -- 147,912 pageable copies a rank, 15.0 GiB, 34.5 s of copy wall at 0.33-0.52 GB/s
+    "moe_h2d_batch": (("0.32.0",), "vllm: batched expert weight placement in RoutedExperts"),
 }
 
 

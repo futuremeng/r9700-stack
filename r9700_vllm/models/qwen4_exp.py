@@ -90,6 +90,8 @@ def target_weights(weights):
             prof.snap("target start")
             prof.start_stacks()
             prof.install_copy_probe()     # must be installed before any weight is placed
+        from ..moe import h2dbatch
+        h2dbatch.install()                # batch stock's per-expert H2D copies (off unless R9K_MOE_BATCH_H2D=1)
         t = time.perf_counter()
         tstream = t                            # stream clock, for reporting when each group arrives
         for n, w in weights:
@@ -110,6 +112,7 @@ def target_weights(weights):
                 g[2] += now - t
                 g[4] = now - tstream
             t = now
+        h2dbatch.flush_all()              # every staged byte has to reach the device before the stream ends
         from ..utils import hostmem          # late pinning: register the PLE tables now, not at construction
         hostmem.finalize_late_pins()
         if _PROF:
