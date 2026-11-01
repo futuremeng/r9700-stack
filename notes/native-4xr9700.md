@@ -1054,6 +1054,44 @@ So the census now also samples our own `VmSwap`, our minor/major fault counters 
 across the window (plus `/proc/<tid>/syscall`, which is how we can tell the self-test's `clock_nanosleep` from a
 thread spinning in user space).
 
+## C13: the swap reading dies too, and warming the post-load path takes the tail away (7 launches, none over 20 s)
+
+The swap numbers the census added say the swap story is wrong: a worker starts its window with **512-750 MiB of
+itself in swap whether the instance is clean or tailed** -- tail57 (73.8 s window) at 578 MiB, tail61-65 (4.4-4.6 s
+windows) at 512-607 MiB. Together with the corrected KV table, the tail has no memory-side marker at all.
+
+What survived is where the tail sits: the visit of the **first tensor the fold guard ever runs**. So the experiment
+was to do that work before the timed window: `warm_post_load()` (kernels/moe.py, `R9K_PWAL_WARM=1`, default on)
+calls `permute_fragments`, `pack_scales`, `_fold_hist` and `quantize_rows_fp8` once on coin-sized dummies of the
+same shape class, 48-184 ms, immediately before `start_pwal`. It cost four launches to get right first --
+`torch.device("cuda1")` is not a valid device string and the exception took the workers down -- which is why the
+call is now wrapped in `try/except` (a warm-up may only ever cost time) and tested exactly as the server calls it.
+
+Seven warmed launches (tail59-65), all four ranks each:
+
+| instance | per-rank windows | worst | KV | load |
+|---|---|---|---|---|
+| tail59 | 4.5 4.5 4.6 7.5 | 7.5 s | 497,588 | 71.4 s |
+| tail60 | 4.6 4.9 7.4 8.4 | 8.4 s | 496,374 | 105.2 s |
+| tail61 | 4.5 4.5 4.6 4.6 | 4.6 s | 493,542 | 71.9 s |
+| tail62 | 4.4 4.4 4.5 4.6 | 4.6 s | 493,542 | 77.8 s |
+| tail63 | 4.5 4.5 4.6 4.6 | 4.6 s | 494,351 | 77.3 s |
+| tail64 | 4.5 4.7 4.7 4.8 | 4.8 s | 497,588 | 80.1 s |
+| tail65 | 4.5 4.5 4.5 4.6 | 4.6 s | 495,160 | 71.1 s |
+
+Two things changed. The ordinary window dropped from 5.4-5.9 s a rank to **4.4-4.8 s a rank** -- so even the clean
+instances were paying about a second of first-call cost inside the window. And the giant tail did not appear: **no
+window over 20 s in 7 launches**, against 5 of the previous 13 launches carrying a 43-74 s single visit (at that
+rate, seven clean launches in a row has about a 4% chance). That is not proof, and the mild outliers in tail59/tail60
+(7.5, 8.4 s) say the window is still jittery; but the reading and the experiment agree, and the warm-up is cheap
+enough to keep regardless -- the load total is now 71-80 s with a new best of 71.07 s, and the instance serves
+98/100 on GSM8K with needles 3/3 and a 495,160-token pool.
+
+What is still unexplained is the mechanism of the stall itself: the visit is one call queueing ~44-69 s while two
+host threads spin (`syscall running`, state R), on tensors of 26 KB, with no swap, no MES timeout, no memory
+pressure and no cross-rank queueing. The warm-up removes the *waiting*; nothing here says what the device was doing
+while the host waited.
+
 
 ## How to reproduce the load-path analysis
 

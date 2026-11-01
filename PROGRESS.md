@@ -1,3 +1,21 @@
+## 2026-11-01 (end of day): warming the post-load path took the tail away -- 7 launches, no window over 20 s, and the clean window fell from 5.6 s to 4.6 s a rank
+
+* The swap reading died with the KV one: a worker starts its post-load window with 512-750 MiB of itself in swap
+  whether the instance is clean (tail61-65: 512-607 MiB) or tailed (tail57, 73.8 s window: 578 MiB).
+* What survived is *where* the tail sits -- the visit of the first tensor the fold guard runs -- so the experiment
+  was `warm_post_load()` (kernels/moe.py, `R9K_PWAL_WARM=1`, default on): `permute_fragments`, `pack_scales`,
+  `_fold_hist`, `quantize_rows_fp8` once on coin-sized dummies, 48-184 ms, right before `start_pwal`.
+* Seven warmed launches: per-rank windows **4.4-4.8 s** (was 5.4-5.9 -- the clean instances were paying ~1 s of
+  first-call cost too), outliers 7.5 s and 8.4 s once each, and **no window over 20 s** where 5 of the previous 13
+  launches had carried a 43-74 s single visit. Load totals 71.1-105.2 s, new best 71.07 s.
+* Getting there cost four launches: `torch.device("cuda1")` is not a valid device string and the exception took the
+  workers down. The call is now `try/except`-guarded (a warm-up may only ever cost time) and tested exactly as the
+  server calls it (`warm_post_load()` no-argument on the current CUDA device).
+* Instance up: tail65, load 71.1 s, KV **495,160**, GSM8K 98/100, needles 3/3.
+* Still unexplained: what the device was doing while the host waited -- one call queueing 44-69 s on a 26 KB tensor
+  with two host threads spinning (`syscall running`, state R), no swap, no MES timeout, no memory pressure, no
+  cross-rank queueing. The warm-up removes the waiting, not the cause.
+
 ## 2026-11-01 (night): the known MES bug is ruled out by the kernel log; the census now samples swap, and `slowcall` says the slow calls are waits, not work
 
 * We are in group `adm`, so `/var/log/kern.log` is readable: **zero `MES(...) failed to respond` lines today**, on
