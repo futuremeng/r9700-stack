@@ -1,5 +1,32 @@
 # Progress log
 
+## 2026-11-01 (night): the prefetch question closes as a no-op, and the A/B wedges the box (OOM -> amdgpu SVM)
+
+* **The prefetch knobs are inert on this stack.** `weight_utils.py:1115` is `should_prefetch = strategy ==
+  "prefetch"`; with no `--safetensors-load-strategy` it auto-enables only on NFS/Lustre *and* when the checkpoint
+  fits 90% of available RAM. Every rank logs `EXT4. Checkpoint size: 110.60 GiB. Available RAM: 40.74 GiB.` +
+  `Auto-prefetch is disabled ...`, so `--safetensors-prefetch-num-threads 1` and the default arm ran **identical
+  code**. Forcing the strategy would stage later shards into RAM that is already 70 GiB short of the 110.6 GiB
+  each rank streams; vLLM warns `This may cause out-of-memory errors`. Not attempted.
+* What the two launches did give, identical config, page cache alone: **load 208.4 s / experts place 137.6 s cold
+  vs 103.2 s / 34.5 s warm (2.02x)**. Third load-path number in a row that turned out to be a page-cache artifact
+  (after the `R9K_FOLD` 27 s and the 143.8-179.9 s spread). New protocol `bench/coldstart_ab.sh` measures that
+  axis with `drop_caches` / pre-read arms; `bench/prefetch_ab.sh` is neutered with the reasoning in its header.
+* **The box died for it, and the cause is not vLLM.** `STOP` returns before teardown is verified, so run 3 of the
+  loop started a 4-rank load while the previous 53.7 GiB of worker RSS (10.6/11.8/18.4/12.9) was still mapped --
+  vLLM was already at `Available RAM: 40.74 GiB`, buff/cache 47 GiB, `SwapFree` down to 1.5 GiB of 8. The OOM
+  killer fired (`/proc/vmstat oom_kill 8`) and SIGKILLed the two launcher wrappers plus the agent (session file
+  ends mid-tool-call, no error block -- that is the OOM signature), then **kswapd0 wedged on the amdgpu SVM
+  mmu-notifier**: `svm_range_cpu_invalidate_pagetables+0x7b [amdgpu] <- __mmu_notifier_invalidate_range_start`,
+  `blocked on a mutex likely owned by task kworker/185:3`, while another task sat in
+  `amdgpu_hmm_range_get_pages+0xf3`. Reclaim needs the mutex a HMM-validating worker holds; the worker needs
+  reclaim. `sshd`, the driver `bash` and a dozen kworkers queued behind it, load average 62.
+* Unkillable: after `kill -9`, workers stayed `D` in `exit_mm`, the driver stayed `D` in
+  `svm_range_cpu_invalidate_pagetables`, VRAM held 19.4 GiB/GPU, load frozen at 1/23 shards for 73 minutes,
+  `kswapd0` still `D` at 02:55. A GPU reset cannot free a kernel mutex -- reboot is the only exit. Full write-up
+  and the launch rules (no launch unless no `vllm serve|VLLM::` process and `MemAvailable >= 55 GiB`; watch
+  `SwapFree`; poll with short calls so an agent OOM costs a call, not a session) in **`notes/load-oom-svm-wedge.md`**.
+
 ## 2026-11-01: draft depth is a concurrency question; the native default becomes MTP=2
 
 * Measured on two fresh instances (3 x 300-token samples at 32 in flight each, plus ITL, plus the quality gate):

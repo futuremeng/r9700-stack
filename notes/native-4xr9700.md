@@ -344,11 +344,22 @@ Two claims this corrects:
 * `--load-format fastsafetensors` is not available on this stack: it fails at the first tensor with
   `[FAIL] framework hinted GPU runtime 'libamdhip64.so'` (fastsafetensors 0.5.0 is CUDA-only).
 
-Queued next, with the protocol this table forces: vLLM prefetches `sorted_files[rank::world_size]` at 8 threads /
-16 MiB a rank by default (`--safetensors-prefetch-num-threads` / `--safetensors-prefetch-block-size`), and with a
-110.6 GiB checkpoint against 93.8 GiB of RAM, prefetching later shards evicts the pages the iteration is still
-reading -- so *less* prefetch may be faster. Any variant must be measured as two launches with the second one
-counted, because one config alone spans 143.8 - 179.9 s.
+~~Queued next: tune vLLM's safetensors prefetch (8 threads / 16 MiB a rank by default).~~ **Wrong on both counts,
+and the run that tested it wedged the box** (see `notes/load-oom-svm-wedge.md`):
+
+* There is no default prefetch here. `weight_utils.py:1115` is `should_prefetch = strategy == "prefetch"`, and
+  with no `--safetensors-load-strategy` it auto-enables only on NFS/Lustre *and* when the checkpoint fits in 90%
+  of available RAM. Every rank of every Flash-Next launch logs: `Filesystem type for checkpoints: EXT4.
+  Checkpoint size: 110.60 GiB. Available RAM: 40.74 GiB.` + `Auto-prefetch is disabled ...`. So
+  `--safetensors-prefetch-num-threads 1` tunes a path that never runs; the A/B arms were identical.
+* Forcing `--safetensors-load-strategy=prefetch` on this stack would stage later shards into the same RAM that is
+  already 40 GiB short of the 110.6 GiB the four ranks stream -- vLLM logs `This may cause out-of-memory errors`.
+  Not attempted, and it should not be.
+* The two arms that *do* exist are page-cache cold and warm, and they are worth 2.02x on an identical config:
+  `load_s=208.4 / experts_place_s=137.6` cold vs `load_s=103.2 / experts_place_s=34.5` warm. This is also the
+  third time a load-path number turned out to be a page-cache artifact in disguise.
+* The two-launch protocol still applies, and now a hard gate: no launch unless every `vllm serve|VLLM::` process
+  is gone and `MemAvailable >= 55 GiB` -- see `bench/coldstart_ab.sh`, which replaces `bench/prefetch_ab.sh`.
 
 ## How to run it again
 
