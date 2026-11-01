@@ -12,7 +12,7 @@
 #      "3 x 300-token sample" baseline and a "300 x 300 in one wave" baseline are not comparable.
 cd /home/jiulu/r9700-stack || exit 1
 PY=~/venv-r9700/bin/python3
-OUT=~/logs/probe32.txt; PW=~/logs/probe32.pwr
+OUT=${PROBE_OUT:-$HOME/logs/probe32.txt}; PW=$OUT.pwr
 : > "$OUT"; : > "$PW"
 
 power_gated () {   # $1: sample power+busy every 2 s until told to stop

@@ -35,6 +35,7 @@ from vllm.models.qwen4_exp.amd.mtp import Qwen4ExpMTP
 
 from . import lm_heads
 from ..quant.nvfp4 import quantize_mxfp4_search
+from ..utils import prof
 from ..attn import qsa as _qsa
 from ..ple import short_conv as _ple_conv
 from .. import hc as _hc
@@ -85,6 +86,8 @@ def target_weights(weights):
     def gen():
         pull = place = 0.0
         seen: dict[str, list] = {}
+        if _PROF:
+            prof.snap("target start")
         t = time.perf_counter()
         for n, w in weights:
             now = time.perf_counter(); pull += now - t
@@ -107,6 +110,7 @@ def target_weights(weights):
             for k, v in sorted(seen.items(), key=lambda kv: -kv[1][2])[:4]:
                 logger.info("r9700 load profile: %7.1f s on %s (%s tensors, %.1f GiB checkpoint bytes a rank)",
                             v[2], k, v[0], v[1] / 2**30)
+            prof.snap("target end")     # majflt here = bytes the target pass took from disk rather than cache
     return gen(), last
 
 
@@ -128,12 +132,16 @@ def _group(name: str) -> str:
 def mtp_weights(weights, mtp_mxfp4: bool):
     dropped, pend = [], {}
     requant = 0.0
+    n_t, n_b, t_all = 0, 0, time.perf_counter()
     for name, w in weights:
         if _DROP_MTP_HEAD.search(name):
             dropped.append(name)
             continue
         if _DROP_ATTN_SCALE.search(name):
             continue
+        if _PROF:
+            n_t += 1
+            n_b += w.numel() * w.element_size()
         # HF rev 6fe3e746 ships the MTP MLP in bf16 (fused experts) instead of fp8
         if mtp_mxfp4 and (_MTP_EXPERTS_FUSED.search(name) or (_MTP_MLP_FP8.search(name) and name.endswith(".weight"))) \
                 and w.dtype == torch.bfloat16:
@@ -160,7 +168,9 @@ def mtp_weights(weights, mtp_mxfp4: bool):
     if pend:
         logger.warning("r9700: unpaired MTP fp8 tensors left: %s", list(pend)[:4])
     if _PROF:
-        logger.info("r9700 load profile (draft): bf16->MXFP4 requant %.1f s", requant)
+        logger.info("r9700 load profile (draft): bf16->MXFP4 requant %.1f s (%s tensors, %.1f GiB a rank, "
+                    "%.1f s wall)", requant, n_t, n_b / 2**30, time.perf_counter() - t_all)
+        prof.snap("draft end")          # majflt delta vs "target end" = the duplicate read, measured
     if dropped:
         logger.info_once("r9700: ignored fork-private MTP draft head tensors: %s", ", ".join(dropped))
 

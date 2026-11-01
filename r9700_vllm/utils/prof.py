@@ -7,6 +7,7 @@ process exit. Zero cost when the switch is off."""
 import atexit
 import functools
 import os
+import resource
 import time
 
 from vllm.logger import init_logger
@@ -45,6 +46,30 @@ def timed(name: str):
                 record(name, time.perf_counter() - t0)
         return wrap
     return deco
+
+
+def snap(tag: str) -> None:
+    """Log page-cache state and this process's page faults at a load phase boundary.
+
+    The load streams safetensors through mmap, so the cost of a tensor is paid when its bytes are first touched:
+    a warm run shows up as minor faults, a run whose pages were evicted by the ranks' own anon (4 x ~13 GiB plus a
+    38.8 GiB pinned PLE table) shows up as **major faults** -- i.e. a disk re-read. That is the difference between
+    a 6 s and a 73 s draft requant on this box, and this is the counter that proves it. R9K_LOAD_PROF=1 only."""
+    if not ON:
+        return
+    cached = swapfree = -1
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("Cached:"):
+                    cached = int(line.split()[1]) // 2**20
+                elif line.startswith("SwapFree:"):
+                    swapfree = int(line.split()[1]) // 2**20
+        ru = resource.getrusage(resource.RUSAGE_SELF)
+        logger.info("r9700 load snap %-12s Cached=%4d GiB  SwapFree=%3d GiB  majflt=%9d  minflt=%9d",
+                    tag, cached, swapfree, ru.ru_majflt, ru.ru_minflt)
+    except OSError as e:
+        logger.info("r9700 load snap %-12s unavailable: %s", tag, e)
 
 
 def report() -> None:
