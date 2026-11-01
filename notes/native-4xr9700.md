@@ -1246,6 +1246,40 @@ before the pass has even started. It is not a reliable predictor in either direc
 took 86 s; tail71 warmed in 199 ms and took 12 s), but it rules out "big tensor, big allocation, first touch of that
 shape" as the whole story.
 
+## C19: the queue/wakeup knobs are not it either (defaults are the best arm) -- and the window number I had been
+comparing was an attributed sum, not wall time
+
+`serve/native-flashnext.sh` already parameterises the two queue-level knobs (`GPU_MAX_HW_QUEUES=${HWQ:-1}`,
+`HSA_ENABLE_MWAITX=${MWAITX:-1}`), so this A/B was env-only; a worker's `/proc/<pid>/environ` confirmed the values
+landed (`HSA_ENABLE_MWAITX=0` in tail81). Four launches:
+
+| arm | windows (s) | majflt in windows | swap at window start | draft wall | load |
+|---|---|---|---|---|---|
+| tail81 `MWAITX=0` | 12.3 11.4 11.4 10.9 | 150,870 | 927 | 6.2 | 93.7 |
+| tail83 `HWQ=2` | 11.6 11.4 11.3 + a ~65 s stall | 154,182 | 969 | **74.5** | 137.8 |
+| tail85 `HWQ=2 MWAITX=0` | 12.6 11.9 11.4 11.3 | 150,756 | 928 | 6.5 | 72.7 |
+| tail87 control `HWQ=1 MWAITX=1` | **10.6 10.3 10.1 9.9** | 149,062 | 896 | 6.3 | 80.6 |
+
+The default configuration is the fastest arm, so the queue-count and MWAITX hypotheses are closed (and the serve
+script's defaults stay -- no code change). tail83's arm is the worst one seen (one rank stalled, and the draft pass
+took 74.5 s), n=1, but it points the same way: do not raise `GPU_MAX_HW_QUEUES` here.
+
+Two corrections to the record, both from that same launch:
+
+1. **The window figure was an attributed sum, not wall.** `stop_pwal` printed `sum()` of the per-class gaps, which is
+   wall time when the pass is single-threaded (hence every clean run agreed with the clock) and can exceed it when a
+   `named_modules` loop nests. tail83 said `440.5 s over 33691 module visits` while the timer opened at 14:21:20 and
+   closed at 14:22:27 -- **67 s of wall**. `start_pwal` now stamps `t0` and the line reads
+   `r9700 target post-load: 67.4 s of wall (440.5 s attributed) over ... visits`, with an explicit warning when the
+   attributed sum exceeds the wall. `bench/ab_report.py` parses the wall number and shows the attributed sum next to
+   it. Every pre-fix window number in this file is the attributed sum; for the clean runs (4.4-5.9 s) that equals
+   wall, but the tall ones (45-86 s) should be read as attributed until re-measured.
+2. **The warm-up does not always prevent shape (a).** tail83 warmed in 204 ms and then spent essentially the whole
+   67 s wall inside one call: the watchdog repeated `stuck in moe.py:255 _fold_hist for 2.0 s state=R wchan=0
+   syscall=running` every 2 s from 14:21:27 to the end. So the earlier "7/7 warmed launches with no window over 20 s"
+   stands as what those seven launches did, not as a guarantee; across the ten warmed launches since, tail83 is one
+   recurrence.
+
 ## How to reproduce the load-path analysis
 
 ```bash

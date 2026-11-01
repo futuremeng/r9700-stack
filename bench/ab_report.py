@@ -14,7 +14,7 @@ import sys
 
 # "self VmSwap   921 ->   586 MiB ... faults +48290 minor +38158 major   box pswpin +272442"
 CENSUS = re.compile(r"self VmSwap\s+(\d+) ->\s+(\d+).*faults \+(\d+) minor \+(\d+) major.*pswpin \+(\d+)")
-WINDOW = re.compile(r"target post-load: ([\d.]+) s over")
+WINDOW = re.compile(r"target post-load: ([\d.]+) s(?: of wall(?: \(([\d.]+) s attributed\))?)? over")
 DRAFT = re.compile(r"load profile \(draft\): bf16->MXFP4 requant [\d.]+ s \([^)]*?([\d.]+) s wall\)")
 DISK = re.compile(r"load snap (\S+).*disk reads=\s*([\d.]+) GiB")
 LOAD = re.compile(r"Model loading took [\d.]+ GiB memory and ([\d.]+) seconds")
@@ -23,7 +23,8 @@ KV = re.compile(r"KV cache size: ([\d,]+) tokens")
 
 def report(path: str) -> None:
     txt = open(path, errors="replace").read()
-    wins = [float(x) for x in WINDOW.findall(txt)]
+    wins = [float(a) for a, _ in WINDOW.findall(txt)]
+    attr = [float(b) for _, b in WINDOW.findall(txt) if b]
     cen = [(int(a), int(b), int(c), int(d), int(e)) for a, b, c, d, e in CENSUS.findall(txt)]
     draft = [float(x) for x in DRAFT.findall(txt)]
     disk = {k: float(v) for k, v in DISK.findall(txt)}
@@ -32,6 +33,7 @@ def report(path: str) -> None:
     swap0 = sum(c[0] for c in cen) // max(1, len(cen))
     dload = max(disk.values()) - min(disk.values()) if len(disk) >= 2 else 0.0
     print(f"{name:<10} windows[{' '.join(f'{w:5.1f}' for w in sorted(wins, reverse=True))}] "
+          f"attr={max(attr) if attr else 0:6.0f} "
           f"majflt={maj:>7} swap0={swap0:>4} MiB draft_wall={max(draft) if draft else 0:4.1f} "
           f"disk={dload:5.1f} GiB load={float(LOAD.search(txt).group(1)) if LOAD.search(txt) else 0:5.1f} "
           f"KV={KV.search(txt).group(1) if KV.search(txt) else '?'}")

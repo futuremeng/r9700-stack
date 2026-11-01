@@ -663,6 +663,9 @@ def start_pwal() -> None:
             yield m
 
     _PWA["on"] = True
+    _PWA["t0"] = time.perf_counter()   # the sum of per-class gaps is NOT wall time: a nested named_modules loop
+                                       # counts one interval twice, and a 440 s "window" against a 67 s wall in
+                                       # tail83 is that artifact, not a measurement of the stall
     torch.nn.Module.named_modules = timed
     if not _WD:
         start_watchdog()                 # the slow version of this window is blocked, not computed: name the line
@@ -689,8 +692,11 @@ def stop_pwal(tag: str = "post-load") -> None:
     if not acc:
         logger.info("r9700 %s: the timer saw no named_modules loop", tag)
         return
-    logger.info("r9700 %s: %.1f s over %s module visits", tag, sum(v[1] for k, v in acc.items()
-                if not k.startswith("@")), sum(v[0] for k, v in acc.items() if not k.startswith("@")))
+    wall = time.perf_counter() - _PWA.get("t0", time.perf_counter())
+    total = sum(v[1] for k, v in acc.items() if not k.startswith("@"))
+    logger.info("r9700 %s: %.1f s of wall (%.1f s attributed) over %s module visits%s", tag, wall, total,
+                sum(v[0] for k, v in acc.items() if not k.startswith("@")),
+                "  << attributed exceeds wall: nested named_modules loops" if total > wall + 1.0 else "")
     for k, (c, s, uc, sc, mnfl, mjfl) in sorted(((k, v) for k, v in acc.items() if not k.startswith("@")),
                                                 key=lambda kv: -kv[1][1])[:8]:
         if s < 0.05:

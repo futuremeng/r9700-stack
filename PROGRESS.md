@@ -1,3 +1,21 @@
+## 2026-11-01 (night): queue/wakeup A/B negative (defaults win); the window number was an attributed sum, not wall; warm-up is not a guarantee
+
+* `HWQ` / `MWAITX` are already parameterised in `serve/native-flashnext.sh`, so the A/B was env-only (worker
+  `environ` verified). Four launches: `MWAITX=0` 10.9-12.3 s, `HWQ=2` 11.3-11.6 s + a ~65 s stall and a 74.5 s draft
+  pass, `HWQ=2 MWAITX=0` 11.3-12.6 s, **control (`HWQ=1 MWAITX=1`) 9.9-10.6 s -- the fastest arm**. Both queue
+  hypotheses closed; the serve script's defaults stay.
+* Instrumentation correction: `stop_pwal` printed the **sum of per-class gaps**, not wall. tail83 read `440.5 s over
+  33691 visits` against **67 s of wall** (timer opened 14:21:20, closed 14:22:27). Now: `t0` stamped in `start_pwal`,
+  the line reads `67.4 s of wall (440.5 s attributed)`, with a warning when attributed > wall; `bench/ab_report.py`
+  shows both. Clean-run numbers (4.4-5.9 s) equal wall; the tall pre-fix numbers (45-86 s) are attributed sums.
+* The warm-up is not a guarantee: tail83 warmed in 204 ms and still spent essentially all 67 s inside one
+  `_fold_hist` (watchdog every 2 s: `state=R wchan=0 syscall=running`). "7/7 warmed launches with no window >20 s"
+  stands as those seven launches, not as a promise -- ten warmed launches since, one recurrence.
+* After today: shape (a) suppressed (not eliminated) by the warm-up; shape (b) -- a stable 10-13 s floor across the
+  whole pass, now in its 10th consecutive launch, vs 4.4-4.8 s earlier in the day -- has no demonstrated cause.
+  Closed as causes: cross-rank queueing, the known MES bug, swap/paging (populate A/B), prestage readahead, queue
+  count and MWAITX.
+
 ## 2026-11-01 (end): populate-vs-control A/B closes the swap family -- paging marks shape (b), it does not cause it
 
 * New: `r9700_vllm/utils/pin.py` (`R9K_PWAL_PRESTAGE=populate|lock`, `R9K_PWAL_GIB=<n>`, off by default) faults in or
