@@ -610,6 +610,106 @@ def stop_pwsamp(tag: str = "window") -> None:
             logger.info("r9700 %s   %9.2f s  %-7s %s", tag, v * 0.25, label, k)
 
 
+_PWPR = {"on": False, "n": 0, "sub": [], "tot": [], "sync_only": [], "cost": 0.0, "last": 0.0,
+         "budget": 0, "why": "", "buf": None, "dev_str": ""}
+
+
+def _probe_start() -> None:
+    """Arm the tiny-kernel latency probe for the window (env ``R9K_PWAL_PROBE``, on by default).
+
+    The question it answers is the one the census cannot: during a slow window the host thread is in R and the device
+    looks idle, but "idle" from ``gpu_busy_percent`` does not say whether the device would answer a submission right
+    now. So the pass itself -- the main thread, in the gap between two visits, no extra thread and no second CUDA
+    context (the server runs at 0.97 memory utilization, there is no room for one) -- submits one tiny kernel through
+    a pair of events and measures both clocks: what the device says the kernel took, and what the host says the
+    submit-and-wait took.
+    """
+    if os.environ.get("R9K_PWAL_PROBE", "1") != "1":
+        _PWPR.update(on=False, n=0, sub=[], tot=[], sync_only=[], cost=0.0, last=0.0, budget=0,
+                     why="disabled by R9K_PWAL_PROBE", buf=None, dev_str="")
+        return
+    try:
+        iv = max(0.0, float(os.environ.get("R9K_PWAL_PROBE_MS", "200")) / 1000.0)
+    except ValueError:
+        iv = 0.2
+    _PWPR.update(on=True, n=0, sub=[], tot=[], sync_only=[], cost=0.0, last=0.0, budget=800, why="",
+                 buf=None, dev_str="", iv=iv)
+
+
+def _probe_tick(interval: float | None = None) -> None:
+    """One sample: submit a 1-element kernel, wait for the device to come back, and split what the host paid.
+
+    Both halves matter and only one of them can be large: ``sub`` is the cost of handing work to the driver, ``wait``
+    is the cost of the device taking it and finishing. An empty ``sync`` is measured every fifth sample to know where
+    the floor is (0.055 ms measured on this box with the server idle).
+
+    Note on what is *not* used here: a ``torch.cuda.Event`` pair looked like the obvious way to get the device's own
+    opinion, and was dropped after measuring it -- an empty event pair reports 6.7 ms of ``elapsed_time`` on this
+    stack, and an event-synchronized sample reports 11.9 ms while the host call returns in 0.27 ms. The event clock
+    is not trustworthy at this resolution, so the probe stays on the host clock and measures a whole-device sync.
+    """
+    if not _PWPR["on"]:
+        return
+    now = time.perf_counter()
+    if _PWPR["n"] and now - _PWPR["last"] < (interval if interval is not None else _PWPR.get("iv", 0.2)):
+        return
+    if _PWPR["n"] >= _PWPR["budget"]:
+        _PWPR["why"] = f"budget of {_PWPR['budget']} samples reached"
+        _PWPR["on"] = False
+        return
+    t0 = time.perf_counter()
+    try:
+        import torch
+        dev = torch.cuda.current_device()
+        dev_str = f"cuda:{dev}"
+        if _PWPR["buf"] is None or _PWPR["dev_str"] != dev_str:
+            _PWPR["buf"] = torch.ones(1, device=dev_str, dtype=torch.float32)
+            _PWPR["dev_str"] = dev_str
+        if _PWPR["n"] % 5 == 4:                     # floor sample: ask for a sync with nothing submitted
+            t_a = time.perf_counter()
+            torch.cuda.synchronize()
+            _PWPR["sync_only"].append((time.perf_counter() - t_a) * 1000.0)
+        else:
+            _PWPR["buf"].add_(1.0)                  # submit (async)
+            _PWPR["sub"].append((time.perf_counter() - t0) * 1000.0)  # ms to hand the work over
+            torch.cuda.synchronize()                # whole device: does it answer at all
+            _PWPR["tot"].append((time.perf_counter() - t0) * 1000.0)  # ms submit + wait
+        _PWPR["n"] += 1
+        _PWPR["last"] = time.perf_counter()
+    except Exception as e:                                          # noqa: BLE001
+        _PWPR["on"] = False
+        _PWPR["why"] = f"probe failed: {type(e).__name__}: {e}"
+    _PWPR["cost"] += time.perf_counter() - t0
+
+
+def _pct(xs: list, q: float) -> float:
+    if not xs:
+        return 0.0
+    s = sorted(xs)
+    return s[min(len(s) - 1, int(q * len(s)))]
+
+
+def _probe_report(tag: str = "post-load") -> None:
+    if not _PWPR["n"]:
+        if _PWPR["why"]:
+            logger.info("r9700 %s probe: no samples (%s)", tag, _PWPR["why"])
+        return
+    sub, tot, idle = _PWPR["sub"], _PWPR["tot"], _PWPR["sync_only"]
+    logger.info("r9700 %s probe: %d samples (probe cost %.2f s) submit ms p50 %.3f p95 %.3f max %.2f | "
+                "submit+sync ms p50 %.2f p95 %.2f max %.2f | sync-only (nothing submitted) p50 %.2f max %.2f",
+                tag, _PWPR["n"], _PWPR["cost"], _pct(sub, 0.5), _pct(sub, 0.95), max(sub or [0.0]),
+                _pct(tot, 0.5), _pct(tot, 0.95), max(tot or [0.0]), _pct(idle, 0.5), max(idle or [0.0]))
+    # the discriminator: handing the work over stays fast while waiting for the device is what stretches
+    s, t = _pct(sub, 0.95), _pct(tot, 0.95)
+    if t > 0 and s > 0 and t > 20.0 * s:
+        logger.info("r9700 %s probe: handing work to the driver costs %.3f ms at p95 but waiting for the device to "
+                    "finish costs %.2f ms -- the wait is on the device side, not in the submission path", tag, s, t)
+    elif t > 0 and s > 5.0 * _pct(tot, 0.5):
+        logger.info("r9700 %s probe: the submission call itself costs %.2f ms at p95 (sync p50 %.2f ms) -- the wait "
+                    "is in the host's submission path", tag, s, _pct(tot, 0.5))
+    _PWPR["on"] = False
+
+
 def start_pwal() -> None:
     """Attribute the loader's post-load pass (``process_weights_after_loading``) to module classes.
 
@@ -657,6 +757,7 @@ def start_pwal() -> None:
                     d[5] += ru.ru_majflt - ru0.ru_majflt
             prev, tprev = m, now
             ru0 = ru
+            _probe_tick()
             pm = m[1] if isinstance(m, tuple) and len(m) == 2 else m
             pn = m[0] if isinstance(m, tuple) and len(m) == 2 else ""
             _PWA["cur"] = f"{type(pm).__name__} {pn}".strip()   # whose work the sampler is about to see
@@ -672,6 +773,7 @@ def start_pwal() -> None:
         _PWA["wd"] = True
     start_pwsamp()                       # ... and count what the whole window is made of, not just one stuck frame
     start_beat()
+    _probe_start()                       # and ask the device, from this thread, whether it answers right now
     if os.environ.get("R9K_PWAL_SERIAL", "0") == "1":
         _pwlock_acquire("post-load")               # one rank's window at a time (see the note above)
     logger.info("r9700 post-load timer on (gaps between named_modules yields)")
@@ -688,6 +790,7 @@ def stop_pwal(tag: str = "post-load") -> None:
     if _PWA["orig"] is not None:
         torch.nn.Module.named_modules = _PWA["orig"]
         _PWA["orig"] = None
+    _probe_report(tag)
     acc = _PWA["acc"]
     if not acc:
         logger.info("r9700 %s: the timer saw no named_modules loop", tag)
