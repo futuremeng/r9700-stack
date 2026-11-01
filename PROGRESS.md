@@ -1,3 +1,19 @@
+## 2026-11-01 (evening, later): caught a slow window with its brackets -- it is spinning on the device, not waiting
+
+* New tool `bench/catch_tail.sh`: relaunch until a window >= 8 s appears. Round 1 clean (5.5 s x4), round 2 (tail45)
+  landed a bad one: **5.7 / 21.8 / 51.0 / 57.0 s**, KV pool 468,865 (smallest so far), and it served fine anyway
+  (GSM8K 97/100, needles 3/3).
+* The rusage brackets settle what the slow ranks are doing: for `GatedResidual`, wall 0.44 s / user 0.72 s on the
+  fast rank against wall 50.66 s / user 53.06 s on the slowest, sys CPU ~2% of it, ~2.5 k major faults (10 MiB) and
+  **0.0 s** of memory pressure across the whole 57 s window. Single visits: `layers.41.mlp_hyper_connection`
+  30.76 s (31.96 s user), `layers.5.attn_hyper_connection` 32.52 s (33.85 s user).
+* So the tail is not a slow module, not the memory side, not the disk: same ops, same tensors, 75x the user CPU --
+  the thread is busy-waiting on a device that three other ranks are driving (the serve script even sets
+  `HSA_ENABLE_MWAITX=1`, and the census sees state R with `wchan (running)`, leaf frames in `quantize_rows_fp8`).
+* Next: `R9K_PWAL_SERIAL=1` (added) holds a cross-rank file lock across exactly that window, so the four ranks do
+  their post-load repacks one at a time. If the reading is right, the 50 s windows and the shrunken KV pool go away;
+  the cost, if any, is a few seconds on the load total.
+
 ## 2026-11-01 (later still): a slow post-load window is CPU work, not a wait; census + per-visit rusage are now in place, and the tail/KV-pool separation is complete
 
 * `prof`: `start_pwsamp()` samples the load thread across the whole post-load window (leaf frame, kernel state R/S/D,

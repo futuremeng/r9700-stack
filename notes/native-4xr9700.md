@@ -956,6 +956,38 @@ r9700 target post-load census: 5 samples -- thread state R=4 S=1     psi memory 
 The catch we still need is a slow instance *with* the rusage brackets: in final41/42 the attribution existed but the
 brackets did not. Two or three relaunches catch one (4 of the last 10 had one).
 
+## C10: caught one -- the slow window is not waiting for anything, it is spinning, and the same work costs 75x the CPU
+
+`bench/catch_tail.sh` relaunches until a window >= 8 s shows up. It took two rounds (tail44 clean at 5.5 s, tail45
+with 5.7 / 21.8 / 51.0 / 57.0 s), and the brackets say what the slow ranks are doing:
+
+| rank (window) | `GatedResidual` wall | user CPU | sys CPU | faults in the class |
+|---|---|---|---|---|
+| 5.7 s | 0.44 s | 0.72 s | 0.12 s | +1024 minor / +1644 major |
+| 21.8 s | 13.80 s | 14.84 s | 0.51 s | +3051 / +2332 |
+| 51.0 s | 45.05 s | 47.24 s | 1.36 s | +966 / +1824 |
+| 57.0 s | 50.66 s | 53.06 s | 1.18 s | +2726 / +2434 |
+
+and inside it, single visits: `layers.41.mlp_hyper_connection` 30.76 s wall / 31.96 s user, and
+`layers.5.attn_hyper_connection` 32.52 s / 33.85 s. So:
+
+* **wall ~= user CPU, and sys CPU is ~2% of it**: the rank is not blocked in the kernel and not faulting -- it is
+  running in user space for the whole slow window (the census agrees: R on 7-11 of its samples, `wchan (running)`).
+* The page faults in the slow class are ~2-3 k major = ~10 MiB, so this is not the memory side at all, and
+  `psi memory` stalled **0.0 s** across the whole 57 s window.
+* Same code, same tensors: the fast rank spends **0.72 s** of user CPU where the slow rank spends **53 s**. Launch
+  overhead does not scale with contention, so the extra 50 s is not "more launches" -- it is the thread **spinning
+  while the device finishes someone else's work**: `quantize_rows_fp8` (`fp8.py:64/67`, the hyper-connection
+  quantization, all torch ops on device tensors) is exactly where the census's leaf frames land, and the ROCr runtime
+  busy-waits by default, which charges that wait as user CPU in state R.
+
+That reframes the tail: it is **device serialization among the four ranks**, not a slow module and not a memory
+problem. The fix to try is not making the code faster -- it is not having all four ranks queue their post-load
+repacks at the same time (`R9K_PWAL_SERIAL`, which holds a cross-rank file lock across the window the timer
+measures). tail45 served fine meanwhile (GSM8K 97/100, needles 3/3), and again it has the smallest KV pool of any
+instance so far: 468,865 tokens.
+
+
 ## How to reproduce the load-path analysis
 
 ```bash
