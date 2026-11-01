@@ -187,6 +187,12 @@ _SLOW: list[tuple] = []          # (seconds, nbytes, key, t_start) -- the outlie
 _BUCK = [0, 0, 0, 0, 0]          # <1 ms, 1-10 ms, 10-100 ms, 0.1-1 s, >1 s
 _BUCKT = [0.0, 0.0, 0.0, 0.0, 0.0]
 _T0 = [0.0]                     # perf_counter at probe install, to place slow calls on the load timeline
+_CURRENT = [""]                 # tensor name the load stream is currently placing, set by models/qwen4_exp.py
+
+
+def set_current(name: str) -> None:
+    if COPIES:
+        _CURRENT[0] = name
 
 
 def _bucket(dt: float) -> int:
@@ -218,7 +224,7 @@ def install_copy_probe() -> None:
         _BUCK[i] += 1
         _BUCKT[i] += dt
         if dt > 0.2:
-            _SLOW.append((dt, self.numel() * self.element_size(), key, t0))
+            _SLOW.append((dt, self.numel() * self.element_size(), key, t0, _CURRENT[0]))
             _SLOW.sort(reverse=True)
             del _SLOW[8:]
         return r
@@ -247,6 +253,6 @@ def report_copies(tag: str) -> None:
                 "0.1-1s=%d (%.1f s) >1s=%d (%.1f s)",
                 _BUCK[0], _BUCKT[0], _BUCK[1], _BUCKT[1], _BUCK[2], _BUCKT[2], _BUCK[3], _BUCKT[3],
                 _BUCK[4], _BUCKT[4])
-    for dt, nb, key, t0 in _SLOW[:6]:
-        logger.info("r9700 copies slow call %7.2f s  %8.1f MiB  +%6.1f s into the load  %s",
-                    dt, nb / 2**20, t0 - _T0[0], " ".join(key))
+    for dt, nb, key, t0, name in _SLOW[:6]:
+        logger.info("r9700 copies slow call %7.2f s  %8.1f MiB  +%6.1f s into the load  on [%s]  %s",
+                    dt, nb / 2**20, t0 - _T0[0], name, " ".join(key))

@@ -91,6 +91,7 @@ def target_weights(weights):
             prof.start_stacks()
             prof.install_copy_probe()     # must be installed before any weight is placed
         t = time.perf_counter()
+        tstream = t                            # stream clock, for reporting when each group arrives
         for n, w in weights:
             now = time.perf_counter(); pull += now - t
             if _DROP_ATTN_SCALE.search(n):
@@ -98,13 +99,16 @@ def target_weights(weights):
                 continue
             n = rename_scale(n)
             last[0] = n
+            if _PROF:
+                prof.set_current(n)
             yield n, w
             now = time.perf_counter(); place += now - t      # weight_loader: fold repack, int6 PLE copy, ... 
             if _PROF:
-                g = seen.setdefault(_group(n), [0, 0.0, 0])
+                g = seen.setdefault(_group(n), [0, 0.0, 0, now - tstream, 0.0])
                 g[0] += 1
                 g[1] += w.numel() * w.element_size()
                 g[2] += now - t
+                g[4] = now - tstream
             t = now
         if _PROF:
             prof.dump_stacks("target pass")      # which functions, not just which tensor group
@@ -115,6 +119,9 @@ def target_weights(weights):
             for k, v in sorted(seen.items(), key=lambda kv: -kv[1][2])[:4]:
                 logger.info("r9700 load profile: %7.1f s on %s (%s tensors, %.1f GiB checkpoint bytes a rank)",
                             v[2], k, v[0], v[1] / 2**30)
+            for k, v in sorted(seen.items(), key=lambda kv: kv[1][3]):
+                logger.info("r9700 load profile: %-8s first tensor at +%5.1f s of the stream, last at +%5.1f s",
+                            k, v[3], v[4])
             prof.snap("target end")     # majflt here = bytes the target pass took from disk rather than cache
         # E1: the draft pass is about to re-read its bf16 MTP weights, which four ranks' anon (~50 GiB, 9.7 GiB a
         # rank of it pinned PLE table) have in general just evicted. Queue the readahead while the target pass is
