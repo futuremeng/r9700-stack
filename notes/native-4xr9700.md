@@ -626,12 +626,39 @@ writes concurrently with reads while the ranks' own `read_bytes` stood still and
   68.7 (cold) / 72.3 / 72.5 / 118.6 s; three without: 114.5 (cold) / 174.8 / 189.6 s. Throughput and quality are
   unchanged in every case (`@32 x300` 1543-1608, `@32 x1200` 1800-1815, `@16 x300` 1107-1206 tok/s, GSM8K 98-99/100,
   needles 3/3, KV 496,374 tokens, ~299 W at busy==100).
-* Remaining: (i) **swap headroom** -- late pinning deliberately uses all 8 GiB of swap during the load (peak 8191 MiB
-  of 8191) while `MemAvailable` stays at ~36-37 GiB; more swap would take the last sharp edge off (needs root, and the
-  earlier incident was a reclaim/GPU-fence deadlock, so a bigger buffer is worth having); (ii) re-test **E1 prestage
-  with late pinning** (it failed early-pinned because the MTP span was evicted during consumption); (iii) the last big
-  swing is the draft pass (3.4-48.8 s), and it is data movement into the draft, not the requant; (iv) the experts term
-  (35.5-37.7 s) is now plain work: 147k copies of 27.3 GiB, ~30 s of copy wall time, with nothing pathological left.
+* Remaining: (i) **swap capacity was measured and the sign is the opposite of what I expected** (see the next
+  section: more swap makes the load slower, because late pinning lets the kernel park the PLE tables in swap and
+  `hipHostRegister` then has to pull them back); (ii) re-test **E1 prestage with late pinning** (it failed
+  early-pinned because the MTP span was evicted during consumption); (iii) the last big swing is the draft pass
+  (3.4-48.8 s), and it is data movement into the draft, not the requant; (iv) the experts term (35.5-37.7 s) is now
+  plain work: 147k copies of 27.3 GiB, ~30 s of copy wall time, with nothing pathological left.
+
+## More swap made the load slower: the 8 GiB budget was doing a favour (swap32-warm29, swap32-cold30)
+
+A 24 GiB swapfile was added (`/swap-r9k-24g.img`, same LV, equal priority) so SwapTotal went 8 -> 32 GiB, and the same
+late-pinning loads were re-run:
+
+| late pin | SwapTotal 8 GiB | SwapTotal 32 GiB |
+|---|---|---|
+| cold | **68.7 s** | 103.2 s |
+| warm | **72.3 / 72.5 s** | 98.3 s |
+| `hipHostRegister` at stream end | 5.0-8.2 s | **20.1-30.7 s** |
+| swap peak during load | 8191 MiB (saturated) | 28074 MiB |
+| place / experts | 47.1-48.6 / 35.5-37.7 s | 52.4-54.2 / 41.9-42.1 s |
+| `>1s` copies | 0 | 0 |
+| runtime (GSM8K / needles / `@32 x1200`) | 98-99/100 / 3/3 / 1800-1815 | 99/100 / 3/3 / 1825-1831 |
+
+Why: with 8 GiB the kernel could only push 8 GiB into swap, so it shed page cache instead and left the (unpinned, but
+soon-to-be-registered) tables mostly where they were. With 32 GiB it happily moved **27 GiB** of them out, and since
+the tables have to be resident to be registered, that debt comes due at `hipHostRegister`: 30 s of swap readback per
+rank, plus slower copies while the swap traffic is in flight. Nothing degenerated into a stall -- the cost is spread
+out, which is why it shows up as a uniformly slower load.
+
+So for this load path a **small swap is a budget that protects us**, not a shortage: it constrains how far the kernel
+may move memory that we are about to pin. My earlier recommendation to add swap headroom was wrong, measured twice
+(cold and warm). If more swap is wanted for other reasons, the right shape is to keep vLLM's own swap budget where it
+is (e.g. a systemd slice with `MemorySwapMax=8G` around the server, untested here) rather than widening what the load
+may use.
 
 ## How to reproduce the load-path analysis
 
