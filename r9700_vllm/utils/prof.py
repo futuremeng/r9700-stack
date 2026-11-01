@@ -343,7 +343,80 @@ def stop_watchdog() -> None:
 
 # --------------------------------------------------------------------------- post-load pass, per module class
 
-_PWA = {"on": False, "acc": {}, "orig": None}
+_PWA = {"on": False, "acc": {}, "orig": None, "cur": "?"}
+
+# The watchdog answers "which call was stuck" and nothing else, and the slow post-load window is not one stuck
+# call: final41's worst rank spread 48.6 s over 2460 module visits, 35.4 s of it inside a single visit that kept
+# moving through Python frames, so no frame ever repeated and the watchdog printed not one line. What that window
+# needs is a census, not an alarm: sample the load thread every quarter second for the whole window and report what
+# it was doing (leaf frame), what the kernel says it was doing (R running / S sleeping / D uninterruptible, plus
+# wchan), which module the visit belonged to, and what the machine's pressure stalls say.
+_PWS = {"on": False, "th": None, "frames": {}, "mods": {}, "states": {}, "wchans": {}, "psi": {}, "n": 0}
+
+
+def _psi_read() -> dict:
+    out = {}
+    for name in ("memory", "io"):
+        try:
+            with open(f"/proc/pressure/{name}") as f:
+                fields = dict(kv.split("=") for kv in f.readline().split()[1:])
+            out[name] = (float(fields["avg10"]), int(fields["total"]))      # percent, and microseconds stalled
+        except (OSError, ValueError):
+            out[name] = None
+    return out
+
+
+def _pws_run(interval: float) -> None:
+    import threading
+    frame_key, tid = threading.main_thread().ident, os.getpid()
+    while _PWS["on"]:
+        time.sleep(interval)
+        fr = sys._current_frames().get(frame_key)
+        leaf = f"{fr.f_code.co_filename.rsplit('/', 1)[-1]}:{fr.f_lineno} {fr.f_code.co_name}" if fr else "?"
+        state, wchan = "?", "?"
+        try:
+            base = f"/proc/self/task/{tid}"
+            state = open(base + "/stat").read().split()[2]
+            wchan = open(base + "/wchan").read().strip() or "0"
+        except OSError:
+            pass
+        _PWS["n"] += 1
+        for key, val in (("frames", leaf), ("mods", _PWA["cur"]), ("states", state),
+                         ("wchans", wchan if state != "R" else "(running)")):
+            _PWS[key][val] = _PWS[key].get(val, 0) + 1
+        for name, v in _psi_read().items():
+            if v is not None:
+                _PWS["psi"].setdefault(name, []).append(v)
+
+
+def start_pwsamp(interval: float = 0.25) -> None:
+    import threading
+    _PWS["on"], _PWS["frames"], _PWS["mods"], _PWS["states"] = True, {}, {}, {}
+    _PWS["wchans"], _PWS["psi"], _PWS["n"] = {}, {}, 0
+    _PWS["th"] = threading.Thread(target=_pws_run, args=(interval,), name="r9700-window-sampler", daemon=True)
+    _PWS["th"].start()
+
+
+def stop_pwsamp(tag: str = "window") -> None:
+    _PWS["on"] = False
+    th = _PWS.pop("th", None)
+    if th is not None:
+        th.join(timeout=2.0)
+    n = _PWS["n"]
+    if not n:
+        return
+    states = " ".join(f"{k}={v}" for k, v in sorted(_PWS["states"].items(), key=lambda kv: -kv[1]))
+    logger.info("r9700 %s census: %d samples -- thread state %s", tag, n, states)
+    for name, samples in _PWS["psi"].items():
+        avg = [s[0] for s in samples]
+        stalled = (samples[-1][1] - samples[0][1]) / 1e6
+        logger.info("r9700 %s   psi %-6s avg10 mean %5.1f%% max %5.1f%%   pressure-stalled %5.1f s during the window",
+                    tag, name, sum(avg) / len(avg), max(avg), stalled)
+    for what, label in (("mods", "module"), ("frames", "leaf frame"), ("wchans", "wchan")):
+        for k, v in sorted(_PWS[what].items(), key=lambda kv: -kv[1])[:5]:
+            if v * 0.25 < 1.0:
+                break
+            logger.info("r9700 %s   %9.2f s  %-7s %s", tag, v * 0.25, label, k)
 
 
 def start_pwal() -> None:
@@ -366,19 +439,36 @@ def start_pwal() -> None:
             yield from orig(self, *a, **kw)
             return
         prev, tprev = None, time.perf_counter()
+        ru0 = resource.getrusage(resource.RUSAGE_SELF)
         for m in orig(self, *a, **kw):
             now = time.perf_counter()
+            ru = resource.getrusage(resource.RUSAGE_SELF)
             if prev is not None:
                 # some callers iterate (name, module) pairs rather than modules; normalize both forms
                 nm, mod = (prev[0], prev[1]) if isinstance(prev, tuple) and len(prev) == 2 else (None, prev)
                 cls = type(mod).__name__
-                e = _PWA["acc"].setdefault(cls, [0, 0.0])
+                # [visits, wall, user cpu, sys cpu, minor faults, major faults]: wall alone cannot tell a slow
+                # module from a starved one, and the sample census cannot see the thread at all while it is inside
+                # a C call holding the GIL -- the rusage delta around each visit can
+                e = _PWA["acc"].setdefault(cls, [0, 0.0, 0.0, 0.0, 0, 0])
                 e[0] += 1
                 e[1] += now - tprev
+                e[2] += ru.ru_utime - ru0.ru_utime
+                e[3] += ru.ru_stime - ru0.ru_stime
+                e[4] += ru.ru_minflt - ru0.ru_minflt
+                e[5] += ru.ru_majflt - ru0.ru_majflt
                 if nm and now - tprev > 0.2:
-                    d = _PWA["acc"].setdefault("@" + nm, [0, 0.0])
+                    d = _PWA["acc"].setdefault("@" + nm, [0, 0.0, 0.0, 0.0, 0, 0])
                     d[1] += now - tprev
+                    d[2] += ru.ru_utime - ru0.ru_utime
+                    d[3] += ru.ru_stime - ru0.ru_stime
+                    d[4] += ru.ru_minflt - ru0.ru_minflt
+                    d[5] += ru.ru_majflt - ru0.ru_majflt
             prev, tprev = m, now
+            ru0 = ru
+            pm = m[1] if isinstance(m, tuple) and len(m) == 2 else m
+            pn = m[0] if isinstance(m, tuple) and len(m) == 2 else ""
+            _PWA["cur"] = f"{type(pm).__name__} {pn}".strip()   # whose work the sampler is about to see
             yield m
 
     _PWA["on"] = True
@@ -386,6 +476,7 @@ def start_pwal() -> None:
     if not _WD:
         start_watchdog()                 # the slow version of this window is blocked, not computed: name the line
         _PWA["wd"] = True
+    start_pwsamp()                       # ... and count what the whole window is made of, not just one stuck frame
     logger.info("r9700 post-load timer on (gaps between named_modules yields)")
 
 
@@ -406,12 +497,17 @@ def stop_pwal(tag: str = "post-load") -> None:
         return
     logger.info("r9700 %s: %.1f s over %s module visits", tag, sum(v[1] for k, v in acc.items()
                 if not k.startswith("@")), sum(v[0] for k, v in acc.items() if not k.startswith("@")))
-    for k, (c, s) in sorted(((k, v) for k, v in acc.items() if not k.startswith("@")), key=lambda kv: -kv[1][1])[:8]:
+    for k, (c, s, uc, sc, mnfl, mjfl) in sorted(((k, v) for k, v in acc.items() if not k.startswith("@")),
+                                                key=lambda kv: -kv[1][1])[:8]:
         if s < 0.05:
             break
-        logger.info("r9700 %s   %7.2f s  %5d  %s", tag, s, c, k)
-    for k, (c, s) in sorted(((k, v) for k, v in acc.items() if k.startswith("@")), key=lambda kv: -kv[1][1])[:8]:
-        logger.info("r9700 %s   %7.2f s  %s", tag, s, k[1:])
+        logger.info("r9700 %s   %7.2f s  %5d  %-28s cpu %6.2f/%6.2f s u/s  faults +%d minor +%d major",
+                    tag, s, c, k, uc, sc, mnfl, mjfl)
+    for k, (c, s, uc, sc, mnfl, mjfl) in sorted(((k, v) for k, v in acc.items() if k.startswith("@")),
+                                                key=lambda kv: -kv[1][1])[:8]:
+        logger.info("r9700 %s   %7.2f s  %-52s cpu %6.2f/%6.2f s u/s  faults +%d minor +%d major",
+                    tag, s, k[1:], uc, sc, mnfl, mjfl)
+    stop_pwsamp(tag)
     # the post-load pass is where the fold guard runs for dense/shared-expert tensors, so print the @timed section
     # totals here too -- by now they cover both the stream and this window, which is the only complete picture a
     # server process (which never exits, so atexit never fires) gives

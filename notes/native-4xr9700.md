@@ -902,22 +902,59 @@ measurement: sample the load thread's frame *and its kernel state* across the wh
 stuck frame.
 
 The window and the KV pool also move together, which no explanation of the window should ignore (every instance that
-has measured the window, worst rank):
+has measured the window, worst rank; ten instances):
 
-| instance | worst rank | mean of 4 ranks | KV pool |
+| instance | worst rank | KV pool | load |
 |---|---|---|---|
-| warm4 | 61.8 s | 33.0 s | 490,306 |
-| final41 | 55.9 s | 23.6 s | 478,979 |
-| pwal3 | 24.9 s | 10.5 s | 468,865 |
-| pwal2 | 5.9 s | 5.8 s | 492,329 |
-| warm3 | 5.6 s | 5.1 s | 493,542 |
-| final40 | 5.1 s | 5.0 s | 493,542 |
-| warm2 | 4.5 s | 4.4 s | 492,329 |
-| warm1 | 4.4 s | 4.4 s | 495,160 |
+| warm4 | 61.8 s | 490,306 | 90.8 s |
+| final41 | 55.9 s | 478,979 | 79.3 s |
+| final42 | 41.7 s | 483,024 | 86.4 s |
+| pwal3 | 24.9 s | 468,865 | 75.4 s |
+| pwal2 | 5.9 s | 492,329 | 73.4 s |
+| final43 | 5.7 s | **497,588** | 77.7 s |
+| warm3 | 5.6 s | 493,542 | 80.8 s |
+| final40 | 5.1 s | 493,542 | 75.5 s |
+| warm2 | 4.5 s | 492,329 | 75.2 s |
+| warm1 | 4.4 s | 495,160 | 81.3 s |
 
-Every instance with a tail has a smaller KV pool than every instance without one: the slow window and the shrunken
-pool look like two symptoms of the same memory-side event at the end of the load, not one of our code paths being
-slow. And a smaller pool is not free: 468,865 tokens is 5.5% less concurrency than 495,160.
+That separation is now complete: all four instances with a tail have a KV pool of 490,306 tokens or less, all six
+without one have 492,329 or more. The slow window and the shrunken pool look like two symptoms of one memory-side
+event at the end of the load, not a code path of ours being slow -- and the pool difference is itself a cost: 468,865
+tokens is 5.7% less concurrency than 497,588.
+
+## C9: the census of a slow window -- it is CPU work, not a wait, and the tool that sees it is rusage, not a sampler
+
+The watchdog cannot describe this tail: it only reports a frame it sees unchanged for 2 s, and in final41 the 35.4 s
+visit kept moving through frames, so it printed nothing at all. `prof.start_pwsamp()` now samples the load thread
+(leaf frame, kernel state, wchan, PSI) for the whole window and `stop_pwal` prints a census, and each module visit is
+now also bracketed by `getrusage` (wall, user CPU, sys CPU, minor/major faults).
+
+On final42, where all four ranks were slow (13.1 / 25.5 / 36.5 / 41.7 s):
+
+```
+r9700 target post-load census: 25 samples -- thread state R=14 D=10 S=1
+r9700 target post-load   psi memory avg10 mean   0.6% max   0.9%   pressure-stalled   0.0 s during the window
+r9700 target post-load   psi io     avg10 mean   4.6% max   6.8%   pressure-stalled   0.7 s during the window
+```
+
+So the thread is mostly **running**, occasionally in D, and the machine is not stalled on memory at all (0.0 s of
+memory pressure in a 36 s window; io pressure 0.7 s). A slow window is four ranks doing the same repack work at once
+on a box that is also swapping 6 GiB, not a lock and not a wait. Two honest caveats about the instrument: the Python
+sampler runs at 0.7-1.1 Hz, not the 4 Hz it asks for, because it needs the GIL that the load thread holds inside C
+calls -- which is itself a hint, but also why the rusage bracket per visit is the number to trust; and rusage counts
+the whole process, so a class can show more CPU than wall when other threads of that worker were busy too.
+
+The clean shape of the same window, final43 (all four ranks 5.4-5.7 s, biggest KV pool yet):
+
+```
+r9700 target post-load      2.39 s   1413  RoutedExperts              cpu   4.10/  0.38 s u/s  faults +4023 minor +8330 major
+r9700 target post-load      1.74 s   5592  MergedColumnParallelLinear cpu   2.28/  0.56 s u/s  faults +13290 minor +12666 major
+r9700 target post-load      0.44 s   2460  GatedResidual              cpu   0.69/  0.11 s u/s  faults +934 minor +1872 major
+r9700 target post-load census: 5 samples -- thread state R=4 S=1     psi memory 0.2% avg10, 0.0 s stalled
+```
+
+The catch we still need is a slow instance *with* the rusage brackets: in final41/42 the attribution existed but the
+brackets did not. Two or three relaunches catch one (4 of the last 10 had one).
 
 ## How to reproduce the load-path analysis
 

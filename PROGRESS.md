@@ -1,3 +1,22 @@
+## 2026-11-01 (later still): a slow post-load window is CPU work, not a wait; census + per-visit rusage are now in place, and the tail/KV-pool separation is complete
+
+* `prof`: `start_pwsamp()` samples the load thread across the whole post-load window (leaf frame, kernel state R/S/D,
+  wchan, PSI memory+io) and `stop_pwal` prints the census; every module visit is now also bracketed by `getrusage`
+  (wall, user CPU, sys CPU, minor/major faults), because a wall-time column cannot tell a slow module from a
+  starved one.
+* final42, where all four ranks were slow (13.1 / 25.5 / 36.5 / 41.7 s): thread state **R=14-21, D=3-10, S=1**,
+  memory pressure **0.0 s stalled** in a 36 s window (avg10 0.6%), io pressure 0.7 s. Not a lock, not reclaim, not
+  the disk -- the window is CPU work, done slowly because four ranks do it at once on a box with 6 GiB swapped out.
+* Instrument caveats worth keeping: the Python sampler only reaches 0.7-1.1 Hz, not the 4 Hz it asks for, because it
+  needs the GIL that the load thread holds inside C calls; and rusage is per-process, so a class can show more CPU
+  than wall when that worker's other threads were busy too.
+* final43, clean: windows 5.4-5.7 s on all four ranks, load 77.7 s, `kernels fold_stats` 0.4 s (96 calls),
+  **KV pool 497,588 tokens** (largest yet), GSM8K 97.0% (194/200), needles 3/3.
+* Tail vs KV pool now separates perfectly over ten instances: every instance with a tail has a pool of 490,306 or
+  fewer, every clean one 492,329 or more (468,865 costs 5.7% of concurrency against 497,588).
+* Still missing: a tailed instance *with* the rusage brackets -- final41/42 had the attribution but not the brackets.
+  4 of the last 10 launches had a tail, so the catch is a couple of relaunches away.
+
 ## 2026-11-01 (late): the fold guard cost 8 s a rank -- cut to 0.4 s; the load total and the post-load tail did not move
 
 * `kernels/moe.py`: the guard now refuses short-K tensors from the shape (`fold_k`, no bytes touched: 98 of the 196
