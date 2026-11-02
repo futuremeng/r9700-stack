@@ -1,0 +1,60 @@
+# captured 2026-11-02 00:2x UTC from boot 0 (the boot after the third sync-flood reset of the night)
+# NOTE boot indices here are relative to THIS boot; incident-2026-11-01b used its own numbering (see mapping in README.md)
+
+# boot list (journalctl --list-boots)
+IDX BOOT ID                          FIRST ENTRY                 LAST ENTRY
+-15 42f83cb51f704425bd6ba44a87a3efea Sat 2026-10-31 06:20:58 UTC Sat 2026-10-31 06:33:25 UTC
+-14 46015a3caf1c460fa579430117758e87 Sat 2026-10-31 06:34:57 UTC Sat 2026-10-31 06:48:18 UTC
+-13 b57181a22f38451ca1415878a328075d Sat 2026-10-31 06:49:52 UTC Sat 2026-10-31 07:51:35 UTC
+-12 e7dd6b86d9d8413180d7b1d59e97f42c Sat 2026-10-31 07:53:08 UTC Sat 2026-10-31 08:04:26 UTC
+-11 01697656466f48adb4f17e2eff22a634 Sat 2026-10-31 08:06:00 UTC Sat 2026-10-31 08:10:56 UTC
+-10 8a22f104289f4761a968236f92f0ea2b Sat 2026-10-31 08:12:35 UTC Sat 2026-10-31 09:15:54 UTC
+ -9 d4275a7d97b8429a9b6e14838a392cad Sat 2026-10-31 09:27:12 UTC Sat 2026-10-31 11:12:27 UTC
+ -8 52deb9f389f34cf19d8a2a2c11feb69c Sat 2026-10-31 11:31:00 UTC Sat 2026-10-31 12:47:24 UTC
+ -7 ab5f1a30b0ef4353a09397c81defac53 Sat 2026-10-31 12:49:00 UTC Sun 2026-11-01 03:20:43 UTC
+ -6 aa661de3a0dc4be78a4d1350edd13a81 Sun 2026-11-01 03:27:55 UTC Sun 2026-11-01 20:30:41 UTC
+ -5 9c62bb9e839d4a9b96dd0d0f8c9dd3aa Sun 2026-11-01 20:36:38 UTC Sun 2026-11-01 21:02:15 UTC
+ -4 6ae7b3087144493da2cb5b25209de069 Sun 2026-11-01 21:03:56 UTC Sun 2026-11-01 23:45:01 UTC
+ -3 3b531c6383b8422a8bdcfded5724dcbf Sun 2026-11-01 23:52:35 UTC Sun 2026-11-01 23:53:07 UTC
+ -2 b6aae6d2830d4eac9dd202079a110fdb Sun 2026-11-01 23:59:36 UTC Mon 2026-11-02 00:01:37 UTC
+ -1 2989bceb897641b69a5ac63ba4180d12 Mon 2026-11-02 00:04:54 UTC Mon 2026-11-02 00:15:01 UTC
+  0 75a86b4c59734ae28edf0ff14c60537b Mon 2026-11-02 00:17:12 UTC Mon 2026-11-02 00:25:01 UTC
+
+# wtmp: last -x -F (note: NO 'shutdown' line closes boot -4, -2 or -1; boot -3's end has no firmware latch either)
+jiulu    pts/0        192.168.1.200    Mon Nov  2 00:17:59 2026   still logged in
+runlevel (to lvl 5)   7.0.0-42-generic Mon Nov  2 00:17:19 2026   still running
+reboot   system boot  7.0.0-42-generic Mon Nov  2 00:17:11 2026   still running
+runlevel (to lvl 5)   7.0.0-42-generic Mon Nov  2 00:05:01 2026 - Mon Nov  2 00:17:19 2026  (00:12)
+reboot   system boot  7.0.0-42-generic Mon Nov  2 00:04:53 2026   still running
+jiulu    pts/0        192.168.1.200    Mon Nov  2 00:00:08 2026 - crash                     (00:04)
+runlevel (to lvl 5)   7.0.0-42-generic Sun Nov  1 23:59:42 2026 - Mon Nov  2 00:05:01 2026  (00:05)
+reboot   system boot  7.0.0-42-generic Sun Nov  1 23:59:35 2026   still running
+runlevel (to lvl 5)   7.0.0-42-generic Sun Nov  1 23:52:42 2026 - Sun Nov  1 23:59:42 2026  (00:07)
+reboot   system boot  7.0.0-42-generic Sun Nov  1 23:52:35 2026   still running
+jiulu    pts/1        192.168.1.200    Sun Nov  1 23:27:30 2026 - crash                     (00:25)
+jiulu    pts/0        192.168.1.200    Sun Nov  1 23:25:55 2026 - crash                     (00:26)
+runlevel (to lvl 5)   7.0.0-42-generic Sun Nov  1 21:04:02 2026 - Sun Nov  1 23:52:42 2026  (02:48)
+reboot   system boot  7.0.0-42-generic Sun Nov  1 21:03:55 2026   still running
+jiulu    pts/0        192.168.1.200    Sun Nov  1 20:48:05 2026 - crash                     (00:15)
+runlevel (to lvl 5)   7.0.0-42-generic Sun Nov  1 20:36:44 2026 - Sun Nov  1 21:04:02 2026  (00:27)
+reboot   system boot  7.0.0-42-generic Sun Nov  1 20:36:37 2026   still running
+jiulu    pts/1        192.168.1.200    Sun Nov  1 03:32:26 2026 - crash                     (17:04)
+jiulu    pts/0        192.168.1.200    Sun Nov  1 03:30:50 2026 - crash                     (17:05)
+runlevel (to lvl 5)   7.0.0-42-generic Sun Nov  1 03:28:00 2026 - Sun Nov  1 20:36:44 2026  (17:08)
+reboot   system boot  7.0.0-42-generic Sun Nov  1 03:27:54 2026   still running
+shutdown system down  7.0.0-42-generic Sun Nov  1 03:16:12 2026 - Sun Nov  1 03:27:54 2026  (00:11)
+jiulu    pts/2        192.168.1.200    Sun Nov  1 01:45:06 2026 - Sun Nov  1 03:13:12 2026  (01:28)
+jiulu    pts/1        192.168.1.200    Sat Oct 31 12:57:33 2026 - Sun Nov  1 03:13:12 2026  (14:15)
+jiulu    pts/0        192.168.1.200    Sat Oct 31 12:50:28 2026 - down                      (14:25)
+runlevel (to lvl 5)   7.0.0-42-generic Sat Oct 31 12:49:06 2026 - Sun Nov  1 03:16:12 2026  (14:27)
+reboot   system boot  7.0.0-42-generic Sat Oct 31 12:48:59 2026 - Sun Nov  1 03:16:12 2026  (14:27)
+shutdown system down  7.0.0-42-generic Sat Oct 31 12:47:24 2026 - Sat Oct 31 12:48:59 2026  (00:01)
+jiulu    pts/1        192.168.1.200    Sat Oct 31 12:36:25 2026 - Sat Oct 31 12:47:24 2026  (00:10)
+jiulu    pts/0        192.168.1.200    Sat Oct 31 11:36:12 2026 - Sat Oct 31 12:47:24 2026  (01:11)
+
+wtmp begins Sat Oct 31 06:20:57 2026
+
+# this boot
+         system boot  2026-11-02 00:17
+ 00:25:10 up 8 min,  1 user,  load average: 0.12, 0.33, 0.25
+Mon Nov  2 12:25:10 AM UTC 2026

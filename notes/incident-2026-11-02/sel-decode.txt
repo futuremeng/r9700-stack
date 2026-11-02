@@ -1,0 +1,135 @@
+# the raw SEL against the seven deaths -- and why nobody power-cycled this box
+
+Source: `sudo ipmitool -I open sel elist` run on the host by the operator, 2026-11-02 ~00:40 UTC.
+`sel info`: 3639 entries, percent used 100%, free 0 bytes, `Overflow: false`, last add
+`11/02/2026 12:27:02 AM UTC`, last delete `02/15/2025 03:05:51 AM UTC`.
+SEL clock == OS UTC clock (`sel time get` 11/02/2026 12:37:41 == `date -u`).
+
+## 1. the web-UI `ID: 4778..4794` are SEL record ids printed in DECIMAL
+
+`0x12aa` = 4778 and `0x12ba` = 4794, and record `0x12ba` is the last add (`00:27:02`) that `sel info`
+reported. That is why `sel get 0x4794` failed: the record the UI calls 4794 is hex `0x12ba`.
+Every row of the earlier UI paste maps one-for-one onto the SEL:
+
+```
+UI 4794 oem       = 0x12ba  11/02 00:27:02  Unknown                        Asserted
+   4793 power off = 0x12b9  11/02 00:25:57  PowerUnit Power off/down       Deasserted
+   4792 oem       = 0x12b8  11/02 00:16:46  Unknown                        Asserted
+   4791 power off = 0x12b7  11/02 00:15:42  PowerUnit Power off/down       Deasserted
+   4790 oem       = 0x12b6  11/02 00:04:28  Unknown                        Asserted
+   4789 power off = 0x12b5  11/02 00:03:24  PowerUnit Power off/down       Deasserted
+   4788 power off = 0x12b4  11/01 23:54:57  PowerUnit Power off/down       ASSERTED   <- see 4 below
+   4787 oem       = 0x12b3  11/01 23:51:38  Unknown                        Asserted
+   4786 power off = 0x12b2  11/01 23:50:33  PowerUnit Power off/down       Deasserted
+   4785 oem       = 0x12b1  11/01 23:50:07  Unknown                        Asserted
+   4784 power off = 0x12b0  11/01 23:49:02  PowerUnit Power off/down       Deasserted
+   4783 oem       = 0x12af  11/01 21:03:29  Unknown                        Asserted
+   4782 power off = 0x12ae  11/01 21:02:24  PowerUnit Power off/down       Deasserted
+   4781 oem       = 0x12ad  11/01 20:36:11  Unknown                        Asserted
+   4780 power off = 0x12ac  11/01 20:35:07  PowerUnit Power off/down       Deasserted
+   4779 power off = 0x12ab  11/01 03:26:26  PowerUnit Power off/down       Deasserted   (clean reboot)
+   4778 power off = 0x12aa  11/01 03:26:09  PowerUnit Power off/down       Asserted     (clean shutdown)
+```
+
+The UI renders the sensor name, not the state: seven of those `power off` rows are **Deasserted** --
+i.e. the BMC recording that power came *back*, not that it went away. The paste's apparent
+"login then, a minute later, a power off" order was just the same pair read newest-first.
+
+## 2. the `Unknown` OEM record is a per-boot record, not a session login
+
+There is exactly one `Unknown | Asserted` per boot in this window (7 boots, 7 records), always 57-65 s
+after that boot's power-on record and 26-50 s before the first journal line of that boot. There are **no**
+`Unknown` records anywhere in the SEL before 20:36:11 on 11/01 -- not for the clean reboots of 11/01
+03:26, not in the whole 10/30-10/31 working session, not in the 2025 body of the log. So it is not a
+user-login event: it starts appearing exactly when the deaths start. Reading A in
+`bmc-power-events.txt` (someone opened the BMC UI and cycled the hung box) is dead.
+
+## 3. per death: last journal line -> BMC power-on record
+
+| # | dying boot (last journal, UTC) | BMC power-on (Deassert) | gap | recovery boot (first journal) | firmware latch in recovery boot |
+|---|---|---|---|---|---|
+| 1 | aa661de3 11-01 20:30:41 | 20:35:07 (0x12ac) | 4m26 | 20:36:38 | sync flood + fatal BERT, APIC 0x83 |
+| 2 | 9c62bb9e 11-01 21:02:15 | 21:02:24 (0x12ae) | **9 s** | 21:03:56 | sync flood + fatal BERT, APIC 0x82 |
+| 3 | 6ae7b308 11-01 23:45:01 | 23:49:02 (0x12b0) **and** 23:50:33 (0x12b2) | 4m01, 5m32 | 23:52:35 | sync flood + fatal BERT, APIC 0x82 |
+| 4 | 3b531c63 11-01 23:53:07 | (power-on record absent; only the Asserted at 23:54:57) | -- | 23:59:36 | **no latch at all** |
+| 5 | b6aae6d2 11-02 00:01:37 | 00:03:24 (0x12b5) | 1m47 | 00:04:54 | sync flood + fatal BERT, APIC 0x82 |
+| 6 | 2989bceb 11-02 00:15:01 | 00:15:42 (0x12b7) | **41 s** | 00:17:12 | sync flood + fatal BERT, APIC 0x82 |
+| 7 | 75a86b4c 11-02 00:25:01 | 00:25:57 (0x12b9) | **56 s** | 00:27:28 | sync flood + fatal BERT, APIC 0x82 |
+
+Deaths 2, 6 and 7: power is back **9 s, 41 s and 56 s** after the last journal line, with no
+power-off record and no human in the loop (death 7: nobody logged in, pi died with it). POST then takes
+~90 s to the first journal line. A person cannot be that fast and that consistent; the platform is
+resetting itself and the BMC's power-restore policy (`previous`/`always-on` -- still to be confirmed,
+see `bmc-sensors-watchdog-psu.txt` §4) brings it back.
+
+Death 3 is two power-on transitions 91 s apart with a single OS boot after them: the platform
+re-tried POST on its own. Also not a human gesture.
+
+**Death 4 is the odd one out and the only genuine power-off.** Record `0x12b4` = `Asserted` at
+23:54:57 is the only true power-off in the whole window, it lands 1m50 after boot `3b531c63` stopped
+logging, and it is the only death whose recovery boot carries **no** reset-reason latch. So death 4 =
+the box went fully dark (hung 1m50, then powered off, then back ~23:58 -- that power-on record is
+missing, plausibly dropped: the SEL is at 0 bytes free). The other six = live resets of a powered
+platform, which is exactly what a data-fabric sync flood looks like, and exactly what the firmware's
+own `Previous system reset reason [0x88000800]` says.
+
+## 4. what the whole SEL contains, and does not contain
+
+Body of the log, record ids `0x491`..`0x12ba`, 04/2025 -> 11/02/2026:
+
+- Thousands of `TR2 Temperature` / `TR3 Temperature` `Upper Non-critical going high` (88 C) and
+  `Upper Critical going high` (90 C) with readings up to 96 C, plus a handful of `TR1 Temperature`
+  37/40 C. **All of them end 06/06/2025.** There is not one thermal record in 2026, so the
+  "no thermal event" statements in `notes/bug-mes-invalidate-tlbs.md:156` and `notes/mes-timeouts.md:43`
+  stand for their incidents. (The reason they stopped is not that things cooled: today TR2 and TR4 read
+  `No Reading` and TR3 reads `0 degrees C`. See §5.)
+- `Power Unit PowerUnit | Power off/down` Asserted/Deasserted pairs at each real power transition.
+  The 2025 ones are followed by `Pre-Init |<epoch>|` records -- the signature of the BMC itself losing
+  its time base, i.e. a full AC loss. None of the seven deaths has a `Pre-Init` record: the BMC stayed
+  up and time-stamped everything normally.
+- `Version Change PCIE_Hardware | Hardware change detected` repeatedly across 10/31 (01:33, 02:40,
+  05:41, 05:44, 06:20) and `Mem_Hardware`+`CPU_Hardware`+`PCIE_Hardware` at 10/31 03:26:14 -- the
+  BIOS/hardware working session, matching the boot at 11/01 03:27:54 in `boots.txt`.
+- `Physical Security #0xfc | General Chassis intrusion | Asserted` many times, all with `Pre-Init`
+  or epoch `03155148xx` stamps, i.e. during that same bench session / BMC restarts. Not new, not
+  related to the deaths.
+- A run of `Pre-Init` and `01/01/2011`-dated records (ids `0x123d`..`0x1285`) sitting between
+  Dec-2025 and 10/30/2026 dated records: the BMC clock was at its factory default for a stretch, with
+  `Version Change Mem_Hardware/CPU_Hardware/PCIE_Hardware` at "12:03:15" and a `Drive Slot / Bay
+  Backplane1 HD01 | Drive Present` at 05/09/2025. Treat as BMC reflash / CMOC-lost history, not as
+  events of this incident.
+- **Zero** `Critical Interrupt`/NMI records, **zero** watchdog records, **zero** PSU records
+  (`PSU1/PSU2 AC Lost`, `Over Curr`, `Over Temp`, `PWR Detect` never fire anywhere in 3639 entries),
+  **zero** voltage/12 V records.
+
+## 5. what is still open
+
+1. `Unknown | Asserted` is un-decoded: `sel elist` gives no sensor type, no entity, no raw bytes for it.
+   Get them:
+   `sudo ipmitool -I open sel get 0x12ba` and `sudo ipmitool -I open sel get 0x12b4`
+   (record type, generator id, event data bytes) -- that names the OEM record and tells us whether the
+   BMC is logging a restart cause.
+2. The one human question left: `0x12b4` at 23:54:57 (death 4). The web UI **操作日志** page will show
+   whether a chassis power command with a username/source IP precedes it. If it does, that one death was
+   a manual power cycle; the other six stay platform-initiated either way.
+3. The SEL is full (0 bytes free, last delete 02/2025) and at least one power-on record inside the
+   incident window is already missing. With the operator's OK:
+   `sudo ipmitool -I open sel save $D/sel-full.bin` then `sudo ipmitool -I open sel clear`
+   before the next repro, otherwise the next death will also lose records.
+4. Sensor health: TR2/TR4 `No Reading`, TR3 `0 degrees C` -- the four `TR*` sensors that produced the
+   2025 flap era now report nothing (see §6 of `bmc-sensors-watchdog-psu.txt`), so the BMC has no
+   thermal visibility into whatever they watch. `sudo ipmitool -I open sdr get 'TR2 Temperature'` etc.
+   to get the entity/labels and confirm they are simply absent rather than failed.
+5. PSU2 at 0 W is a real redundancy hole (PSU1 carries all 208 W) but is **not** the cause of these
+   six deaths: no power-off record, no AC-lost record, no `Pre-Init` at any of them.
+
+## 6. consequence for the diagnosis
+
+The seven deaths are the platform resetting itself while powered, not power cuts, not a BMC watchdog
+(stopped, action `No action`, no expiry flags), not a mains/PSU event (never logged once in 3639
+records), not a human. That puts them squarely inside the firmware's own verdict --
+`Previous system reset reason [0x88000800]: an uncorrected error caused a data fabric sync flood event`
+-- and inside the BERT: `ProcessorError`, `cache error`, `Uncorrected`, socket 0, APIC `0x82` (6x) and
+`0x83` (1x), i.e. the same CPU and adjacent APIC ids, six of seven with the identical MCE signature
+`Bank 5 aea0000000000108 / SYND 4d000000 / IPID 500b024029a00 / PPIN 2b61290dcb2002b`.
+The idle death (7) and the 9 s self-recovery (2) mean load is not required to trigger it.

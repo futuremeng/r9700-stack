@@ -1,0 +1,55 @@
+# deaths with nothing running: three of the seven tonight
+
+Captured 2026-11-02 00:30-00:35 UTC from boot 0 (started 00:27:28, the boot after death 7). The file was
+created empty at 00:25 in the boot that died at 00:25:01; this is the content that boot never wrote.
+
+## death 7 -- boot 75a86b4c, 00:17:12 -> 00:25:01 (8 min life), idle
+
+What was on the box: the journal of that boot after ssh is `sshd` accept at 00:17:59, one `crontab -l` at
+00:20:34, `update-notifier-download` at 00:22:17, a skipped `launchpadlib-cache-clean` at 00:23:47 and root's
+`debian-sa1` cron at 00:25:01 -- and the last three journal lines ARE that cron session.
+
+    Nov 02 00:25:01 CRON[4275]: pam_unix(cron:session): session opened for user root
+    Nov 02 00:25:01 CRON[4276]: (root) CMD (command -v debian-sa1 > /dev/null && debian-sa1 1 1)
+    Nov 02 00:25:01 CRON[4275]: pam_unix(cron:session): session closed for user root
+    <journal ends>
+
+No vLLM rank, no HIP process, no load, nothing in flight. `uptime` read 8 min, load average 0.12 / 0.33 / 0.25
+at 00:25:10 (`boots.txt`), 56 GiB used / 37 GiB available but no job holding it. The last kernel line of that
+boot is from 00:17:59 (igb link up) plus one `hrtimer: interrupt took 27271 ns` at 00:17:23 -- no AER, no MCE,
+no blocked task, no amdgpu line at all after enumeration.
+
+The firmware still calls it the same death (`reset-reasons.txt` / boot 0's own boot messages):
+
+    x86/amd: Previous system reset reason [0x88000800]: an uncorrected error caused a data fabric sync flood event
+    x86/amd: Previous system reset reason [0x88000800]: a software sync flood event occurred
+    BERT: fatal, fru_text: ProcessorError, Local APIC_ID 0x82, cache error Level 0, Context Corrupt, Uncorrected
+    mce: CPU 17: Machine Check: 0 Bank 5: aea0000000000108
+    mce:   TSC 0 ADDR 7e46a5fa1efa MISC d0140ff600000000 PPIN 2b61290dcb2002b SYND 4d000000 IPID 500b024029a00
+    mce:   PROCESSOR 2:a10f11 TIME 1793579231 SOCKET 0 APIC 82 microcode a101158
+
+Bank 5 with `MISC d0140ff600000000`, `SYND 4d000000`, `IPID 500b024029a00`, APIC 0x82 -- the same triple as the
+00:04:37 and 00:16:55 deaths (`IPID 500b024029a00` on APIC 0x82 for all of them; the 20:36 and 00:27-era
+records on APIC 0x83 carry `IPID 500b024029b00`). ADDR differs (`7e46a5fa1efa` here vs `1ffffffa2c9ce8b`,
+`7034db7a1efa`, `1ffffffa249ce8b`, `142d5d3`, `1ffffff8b09ce8b`).
+
+## the other two that were at idle
+
+`sa01` (sysstat, 10-min samples) is an independent witness and it does not show a busy box before deaths 1
+and 2:
+
+    08:30:04 PM  all  %user 2.10  %system 0.04  %iowait 0.00  %idle 97.86   <- death 1 at 20:30:41
+    08:50:04 PM  all  %user 0.00  %system 0.00  %iowait 0.00  %idle 100.00
+    09:00:04 PM  all  %user 1.56  %system 0.20  %iowait 0.01  %idle 98.24   <- death 2 at 21:02:15
+
+Death 2 started its load at 21:01:2x (after the 21:00 sample), so its sample window is idle too.
+`sa02` holds no samples for 23:45-00:25: the sample interval died with the box every time.
+
+## what this rules out
+
+The `notes/native-4xr9700.md` thread (C22/C23) is about slow host-side work in the load path. Death 7 puts a
+sync flood + fatal cache-level MCE on a box with no GPU job, no PCIe traffic worth the name and 0.12 load, so
+the fault domain is not the load path: the same signature appears at idle and at full model load. What is
+still common to all seven is *the box being up and running Linux on this platform* -- and death 4 (`3b531c63`,
+32 s of life, no firmware latch) is inside the recovery of death 3, so a death can be followed by another
+death within half a minute of boot with nothing running at all.

@@ -1,0 +1,138 @@
+# in-band IPMI readout (operator ran it on the box) -- what it rules out, and what it newly implicates
+
+Run on 2026-11-02 ~00:36-00:40 UTC, from the host, `ipmitool -I open`. `ipmitool` is now installed
+(it was missing during the earlier passes), `/dev/ipmi0` exists (node timestamp `Nov 2 00:27`, i.e. the
+boot that recovered death 7). Still needs root, so these came from the operator's paste.
+
+## 1. the BMC clock equals the OS clock -- the web-UI "N minutes ago" is usable
+
+    sudo ipmitool -I open sel time get   -> 11/02/2026 12:37:41 AM UTC
+    date -u                              -> Mon Nov  2 12:37:41 AM UTC 2026
+
+No offset at all. That removes the main weakness of the web-UI paste in `bmc-power-events.txt`: its
+relative timestamps can be converted to absolute UTC directly, to the minute.
+
+## 2. the SEL is 100% full, and the UI's "ID: 4794" is not an SEL record id
+
+    Entries         : 3639
+    Overflow        : false
+    Percent used    : 100%
+    Free space      : 0 bytes
+    Last add        : 11/02/2026 12:27:02 AM UTC     <- the recovery boot of death 7 (00:27:28)
+    Last delete     : 02/15/2025 03:05:51 AM UTC
+
+Two consequences:
+
+- `sudo ipmitool -I open sel get 0x4794` -> `Requested sensor, data, or record not found`. The web UI's
+  `ID: 4778..4794` is the BMC's own display index for its event page, not a 16-bit SEL record id; SEL ids
+  seen in `sel elist` this session are hex in the `0x44xx` range. Address records by the hex id from
+  `sel elist`, not by the UI number.
+- New events *are* still being recorded (`Last add` is tonight) even at 0 bytes free, so the log is
+  rolling over and the oldest history is being lost. The 09-30 NMI record quoted in `host/README.md` and
+  the earlier "no power or thermal event" claims are probably already gone. Clear/archive the SEL
+  (`sel save` then `sel clear`) before the next repro, and pull the log while it is fresh.
+
+## 3. ruled out: the BMC watchdog
+
+    Watchdog Timer Use:     BIOS FRB2 (0x01)
+    Watchdog Timer Is:      Stopped
+    Watchdog Timer Logging: On
+    Watchdog Timer Action:  No action (0x00)
+    Pre-timeout interrupt:  None
+    Timer Expiration Flags: None (0x00)
+    Initial/Present Countdown: 0.0 sec
+
+Stopped, action is "no action", timer never expired. No BMC watchdog power-off/power-cycle is behind any
+of the seven deaths. That kills one of the four candidate causes in `bmc-power-events.txt`.
+
+## 4. not yet answered: the *configured* power-restore policy
+
+`chassis policy list` only printed the **supported** set (`always-off always-on previous`), which is just
+the BMC's capability readout -- it does not say which one is in force. That number matters: with
+`previous` or `always-on`, a platform that drops to a powered-off state comes back by itself, which is
+exactly what death 7's 2m27 self-recovery looked like with nobody logged into the OS. Get it with:
+
+    sudo ipmitool -I open raw 0 7        # Get Chassis Power Configuration; low bits of byte 2:
+                                         # 0 = always off, 1 = restore previous, 2 = always on
+    sudo ipmitool -I open chassis status
+
+## 5. new and important: PSU2 is installed and detected but delivers nothing
+
+    PSU1 Power In   | DFh | ok | 224 Watts
+    PSU1 Power Out  | 5Ah | ok | 208 Watts
+    PSU2 Power In   | E4h | ok |  16 Watts
+    PSU2 Power Out  | 5Dh | ok |   0 Watts
+    PSU2 AC Lost    | E6h | ok | Presence detected
+    PSU2 PWR Detect | E8h | ok | Presence detected
+    PSU2 Over Temp / Slow FAN1 / Over Curr : all ok
+
+PSU2 has presence and no AC-loss flag, yet it draws 16 W (standby) and puts out 0 W. Every watt in this
+box is going through PSU1. So **the power redundancy that the chassis implies does not exist**: a single
+PSU1 or 12 V excursion takes the whole box, and such a drop is precisely what an OS-side death with no
+kernel message, and death 4's `3b531c63` with **no firmware reset latch at all**, look like.
+
+This does not yet prove tonight's deaths were a power event (the BMC never logged a PSU fault, and PSU2
+sitting at 0 W could be a parked/standby redundant supply by design, or a second feed that is fused but
+not really there). But it is a live fault on its own, and it removes the "not a power problem" assumption
+that `notes/bug-mes-invalidate-tlbs.md` and `notes/mes-timeouts.md` were leaning on. Worth:
+
+    sudo ipmitool -I open sdr get 'PSU2 Power In'
+    sudo ipmitool -I open sdr get 'PSU2 Power Out'
+    sudo ipmitool -I open sdr elist | grep -i psu      # re-read under load
+    # and physically: is the second power cord actually seated, and on which circuit/PDU?
+
+## 6. new and important: the SEL is full of thermal threshold events, so "no thermal event" is wrong
+
+`sel elist` is dominated by `TR2 Temperature` / `TR3 Temperature` flapping:
+
+    Upper Non-critical going high / Deasserted   (threshold 88 C)
+    Upper Critical going high / Deasserted       (threshold 90 C)
+    with readings in the 88-95 C band, hundreds of transitions; some `TR1 Temperature` at 37/40 C
+
+Right now: `TR1 32 C`, `TR3 0 C` (a nonsense reading), `TR2 No Reading`, `TR4 No Reading`. So the sensors
+that used to scream are now dead or unpopulated, which explains why no thermal record shows up "lately".
+
+This directly contradicts the sentence "The host BMC log has no power-supply or thermal event" in
+`notes/bug-mes-invalidate-tlbs.md:156` and `notes/mes-timeouts.md:43`: those were read off the web UI page,
+not the raw SEL. It needs re-checking per-incident against the SEL windows (see §7). `TR1..TR4` are on
+entity `49.0`, not the motherboard (`TR1` is `7.0`), so what those four sensors actually watch has to be
+identified before reading anything into them -- if they sit on the 12 V / VR or power-brick area, 88-95 C
+with a 90 C critical is a real thermal story, and thermal shutdown would also explain a `power off/down`
+record with no firmware latch.
+
+## 7. the one measurement that decides human vs firmware, now obtainable
+
+With absolute SEL times available (§1), for each death compute
+`<BMC "Power off/down" assert time> - <last journal line of the dying boot>`:
+
+- near 0 s  -> the BMC saw the platform drop the instant it died: firmware/platform-initiated.
+- 1-6 min   -> the box hung first and someone (or an auto policy) cut it afterwards: human/auto-cycle.
+
+Also want the assert->deassert pair: that is how long the box actually sat powered off, which separates
+"reset" (seconds) from "power cycle" (a deliberate off-on gesture).
+
+Needed, saving it where pi can read it:
+
+    D=/home/jiulu/r9700-stack/notes/incident-2026-11-02
+    sudo ipmitool -I open sel elist            | sudo tee $D/sel-elist.txt >/dev/null
+    sudo ipmitool -I open sel list             | sudo tee $D/sel-list-raw.txt >/dev/null
+    sudo ipmitool -I open sdr elist            | sudo tee $D/sdr-elist.txt >/dev/null
+    sudo ipmitool -I open sdr type Temperature | sudo tee $D/sdr-temperature.txt >/dev/null
+    sudo ipmitool -I open sdr get 'TR2 Temperature' | sudo tee -a $D/sdr-temperature.txt >/dev/null
+    sudo ipmitool -I open sdr get 'TR3 Temperature' | sudo tee -a $D/sdr-temperature.txt >/dev/null
+    sudo ipmitool -I open mc info              | sudo tee $D/mc-info.txt >/dev/null
+    sudo ipmitool -I open raw 0 7              | sudo tee $D/chassis-policy-raw.txt >/dev/null
+    sudo ipmitool -I open chassis status       | sudo tee -a $D/chassis-policy-raw.txt >/dev/null
+
+then, for the hex record ids that `sel elist` shows inside 11/01 20:25 - 11/02 00:30:
+
+    sudo ipmitool -I open sel get <id>        # raw event bytes for the "Unknown" / power records
+
+and from the web UI: the **操作日志 / operation log** tab (chassis power commands with username + source
+IP). That page, not the SEL, is what settles reading A vs reading B in `bmc-power-events.txt`.
+
+## 8. state at the time of this readout
+
+Box up 22 min (boot `7e5bfe69`, 00:27:28 -> past 00:50), load 0.1-0.3, no vLLM running, all four
+`1002:7551` GPUs enumerating normally, `CPU_Power 96 W`, `Memory_Power 8 W`, total ~208 W on PSU1.
+Idle, and idle is where death 7 happened.

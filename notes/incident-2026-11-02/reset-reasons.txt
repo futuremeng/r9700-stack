@@ -1,0 +1,75 @@
+# what the firmware says about each death, read at the FOLLOWING boot
+# TIME fields decoded: 1793565381=2026-11-01 20:36:21  1793567019=21:03:39  1793577138=23:52:18  1793577877=00:04:37  1793578615=00:16:55 (all UTC)
+
+## boot -5 boot messages (reset reason / BERT / MCE)
+  'Previous system reset reason' lines: 2
+  x86/amd: Previous system reset reason [0x88000800]: an uncorrected error caused a data fabric sync flood event
+  x86/amd: Previous system reset reason [0x88000800]: a software sync flood event occurred
+  [Hardware Error]:  fru_text: ProcessorError
+  [Hardware Error]:   Local APIC_ID: 0x83
+  [Hardware Error]:    Error Structure Type: cache error
+  [Hardware Error]:     Processor Context Corrupt: true
+  [Hardware Error]:     Uncorrected: true
+  BERT: Total records found: 1
+  mce: [Hardware Error]: CPU 113: Machine Check: 0 Bank 5: aea0000001000108
+  mce: [Hardware Error]: TSC 0 ADDR 1ffffffa2c9ce8b MISC d0140ff600000000 PPIN 2b61290dcb2002b SYND 4d000000 IPID 500b024029b00 
+  mce: [Hardware Error]: PROCESSOR 2:a10f11 TIME 1793565381 SOCKET 0 APIC 83 microcode a101158
+
+## boot -4 boot messages (reset reason / BERT / MCE)
+  'Previous system reset reason' lines: 2
+  x86/amd: Previous system reset reason [0x88000800]: an uncorrected error caused a data fabric sync flood event
+  x86/amd: Previous system reset reason [0x88000800]: a software sync flood event occurred
+  [Hardware Error]:  fru_text: ProcessorError
+  [Hardware Error]:   Local APIC_ID: 0x82
+  [Hardware Error]:    Error Structure Type: cache error
+  [Hardware Error]:     Processor Context Corrupt: true
+  [Hardware Error]:     Uncorrected: true
+  BERT: Total records found: 1
+  mce: [Hardware Error]: CPU 17: Machine Check: 0 Bank 5: aea0000000000108
+  mce: [Hardware Error]: TSC 0 ADDR 7034db7a1efa MISC d0140ff600000000 PPIN 2b61290dcb2002b SYND 4d000000 IPID 500b024029a00 
+  mce: [Hardware Error]: PROCESSOR 2:a10f11 TIME 1793567019 SOCKET 0 APIC 82 microcode a101158
+
+## boot -3 boot messages (reset reason / BERT / MCE)
+  'Previous system reset reason' lines: 2
+  x86/amd: Previous system reset reason [0x88000800]: an uncorrected error caused a data fabric sync flood event
+  x86/amd: Previous system reset reason [0x88000800]: a software sync flood event occurred
+  [Hardware Error]:  fru_text: ProcessorError
+  [Hardware Error]:   Local APIC_ID: 0x82
+  [Hardware Error]:    Error Structure Type: cache error
+  [Hardware Error]:     Processor Context Corrupt: true
+  [Hardware Error]:     Uncorrected: true
+  mce: [Hardware Error]: CPU 17: Machine Check: 0 Bank 5: aea0000001000108
+  BERT: Total records found: 1
+  mce: [Hardware Error]: TSC 0 ADDR 1ffffffa249ce8b MISC d0140ff600000000 PPIN 2b61290dcb2002b SYND 4d000000 IPID 500b024029a00 
+  mce: [Hardware Error]: PROCESSOR 2:a10f11 TIME 1793577138 SOCKET 0 APIC 82 microcode a101158
+
+## boot -2 boot messages (reset reason / BERT / MCE)
+  'Previous system reset reason' lines: 0
+
+## boot -1 boot messages (reset reason / BERT / MCE)
+  'Previous system reset reason' lines: 2
+  x86/amd: Previous system reset reason [0x88000800]: an uncorrected error caused a data fabric sync flood event
+  x86/amd: Previous system reset reason [0x88000800]: a software sync flood event occurred
+  [Hardware Error]:  fru_text: ProcessorError
+  [Hardware Error]:   Local APIC_ID: 0x82
+  [Hardware Error]:    Error Structure Type: cache error
+  [Hardware Error]:     Processor Context Corrupt: true
+  [Hardware Error]:     Uncorrected: true
+  BERT: Total records found: 1
+  mce: [Hardware Error]: CPU 17: Machine Check: 0 Bank 5: aea0000001000108
+  mce: [Hardware Error]: TSC 0 ADDR 142d5d3 MISC d0140ff600000000 PPIN 2b61290dcb2002b SYND 4d000000 IPID 500b024029a00 
+  mce: [Hardware Error]: PROCESSOR 2:a10f11 TIME 1793577877 SOCKET 0 APIC 82 microcode a101158
+
+## boot 0 boot messages (reset reason / BERT / MCE)
+  'Previous system reset reason' lines: 2
+  x86/amd: Previous system reset reason [0x88000800]: an uncorrected error caused a data fabric sync flood event
+  x86/amd: Previous system reset reason [0x88000800]: a software sync flood event occurred
+  [Hardware Error]:  fru_text: ProcessorError
+  [Hardware Error]:   Local APIC_ID: 0x83
+  [Hardware Error]:    Error Structure Type: cache error
+  [Hardware Error]:     Processor Context Corrupt: true
+  [Hardware Error]:     Uncorrected: true
+  BERT: Total records found: 1
+  mce: [Hardware Error]: CPU 113: Machine Check: 0 Bank 5: aea0000001000108
+  mce: [Hardware Error]: TSC 0 ADDR 1ffffff8b09ce8b MISC d0140ff600000000 PPIN 2b61290dcb2002b SYND 4d000000 IPID 500b024029b00 
+  mce: [Hardware Error]: PROCESSOR 2:a10f11 TIME 1793578615 SOCKET 0 APIC 83 microcode a101158

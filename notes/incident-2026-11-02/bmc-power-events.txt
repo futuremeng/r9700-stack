@@ -1,0 +1,122 @@
+# the BMC's own account of the seven deaths, read off the BMC event log at ~2026-11-02 00:28-00:32 UTC
+
+BMC is at 192.168.1.125 (given by the operator). It is NOT reachable from the box: `ping` 100% loss,
+:443/:623 filtered, `https://192.168.1.125/redfish/v1` -> curl exit 7 (management NIC is on an isolated
+network). In-band is open but needs root: `/dev/ipmi0` is `crw------- root root`, `ipmitool`/freeipmi are
+not installed, `sudo -n` fails. So this section is built from the operator's paste of the BMC web log
+(relative timestamps only) against the OS-side timeline in `boots.txt`.
+
+## what was pasted (verbatim, newest first; "登录" is the UI's word for the OEM record)
+
+    ID: 4794 Unknown sensor of type oem 登录                       2 minutes ago
+    ID: 4793 PowerUnit sensor of type power_unit 登录 power off   11 minutes ago
+    ID: 4792 Unknown sensor of type oem 登录                      12 minutes ago
+    ID: 4791 PowerUnit sensor of type power_unit 登录 power off   24 minutes ago
+    ID: 4790 Unknown sensor of type oem 登录                      25 minutes ago
+    ID: 4789 PowerUnit sensor of type power_unit 登录 power off   33 minutes ago
+    ID: 4788 PowerUnit sensor of type power_unit 登录 power off   36 minutes ago
+    ID: 4787 Unknown sensor of type oem 登录                      37 minutes ago
+    ID: 4786 PowerUnit sensor of type power_unit 登录 power off   38 minutes ago
+    ID: 4785 Unknown sensor of type oem 登录                      39 minutes ago
+    ID: 4784 PowerUnit sensor of type power_unit 登录 power off    3 hours ago
+    ID: 4783 Unknown sensor of type oem 登录                       3 hours ago
+    ID: 4782 PowerUnit sensor of type power_unit 登录 power off    4 hours ago
+    ID: 4781 Unknown sensor of type oem 登录                       4 hours ago
+    ID: 4780 PowerUnit sensor of type power_unit 登录 power off   21 hours ago
+    ID: 4779 PowerUnit sensor of type power_unit 登录 power off   21 hours ago
+    ID: 4778 PowerUnit sensor of type power_unit 登录 power off   21 hours ago
+
+In the last 4 h: 7 `power_unit / power off` records and 7 `oem` records. In the 21-h-ago cluster: 3
+`power off` and no `oem` (that is the planned `shutdown` at 03:16:12 + the 03:27:54 boot from the BIOS work).
+
+## the OS side of the same night (this boot's `journalctl --list-boots`; boot ids, not indices)
+
+| # | boot id        | last journal entry | recovery boot starts | dark for | firmware verdict read in the recovery boot |
+|---|---|---|---|---|---|
+| 1 | aa661de3 | 11-01 20:30:41 | 11-01 20:36:38 | 5m57 | sync flood + fatal BERT, APIC 0x83, MCE TIME 20:36:21 |
+| 2 | 9c62bb9e | 11-01 21:02:15 | 11-01 21:03:56 | 1m41 | sync flood + fatal BERT, APIC 0x82, MCE TIME 21:03:39 |
+| 3 | 6ae7b308 | 11-01 23:45:01 | 11-01 23:52:35 | 7m34 | sync flood + fatal BERT, APIC 0x82, MCE TIME 23:52:18 |
+| 4 | 3b531c63 | 11-01 23:53:07 (32 s life) | 11-01 23:59:36 | 6m29 | **no reset-reason latch at all** (0 lines) |
+| 5 | b6aae6d2 | 11-02 00:01:37 | 11-02 00:04:54 | 3m17 | sync flood + fatal BERT, APIC 0x82, MCE TIME 00:04:37 |
+| 6 | 2989bceb | 11-02 00:15:01 | 11-02 00:17:12 | 2m11 | sync flood + fatal BERT, APIC 0x82, MCE TIME 00:16:55 |
+| 7 | 75a86b4c | 11-02 00:25:01 | 11-02 00:27:28 | 2m27 | sync flood + fatal BERT, APIC 0x82, MCE TIME 00:27:11 |
+
+Seven deaths; the paste carries seven `power off` records in the same 4 h window. **Count and cadence match
+one for one**, and the spacings between successive `power off` records (13, 9, 3, 2 min and the 3 h / 4 h
+ones) are the spacings between the deaths (20:30, 21:02, 23:45, 23:53, 00:01, 00:15, 00:25). The 21 h cluster
+matches the one *clean* shutdown in wtmp, which is the control: a planned shutdown also writes
+`power off` records and writes no `oem` record.
+
+So yes -- the BMC log is the same event, seen from outside: the box dropped power at each of the deaths pi
+was already dating from the inside.
+
+## correction to `incident-2026-11-01b/mce-firmware-records.txt`: the TIME field is not the death time
+
+Every `PROCESSOR 2:a10f11 TIME <epoch>` value in the five latched deaths is **17 s before the first journal
+line of the boot that recovered it**, 5/5:
+
+    20:36:21 -> boot 20:36:38    21:03:39 -> 21:03:56    23:52:18 -> 23:52:35
+    00:04:37 -> 00:04:54         00:16:55 -> 00:17:12    00:27:11 -> 00:27:28
+
+The TIME is stamped when the firmware writes the BERT/MCE record, i.e. during the *next* boot's POST. The
+firmware cannot date a death at all. Two consequences:
+
+- any "it hung N minutes before the reset" reading of these numbers is void;
+- the BMC's `power off` record is the only external clock that can date a death, which is why the raw SEL
+  (absolute times, event bytes) is worth pulling -- the paste's "N minutes ago" plus unknown paste time plus
+  an unchecked BMC clock leaves minutes of slack.
+
+## what the `oem / 登录` record is: two readings, one command decides
+
+Reading A (human): the record is a BMC **session login**, and the pair is login then, ~1 min later, a
+`power off` -- i.e. someone opened the BMC web UI and power-cycled the hung box. The order in the paste is
+`oem` 1 min *before* `power off` for 6 of the 7 (4785/4786, 4787/4788, 4790/4791, 4792/4793, 4783/4784,
+4781/4782), which is exactly a login-then-cycle gesture, and 4789 (`power off` with no login before it) and
+4794 (`oem` with no power action after it yet) are the two edges of a session.
+
+Reading B (firmware): the platform itself drops to a powered state on a sync flood and the `oem` record is
+the BMC's per-boot record for the restart (restart cause / boot-up), 1 min after the drop.
+
+Reading A is the better fit for the record order; reading B is the better fit for two facts: death 4
+(`3b531c63`, 32 s life) left **no** firmware latch, which is what a power cut looks like rather than a fabric
+reset, and death 7 recovered in 2m27 with nobody logged into the box (pi died with it) -- the boot at
+00:27:28 had to come from the BMC or a button.
+
+Decide it with, from the box (needs the operator's password):
+
+    sudo apt-get install -y ipmitool
+    sudo ipmitool -I open mc info          # which BMC, firmware version
+    sudo ipmitool -I open sel info         # last record, epoch of the SEL clock
+    sudo ipmitool -I open sel time get; date -u     # BMC clock vs OS clock -- do this first
+    sudo ipmitool -I open sel elist        # record type + sensor number + raw event bytes
+    sudo ipmitool -I open sel get <hex id from elist>   # NOT 0x4794: the UI's 4778-4794 are display
+                                         # indices, not SEL record ids (see bmc-sensors-watchdog-psu.txt §2)
+    sudo ipmitool -I open sdr elist | grep -i -E "power|psu|temp|intr|watchdog"
+    sudo ipmitool -I open mc watchdog get  # a BMC watchdog power-off would be a different cause
+
+and in the web UI: the **操作日志 / operation log** page (not 登录日志). A logged chassis power command with
+a username and source IP settles reading A; no such command with `power off` records still present settles
+reading B.
+
+## what the SEL must still be checked for
+
+- tonight's window 20:25-00:30: any PSU / 12V / thermal / `Critical Interrupt` record (the only prior BMC
+  finding of note is the 09-30 NMI record in `host/README.md`; `notes/bug-mes-invalidate-tlbs.md` and
+  `notes/mes-timeouts.md` both record "no power-supply or thermal event");
+- BMC power-restore / restart policy (`ipmitool chassis policy list`) -- if it is `previous` or `always on`,
+  a sync flood that drops power explains the self-recovery at 00:27:28 without a human;
+- whether the BMC ever saw the box hang before the drop: the gap from the last journal line to the BMC's
+  `power off` stamp is the one number the OS cannot produce (dark times are 5m57 / 1m41 / 7m34 / 6m29 /
+  3m17 / 2m11 / 2m27 -- bimodal, and if a drop lands 1-2 min after the journal stops, the box hung first).
+
+## status after the in-band readout (see `bmc-sensors-watchdog-psu.txt`)
+
+- BMC clock == OS UTC clock (verified to the second), so the UI paste can be made absolute.
+- **BMC watchdog ruled out** as a cause: FRB2, stopped, `No action`, `Timer Expiration Flags: None`.
+- The 4 h window's PSU / thermal / `Critical Interrupt` question is now open again rather than closed:
+  the raw SEL turns out to be full of `TR2`/`TR3` 88-95 C threshold crossings, and **PSU2 delivers 0 W**
+  while PSU1 carries the whole box. The older "BMC log has no power-supply or thermal event" lines in
+  `notes/bug-mes-invalidate-tlbs.md` and `notes/mes-timeouts.md` were read off the UI page and need
+  re-checking against the SEL.
+- Reading A vs B is still undecided; it now hinges on the per-death delta between the SEL `Power off/down`
+  assert time and the last journal line, plus the web UI 操作日志 page.
