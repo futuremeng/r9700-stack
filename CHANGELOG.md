@@ -366,6 +366,19 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   like an uncorrectable fault. Serving traffic does not move these counters; launches do — recorded in the incident
   note, where the takeaway is that a mid-decode event is now the out-of-pattern thing to look for.
 
+- **Two 2600 W supplies, so PSU2 delivering 0 W is a fault and not a parked bay** (operator-confirmed; recorded in
+  [notes/incident-2026-11-02/bmc-sensors-watchdog-psu.txt](notes/incident-2026-11-02/bmc-sensors-watchdog-psu.txt)
+  §5c). A dual-2600 W chassis is N+1: each unit carries the box alone, which is exactly the 52-62% case measured in
+  §5b — so the box has run without redundancy through all fifteen resets of the day. The sensor trap worth naming:
+  `PSU2 AC Lost ... ok / Presence detected` reads like a clear bill of health, but that sensor's *reading* is
+  presence, not the AC feed, so it cannot separate "cord unseated / circuit dead" from "PSU2 dead" — and the SEL is
+  silent about PSU2 entirely (it is full of TR2/TR3 flapping). Action order for the operator: look at the back of
+  the box (two cords? separate circuits? two cords on one PDU is not redundancy either), `fru print` for the ratings
+  and a `sdr elist` under load (a healthy pair should split ~700/700 W at this box's ~1.4 kW), then swap bays if the
+  cords are good — follows the unit → RMA, follows the bay → backplane/feed. Fixing it is also the only cheap
+  discriminator for the incident's "electric" branch: if the correctable `BadTLP` events at `c4:00.0`/`04:00.0` thin
+  out with the load and transient step halved, that branch gains; if not, it weakens.
+
 - **The supply is 2600 W, which removes the electrical argument for a cap** (operator-supplied rating, recorded in
   [notes/incident-2026-11-02/bmc-sensors-watchdog-psu.txt](notes/incident-2026-11-02/bmc-sensors-watchdog-psu.txt)
   §5b). Redone with measured load: 1,176 W of GPU (4 × 294 W averaged) plus ~100-400 W of platform is **~52-62% of

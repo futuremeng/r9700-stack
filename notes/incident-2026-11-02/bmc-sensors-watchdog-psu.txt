@@ -104,6 +104,42 @@ What survives from this section is narrower but still live:
 - Whether the 2600 W is per unit or the chassis budget is worth confirming from the FRU
   (`sudo ipmitool -I open fru print` -- not readable without privilege here).
 
+### 5c. 2026-11-02 15:3x: the operator confirms **two** 2600 W supplies -- so PSU2 at 0 W is a fault, not a parked bay
+
+That settles the ambiguity left open in §5 ("could be a parked/standby redundant supply by design"). A dual-2600 W
+chassis is an N+1 pair: each unit is rated to carry the box alone, and 52-62% loading on one (§5b) is exactly the
+case the pair exists to survive. **This box has been running with its redundancy absent** -- through all fifteen
+resets of 2026-11-02 and every death in this note -- and the failure mode those deaths have (OS gone, no kernel
+message, and death 4 with no firmware reset latch) is the one a 12 V excursion is good at producing.
+
+What the registers do and do not say. PSU2 reports `Power In 16 W` (standby), `Power Out 0 W`,
+`PWR Detect ok / Presence detected`, and -- the trap -- `PSU2 AC Lost ... ok / Presence detected`. That last line
+reads as "no AC-loss flag", but the sensor's *reading* is presence, so on this firmware it appears to report that
+the unit is physically there, **not that its AC feed is alive**. Do not treat it as evidence the cord is fine: it
+cannot distinguish "second cord not seated / circuit dead" from "PSU2 dead". The SEL agrees by silence -- it is
+full of `TR2`/`TR3` temperature flapping and a `PSU1 Power In` assert, and says **nothing** about PSU2. Registers
+here are status, not a meter (see §5b on the 6.4 A @ 240 V vs 208 W inconsistency), and this account cannot open
+`/dev/ipmi0` at all, so the check is an operator's:
+
+1. **Look at the back of the box first**: are there two cords, both seated, and are they on **separate** PDUs or
+   separate circuits? Two cords into one PDU/circuit is not redundancy either, and it would explain 0 W on one
+   bay if a circuit is off. This is the cheapest possible action on a box that reset 15 times in a day.
+2. `sudo ipmitool fru print` -- confirm both supplies are the same 2600 W model and both are really populated;
+   `sudo ipmitool sdr elist | grep -i psu` **under load** (a healthy pair should split roughly evenly, ~700 W each
+   at this box's measured ~1.4 kW serving draw).
+3. If both cords are good and PSU2 still puts out 0 W: **swap the two units' bays**. Fault follows the unit ->
+   dead supply, RMA; follows the bay -> backplane or feed.
+4. Fixing it is also a free experiment for the incident itself: watch the PCIe evidence
+   (`:8099 /api/status` -> `.pcie_events`, and the per-chain counters in `serve/webui.py --pci`) before and after.
+   If the correctable `BadTLP` events at `c4:00.0`/`04:00.0` thin out with a second supply carrying half the load
+   and half the transient step, the "electric" branch of the AER story gains real support; if nothing changes, that
+   branch weakens and the switch/airflow branches gain. Either outcome is worth recording, and it is the only
+   cheap discriminator that branch has.
+
+What this does not change: no `power1_cap` cut is warranted (52-62% on one unit, and a cap costs −25 to −33% of
+prefill), GPU temperatures are inside their published limits, and the first thermal lever is still `fan1_target`
+on card4 (§5b and `notes/observe-2026-11-02.md`).
+
     sudo ipmitool -I open sdr get 'PSU2 Power In'
     sudo ipmitool -I open sdr get 'PSU2 Power Out'
     sudo ipmitool -I open sdr elist | grep -i psu      # re-read under load
