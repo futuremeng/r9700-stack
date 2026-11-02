@@ -94,6 +94,25 @@ and a test asserts the repo's own plugin survives it.
 | card busy % / VRAM / temperature / sclk / mclk | `/sys/class/drm/card*/device` (`gpu_busy_percent`, `mem_info_*`, `hwmon*/{temp1_input,power1_average}`, `hwmon*/freq*_label` matched by `sclk`/`mclk`, not by index) |
 | the launch recipe on About | the meta file `serve/serve.sh` and `serve/native-flashnext.sh` write when `WEBUI` is set (`--meta`), not something inferred. It is named after the port the **pages** are served on — `PORT+1` for the sidecar, `PORT` for `WEBUI=same`, since merged mode has no second port. Write it to one name and read it from the other and the card silently disappears: that is how the merged About page lost it |
 
+**`prompt_tokens_total` is credited when a request finishes, not as prefill proceeds.** Measured against a
+single 180,066-token prompt: the counter sat at 432,262 through the whole prefill and jumped to 612,332 in one
+go at the end, so the "prompt tok/s" card is a step function at completion (89,580 tok/s for one poll) and not
+a live prefill rate. What DOES move live during prefill: `vllm:kv_cache_usage_perc`, sampled every 2 s while
+`running=1` and `generation_tok_s=0`, climbed 5.1 / 8.1 / 11.1 / 14.1 / 17.1 / 20.1 / 23.1 / 24.6 / 27.6 /
+30.5 / 32.1% in 3.0% steps (3.0% of the 540,202-token pool = 16,206 tokens = two 8,192-token chunks per ~2 s
+sample, about 7,400-8,100 tok/s at that spacing, in line with the 8,639-8,759 tok/s the same script measures
+directly at 60k). So the KV pool bar on the Monitor already IS a live prefill
+indicator for the engine as a whole, and it is not made into a per-request progress bar: the denominator would
+be that request's prompt length, which the engine only reports at the end.
+
+A per-request prefill bar was asked for and refused for that reason. vLLM's `SchedulerStats` has nothing per
+request in flight, and `SchedulerIterationDetails` (`num_ctx_requests`, `num_ctx_tokens`, `elapsed_ms`, per
+engine step, no request ids) is only built when `--enable-logging-iteration-details` is set
+(`config/observability.py:99` default False, gated at `v1/engine/core.py:582`), whose visible effect is one
+INFO line per engine step on the path everything else is measured on. Strata can draw the bar
+(`prompt_read / prompt_total`, `serve/server.py:2102`) because it owns the engine's terminal protocol and the
+tokenizer; stock vLLM gives neither.
+
 **What cannot be answered per request from outside:** queue wait and the prefill/decode split. vLLM counts
 those in aggregate, so in `observe`/`proxy` the Monitor shows them as window means under "Engine timings"
 and the per-request rows carry a dash. Inside the serve (`serve/plugin`) the engine hands over each request's
