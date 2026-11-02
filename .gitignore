@@ -4,3 +4,7 @@ profiling/traces/
 secrets*
 __pycache__/
 *.pyc
+
+# setup.sh state (the image pin it recorded) and the venv it makes for the host tests
+.r9700-state/
+.venv/

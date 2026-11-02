@@ -107,6 +107,14 @@ Requirements: 2x, 4x or 8x Radeon AI PRO R9700, ROCm 10 on the host, docker, the
 (`Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ`, `Qwen3.8-27B-NVFP4` with `Qwen3.8-27B-DFlash2-FP8`,
 `GLM-5.3-Flash-NVFP4-RedHat` for eight cards).
 
+0. **Or let it be checked for you**: `./setup.sh` walks the box (cards seen with their 32 GB BAR0 placed,
+   `/dev/kfd`, kernel cmdline, memlock, docker or the native path, the pinned image and whether its nightly pin
+   moved, the second checkout `serve.sh` mounts, every checkpoint the serve scripts name, the no-GPU tests) and
+   names the file each requirement came from; `--check` reports without touching anything, `--launch flashnext`
+   starts one. `./update.sh` pulls this checkout and re-checks -- it refuses while tracked files are edited, and
+   never touches `~/models`, the launch caches or a running launch. The host-side BAR0/ACS/switch-chain setup is
+   not in either script: that is [host/README.md](host/README.md).
+
 1. **Build the image** (stock vLLM ROCm 10 nightly plus the plugin; the kernels compile inside):
    ```
    docker build -t r9700/vllm:dev docker/

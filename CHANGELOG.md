@@ -17,7 +17,7 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   means, speculation acceptance, prefix-cache hits and per-card busy%/VRAM/sclk; the About page carries
   the configuration, the machine, the base URL and the recipe `serve/serve.sh` wrote for it (`WEBUI=1`).
   Cards whose sysfs attributes answer EBUSY name what they refused instead of reporting 0%, and `SMI=1`
-  fills the gaps from rocm-smi joined by PCI bus id (opt-in: it opens `/dev/kfd`). 89 checks in
+  fills the gaps from rocm-smi joined by PCI bus id (opt-in: it opens `/dev/kfd`). 90 checks in
   `tests/test_webui.py`: metrics collapsing (buckets skipped, gauges max-ed not summed, no data before
   the first window), the request ring, the sysfs and rocm-smi readers, an end-to-end relay against a
   fake vLLM (SSE passed through, a 500 recorded as an error, `observe` relaying while recording nothing,
@@ -28,6 +28,21 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   `read1()` now. `bench/webui_ab.py` A/Bs direct / relay / record: about **1 ms per request** for the
   hop against a loopback stand-in, and recording costs nothing beyond that (the live A/B on a real
   launch is still owed -- run `bench/webui_ab.py http://127.0.0.1:8080` when one is up).
+- **`setup.sh` / `setup.py` / `update.sh`**: bring a box up, or re-check one that already runs it. One pass over
+  what this repo actually needs, with the file each requirement came from named on the line: the cards as the guest
+  sees them **and the size BAR0 was really placed at** (the starved card on a PLX switch reports `current size:
+  32GB` in its ReBAR capability while `Region 0` is absent -- host/README.md's failure mode, so it is checked here
+  rather than assumed), `/dev/kfd` and the render nodes, which cards hang off the same bridge (TP wants that pair,
+  host-RAM experts want the split: 114/132/2464 against 81/54/1379), the kernel cmdline (`amdgpu.ppfeaturemask`,
+  with `amdgpu.mes_log_enable=1`'s absence recorded as the reason two incident notes exist), `RLIMIT_MEMLOCK` (this
+  box answers 11.7 GiB -- where that number in PROGRESS.md comes from), docker **or the native path** (whose ROCm
+  vLLM wheels need the locally unpacked OpenMPI: import-tested with the same `LD_LIBRARY_PATH`
+  `serve/native-flashnext.sh` sets), the pinned nightly from `docker/Dockerfile` against a recorded marker so a pin
+  change offers a rebuild, the second checkout `serve.sh` mounts (the running plugin comes from there, not from this
+  folder), every `/models/...` the serve scripts name with who needs it and where `serve/deploy.sh` fetches it from,
+  and the tests that need no GPU. `--check` runs nothing that changes anything; `--launch flashnext` starts one and
+  waits for `/health`. `update.sh` pulls with the guard Strata's has (it refuses while tracked files are edited and
+  prints what `git status` says) and touches no weights, no launch caches, no running launch.
 
 ## [0.3.8] - 2026-10-31
 
