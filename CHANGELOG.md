@@ -123,7 +123,7 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   a parenthetical the width of a line: it says once that the first three tables are the release configuration
   (210 W cap, -42 mV, 32k) and the last is a different, uncapped box at 262,144 tokens, under two `###` headings.
   A new `## Watching it: the Monitor and About pages` section carries the screenshot
-  (`docs/r9700-stack-monitor.png`, shown at 520 px linking to the full frame), the two shapes of the pages and what
+  (`docs/r9700-stack-monitor.png`, as wide as the page column, click for the frame), the two shapes of the pages and what
   each can honestly say, the relay's measured 2-3 ms, and the refusal to draw a prefill progress bar. The Serve
   block now marks which recipes run in the image and which line is the native one, and the check step is a list of
   what each bench proves rather than a paragraph of names.

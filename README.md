@@ -144,14 +144,14 @@ the metric-reading traps: [notes/context-262k.md](notes/context-262k.md).
 
 ## Watching it: the Monitor and About pages
 
-<a href="docs/r9700-stack-monitor.png"><img src="docs/r9700-stack-monitor.png" width="520" alt="The Monitor page:
+<a href="docs/r9700-stack-monitor.png"><img src="docs/r9700-stack-monitor.png" alt="The Monitor page:
 model and KV pool, request counts at the engine, generation and speculation, every card's busy% and VRAM, the
 engine's timings over the poll window, and the request list with each request's own wall clock, token counts and
 prefill"/></a>
 
 The Monitor page: engine state and the KV pool, generation and speculation, every card's busy% and VRAM, the
 engine's timings over the poll window, and the request list carrying each request's own wall clock, token counts
-and prefill (click it for the full 1688 x 1953).
+and prefill. The frame is 1688 x 1953: it is shown as wide as the page column, so click it for the pixels.
 
 A stdlib sidecar (`serve/webui.py`: no framework, nothing extra to install) that reads what a running launch already
 publishes, `/health`, `/v1/models`, `/metrics`, plus the amdgpu sysfs of every card. Two shapes, and each page says
