@@ -115,22 +115,30 @@ How each number was produced, and what was tried and rejected: [PROGRESS.md](PRO
 
 ### Uncapped cards, the checkpoint's full 262,144-token context
 
-The native 4x R9700 box: vLLM 0.32.0+rocm723 in a venv, `MAXLEN=262144 NSEQ=32 NBT=8192`, cards uncapped, so
-compare it against the uncapped numbers in [notes/native-4xr9700.md](notes/native-4xr9700.md), not against the
-210 W tables above. Same model, four cards, TP4, MTP-3.
+The native 4x R9700 box: vLLM 0.32.0+rocm723 in a venv, cards uncapped, so compare it against the uncapped numbers
+in [notes/native-4xr9700.md](notes/native-4xr9700.md), not against the 210 W tables above. Same model, four cards,
+TP4, MTP-3. Except where a row names another launch, this is the launch that runs on this box today
+(`MAXLEN=262144 NSEQ=32 NBT=8192 PREFIX_CACHE=0`), re-measured after a restart.
 
 | | |
 |---|---:|
 | KV cache at MAXLEN=262,144 | **540,202 tokens**; vLLM: `Maximum concurrency for 262,144 tokens per request: 2.06x` |
 | KV cache at MAXLEN=32,768 (same launch shape) | 497,588 tokens: raising context 8x made the pool **bigger**, because the sizing run is bounded by `NBT`, not by MAXLEN |
-| prompt processing at 30k / 250k | 9,097 / 6,832-6,847 tok/s (uncapped 31k on the 32k recipe: 8,963-9,221) |
-| time to first token at 30k / 67k / 150k / 250k | 3.31 / 7.73 / 19.32 / **36.52 s** cold; 0.28-0.70 s for a context the prefix cache has seen |
-| needle at 30,070 / 67,063 / 150,057 / 250,078 tokens | found at every tier (30-70% depth, `bench/needle_long.py`) |
+| prompt processing at 60k / 120k / 180k | 8,672-8,742 / 8,062-8,064 / 7,416-7,436 tok/s, each tier sent twice back to back with no prefix cache to help it |
+| time to first token at 60k / 120k / 180k | 6.87-6.93 / 14.89 / 24.22-24.28 s, needle found at 60,061 / 120,066 / 180,070 tokens |
+| the same 60k prefill as the engine measures it | **8,908-8,917 tok/s**: that request's own 60,061 prompt tokens over its own 6.74 s of prefill (the Monitor's per-request row, `FinishedRequestStats`) |
+| retrieval ladder, a `PREFIX_CACHE=1` launch: 30,070 / 67,063 / 150,057 / 250,078 tokens | found at every tier (30-70% depth): TTFT 4.25 / 7.73 / 19.32 / **36.52 s**, prefill 7,068 / 8,671 / 7,768 / 6,847 tok/s, and **0.28-0.70 s** for a context the prefix cache has already seen |
+| prompt processing at 30k / 250k, prefix cache off | 9,097 (the 8 x 30k wave) / 6,832 (a needle run) tok/s -- **-25% for 8x the context**, which is what 12 of 48 layers attending plus the QSA indexer buys |
 | decode at depth (400 tokens inside a 250k context) | 141 tok/s single stream, on a repetitive haystack, so high draft acceptance |
-| 32 concurrent 300-token streams | **1,186-1,257 tok/s** aggregate: all 32 running, KV pool peak 20.7%, nothing waiting |
+| 32 in flight, 300-token waves (`bench/probe32.sh`) | **1,568.3 / 1,573.7 / 1,587.5 tok/s**; the 32k recipe's band at this protocol is 1,574-1,598 across instances, so the full context costs nothing measurable |
+| 32 in flight, 1,200-token waves | 1,799.5 / 1,832.7 (32k band: 1,823) -- `max_tokens` alone moves this protocol by 15%, so a wave length belongs next to every aggregate number |
+| 16 in flight, 300-token waves | 1,133.1 / 1,135.8 / 1,142.7 (32k band: 1,107) |
+| 32 concurrent 300-token requests, wall clock from one process | 3.7-4.0 s: all 32 running at once, KV pool peak 20.7%, nothing waiting, because 32 x 300 tokens is two 8,192-token steps |
 | 8 concurrent 30k prompts | 26.2 s end to end: TTFTs 3.6 -> 26.2 s in 3.3 s steps (one prefill each) with the pool only **11.7%** full |
 | 3 concurrent 250k prompts | queue to 36.9 / 73.7 / 109.2 s; no OOM, all three retrieve |
-| VRAM per card | 30.5 of 31.86 GiB used, ~1.35 GiB spare |
+| card power at `gpu_busy_percent` 100 | median **299 W** a card (132 samples, 179-303) |
+| standing gate on the launch that runs today | GSM8K **99/100** (33,909 prompt tokens in 40 s), `bench/quality.py` needle 3/3 at 3,828 / 15,196 / 30,354 tokens |
+| VRAM per card | 30.3-30.5 of 31.86 GiB at every tier up to 180k, ~1.35 GiB spare |
 
 The limit is not the KV cache. Only 12 of 48 layers do full attention (24 KiB a token, 6.00 GiB per full-length
 sequence), so a 262k request needs 586 of 1,230 blocks and the pool holds **2.06** of them -- a residency
@@ -138,9 +146,8 @@ ceiling, not the concurrency the box serves: long prefills serialize, so above r
 "more than 2 in flight" already means queueing while the pool sits a tenth full. `--long-prefill-token-threshold`
 (+ `_adaptive`) measured as a fairness knob, not a speed one: six 30k requests behind a 250k one go 40.3-55.8 s
 -> **7.8-27.7 s** at an unchanged wall clock (55.9 vs 56.8 s), while three 250k prefills in parallel push the pool
-to 99.1% and cost 22% (109.2 -> 133.6 s), so it stays off. The standing gate is unchanged at this context
-(GSM8K 99/100 and needle 3/3 from `bench/quality.py`, re-run on this launch). Method, the queue measurements and
-the metric-reading traps: [notes/context-262k.md](notes/context-262k.md).
+to 99.1% and cost 22% (109.2 -> 133.6 s), so it stays off. Method, the queue measurements and the metric-reading
+traps: [notes/context-262k.md](notes/context-262k.md).
 
 ## Watching it: the Monitor and About pages
 

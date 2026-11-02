@@ -127,8 +127,22 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   each can honestly say, the relay's measured 2-3 ms, and the refusal to draw a prefill progress bar. The Serve
   block now marks which recipes run in the image and which line is the native one, and the check step is a list of
   what each bench proves rather than a paragraph of names.
+- **The README's 262k table now carries the standing recipe, re-measured.** New rows, all from the launch that runs
+  today: prompt processing 8,672-8,742 / 8,062-8,064 / 7,416-7,436 tok/s and TTFT 6.87-6.93 / 14.89 / 24.22-24.28 s
+  at 60,061 / 120,066 / 180,070 tokens (needle found at each, no prefix cache in any of it), the same 60k prefill as
+  the engine itself measures it (8,908-8,917 tok/s over its own 6.74 s, from `FinishedRequestStats`),
+  `bench/probe32.sh` bands -- 32 x 300: 1,568.3 / 1,573.7 / 1,587.5, 32 x 1,200: 1,799.5 / 1,832.7, 16 x 300:
+  1,133.1 / 1,135.8 / 1,142.7 -- card power at busy==100 (median 299 W, 132 samples), and the gate (GSM8K 99/100
+  with 33,909 prompt tokens in 40 s, needle 3/3). Each row names which launch it came from.
 
 ### Fixed
+- **The README's 262k throughput row compared two different protocols.** It said "32 concurrent 300-token streams:
+  1,186-1,257 tok/s", a wall-clock figure from the issuing process, and readers would compare it against the 32k
+  recipe's `bench/probe32.sh` band of 1,574-1,598 and conclude the full context cost 25%. `probe32.sh` run on the
+  262k launch gives 1,568.3 / 1,573.7 / 1,587.5 at the same protocol, so the real cost is nothing measurable; the
+  wall-clock row is still there, labelled as wall clock from one process, and `notes/context-262k.md` says why the
+  two differ. Same note fixes the launch provenance of the retrieval-ladder rows (measured with `NSEQ=4
+  PREFIX_CACHE=1`, while the table implied the standing `NSEQ=32 PREFIX_CACHE=0` recipe).
 - **`bench/needle_long.py` called a repeat run a prefix-cache hit.** The warm line ended in "(prefix cache)"
   whatever happened; this launch runs `--no-enable-prefix-caching` and the second prefill costs the same
   (60,061 tokens: 6.74 s cold, 6.73 s warm, 8,639 against 8,759 tok/s). The line now says which it was: a

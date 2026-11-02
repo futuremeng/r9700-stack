@@ -58,7 +58,7 @@ nicer-looking queue):
 
 | load | wall | running peak | waiting peak | KV pool peak |
 |---|---|---|---|---|
-| 32 × 300 tok | 3.7-4.0 s (1,126-1,257 tok/s) | **32** | 0 | 20.7% |
+| 32 × 300 tok | 3.7-4.0 s (1,126-1,257 tok/s, wall clock from the issuing process, not the `bench/probe32.sh` window) | **32** | 0 | 20.7% |
 | 8 × 30k tok | 26.2 s | **2** | 7 | **11.7%** |
 | 3 × 150k tok | 59.1 s | 2 | 2 | 32.3% |
 | 4 × 150k tok | 79.1 s | 2 | 3 | 32.3% |
@@ -110,6 +110,49 @@ Recommendation as measured: leave it off in the 32k-or-262k production recipe; i
 (agent traffic behind the same endpoint as long documents), use **4096** -- `NBT/2`, which caps parallel long
 prefills at two and so matches the 2.06× the memory can actually hold. 2048 over-parallelizes at 262k.
 This box is left running the recipe without it.
+
+## Re-measured on a later day, on the standing recipe (what the README's 262k table now quotes)
+
+Same box, same recipe (`MAXLEN=262144 NSEQ=32 NBT=8192 PREFIX_CACHE=0 WEBUI=same`), launched fresh from this repo
+after the Monitor changes, `~/logs/ctx262k-prefillrate-052720.log.out`; probe bands in
+`~/logs/probe32-262k-054506.log`. Prefill and throughput, nothing else changed.
+
+| tier (`bench/needle_long.py`, prefix cache off) | prompt tokens | cold TTFT | cold prefill | the same context again |
+|---|---|---|---|---|
+| 60k | 60,061 | 6.93 s | 8,672 tok/s | 6.87 s, 8,742 tok/s -- **no reuse, the prefill was repeated**, which is what `--no-enable-prefix-caching` means |
+| 120k | 120,066 | 14.89 s | 8,062 tok/s | 14.89 s, 8,064 tok/s |
+| 180k | 180,070 | 24.22 s | 7,436 tok/s | 24.28 s, 7,416 tok/s |
+
+Every tier was found (needle hit, 7-token answer), and per-card VRAM high-water was 30.3-30.4 GiB at 120k and 180k.
+The ladder now fills in between its ends on one launch: 8,672 / 8,062 / 7,436 tok/s at 60k / 120k / 180k, and 6,832
+at 250k on the standing recipe. Read the shape rather than the endpoints as one series: the 30k figure quoted
+elsewhere (9,097) comes from the 8 × 30k concurrency wave and not from `needle_long`, and the `PREFIX_CACHE=1`
+ladder above reads 7,068 at 30k.
+
+What the engine says about the same 60k request, from its own `FinishedRequestStats` (the Monitor's per-request
+row): 60,061 prompt tokens over 6.74 s of prefill = **8,908 and 8,917 tok/s** on the two runs. That is ~2.5% above
+the client-side 8,672 / 8,742: the client clock includes connect, the JSON body crossing the socket, and the
+engine's queue, the engine's clock does not. Both are honest; they are just measuring from different places.
+
+| `bench/probe32.sh` protocol | this launch (262k) | the 32k recipe's band, same protocol |
+|---|---|---|
+| 32 in flight, 300-token waves | 1,568.3 / 1,573.7 / 1,587.5 -> **1,576** | 1,598 (three samples), and 1,574 on another instance of the same recipe |
+| 32 in flight, 1,200-token waves | 1,799.5 / 1,832.7 -> **1,816** | 1,823 |
+| 16 in flight, 300-token waves | 1,133.1 / 1,135.8 / 1,142.7 -> **1,137** | 1,107 |
+
+So the full 262,144-token context costs **nothing measurable** in short-request throughput: 1,576 at 32 × 300 sits
+inside the spread between instances of the 32k recipe (1,574-1,598), and 1,816 at 1,200-token waves is at that
+band's 1,823. The 1,126-1,257 tok/s row earlier in this note is not in conflict with that: it is a **wall-clock**
+figure from the issuing process, while `probe32.sh` measures the `bench.aggregate(conc, max_tokens)` window. Quoting
+the first against the second's band makes 262k look 25% slower than it is, which is why both rows now name their
+protocol.
+
+Power while `gpu_busy_percent` read 100: 132 samples, 179-303 W, **median 299 W a card** -- the same ~300 W ceiling
+[notes/native-4xr9700.md](native-4xr9700.md) records for this box uncapped (299 W median, 300.0 W max there), so
+the full context changes where the cards sit, not how hard they work. The standing gate on this launch:
+GSM8K **99/100** with 33,909 prompt tokens in 40 s, and `bench/quality.py`'s needle 3/3 at 3,828 / 15,196 /
+30,354 tokens. (The `GSM8K 10/10` line earlier in this note is the 10-question sample taken during the first 262k
+launch; the 100-question gate is 99%, where every other launch of this recipe has been.)
 
 ## Why the GLM-5.3-Flash 262k failure did not repeat here
 
