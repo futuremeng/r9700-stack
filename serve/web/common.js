@@ -107,7 +107,7 @@ function spark(el, values, {fill = true, baseLo = null, baseHi = null} = {}) {
 // -- one card's block, shared by both pages ---------------------------------------------------------
 // A card that answers nothing is said to answer nothing: on this box several amdgpu attributes return
 // EBUSY while a compute context holds the card, and "0% busy" is the wrong answer for that.
-function gpuCard(g) {
+function gpuCard(g, ghist = [], i = 0) {
   const d = document.createElement("div");
   d.className = "gpu";
   const line = (a) => a.filter((x) => x).join(" · ");
@@ -118,12 +118,34 @@ function gpuCard(g) {
   const busy = isnum(g.busy_pct) ? `${fmt(g.busy_pct, 0)}<span class="unit">busy</span>` : `<span class="q">—</span>`;
   d.innerHTML = `<b>${g.name || g.card}</b><span class="small">${g.card}</span>`
     + `<div class="pct">${busy}</div>`
-    + `<div class="bar"><div style="width:${Math.min(100, g.busy_pct || 0)}%"></div></div>`
+    + `<div class="sparkline spark--gpu"></div>`
     + `<div class="muted small">${isnum(g.vram_used) || isnum(g.vram_total) ? `${gb(g.vram_used)} / ${gb(g.vram_total)} GiB VRAM` : ""}</div>`
+    + `<div class="sparkline spark--gpu"></div>`
+    + `<div class="muted small" data-wave></div>`
     + `<div class="muted small">${line([isnum(g.mem_busy_pct) ? `VRAM ${fmt(g.mem_busy_pct, 0)}% busy` : "",
         isnum(g.sclk_mhz) ? `sclk ${fmt(g.sclk_mhz, 0)} MHz` : "", isnum(g.mclk_mhz) ? `mclk ${fmt(g.mclk_mhz, 0)} MHz` : "",
         isnum(g.temp_c) ? `${g.temp_c.toFixed(0)} °C` : "", isnum(g.power_w) ? `${g.power_w.toFixed(0)} W` : ""])}</div>`
     + unread + smi;
+  // Busy and VRAM as waveforms, on the honest axes: busy over 0..100 (a card at 40% is 40% of the box, not the
+  // tallest bar in the ring), VRAM over 0..the card's own total -- which is the leak question asked without a
+  // script: the soak runs used to log per-card VRAM to a side file to show flat is flat, and this is the same
+  // evidence, always on. Align by bus id / card name rather than by index: if a card disappears from sysfs the
+  // series keeps meaning instead of quietly plotting the neighbour's numbers.
+  const at = (s) => (s.cards || []).find((c) => (g.bus && c.bus === g.bus) || c.card === g.card) || null;
+  const series = (k) => ghist.map((s) => { const c = at(s); return c ? c[k] : null; });
+  const busyS = series("busy_pct");
+  const sparks = d.querySelectorAll(".spark--gpu");
+  spark(sparks[0], busyS, { baseLo: 0, baseHi: 100 });
+  const vramS = series("vram_used");
+  const total = g.vram_total || Math.max(...vramS.filter(isnum), 0);
+  spark(sparks[1], vramS.map((v) => (isnum(v) ? v / 2 ** 30 : null)),
+        { baseLo: 0, baseHi: total / 2 ** 30 });
+  const xs = busyS.filter(isnum);
+  const cap = d.querySelector("[data-wave]");
+  const spanS = ghist.length > 1 ? ghist[ghist.length - 1].at - ghist[0].at : 0;
+  if (cap) cap.textContent = xs.length < 2 ? ""
+    : `busy peak ${fmt(Math.max(...xs), 0)} · avg ${fmt(xs.reduce((a, b) => a + b, 0) / xs.length, 0)}% `
+      + `· ${xs.length}/${ghist.length} pts over ${spanS.toFixed(0)} s`;
   return d;
 }
 

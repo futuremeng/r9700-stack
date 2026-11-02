@@ -513,6 +513,20 @@ status, s = call(port, "/api/status")
 ck("status reads the engine", s["reachable"] and s["model_name"] == "Qwen3.8", str(s)[:120])
 ck("status carries config labels", s["config"].get("block_size") == "1088")
 ck("status carries cards", len(s["gpus"]) == 3 and s["gpus"][0]["busy_pct"] == 87, str(len(s.get("gpus", []))))
+# Per-card history, so a card's busy% and VRAM are waveforms like everything else. Two things the test
+# insists on: the ring is capped (a page open for a day must not grow the payload), and a card that refuses
+# to answer (the fixture's card5, standing in for EBUSY on a live box) is a null in the ring, not a 0 --
+# otherwise a card that stops answering plots as a card that went idle.
+_gh = s["gpus_history"]
+ck("per-card history rides along, capped at the same ring",
+   _gh and all(len(e["cards"]) == 3 for e in _gh) and len(_gh) <= W.HIST,
+   f"{len(_gh)} samples x {len(_gh[0]['cards']) if _gh else 0} cards (HIST={W.HIST})")
+ck("a card that refuses sysfs reads is a gap in its own waveform, not a zero",
+   all(c["busy_pct"] is None for e in _gh for c in e["cards"] if c["card"] == "card5")
+   and any(c["busy_pct"] == 87 for e in _gh for c in e["cards"] if c["card"] == "card0"),
+   str(_gh[-1]["cards"]) if _gh else "no history")
+ck("the slot carries the leak question too (vram_used, and the card's own total)",
+   all(k in _gh[-1]["cards"][0] for k in ("vram_used", "vram_total", "bus", "sclk_mhz")), str(_gh[-1]["cards"][0]))
 ck("status carries models", s["models"][0]["id"] == "Qwen3.8")
 ck("status engine version", s["engine"]["vllm_version"] == "test")
 ck("the sparkline ring carries the live rates too",
@@ -730,6 +744,23 @@ ck("the KV pool draws a waveform on a 0-100 axis, and the progress bar is gone",
 ck("sparklines take an axis from the caller instead of always autoscaling",
    "baseLo = null" in (WEB / "common.js").read_text()
    and '{ lo: 0, hi: "peak" }' in monjs)
+# The per-card cards: busy and VRAM as waveforms on honest axes (0..100, and 0..the card's own VRAM), and
+# aligned by bus id / card name so a card vanishing from sysfs cannot plot its neighbour's numbers.
+_ck2 = (WEB / "common.js").read_text()
+ck("a GPU card draws busy and VRAM waveforms, not a busy bar",
+   _ck2.count('spark--gpu') >= 2 and 'class="bar"' not in _ck2
+   and "{ baseLo: 0, baseHi: 100 }" in _ck2 and "total / 2 ** 30" in _ck2)
+ck("each card's waveform is matched by bus/card id, not by position",
+   "c.bus === g.bus" in _ck2 and "c.card === g.card" in _ck2)
+ck("both pages feed the card history to it",
+   "gpuCard(g, s.gpus_history || [])" in monjs and "gpuCard(g, s.gpus_history || [])" in (WEB / "about.js").read_text())
+ck("a card's caption carries busy peak and average, and names the span",
+   "busy peak" in _ck2 and "pts over" in _ck2)
+# gpu_busy_percent on this box reads ~99 whenever a launch holds the card, request or none (measured: avg
+# 95-99% over rings in which nothing was asked of the serve). The page has to say that, or a flat busy wave
+# reads as load.
+ck("the cards line says busy % is a context-alive signal here, not a load signal",
+   "context-alive" in monjs and "amdgpu sysfs" in monjs)
 ck("each waveform carries last, peak and average",
    'avg ${fmt' in monjs and 'peak ${fmt' in monjs
    and all(f'id="{i}"' in monhtml for i in ("stream-spark-note", "gen-spark-note",

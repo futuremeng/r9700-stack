@@ -653,6 +653,11 @@ class Hub:
                        "live": {}, "rate": {}, "history": [], "requests_kept": 0, "models": []}
         self.gpus, self.models, self.meta = [], [], {}
         self.prev, self.prev_t, self.hist = {}, 0.0, deque(maxlen=HIST)
+        # Per-card history, sampled by gpu_poll: one entry per gpu poll with one slot per card, aligned by
+        # index (read_gpus sorts by card name, and the card set does not change under us). VRAM in particular
+        # is a number people ask us to prove by hand -- the soak runs log it to a side file to show a leak is
+        # not happening -- and a ring on the page is the same evidence, continuously, with no script.
+        self.gpuhist = deque(maxlen=HIST)
         self.health, self.engine, self.host = None, {}, read_host()
         self.key_needed, self.smi_error = False, None
         self.lock = threading.Lock()
@@ -699,6 +704,7 @@ class Hub:
                     payload["models"] = self.models
                     payload["engine"] = self.engine
                     payload["gpus"] = self.gpus
+                    payload["gpus_history"] = list(self.gpuhist)
                     payload["smi"] = bool(self.cfg["smi"])
                     payload["smi_error"] = self.smi_error
                     payload["meta"] = self.meta
@@ -720,7 +726,8 @@ class Hub:
                     self.status = dict(self.status, reachable=False, at=time.time(),
                                        upstream=self.cfg["upstream"], error=str(e)[:300],
                                        key_needed=self.key_needed or bool(self.cfg["key"]),
-                                       gpus=self.gpus, models=self.models, engine=self.engine,
+                                       gpus=self.gpus, gpus_history=list(self.gpuhist),
+                                       models=self.models, engine=self.engine,
                                        meta=self.meta, requests_kept=self.kept())
             time.sleep(self.cfg["poll"])
 
@@ -745,6 +752,13 @@ class Hub:
                 self.smi_error = err
                 if by_bus:
                     self.gpus = merge_smi(self.gpus, by_bus)
+            # What a card refuses to answer (EBUSY while a compute context holds it) is stored as a null, not
+            # a 0: the gap is drawn as a gap, and a card that stops answering does not look like a card that
+            # went idle.
+            self.gpuhist.append({"at": time.time(), "cards": [
+                {"card": g.get("card"), "bus": g.get("bus"), "busy_pct": g.get("busy_pct"),
+                 "vram_used": g.get("vram_used"), "vram_total": g.get("vram_total"),
+                 "sclk_mhz": g.get("sclk_mhz"), "power_w": g.get("power_w")} for g in self.gpus]})
             self.host = read_host()
             time.sleep(max(1.0, self.cfg["poll"]))
 

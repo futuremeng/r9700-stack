@@ -18,6 +18,9 @@ section{margin:18px 0}
 .gpu b{display:block;font-size:var(--st-fs-md);font-weight:700}
 .gpu .pct{font-size:var(--st-fs-stat);font-weight:900;letter-spacing:-.01em;line-height:1;margin:8px 0 0;font-variant-numeric:tabular-nums}
 .gpu .muted{margin-top:6px}
+/* Per-card busy and VRAM as waveforms (0..100 and 0..the card's own VRAM total), replacing the busy bar. */
+.gpu .spark--gpu{display:block;margin-top:8px}
+.gpu .spark--gpu .spark{height:26px}
 .gpu .q,.value .q{color:var(--st-ink-muted);font-weight:500;font-size:var(--st-fs-xl)}
 
 .panel-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}

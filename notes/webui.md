@@ -398,6 +398,24 @@ breaks into a new subpath and the filled area under it is dropped for that serie
 first ~30 windows have no value at all, that would have invented a flat prefill. The x axis spans the whole ring
 either way, so one point is one poll of time whatever the series was doing in between.
 
+**Per-card waveforms: busy and VRAM replace the busy bar.** `gpu_poll` keeps its own ring
+(`gpus_history`, same 90 points, one slot per card, aligned by PCI bus id / card name so a card vanishing from
+sysfs cannot plot its neighbour's numbers), and each card draws busy on 0..100 and VRAM on 0..that card's own
+total, captioned `busy peak 100 · avg 95% · 65/65 pts over 65 s`. Two honest readings, learned while wiring it:
+
+- **busy % on this box is a context-alive signal, not a load signal.** `gpu_busy_percent` reads ~99 the whole
+  time a launch holds the card — measured avg 95-99% over rings in which nothing at all was asked of the serve.
+  The panel line says so, because otherwise a flat line at 99 reads as "fully loaded" and a drop to 0 as "idle
+  and healthy" when it actually means "the launch let go of the card".
+- **VRAM on 0..total is the leak question with no script.** The soak runs used to log per-card VRAM to a side
+  file to show flat is flat (`min == max` on all four cards); the wave is that evidence, always on, and the
+  launch preallocates the pool so the expected shape is a step at boot and a line — anything sloping up is the
+  finding.
+
+`tools/cardwave-check.js` runs the card renderer under node against a live `/api/status` with a stub DOM, and
+prints what it produced (two waveforms, no bar, the caption text) — the browser is still the real test, but the
+silent failure this catches is the card drawing nothing at all.
+
 One caveat on the KV-growth estimate, because it is a difference of a gauge sampled at the poll rate: it is good
 on large prefills (5,787 against 5,459 measured) and can spike on small ones and at request boundaries — a peak
 of **19,217 tok/s** in the ring right after a 62-token prompt is the pool being reclaimed and re-allocated

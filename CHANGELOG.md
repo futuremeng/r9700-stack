@@ -259,6 +259,18 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   dropped) rather than a value at the baseline, which for the prefill estimate would have invented a flat prefill
   over the ~30 windows where it has no value at all. The fourth trends slot, freed by the pool's move, is streams
   running -- the shape the NSEQ=32 knee lives in.
+  **The GPU cards got waveforms too** (`gpus_history`: a second 90-point ring from `gpu_poll`, one slot per card,
+  aligned by PCI bus id / card name so a card dropping out of sysfs cannot plot its neighbour's numbers).
+  Each card draws busy on 0..100 and VRAM on 0..that card's own total, captioned `busy peak 100 · avg 95% ·
+  65/65 pts over 65 s`, replacing the busy bar. Two readings the wiring forced out: **busy % on this box is
+  context-alive, not load** -- `gpu_busy_percent` reads ~99 the entire time a launch holds the card (measured avg
+  95-99% over rings in which nothing was asked of the serve), and the panel line now says so, because a flat
+  line at 99 otherwise reads as "fully loaded" and a fall to 0 as "healthy idle" when it means "the launch let
+  go"; and **VRAM on 0..total is the leak question without a script** -- the soak runs logged per-card VRAM to a
+  side file to prove `min == max`, and this is that evidence always on, where the expected shape is one step at
+  boot and then a line. `tools/cardwave-check.js` runs the card renderer under node against a live `/api/status`
+  with a stub DOM (two waveforms, no bar, caption text) -- the browser is still the real test, but the failure it
+  catches is a card silently drawing nothing.
 - **The native install recipe now says what is actually fetchable** (`README.md`, `notes/native-4xr9700.md`,
   `setup.py`), and the upstream sweep that found it is written up in [notes/vllm-0.33.md](notes/vllm-0.33.md).
   Checking "is there a new vLLM, should we follow" turned up a broken step in our own quickstart: the ROCm wheel

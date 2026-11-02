@@ -71,7 +71,7 @@ function render() {
   ]);
 
   const gpus = s.gpus || [];
-  $("gpus").replaceChildren(...gpus.map(gpuCard));
+  $("gpus").replaceChildren(...gpus.map((g) => gpuCard(g, s.gpus_history || [])));
 
   // A pasted config has to be pasteable on the machine you are sitting at. `upstream` is what this sidecar
   // dials -- 127.0.0.1 on the box that runs the serve -- which is dead wrong pasted into a client anywhere

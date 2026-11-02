@@ -321,9 +321,14 @@ function renderStatus(s) {
   const gpus = s.gpus || [];
   const quiet = gpus.filter((g) => (g.unread || []).length).length;
   text("gpus-note", gpus.length ? `${gpus.length} card${gpus.length > 1 ? "s" : ""} · amdgpu sysfs`
+    // gpu_busy_percent on this box reads ~99 for the whole time a launch holds a compute context, request or
+    // no request (measured: avg 95-99% over rings in which nothing was asked of the serve). So the busy wave
+    // says "the context is alive", not "the card is working" -- the working signals are the rate waveforms
+    // above it and, for a leak, the VRAM wave staying flat.
+    + " · busy % reads ~99 while a launch holds the card, so read it as context-alive"
     + (s.smi ? " + rocm-smi" : "") + (quiet ? ` · ${quiet} refusing sysfs reads` : "")
     : "no amdgpu sysfs readable here");
-  $("gpus").replaceChildren(...gpus.map(gpuCard));
+  $("gpus").replaceChildren(...gpus.map((g) => gpuCard(g, s.gpus_history || [])));
 }
 
 // -- one tick -------------------------------------------------------------------------------------
