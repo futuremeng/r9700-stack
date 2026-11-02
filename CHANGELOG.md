@@ -366,6 +366,20 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   like an uncorrectable fault. Serving traffic does not move these counters; launches do — recorded in the incident
   note, where the takeaway is that a mid-decode event is now the out-of-pattern thing to look for.
 
+- **Both cords are on one PDU, which reopens the "not a mains event" conclusion** (operator; recorded in
+  [notes/incident-2026-11-02/bmc-sensors-watchdog-psu.txt](notes/incident-2026-11-02/bmc-sensors-watchdog-psu.txt)
+  §5d). Two supplies on one PDU, one of which outputs 0 W, is no redundancy at any level. It also weakens
+  `sel-decode.txt`'s inference that the SEL's silence (no AC-lost, no power-off, no `Pre-Init` in 3639 records)
+  clears a power cause: that silence rules out a **total** input loss -- the BMC stayed up, and the platform's own
+  verdict is a reset while powered -- but SEL power records come from polling PSU registers on a seconds cadence,
+  and those registers are poor instruments here (`AC Lost` reports presence, not AC). A tens-of-ms excursion taking
+  four GPUs' PCIe links with it leaves no IPMI record. Load arithmetic to ask about, not assume: ~6-7 A at 240 V
+  steady, ~+8 A for tens of ms on a synchronized four-card prefill step, more again at cold-start inrush. The
+  questions that would settle the feed branch live outside the box: which PDU and is it metered/switched (its
+  per-outlet history across the 05:2x / 08:xx / 11:0x boot clusters would be this incident's first external
+  record), what else shares it, is there a UPS -- and moving one supply to a second circuit, which is the fix and
+  the experiment in one, tracked by `.pcie_events` before and after.
+
 - **Two 2600 W supplies, so PSU2 delivering 0 W is a fault and not a parked bay** (operator-confirmed; recorded in
   [notes/incident-2026-11-02/bmc-sensors-watchdog-psu.txt](notes/incident-2026-11-02/bmc-sensors-watchdog-psu.txt)
   §5c). A dual-2600 W chassis is N+1: each unit carries the box alone, which is exactly the 52-62% case measured in

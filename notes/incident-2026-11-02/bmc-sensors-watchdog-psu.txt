@@ -140,6 +140,43 @@ What this does not change: no `power1_cap` cut is warranted (52-62% on one unit,
 prefill), GPU temperatures are inside their published limits, and the first thermal lever is still `fan1_target`
 on card4 (§5b and `notes/observe-2026-11-02.md`).
 
+### 5d. 2026-11-02 15:4x: both cords are on the **same PDU** -- which reopens a conclusion this note had closed
+
+The operator says the two supplies share one PDU. Consequences, in order of importance:
+
+- **There is no feed-level redundancy, and with PSU2 at 0 W there is no redundancy at any level.** The pair protects
+  against nothing today: one PDU, one cord run, one circuit, one breaker -- and currently one working supply on it.
+- **This weakens a sentence in `sel-decode.txt` §5/§6**: "PSU2 at 0 W is *not* the cause of these deaths: no
+  power-off record, no AC-lost record, no `Pre-Init`", and "not a mains/PSU event (never logged once in 3639
+  records)". What that evidence genuinely clears is a **total** loss of input power: the BMC stayed up, the SEL
+  recorded no AC-lost / power-off / Pre-Init, and the platform's own verdict is a reset while powered. What it does
+  **not** clear is a fast disturbance on the feed or the 12 V rail, for two reasons now visible in this file:
+  SEL power records come from the BMC *polling* PSU registers on a seconds cadence, and those registers are
+  demonstrably poor instruments here (`PSU2 AC Lost` reports presence rather than AC; `PSU1 In Current` 6.4 A at
+  240 V against 208 W reported out). A tens-of-milliseconds excursion that costs four GPUs their PCIe links would
+  leave no IPMI record at all. So "the SEL says no mains event" is evidence about the SEL's resolution, not about
+  the mains.
+- **The load arithmetic on one PDU is worth asking about rather than assuming.** This box is ~1,350-1,600 W in
+  steady serving, i.e. **~6-7 A at 240 V**, and a synchronized idle->prefill step across four cards is ~+2 kW, i.e.
+  another **+8 A for tens of milliseconds** -- plus the inrush of a cold start, which for a pair of 2600 W supplies
+  is an order of magnitude larger again. On a 16 A circuit carrying only this box that is comfortable; on a PDU that
+  also carries other equipment, or with a marginal outlet/connector, it is not obviously so.
+
+Questions that would settle the feed branch, none of which are answerable from inside the box (this account cannot
+open `/dev/ipmi0`, and the box cannot see its own inlet):
+
+1. **Which PDU, and is it metered/switched?** A metered PDU's per-outlet current or energy history across the boot
+   clusters (05:2x, 08:xx, 11:0x on 2026-11-02) is the first external record this incident could have. A switched
+   one has an event log too.
+2. **What else is on that PDU, and what is its inlet rating / upstream breaker?** Add it to the 6-7 A plus +8 A
+   step and see whether anything is close to a limit.
+3. **Is there a UPS between the wall and the PDU, and what kind?** A failing transfer or a neutral/ground problem
+   shows up as exactly this kind of GPU-only disturbance.
+4. **Move one supply (once PSU2 is working) to a second PDU on a different circuit/phase.** This is the experiment
+   and the fix at once: if the deaths and the correctable `BadTLP` events at `c4:00.0`/`04:00.0` thin out with two
+   feeds, the electric branch gains; if nothing changes, it weakens sharply and the switch-side and thermal/airflow
+   branches take over. Track it with `:8099 /api/status` -> `.pcie_events` and the per-chain AER counters.
+
     sudo ipmitool -I open sdr get 'PSU2 Power In'
     sudo ipmitool -I open sdr get 'PSU2 Power Out'
     sudo ipmitool -I open sdr elist | grep -i psu      # re-read under load
