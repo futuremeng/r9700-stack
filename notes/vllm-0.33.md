@@ -178,11 +178,52 @@ The soak and BetterBench rows stay open until the platform stops resetting, not 
 
 | what | state 2026-11-02 | why it matters here |
 |---|---|---|
-| `#62799` Triton skinny GEMM for 6-128 rows on RDNA4 | open, updated 2026-10-30 | the only upstream item in this whole sweep with a two-digit R9700 win in it: the author measures **+28-29% output throughput with DSpark at conc 1-16 on one R9700** (gfx1201), 0.75-0.81x GEMM time over 36 shapes, because BF16 GEMMs with 6-128 rows fall from `wvSplitK` (600 GB/s) to hipBLASLt (420-470 GB/s). Watch for merge, or carry it |
+| `#62799` Triton skinny GEMM for 6-128 rows on RDNA4 | open, updated 2026-10-30 — **measured here, not worth carrying** (next section) | the only upstream item in this whole sweep with a two-digit R9700 win in it: the author measures **+28-29% output throughput with DSpark at conc 1-16 on one R9700** (gfx1201), 0.75-0.81x GEMM time over 36 shapes, because BF16 GEMMs with 6-128 rows fall from `wvSplitK` (600 GB/s) to hipBLASLt (420-470 GB/s) |
 | `#57861` avoid RowWise FP8 scaled MM on RDNA4 | open, updated 2026-11-01 | vLLM 0.28+ picks RowWise on gfx1200/1201 where ChannelWise decodes faster |
 | `#62718` split `skinny_gemms.cu` per kernel family | open, updated 2026-11-02 | ROCm build time (~58 s serialized); matters if we start source-building |
 | `#64874` `Workspace is locked` assert in `rocm_fp8_paged_mqa_logits` (GLM-5.3-Flash, high decode concurrency) | open, filed 2026-10-31 | our `models/glm5next.py:270` reserves the decode logits through `current_workspace_manager()` — read this one before moving any GLM launch onto a new pin |
 | `#63735` RDNA launch config for `kernel_paged_attention_2d`, `#63054` / `#64614` 64-bit row offsets in the Triton and RDNA-hybrid W4A16 GEMMs | merged, **main only** | RDNA4 fixes that will not reach a wheel until 0.34 |
+
+## Measured, so we do not chase it: `#62799` is not worth carrying here
+
+`tuning/skinny_probe.py` (new, 2026-11-02) graph-times the three per-rank BF16 decode GEMMs of Flash-Next at
+TP4 across the row counts the PR targets — the router gate `[M,2560] x [512,2560]^T` (2.62 MB, **51 calls a
+step**), the hyper-connection down `[336,10240]` (6.88 MB) and up `[10240,320]` (6.55 MB, 48 calls a step) — for
+`torch.matmul`, `torch.mm(out_dtype=fp32)` and our own `r9k_router` kernel forced past its default `MAX_M`.
+
+| shape | graph-replay floor on this box | hipBLASLt | our kernel | net of the 4.9 µs graph-launch |
+|---|---|---|---|---|
+| empty captured graph | **4.88 µs** | — | — | — |
+| 64-element elementwise | 10.64 µs | — | — | ≈ 5.8 µs |
+| 128x128 bf16 matmul | 12.12 µs | — | — | ≈ 7.2 µs |
+| router `[512,2560]` at M=16 | — | 15.04 µs (bf16 out) / 17.60 µs (fp32 out **+ cast**, which is what the served op does) | 29.2 µs (2-3x worse — the note in PROGRESS: it re-reads activations per expert) | hipBLASLt ≈ 10.1, served path ≈ 12.7 |
+| router at M=1..8 | — | 14.8-15.6 µs (168-177 GB/s) | **12.4-14.3 µs (183-212 GB/s)** | the default `MAX_M=8` is the measured crossover |
+| HC down `[336,10240]` at M=1..8 | — | 24.2 µs (284 GB/s) | — | — |
+
+Two things kill the idea:
+
+1. **Our decode path is not on hipBLASLt where the PR says it should be.** The launcher serves with
+   `R9K_HC_FP8_DECODE=1 R9K_HC_FP8_DECODE_MAXM=255` (`serve/native-flashnext.sh:21`): the HC down/up GEMMs run
+   per-token fp8 on our WMMA kernels for every decode M up to 255, and `R9K_ROUTER_MAX_M` (default 8) puts the
+   router gate on `r9k_router` for the small-M end. The band the PR fills is mostly already filled here.
+2. **What is left is latency-bound, not bandwidth-bound.** hipBLASLt reads the 2.6 MB router weight in 15.0 µs —
+   a 128x128 matmul (12.1 µs) is 2.9 µs of it. The PR's 420-470 GB/s figure is for much larger weights; on our
+   per-rank decode shapes the floor is the launch, so a 600 GB/s streaming kernel buys almost nothing: the whole
+   recoverable envelope at M=16, taking the band floor as the best case, is `(17.6 - 12.1) us x 51 calls = 280 us`,
+   i.e. **2.2% of a 13 ms step**, and that assumes a kernel as fast as a trivial matmul.
+
+Two smaller findings worth keeping, both from the same probe:
+
+- **`R9K_ROUTER_MAX_M` above 8 is a loss, and the kernel's own limit is 32.** At M=16/24/32 the r9k router costs
+  29.2 / 41.1 / 43.7 µs against hipBLASLt's 14.6-14.9 — so raising the knob to the kernel's `r9k_router_max_m()`
+  (32) would add ~1.5 ms a step. The default 8 is not timid, it is the measured crossover.
+- **The one candidate the probe exposes is the cast, not the GEMM.** Above `MAX_M` the served op is
+  `torch.mm(out_dtype=fp32)` followed by a bf16 cast (`r9700_vllm/router.py:72`), and the cast measures
+  **2.6 µs a call** (15.04 -> 17.60) = **130 us a step, ~1.0%**, plus 51 fewer launches. Handing the gate fp32
+  instead (its softmax/top-k works in fp32 anyway) is a one-knob A/B, not a new kernel. It changes router rounding
+  on near-ties, so it owes `tests/test_router_r9k.py`'s top-10 agreement and the GSM8K/needle gate — and by the
+  bar this stack already uses for `moe/fold.py` (~0.1 ms of a 16.7 ms step "does not buy two patches"), ~0.13 ms
+  buys one flag and no patch at all. **Not run yet.**
 
 ## Verdict and plan
 
