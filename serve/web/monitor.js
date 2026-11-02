@@ -242,8 +242,8 @@ function renderStatus(s) {
   // while a long one is in flight. The cumulative ratio is not a window mean: the page says which it shows.
   const since = s.since || {};
   const pick = (k) => (isnum(rate[k]) ? rate[k] : (isnum(since[k]) ? since[k] : null));
-  text("accept", pct(pick("accept_pct"), 1) + (isnum(rate.accept_pct) || !isnum(since.accept_pct) ? ""
-    : " (since launch)"));
+  qualText("accept", pct(pick("accept_pct"), 1),
+           isnum(rate.accept_pct) || !isnum(since.accept_pct) ? "" : "since launch");
   text("drafts", isnum(rate.drafts_per_req) ? `${fmt(rate.drafts_per_req, 2)} drafts per request`
     : isnum(since.accept_pct) ? `${fmt(since.requests, 0)} requests finished since the engine started`
       : "no speculation counters");
@@ -315,7 +315,9 @@ function renderStatus(s) {
 
   for (const [id, k] of [["t-ttft", "ttft_ms"], ["t-queue", "queue_ms"], ["t-prefill", "prefill_ms"],
                          ["t-decode", "decode_ms"], ["t-step", "itl_ms"], ["t-tpot", "tpot_ms"]])
-    text(id, ms(pick(k)) + (isnum(rate[k]) || !isnum(since[k]) ? "" : " (since launch)"));
+    // The caveat goes on at note size: these six are value--sm headlines, and "(since launch)" set in the
+    // headline's own size reads as a second number and buries the first.
+    qualText(id, ms(pick(k)), isnum(rate[k]) || !isnum(since[k]) ? "" : "since launch");
   text("window", isnum(rate.window_s) ? `${rate.window_s.toFixed(1)} s` : "—");
 
   const gpus = s.gpus || [];

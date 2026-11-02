@@ -63,6 +63,19 @@ function text(id, value) {
   if (el.textContent !== s) el.textContent = s;
 }
 
+// A qualifier hanging off a big number -- "since launch" under a value--sm stat -- must not inherit the
+// number's size. At --st-fs-xl three words become the loudest thing on the card and outvote the measurement
+// they are qualifying, which is backwards: the qualifier is a caveat on the number, not a second headline.
+// qual() renders it at note size; qualText() is text() with one attached.
+function qual(t) { return t ? ` <span class="qual">${t}</span>` : ""; }
+function qualText(id, value, note) {
+  const el = $(id);
+  if (!el) return;
+  const s = value === null || value === undefined ? "—" : String(value);
+  const html = `${s}${qual(note)}`;
+  if (el.innerHTML !== html) el.innerHTML = html;
+}
+
 // -- sparkline ---------------------------------------------------------------------
 // A polyline of the last N polls, drawn as an SVG the token owns so the theme colours it.
 function spark(el, values, {fill = true, baseLo = null, baseHi = null} = {}) {

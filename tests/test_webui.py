@@ -767,6 +767,14 @@ ck("sparklines take an axis from the caller instead of always autoscaling",
 # The per-card cards: busy and VRAM as waveforms on honest axes (0..100, and 0..the card's own VRAM), and
 # aligned by bus id / card name so a card vanishing from sysfs cannot plot its neighbour's numbers.
 _ck2 = (WEB / "common.js").read_text()
+ck("a caveat on a headline number is note-sized, not headline-sized",
+   'function qual(t) {' in _ck2 and '.qual{font-size:var(--st-fs-xs)' in (WEB / "web.css").read_text())
+# "(since launch)" sat inside value--sm elements, set in the headline's own size -- three words louder than
+# the measurement they qualify, which is backwards. The qualifier helper carries them instead.
+ck("the since-launch caveats on the headline stats ride the qualifier",
+   monjs.count("qualText(") >= 2 and '"since launch"' in monjs
+   and 'text(id, ms(pick(k)) + (isnum(rate[k])' not in monjs)
+
 ck("a GPU card draws one labelled wave per sensor, and no busy bar",
    _ck2.count('spark--gpu') >= 1 and 'class="bar"' not in _ck2
    and '["busy", "VRAM", "sclk", "W", "°C"]' in _ck2

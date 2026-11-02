@@ -34,6 +34,8 @@ main{max-width:1560px;padding:28px var(--st-s-8) 56px;margin:auto}
 .value--sm{font-size:var(--st-fs-xl)}
 /* The Monitor's headline row: the four rates, at a size you can read across the room. */
 .value--xl{font-size:var(--st-fs-display)}
+/* A caveat on a number, not a second headline: note-sized, muted, and never wrapping onto its own line. */
+.qual{font-size:var(--st-fs-xs);font-weight:600;color:var(--st-ink-muted);letter-spacing:0;white-space:nowrap}
 .grid--rates .card{padding:var(--st-s-4) var(--st-s-5)}
 /* The trends row: one row for every series with a waveform, so the shapes line up under each other. */
 .sparkline--lg .spark{height:64px}
