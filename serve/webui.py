@@ -421,6 +421,17 @@ class EngineRecords:
         q, pre, inf, dec = (float(getattr(f, "queued_time", 0) or 0), float(getattr(f, "prefill_time", 0) or 0),
                             float(getattr(f, "inference_time", 0) or 0), float(getattr(f, "decode_time", 0) or 0))
         gen = int(getattr(f, "num_generation_tokens", 0) or 0)
+        prompt, cached = int(getattr(f, "num_prompt_tokens", 0) or 0), int(getattr(f, "num_cached_tokens", 0) or 0)
+        # Prefill speed for THIS request, computed at the moment the record is made. The engine hands over both
+        # the tokens and the seconds, so unlike the "prompt tok/s" card (a counter credited at request end, read
+        # as a rate) this is a measured per-request mean. Two numerators matter: with a prefix-cache hit the
+        # engine computed `prompt - cached`, so prompt/prefill would report a speed it never earned.
+        computed = prompt - cached
+        pre_all = (prompt / pre) if prompt and pre > 0 else None
+        pre_comp = (computed / pre) if computed > 0 and pre > 0 else None
+        pre_rate, pre_basis = ((pre_comp, f"{computed} computed tokens / prefill time ({cached} cached, not read)")
+                               if cached > 0 and pre_comp else
+                               (pre_all, "prompt tokens / prefill time"))
         e2e = inf if inf > 0 else (q + pre + dec)
         with self.lock:
             self.n += 1
@@ -429,12 +440,13 @@ class EngineRecords:
                  "started_at": now - e2e, "finished_at": now,
                  "wallclock_s": e2e, "first_token_s": q + pre, "queue_s": q,
                  "stream": None, "response_format": "engine", "http_status": None,
-                 "usage": {"prompt_tokens": int(getattr(f, "num_prompt_tokens", 0) or 0),
+                 "usage": {"prompt_tokens": prompt,
                            "completion_tokens": gen,
-                           "prompt_tokens_details": {"cached_tokens": int(getattr(f, "num_cached_tokens", 0) or 0)}},
+                           "prompt_tokens_details": {"cached_tokens": cached}},
                  "timings": {"predicted_per_second": (gen / dec) if gen and dec > 0 else None,
                              "speed_basis": "per accepted token (the engine's own mean)",
                              "tokens_are_estimate": False,
+                             "prefill_tok_s": pre_rate, "prefill_basis": pre_basis,
                              "queue_s": q, "prefill_s": pre, "decode_s": dec,
                              "preemptions": int(getattr(f, "num_preemptions", 0) or 0),
                              "max_tokens_param": getattr(f, "max_tokens_param", None),
@@ -512,6 +524,15 @@ class Records:
             span = max(r["wallclock_s"] - (r["first_token_s"] or 0.0), 0.0) or r["wallclock_s"]
             r["timings"] = {"predicted_per_second": (gen / span) if gen and span > 0 else None,
                             "tokens_are_estimate": not bool((r["usage"] or {}).get("completion_tokens"))}
+            # Same per-request prefill mean as the engine-side record, built from what a relay can see: the
+            # prompt token count the response reports and the wait for the first token. Labelled as this page's
+            # own measurement (it includes anything the engine queued before starting), never presented as the
+            # engine's.
+            ptok = (r["usage"] or {}).get("prompt_tokens")
+            pspan = (r["first_token_s"] - (r.get("queue_s") or 0.0)) if r.get("first_token_s") else None
+            r["timings"]["prefill_tok_s"] = (ptok / pspan) if ptok and pspan and pspan > 0 else None
+            r["timings"]["prefill_basis"] = ("prompt tokens over first-token latency, timed through this page"
+                                             if r["timings"]["prefill_tok_s"] else None)
 
     def note(self, r, text):
         if r["_out_len"] < CAP:

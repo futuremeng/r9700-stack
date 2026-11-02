@@ -74,6 +74,19 @@ ck("no endpoint claim: the engine's stats do not carry one", r["path"] is None)
 ck("a row carries the engine's own split and its token counts",
    r["timings"]["prefill_s"] == 1.2 and r["timings"]["queue_s"] == 0.5 and r["timings"]["decode_s"] == 1.6
    and r["usage"]["prompt_tokens"] == 4399 and r["usage"]["completion_tokens"] == 128, json.dumps(r)[:200])
+# Prefill speed per request, computed when the record is made: the card's "prompt tok/s" is a counter credited
+# at request end (a 180,066-token prefill reads 0 tok/s until it lands, then 89,580 in one poll), so the record
+# has to carry the mean the engine's own tokens and seconds support.
+ck("prefill speed uses computed tokens, not tokens the cache handed over",
+   abs(r["timings"]["prefill_tok_s"] - 3247 / 1.2) < 0.01
+   and r["timings"]["prefill_basis"] == "3247 computed tokens / prefill time (1152 cached, not read)",
+   json.dumps(r["timings"]))
+er.add(Fin(request_id="nc", num_prompt_tokens=60061, num_cached_tokens=0, num_generation_tokens=7,
+           prefill_time=6.74, queued_time=0.0, decode_time=0.04, inference_time=6.8))
+nct = er.get("nc")["timings"]
+ck("with nothing cached the numerator is the whole prompt",
+   abs(nct["prefill_tok_s"] - 60061 / 6.74) < 0.01 and nct["prefill_basis"] == "prompt tokens / prefill time",
+   json.dumps(nct))
 er.add(Fin(request_id="q0", queued_time=0.0, prefill_time=0.04, decode_time=0.2, num_generation_tokens=8))
 q0 = er.get("q0")["timings"]
 ck("a request that never queued reads 0.000 s, not a dash (found live: 0 -> None made 'no queue wait' "

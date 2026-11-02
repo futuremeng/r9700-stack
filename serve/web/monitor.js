@@ -62,7 +62,8 @@ function list() {
       // mode both come straight from the engine's per-request stats; in observe mode there are no rows at all.
       + (isnum(u.prompt_tokens) || isnum(u.completion_tokens)
         ? ` · ${fmt(u.prompt_tokens ?? 0, 0)} -> ${fmt(u.completion_tokens ?? 0, 0)} tok` : "")
-      + (isnum(t.prefill_s) ? ` · prefill ${seconds(t.prefill_s)}` : "")
+      + (isnum(t.prefill_s) ? ` · prefill ${seconds(t.prefill_s)}`
+        + (isnum(t.prefill_tok_s) ? ` (${fmt(t.prefill_tok_s, 0)} tok/s)` : "") : "")
       + (isnum(t.queue_s) && t.queue_s >= 0.001 ? ` · queue ${seconds(t.queue_s)}` : "")
       + (t.preemptions ? ` · preempted ${t.preemptions}x` : "");
     b.append(row, ep, meta);
@@ -124,6 +125,10 @@ async function showDetail() {
     : value.timings?.tokens_are_estimate ? "≈ estimated" : "—");
   text("detail-speed", (isnum(t.predicted_per_second) ? fmt(t.predicted_per_second, 1) : "—")
     + (t.speed_basis && isnum(t.predicted_per_second) ? ` (${t.speed_basis})` : ""));
+  // Computed when the record was made, not read off a counter: prompt tokens over that request's own prefill
+  // time (engine), or over its own first-token latency (a relay). The basis is printed because the two differ.
+  text("detail-prefill-speed", (isnum(t.prefill_tok_s) ? `${fmt(t.prefill_tok_s, 0)} tok/s` : "—")
+    + (isnum(t.prefill_tok_s) && t.prefill_basis ? ` · ${t.prefill_basis}` : ""));
   text("detail-format", value.response_format || "text");
   $("detail-error").hidden = !value.error;
   text("detail-error", value.error?.message || "");
@@ -178,6 +183,10 @@ function renderStatus(s) {
     + (live.swapped ? ` · ${Math.round(live.swapped)} swapped` : ""));
   $("gen-toks").textContent = isnum(rate.generation_tok_s) ? fmt(rate.generation_tok_s, 1) : "—";
   text("prompt-toks", `${isnum(rate.prompt_tok_s) ? fmt(rate.prompt_tok_s, 0) : "—"} prompt tok/s`
+    // vLLM credits prompt_tokens_total when a request FINISHES: a long prefill reads 0 for its whole duration
+    // and then lands in one window (measured: 180,066 tokens showed as 89,580 tok/s in a single 2 s poll).
+    // The live signal during a prefill is the KV pool bar, not this line.
+    + " (credited at request end)"
     + (isnum(rate.requests_per_min) ? ` · ${fmt(rate.requests_per_min, 1)} req/min` : ""));
   // vLLM observes a latency histogram when a request FINISHES, so a window holds no observation at all
   // while a long one is in flight. The cumulative ratio is not a window mean: the page says which it shows.

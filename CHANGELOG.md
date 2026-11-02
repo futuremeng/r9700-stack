@@ -100,6 +100,17 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   `r9700_qsa_score`, which never materialises stock's fp32 `[rows, capacity]` logits -- 8.6 GiB a card at
   NBT=8192 against 1.35 GiB of headroom -- and `R9K_QSA_SCORE=stock` would put that allocation back.
 
+- **A prefill speed of its own on every request row.** Inside the serve the record now carries that request's
+  own `prompt - cached` tokens over its own `prefill_time` (the whole prompt when the engine cached nothing), and
+  through a relay it carries prompt tokens over first-token latency with that basis printed, because a relay's
+  number includes engine queue. Live: a 60,061-token needle prints 8,908 tok/s against a 6.74 s prefill. The
+  numerator drops to computed tokens whenever cached tokens were reported, so a prefix-cache hit cannot report a
+  speed the engine never computed.
+- **The "prompt tok/s" line now says when it moves.** vLLM credits `prompt_tokens_total` at request end: a
+  180,066-token prefill read 0 tok/s for its whole duration and then 89,580 in a single 2 s poll. The card reads
+  "prompt tok/s (credited at request end)"; the live signal during a prefill is the KV pool bar, which climbed
+  5.1 to 32.1% in 3.0% steps (16,206 tokens a sample) while that request ran.
+
 ### Fixed
 - **`bench/needle_long.py` called a repeat run a prefix-cache hit.** The warm line ended in "(prefix cache)"
   whatever happened; this launch runs `--no-enable-prefix-caching` and the second prefill costs the same

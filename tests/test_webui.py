@@ -258,6 +258,15 @@ d = ring.get(f"req-{use['seq']}")
 ck("decode speed from usage", (d["timings"]["predicted_per_second"] or 0) > 100, str(d["timings"]))
 ck("estimate flagged only when it is one", d["timings"]["tokens_are_estimate"] is False
    and ring.get(f"req-{recs[-1]['seq']}")["timings"]["tokens_are_estimate"] is True)
+# The same per-request prefill mean the engine ring computes, built from what a relay can time.
+pre = ring.start("/v1/completions", "Qwen3.8", "{}", False)
+pre["usage"], pre["first_token_s"], pre["queue_s"] = {"prompt_tokens": 1000, "completion_tokens": 4}, 0.5, 0.1
+ring.finish(pre, "completed", status=200)
+pt = ring.get(f"req-{pre['seq']}")["timings"]
+ck("a relay record computes its prefill speed and names what it timed",
+   abs((pt["prefill_tok_s"] or 0) - 2500) < 1 and "through this page" in pt["prefill_basis"], str(pt))
+ck("no prefill speed is claimed when the first token was never seen",
+   ring.get(f"req-{use['seq']}")["timings"]["prefill_tok_s"] is None, str(d["timings"]))
 
 
 # ------------------------------------------------------------------ (3) the sysfs read -----------
@@ -592,6 +601,13 @@ ck("a row names its token counts and its own prefill",
    "prefill ${seconds(t.prefill_s)}" in monjs and "fmt(u.prompt_tokens ?? 0, 0)} -> " in monjs)
 ck("the wall-clock card splits that one request into queue, prefill and decode",
    'id="wall-split"' in (WEB / "monitor.html").read_text() and "queue ${seconds(lt.queue_s)}" in monjs)
+# vLLM credits prompt_tokens_total at request END: a 180,066-token prefill read 0 tok/s for its whole duration
+# and then 89,580 in one 2 s poll. The line has to say that rather than look live.
+ck("the prompt tok/s line says it is credited at request end, not measured live",
+   "(credited at request end)" in monjs)
+ck("a record shows its own prefill speed with the basis it was computed from",
+   'id="detail-prefill-speed"' in (WEB / "monitor.html").read_text() and "t.prefill_tok_s" in monjs
+   and "t.prefill_basis" in monjs and "(${fmt(t.prefill_tok_s, 0)} tok/s)" in monjs)
 # About exists so a client can be configured off it. Two things made that fail before: the base URL printed was
 # the sidecar's own upstream (127.0.0.1 on the serve's box -- dead wrong pasted anywhere else, and this box is
 # reached over the network), and it had no /v1, which is what LiteLLM and the OpenAI SDK need. Both blocks are

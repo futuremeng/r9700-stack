@@ -86,7 +86,8 @@ and a test asserts the repo's own plugin survives it.
 | model, served name | `GET /v1/models` |
 | KV pool in tokens, block size, TP/PP, max context, KV dtype, scheduler | the **labels** of vLLM's own `/metrics` series (`cache_config_info` and friends) — vLLM publishes its configuration nowhere else; which labels exist moves between releases, so a dash means this build does not publish it |
 | running / waiting / swapped / KV pool used % | gauges `vllm:num_requests_*`, `vllm:gpu_cache_usage_perc` — **max over ranks** for the gauge (`sum` would say 112% when two ranks are at 56%; the sentence that matters is "the worst rank is at X") |
-| tok/s, req/min, prompt tok/s | counter deltas over the poll window (`generation_tokens_total`, `prompt_tokens_total`, `e2e_request_latency_seconds_count`) |
+| tok/s, req/min, prompt tok/s | counter deltas over the poll window (`generation_tokens_total`, `prompt_tokens_total`, `e2e_request_latency_seconds_count`); `prompt_tokens_total` is credited when a request FINISHES, so the line is labelled "credited at request end" |
+| prefill speed of one request | inside the serve: that request's own `prompt - cached` tokens over its own `prefill_time` (whole prompt when nothing was cached), computed when the record is made. Through a relay: prompt tokens over first-token latency, printed with that basis because it includes engine queue |
 | first token, queue, prefill, decode means | `_sum`/`_count` deltas of `time_to_first_token_seconds`, `request_queue_time_seconds`, `request_prefill_time_seconds`, `request_decode_time_seconds` (`bench/ttft_breakdown.py` reads the same family) |
 | speculation acceptance %, drafts/request | `spec_decode_num_accepted_tokens_total` ÷ `spec_decode_num_draft_tokens_total` (the older builds only have `..._num_drafts_total`, which gives drafts per request but not the token ratio) |
 | tokens per engine step, steps per request | `iteration_tokens_total_{sum,count}` |
@@ -97,7 +98,9 @@ and a test asserts the repo's own plugin survives it.
 **`prompt_tokens_total` is credited when a request finishes, not as prefill proceeds.** Measured against a
 single 180,066-token prompt: the counter sat at 432,262 through the whole prefill and jumped to 612,332 in one
 go at the end, so the "prompt tok/s" card is a step function at completion (89,580 tok/s for one poll) and not
-a live prefill rate. What DOES move live during prefill: `vllm:kv_cache_usage_perc`, sampled every 2 s while
+a live prefill rate; the line now reads "prompt tok/s (credited at request end)". The per-request mean lives in
+the record instead: 60,061 tokens over a 6.74 s prefill prints as 8,908 tok/s on that row, with the numerator
+dropped to computed tokens whenever the engine reported cached ones. What DOES move live during prefill: `vllm:kv_cache_usage_perc`, sampled every 2 s while
 `running=1` and `generation_tok_s=0`, climbed 5.1 / 8.1 / 11.1 / 14.1 / 17.1 / 20.1 / 23.1 / 24.6 / 27.6 /
 30.5 / 32.1% in 3.0% steps (3.0% of the 540,202-token pool = 16,206 tokens = two 8,192-token chunks per ~2 s
 sample, about 7,400-8,100 tok/s at that spacing, in line with the 8,639-8,759 tok/s the same script measures
