@@ -42,6 +42,40 @@
       <button class="st-btn st-btn--primary">Connect</button></div>
   </form>
 
+  <!-- row 0: the rates this page exists to answer, big, and built only from counters that move every
+       engine step. Measured on 0.32.0+rocm723 (notes/webui.md): generation_tokens_total and the KV gauge
+       move per step, so decode is live while you watch it; prompt_tokens_total, iteration_tokens_total and
+       every latency histogram are credited when a request FINISHES, so the prefill card shows its live
+       estimate as the number and names the exact figure beside it. -->
+  <section class="grid grid--4 grid--rates">
+    <div class="card">
+      <div class="label">Decode · one stream</div>
+      <div class="value value--xl" id="rate-stream">—<span class="unit">tok/s</span></div>
+      <div class="small" id="rate-stream-note">aggregate ÷ running, over the poll window</div>
+      <div class="sparkline" id="stream-spark"></div>
+    </div>
+    <div class="card">
+      <div class="label">Decode · all streams</div>
+      <div class="value value--xl" id="rate-gen">—<span class="unit">tok/s</span></div>
+      <div class="small" id="rate-gen-note">generation_tokens_total, credited per step</div>
+      <div class="sparkline" id="gen-spark-lg"></div>
+    </div>
+    <div class="card">
+      <div class="label">Prefill · prompt processing</div>
+      <div class="value value--xl" id="rate-prefill">—<span class="unit">tok/s</span></div>
+      <div class="small" id="rate-prefill-note">no window yet</div>
+      <div class="sparkline" id="prefill-spark"></div>
+    </div>
+    <div class="card">
+      <div class="label">Engine step · first token</div>
+      <div class="value value--xl" id="rate-step">—<span class="unit">ms</span></div>
+      <div class="small" id="rate-ttft">—</div>
+      <div class="small" id="fresh" title="How old this snapshot is (the sidecar polls the engine every poll
+window, and the page refetches it on the same beat). The window behind the rates is the gap between two
+engine polls, so a rate is at most that old -- plus this snapshot's age.">—</div>
+    </div>
+  </section>
+
   <!-- row 1: what the serve is, and the last request through this page -->
   <section class="grid grid--4">
     <div class="card">

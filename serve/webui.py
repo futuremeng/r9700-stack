@@ -20,7 +20,7 @@ engine-wide mean from /metrics instead, and the page says so. For the per-reques
 those use bench/ttft_breakdown.py.
 
 usage: python3 serve/webui.py [--port 8081] [--upstream http://127.0.0.1:8080] [--proxy] [--key K]
-                              [--poll 2.0] [--keep 100] [--meta launch.json] [--gpus /sys/class/drm]
+                              [--poll 1.0] [--keep 100] [--meta launch.json] [--gpus /sys/class/drm]
 env:   R9K_WEB_PORT R9K_WEB_UPSTREAM R9K_WEB_PROXY R9K_WEB_KEY R9K_WEB_POLL R9K_WEB_KEEP
        R9K_WEB_META R9K_WEB_GPUS  (flags win; serve/webui.sh is the usual entry point)
 """
@@ -81,9 +81,20 @@ KV_USED = ("kv_cache_usage_perc", "gpu_cache_usage_perc")
 # NOT the same quantity, and the difference is speculation:
 #   inter_token_latency_seconds            one observation per engine STEP -- what a client feels as one delta
 #   request_time_per_output_token_seconds  one observation per REQUEST, that request's own mean per ACCEPTED
-#                                          token, so MTP's accepted drafts divide it (measured 2026-11-02 on the
-#                                          live native launch: 15.6 ms a step against 3.19 ms per accepted token,
-#                                          4.9 tokens a step at MTP=2). A stream's tok/s is 1/step, never 1/tpot.
+#                                          token, so MTP's accepted drafts divide it.
+# Which one is "a stream's tok/s" was written backwards here until 2026-11-02: it claimed 1/step, from a pair
+# (15.6 ms a step vs 3.19 ms per accepted token) that implies 4.9 tokens a step -- impossible with
+# num_speculative_tokens: 2, whose ceiling is 1 + 2 = 3. Measured on one stream on this launch, one window:
+# step 12.84 ms, per accepted token 6.27 ms, generation_tokens_total moving 155 tokens a second. 1/6.27 ms =
+# 159.5 tok/s matches the counter; 1/12.84 ms = 77.9 is the STEP rate and undercounts by the tokens a step
+# produces (12.84 / 6.27 = 2.05, i.e. 1 + ~1.05 accepted of the 2 drafted). So stream_tok_s follows the
+# per-output-token family and only falls back to the step family when that is all the build publishes, and the
+# page carries tokens_per_step so the two can be reconciled by eye. One more measured wrinkle: at 0.32 the
+# per-output-token family carries ONE observation per REQUEST, so while a request is in flight the window has no
+# observation of it at all (itl 12.8-13.0 ms with tpot None, then tpot 6.3 ms the moment the request lands). The
+# fallback therefore shows the step rate mid-request -- 77 instead of 155, off by exactly the tokens a step
+# produces -- which is why the headline rate is stream_tok_s_live (counter-derived, live every window) and not
+# this field. stream_tok_s stays in the payload for the finished-request view.
 ITL_STEP = ("inter_token_latency_seconds",)
 TPOT = ("request_time_per_output_token_seconds", "time_per_output_token_seconds")
 
@@ -218,11 +229,34 @@ def derive(cur, prev, dt, cap, info, mode, kept, hist):
             "kv_used_pct_mean": 100.0 * g(kv_used) if kv_used else None,
             "kv_tokens": cap,
             "prefix_hit_pct": (100.0 * hits / hitq) if hitq > 0 else None}
+    # What is live WHILE a request runs, measured on this box against 0.32.0+rocm723 (2026-11-02, the
+    # traces are in notes/webui.md): generation_tokens_total advances every engine step (one 900-token
+    # stream moved it ~120 tokens per 0.5 s sample), and so does the KV gauge (0.036 -> 0.1007 across a
+    # 51,859-token prefill). prompt_tokens_total and iteration_tokens_total_* do NOT: the same prefill
+    # held prompt_tokens_total flat for 10 s and then jumped 129 -> 51,988 in one step. Every latency
+    # histogram is observed at request end too. So the two rates the page puts in its headline are the two
+    # that can be computed from what moves per step; the prefill card shows both its live estimate and the
+    # exact figure, and says which is which.
+    gen_rate = per(d("generation_tokens_total"))
+    run_now = g("num_requests_running", 1)
+    kv_now = (cap or 0) * g(kv_used, 1) if (kv_used and cap) else None
+    kv_was = (cap or 0) * ((prev.get(kv_used) or [0.0, 0.0, 0])[1]) if (kv_used and cap and have) else None
     rate = {"window_s": dt, "requests": nrec if have else None, "requests_per_min": per(nrec),
             "generation_tokens": d("generation_tokens_total") if have else None,
-            "generation_tok_s": per(d("generation_tokens_total")), "prompt_tok_s": per(d("prompt_tokens_total")),
+            "generation_tok_s": gen_rate, "prompt_tok_s": per(d("prompt_tokens_total")),
+            # aggregate / running: a rate for the stream you are watching, available while it runs (1/itl
+            # is not -- see the block above). Exact only when the streams run at the same rate.
+            "stream_tok_s_live": (gen_rate / run_now) if (gen_rate is not None and run_now >= 1) else None,
+            # tokens of context added per second, from the live gauge. An estimate: it counts blocks, so it
+            # tracks prefill work within a few percent (measured: 5,787 tok/s against a true 5,459 over the
+            # same 51,859-token prefill) and goes NEGATIVE when requests finish and free blocks.
+            "kv_tok_s": per(kv_now - kv_was) if (kv_now is not None and kv_was is not None) else None,
             "ttft_ms": mean("time_to_first_token_seconds"), "itl_ms": itl, "tpot_ms": tpot,
-            "stream_tok_s": (1e3 / itl) if itl else None,
+            "stream_tok_s": (1e3 / tpot) if tpot else ((1e3 / itl) if itl else None),
+            # tokens a step turns into, from the two families' means: 1.0 without speculation, up to
+            # 1 + num_speculative_tokens with it. This is the factor that makes the step rate and the token
+            # rate differ, so the page can put both on one line instead of choosing between them.
+            "tokens_per_step": (itl / tpot) if (itl and tpot) else None,
             "e2e_ms": mean("e2e_request_latency_seconds"), "queue_ms": mean("request_queue_time_seconds"),
             "prefill_ms": mean("request_prefill_time_seconds"), "decode_ms": mean("request_decode_time_seconds"),
             "prompt_tokens_mean": meanc("request_prompt_tokens"),
@@ -675,6 +709,8 @@ class Hub:
                                                                   # EngineRecords is falsy by __len__
                     self.prev, self.prev_t, self.status = cur, t0, payload
                 self.hist.append({"at": t0, "gen_tok_s": payload["rate"].get("generation_tok_s"),
+                                  "stream_tok_s": payload["rate"].get("stream_tok_s_live"),
+                                  "kv_tok_s": payload["rate"].get("kv_tok_s"),
                                   "kv_used_pct": payload["live"].get("kv_used_pct"),
                                   "running": payload["live"].get("running")})
             except Exception as e:                                # a stopped launch is normal state
@@ -984,7 +1020,7 @@ def main(argv=None):
                     default=os.environ.get("R9K_WEB_PROXY", "0") == "1",
                     help="relay API traffic through here, which is what fills the request list")
     ap.add_argument("--key", default=os.environ.get("R9K_WEB_KEY", ""))
-    ap.add_argument("--poll", type=float, default=float(os.environ.get("R9K_WEB_POLL", 2.0)))
+    ap.add_argument("--poll", type=float, default=float(os.environ.get("R9K_WEB_POLL", 1.0)))
     ap.add_argument("--keep", type=int, default=int(os.environ.get("R9K_WEB_KEEP", 100)))
     ap.add_argument("--meta", default=os.environ.get("R9K_WEB_META", ""))
     ap.add_argument("--gpus", default=os.environ.get("R9K_WEB_GPUS", "/sys/class/drm"))

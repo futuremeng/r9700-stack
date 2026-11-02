@@ -32,6 +32,10 @@ main{max-width:1560px;padding:28px var(--st-s-8) 56px;margin:auto}
 .label{font-size:var(--st-fs-xs);color:var(--st-ink-muted);text-transform:uppercase;letter-spacing:.08em}
 .value{font-weight:900;font-size:var(--st-fs-stat);line-height:1;letter-spacing:-.01em;font-variant-numeric:tabular-nums;margin-top:6px}
 .value--sm{font-size:var(--st-fs-xl)}
+/* The Monitor's headline row: the four rates, at a size you can read across the room. */
+.value--xl{font-size:var(--st-fs-display)}
+.grid--rates .card{padding:var(--st-s-4) var(--st-s-5)}
+.grid--rates .sparkline{margin-top:10px}
 .unit{font-weight:500;font-size:var(--st-fs-md);color:var(--st-ink-muted);margin-left:4px}
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--st-ink-muted);margin-right:9px;vertical-align:2px}
 .dot--live{background:var(--st-accent);box-shadow:0 0 0 4px var(--st-accent-tint)}

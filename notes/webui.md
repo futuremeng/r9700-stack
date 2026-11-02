@@ -343,7 +343,33 @@ cumulative step = 15.62 ms    per accepted token = 3.19 ms    accept = 59.7%    
 by hand: 36.055 / 2309 = 15.62 ms     0.4979 / 156 = 3.19 ms
 ```
 
-A stream's tok/s is 1 / step (64 tok/s), never 1 / per-token (313 tok/s). Both are on the page, labelled.
+That pair's ratio, 4.9 tokens a step, is impossible on a launch running `num_speculative_tokens: 2` (the ceiling
+is 1 + 2 = 3), which is how we found out the sentence this section used to carry — *"a stream's tok/s is
+1 / step, never 1 / per-token"* — was backwards. Measured in one window on one stream, same box, same day
+(`/api/status` while an 800-token generation ran): step **12.84 ms**, per accepted token **6.27 ms**, and
+`generation_tokens_total` moving **155 tokens a second**. 1/6.27 ms = 159.5 tok/s matches the counter; 1/12.84 ms
+= 77.9 is the **step** rate and understates a stream by exactly the tokens a step produces (12.84/6.27 = 2.05,
+i.e. 1 + ~1.05 accepted of the 2 drafted). A stream's token rate is 1/per-token. Both are still on the page, and
+`tokens_per_step` now reconciles them; the cumulative ratio above is kept as an example of a pair that should have
+been rejected by the ceiling check instead of believed.
+
+The other half of that measurement matters for freshness, and is why the Monitor's headline row changed:
+| what | live while a request runs? | measured |
+|---|---|---|
+| `generation_tokens_total` | **yes**, per engine step | a 900-token stream moved it ~120 tokens per 0.5 s sample |
+| `kv_cache_usage_perc` | **yes**, per step | 0.0360 -> 0.1007 across one 51,859-token prefill |
+| `num_requests_running` / `waiting*` | yes | 0 -> 1 within one 0.5 s sample of the request arriving |
+| `prompt_tokens_total` | **no** — credited when the request ends | flat at 129 for 10 s, then one jump to 51,988 |
+| `iteration_tokens_total_{sum,count}` | **no** — same landing | 510 -> 515 and 53,296 -> 105,163 both at the jump |
+| `request_time_per_output_token_seconds` | **no** — one observation per request | `tpot: null` mid-request, 6.3 ms the window it finishes in |
+| every latency histogram (TTFT, queue, prefill, decode, e2e) | **no** | observed at request end |
+
+So: decode rates are live (counter-derived, `stream_tok_s_live` = aggregate ÷ running), prefill is not — the
+number shown during a long prefill is the **KV gauge's growth in tokens a second** (`kv_tok_s`, measured within
+~6% of the truth on that 51,859-token prompt: 5,787 estimated against 5,459 real, and negative when finishing
+requests free blocks), with the exact counter rate appearing beside it when the request lands. Polls went from
+2 s to 1 s on both beats (engine poll and browser refetch), and the page prints its own age (`1.0 s poll ·
+snapshot 0.4 s ago`) instead of letting the reader guess.
 
 **A token family is not a seconds family.** Cumulative means are `_sum / _count`, and for time families that
 ratio is seconds, so it is multiplied by 1000 to print ms. Applying that scaling to `request_prompt_tokens`

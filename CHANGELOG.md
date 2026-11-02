@@ -216,6 +216,28 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   reconciled -- the 210 W figure has never been re-measured on this box.
 
 ### Changed
+- **The Monitor leads with the rates people ask for, and they are now live numbers**
+  (`serve/webui.py`, `serve/plugin/r9700_webui/`, `serve/web/monitor.{html,js}`, `serve/web/web.css`;
+  [notes/webui.md](notes/webui.md)). Row 0 is four display-size cards -- decode for one stream, decode across
+  streams, prefill, engine step + first token -- each with a sparkline, and the page prints its own age
+  (`1.0 s poll · snapshot 0.4 s ago`). Polling went 2 s -> 1 s on both beats (engine counters and browser
+  refetch). What each card may show was decided by measurement, not by what a counter is named:
+  `generation_tokens_total` and the KV gauge move per engine step (a 900-token stream moved the token counter
+  ~120 tokens per 0.5 s; the gauge went 0.0360 -> 0.1007 across a 51,859-token prefill), while
+  `prompt_tokens_total`, `iteration_tokens_total_*`, `request_time_per_output_token_seconds` and every latency
+  histogram are credited when the request **ends** (that prefill held the prompt counter flat at 129 for 10 s,
+  then one jump to 51,988). So the single-stream card is `generation_tok_s / running` (measured live at
+  101.7 -> 143.1 -> 154.8 -> 162.9 tok/s as a request ramped), and the prefill card's number is the KV gauge's
+  growth in tokens a second -- an estimate, 5,787 against a true 5,459 on that prompt -- with the exact counter
+  rate appearing beside it when the request lands.
+  Chasing the freshness turned up a number that had been wrong since the Monitor shipped: it treated
+  1/engine-step as a stream's token rate. In one window on one stream: step 12.84 ms, 6.27 ms per accepted token,
+  and 155 tokens a second off the counter -- so 1/step (77.9) understated a stream by the tokens a step produces
+  (2.05) and 1/per-token (159.5) was the right figure. The old claim rested on a cumulative pair implying 4.9
+  tokens a step on a launch whose ceiling is 1 + 2 = 3; `tokens_per_step` is now in the payload and on the card,
+  so the two families reconcile by eye. 153 checks in `tests/test_webui.py` (106 at the Monitor's release),
+  covering each family's liveness, the `running` guard against dividing by zero, the KV-growth estimate's
+  arithmetic, and the rates row preceding the per-request cards.
 - **The native install recipe now says what is actually fetchable** (`README.md`, `notes/native-4xr9700.md`,
   `setup.py`), and the upstream sweep that found it is written up in [notes/vllm-0.33.md](notes/vllm-0.33.md).
   Checking "is there a new vLLM, should we follow" turned up a broken step in our own quickstart: the ROCm wheel

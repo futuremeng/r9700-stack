@@ -139,6 +139,46 @@ async function showDetail() {
 function renderStatus(s) {
   const live = s.live || {}, rate = s.rate || {};
   const inflight = (live.running || 0) + (live.waiting || 0);
+  // -- the headline row ---------------------------------------------------------------------------
+  // Big numbers, and only from what moves per engine step. stream_tok_s_live is aggregate over running:
+  // the rate of the stream you are watching, available while it runs -- 1/itl (stream_tok_s) is not, because
+  // vLLM observes that histogram when the request FINISHES. The two agree once a request ends.
+  const big = (id, v, unit) =>
+    { $(id).innerHTML = `${isnum(v) ? fmt(v, 1) : "—"}<span class="unit">${unit}</span>`; };
+  big("rate-stream", rate.stream_tok_s_live, "tok/s");
+  text("rate-stream-note", isnum(rate.stream_tok_s_live)
+    ? `aggregate ÷ ${Math.round(live.running || 0)} running · this window`
+      + (isnum(rate.itl_ms) ? ` · step ${fmt(rate.itl_ms, 1)} ms` : "")
+      + (isnum(rate.tokens_per_step) ? ` × ${fmt(rate.tokens_per_step, 2)} tokens a step` : "")
+    : inflight ? "nothing generated in this window yet" : "nothing running");
+  big("rate-gen", rate.generation_tok_s, "tok/s");
+  text("rate-gen-note", isnum(rate.generation_tok_s)
+    ? `${fmt(rate.generation_tok_s * (rate.window_s || 1), 0)} tokens in ${fmt(rate.window_s || 0, 1)} s`
+      + (isnum(rate.requests_per_min) ? ` · ${fmt(rate.requests_per_min, 1)} req/min` : "")
+    : "generation_tokens_total, credited per step");
+  // Prefill, both numbers, always labelled. prompt_tok_s is the exact window rate but it lands when the
+  // request ends (measured: a 51,859-token prefill held the counter flat for 10 s, then one jump), so while
+  // a long prompt is running the number shown is the KV gauge's growth in tokens a second -- an estimate,
+  // measured to within ~6% of the truth on that prefill, and negative when finishing requests free blocks.
+  const kvr = isnum(rate.kv_tok_s) ? Math.max(0, rate.kv_tok_s) : null;
+  const exact = isnum(rate.prompt_tok_s) && rate.prompt_tok_s > 0 ? rate.prompt_tok_s : null;
+  big("rate-prefill", exact ?? kvr, "tok/s");
+  text("rate-prefill-note", exact !== null
+    ? `exact, from prompt_tokens_total (credited at request end)`
+      + (kvr !== null ? ` · KV growth now ${fmt(kvr, 0)}` : "")
+    : kvr !== null ? "≈ estimated from KV growth · the counter credits at request end"
+      : "no prefill in this window");
+  big("rate-step", isnum(rate.itl_ms) ? rate.itl_ms : (s.since || {}).itl_ms, "ms");
+  text("rate-ttft", isnum((rate.ttft_ms ?? (s.since || {}).ttft_ms))
+    ? `first token ${ms(rate.ttft_ms ?? (s.since || {}).ttft_ms)}`
+      + (isnum(rate.ttft_ms) || !isnum((s.since || {}).ttft_ms) ? "" : " (since launch)")
+    : "no first-token observation in this window");
+  // Say how old the numbers are instead of letting the reader guess: the engine poll sets the window, the
+  // snapshot age says how long this payload has been sitting, and the page refetches on the same beat.
+  const age = isnum(s.at) ? Math.max(0, Date.now() / 1000 - s.at) : null;
+  text("fresh", `${isnum(s.poll_s) ? s.poll_s.toFixed(1) : "?"} s poll · snapshot `
+    + (age === null ? "age unknown" : `${age.toFixed(1)} s ago`));
+
   text("mode", s.mode === "proxy" ? "in the path (recording)"
     : s.mode === "merged" ? "inside the serve (engine records)" : "observing (read-only)");
   text("loaded", !s.reachable ? "Unreachable" : inflight ? "In use" : "Idle");
@@ -227,6 +267,11 @@ function renderStatus(s) {
   const hist = s.history || [];
   spark($("gen-spark"), hist.map((h) => h.gen_tok_s));
   spark($("kv-spark"), hist.map((h) => h.kv_used_pct));
+  spark($("gen-spark-lg"), hist.map((h) => h.gen_tok_s));
+  spark($("stream-spark"), hist.map((h) => h.stream_tok_s));
+  // The prefill spark plots the live estimate (KV growth), not the counter rate: over a long prefill the
+  // counter series is a flat line with one spike at the end, which is a fact about vLLM, not about the work.
+  spark($("prefill-spark"), hist.map((h) => h.kv_tok_s));
 
   for (const [id, k] of [["t-ttft", "ttft_ms"], ["t-queue", "queue_ms"], ["t-prefill", "prefill_ms"],
                          ["t-decode", "decode_ms"], ["t-step", "itl_ms"], ["t-tpot", "tpot_ms"]])
@@ -322,4 +367,4 @@ $("copy").onclick = async () => {
 };
 bindTheme();
 
-(async function poll() { await refresh(); setTimeout(poll, 2000); })();
+(async function poll() { await refresh(); setTimeout(poll, 1000); })();

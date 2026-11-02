@@ -125,7 +125,7 @@ ck("generation rate over the window", st["rate"]["generation_tok_s"] == 60.0, st
 ck("requests per window", st["rate"]["requests"] == 4.0)
 ck("mean TTFT over the window", abs(st["rate"]["ttft_ms"] - 500.0) < 1e-9, str(st["rate"]["ttft_ms"]))
 ck("mean ITL from per-output-token", abs(st["rate"]["itl_ms"] - 20.0) < 1e-9, str(st["rate"]["itl_ms"]))
-ck("stream tok/s is 1/ITL", abs(st["rate"]["stream_tok_s"] - 50.0) < 1e-9)
+ck("stream tok/s is 1/per-output-token", abs(st["rate"]["stream_tok_s"] - 50.0) < 1e-9)
 ck("spec acceptance 90/120", abs(st["rate"]["accept_pct"] - 75.0) < 1e-9, str(st["rate"]["accept_pct"]))
 ck("tokens per engine step", abs(st["rate"]["tokens_per_iter"] - 5.0) < 1e-9)
 ck("KV uses the worst rank", abs(st["live"]["kv_used_pct"] - 72.0) < 1e-9, str(st["live"]["kv_used_pct"]))
@@ -133,6 +133,44 @@ ck("running is per-rank max", st["live"]["running"] == 3.0)
 ck("prefix hit rate", abs(st["live"]["prefix_hit_pct"] - 100.0 / 3.0) < 1e-6)
 ck("a counter that did not move reads None, not 0", W.derive(cur2, cur2, 10.0, cap2, info2, "observe", 0, [])
    ["rate"]["ttft_ms"] is None)
+
+# The two rates the headline row is built from are the two that move WHILE a request runs. Measured on this
+# box (0.32.0+rocm723, 2026-11-02): generation_tokens_total advances every engine step (one 900-token stream
+# moved it ~120 tokens per 0.5 s sample) and so does the KV gauge (0.036 -> 0.1007 across a 51,859-token
+# prefill), while prompt_tokens_total, iteration_tokens_total_* and every latency histogram are credited when
+# the request finishes (that same prefill held the prompt counter flat for 10 s, then one jump 129 -> 51,988).
+ck("single-stream rate = aggregate over running, live",
+   abs(st["rate"]["stream_tok_s_live"] - 20.0) < 1e-9,
+   f"{st['rate']['stream_tok_s_live']} for 60 tok/s across 3 running")
+METRICS3 = METRICS2.replace('vllm:gpu_cache_usage_perc{model_name="Qwen3.8",engine="1"} 0.72',
+                           'vllm:gpu_cache_usage_perc{model_name="Qwen3.8",engine="1"} 0.75')
+cur3, cap3, info3 = W.parse_metrics(METRICS3)
+stk = W.derive(cur3, cur2, 10.0, cap3, info3, "observe", 0, [])["rate"]
+ck("context growth in tokens a second, from the live gauge",
+   abs(stk["kv_tok_s"] - 0.03 * 456 * 1088 / 10.0) < 1e-6, str(stk.get("kv_tok_s")))
+nojob = METRICS2.replace('vllm:num_requests_running{model_name="Qwen3.8",engine="0"} 1.0',
+                         'vllm:num_requests_running{model_name="Qwen3.8",engine="0"} 0.0') \
+                .replace('vllm:num_requests_running{model_name="Qwen3.8",engine="1"} 3.0',
+                         'vllm:num_requests_running{model_name="Qwen3.8",engine="1"} 0.0')
+ncur, _, _ = W.parse_metrics(nojob)
+ck("no streams running gives no single-stream rate, not a division by zero",
+   W.derive(ncur, prev, 10.0, cap2, info2, "observe", 0, [])["rate"]["stream_tok_s_live"] is None)
+
+# The two latency families are different quantities under speculation and the TOKEN rate is the per-token one.
+# Measured on this launch (MTP=2), one stream, one window: step 12.84 ms, per accepted token 6.27 ms, and
+# generation_tokens_total moving 155 tokens a second -- which is 1/6.27 ms (159.5), not 1/12.84 ms (77.9).
+# The page used to say the opposite, from a pair implying 4.9 tokens a step, above the 1+2 ceiling the launch
+# can reach. The fixture below is that shape: a 40 ms step turning out two accepted tokens.
+BOTH = METRICS2 + ('\nvllm:inter_token_latency_seconds_sum{model_name="Qwen3.8"} 1.6\n'
+                   'vllm:inter_token_latency_seconds_count{model_name="Qwen3.8"} 40.0\n')
+bcur, bcap, binfo = W.parse_metrics(BOTH)
+b = W.derive(bcur, prev, 10.0, bcap, binfo, "observe", 0, [])["rate"]
+ck("the step family and the per-token family stay apart",
+   abs(b["itl_ms"] - 40.0) < 1e-9 and abs(b["tpot_ms"] - 20.0) < 1e-9, f"{b['itl_ms']} / {b['tpot_ms']}")
+ck("a stream's tok/s follows the per-token family, not the step one",
+   abs(b["stream_tok_s"] - 50.0) < 1e-9, str(b["stream_tok_s"]))
+ck("tokens per step reconciles the two (40 ms a step, 20 ms a token = 2)",
+   abs(b["tokens_per_step"] - 2.0) < 1e-9, str(b.get("tokens_per_step")))
 
 # The names vLLM 0.32.0+rocm723 actually publishes on this box (captured from a live native launch,
 # 2026-11-02): kv_cache_usage_perc instead of gpu_cache_usage_perc, request_time_per_output_token_seconds,
@@ -168,9 +206,14 @@ ck("a build with no per-token family reports it absent, not equal", st32["rate"]
    str(st32["rate"]["tpot_ms"]))
 
 # The two inter-token families are NOT the same quantity, and the gap is speculation: one observation per
-# engine step against one per request of that request's mean per ACCEPTED token. Measured on the live
-# native launch 2026-11-02: 15.6 ms a step, 3.19 ms per accepted token (4.9 tokens a step at MTP=2). A
-# stream's tok/s is 1/step.
+# engine step against one per request of that request's mean per ACCEPTED token. This fixture's pair (a 15 ms
+# step and 300 ms per accepted token) is deliberately unphysical -- per-token time cannot exceed the step that
+# produced it -- because it exists only to prove the two families are never conflated. The physical shape, and
+# which one is a stream's token rate, is the BOTH fixture above: measured on the live launch 2026-11-02, one
+# stream in one window gave a 12.84 ms step against 6.27 ms per accepted token while generation_tokens_total
+# moved 155 tokens a second, so the token rate follows the per-token family (1/6.27 = 159.5), not the step
+# family (1/12.84 = 77.9). An earlier revision of this file asserted the opposite, off a pair that implied 4.9
+# tokens a step where the launch's ceiling is 1 + 2.
 STEPF = ('vllm:inter_token_latency_seconds_sum{model_name="Qwen3.8"} 30.0\n'
          'vllm:inter_token_latency_seconds_count{model_name="Qwen3.8"} 2000.0\n'
          'vllm:request_time_per_output_token_seconds_sum{model_name="Qwen3.8"} 6.0\n'
@@ -184,8 +227,10 @@ ss = W.derive(scur, sp, 1.0, scam, sinfo, "observe", 0, [])
 ck("a step family and a per-accepted-token family stay apart",
    abs(ss["rate"]["itl_ms"] - 15.0) < 1e-9 and abs(ss["rate"]["tpot_ms"] - 300.0) < 1e-9,
    str((ss["rate"]["itl_ms"], ss["rate"]["tpot_ms"])))
-ck("a stream's tok/s is 1 / step", abs(ss["rate"]["stream_tok_s"] - 1e3 / 15.0) < 1e-9,
-   str(ss["rate"]["stream_tok_s"]))
+ck("a stream's tok/s follows the per-token family even when the step family is present",
+   abs(ss["rate"]["stream_tok_s"] - 1e3 / 300.0) < 1e-9, str(ss["rate"]["stream_tok_s"]))
+ck("and the unphysical pair is reported as 0.05 tokens a step rather than smoothed away",
+   abs(ss["rate"]["tokens_per_step"] - 0.05) < 1e-9, str(ss["rate"].get("tokens_per_step")))
 ck("a hybrid model's KV pool is kv_cache_size_tokens, not blocks x block_size", cap32 == 497588, str(cap32))
 ck("a gauge the build does not have reads absent, not zero", st32["live"]["swapped"] is None,
    str(st32["live"]["swapped"]))
@@ -470,6 +515,11 @@ ck("status carries config labels", s["config"].get("block_size") == "1088")
 ck("status carries cards", len(s["gpus"]) == 3 and s["gpus"][0]["busy_pct"] == 87, str(len(s.get("gpus", []))))
 ck("status carries models", s["models"][0]["id"] == "Qwen3.8")
 ck("status engine version", s["engine"]["vllm_version"] == "test")
+ck("the sparkline ring carries the live rates too",
+   s["history"] and all(k in s["history"][-1] for k in ("gen_tok_s", "stream_tok_s", "kv_tok_s", "running")),
+   str(s["history"][-1] if s["history"] else "no history"))
+ck("the payload says how often it is polled",
+   isinstance(s.get("poll_s"), float) and s["poll_s"] == 0.2, str(s.get("poll_s")))
 
 status, r = call(port, "/v1/chat/completions", {"model": "Qwen3.8", "stream": True,
                                                 "messages": [{"role": "user", "content": "hi"}]}, raw_stream=True)
@@ -572,6 +622,19 @@ for a, b in (("/monitor", "Monitor"), ("/about", "About")):
     ck(f"{a} sets a theme", 'data-theme="dark"' in t)
 
 # ------------------------------------------------------------------ (5) the pages themselves -----
+# A duplicated `const` in a page script kills every card on the page, silently, in the browser only: no
+# server error, no failed request, just a Monitor that stops updating. There is no bundler here, so when
+# node is on the box, use it as a parser. This caught a real duplicate on 2026-11-02 -- the rates row
+# introduced a second `const inflight` in the same function.
+import subprocess                                        # noqa: E402
+_node = shutil.which("node")
+for _js in sorted(p.name for p in (Path(ROOT) / "serve" / "web").glob("*.js")):
+    if _node:
+        _r = subprocess.run([_node, "--check", str((Path(ROOT) / "serve" / "web" / _js))],
+                            capture_output=True, text=True)
+        ck(f"{_js} parses as JavaScript", _r.returncode == 0, (_r.stderr or "").strip()[:200])
+    else:
+        ck(f"{_js} parses as JavaScript (no node on this box - skipped)", True)
 # Static pages rot quietly: a text("kv_pct") that no longer matches an id in the HTML renders a blank
 # card forever with no error anywhere. These three checks are the cheapest way to keep that from being
 # discovered by eye.
@@ -632,6 +695,28 @@ ck("the wall-clock card splits that one request into queue, prefill and decode",
 # and then 89,580 in one 2 s poll. The line has to say that rather than look live.
 ck("the prompt tok/s line says it is credited at request end, not measured live",
    "(credited at request end)" in monjs)
+# The rates people ask the page for -- single-stream and aggregate decode, prefill -- lead it, at display
+# size, and each one says what it is computed from. Row 0 comes before the per-request cards.
+monhtml = (WEB / "monitor.html").read_text()
+ck("the four rates lead the Monitor, before the per-request cards",
+   monhtml.index("grid--rates") < monhtml.index('id="speed"'), "rates row is not first")
+ck("they are rendered at display size",
+   'class="value value--xl"' in monhtml and ".value--xl{font-size:var(--st-fs-display)}" in (WEB / "web.css").read_text())
+ck("all four rate slots exist and are written",
+   all(f'id="{i}"' in monhtml and f'("{i}"' in monjs
+       for i in ("rate-stream", "rate-gen", "rate-prefill", "rate-step")))
+ck("the headline decode rate is the live aggregate-over-running one",
+   "rate.stream_tok_s_live" in monjs and 'id="rate-stream"' in monhtml)
+ck("the headline line reconciles the step rate with the token rate",
+   "tokens a step" in monjs and "rate.tokens_per_step" in monjs)
+ck("the prefill rate names which of its two numbers is showing",
+   "estimated from KV growth" in monjs and "exact, from prompt_tokens_total" in monjs)
+ck("the page says how old its numbers are", 'id="fresh"' in monhtml and "snapshot " in monjs)
+ck("the page refetches on the engine's beat", "setTimeout(poll, 1000)" in monjs)
+ck("the sidecar polls the engine at 1 s by default, both modes",
+   'os.environ.get("R9K_WEB_POLL", 1.0)' in (Path(ROOT) / "serve" / "webui.py").read_text()
+   and 'os.environ.get("R9700_WEBUI_POLL", "1")'
+       in (Path(ROOT) / "serve" / "plugin" / "r9700_webui" / "__init__.py").read_text())
 ck("a record shows its own prefill speed with the basis it was computed from",
    'id="detail-prefill-speed"' in (WEB / "monitor.html").read_text() and "t.prefill_tok_s" in monjs
    and "t.prefill_basis" in monjs and "(${fmt(t.prefill_tok_s, 0)} tok/s)" in monjs)

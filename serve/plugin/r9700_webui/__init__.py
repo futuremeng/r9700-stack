@@ -179,7 +179,7 @@ class WebMonitor:
         port = getattr(args, "port", None) or 8000
         KEY[0] = getattr(args, "api_key", None) or None
         cfg = {"mode": "merged", "upstream": f"http://127.0.0.1:{port}", "key": KEY[0],
-               "poll": float(os.environ.get("R9700_WEBUI_POLL", "2")), "keep": STORE.keep,
+               "poll": float(os.environ.get("R9700_WEBUI_POLL", "1")), "keep": STORE.keep,
                # the SAME knobs and defaults serve/webui.py uses, so one env works for both. Defaulting
                # gpus to None was a live bug: the merged page came up with no cards at all.
                "gpus": os.environ.get("R9K_WEB_GPUS", "/sys/class/drm"),
