@@ -113,6 +113,13 @@ stopped at death 7 (00:25). The box went on: boots `274defed` (01:30:27 → 02:5
 06:30:18), `002dbde7` (06:35:06 → **09:09:32**) and `d9eca3ef` (09:11:32 → **09:39:21**), then `29ee487c` at
 09:41:24.
 
+By 11:20 UTC the day stands at **15 boots** (`journalctl --list-boots | grep -c 2026-11-02`) and the spacing has
+collapsed to tens of minutes: `f1fe7747` ran 11:00:46 → 11:05:14, and the boot after it 11:07:37 → ~11:14. Two
+relaunches of the standing 262k recipe (both back on `~/venv-r9700`, after the 0.33.0 trial had been dropped) were
+cut inside that window before either had served a request — the first deaths today that a launch did not outlive. Nothing
+about this changes the 0.32/0.33 finding, which was measured on launches that ran for tens of minutes; it does mean
+any number taken between 10:30 and 11:20 has to be treated as taken on a box in a reset storm.
+
 Two of those deaths had a vLLM launch on them, and in both cases the launch was healthy up to the millisecond the
 platform went:
 
