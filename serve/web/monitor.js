@@ -134,6 +134,8 @@ function renderStatus(s) {
       : s.mode === "merged" ? "Finished requests only: the engine reports a request when it ends"
         : "Nothing routed here");
   text("wall", last ? seconds(last.wallclock_s) : "—");
+  text("wall-note", s.mode === "merged" ? "From the engine: queue, prefill and decode together"
+    : "Through this page · queue, prefill and decode together");
   const speed = last?.timings?.predicted_per_second ?? (isnum(rate.itl_ms) ? 1e3 / rate.itl_ms : null);
   $("speed").innerHTML = `${isnum(speed) ? fmt(speed, 1) : "—"}<span class="unit">tok/s</span>`;
 
@@ -191,11 +193,15 @@ async function refresh() {
     }
     text("kept", String(h.kept));
     $("observe-note").textContent = h.mode === "observe"
-      ? "Start this sidecar with --proxy (or point a client at it) to record requests here." : "";
+      ? "Start this sidecar with --proxy (or point a client at it) to record requests here."
+      : h.mode === "merged" ? "Rows come from the engine as its own per-request stats: timings and token "
+        + "counts, never bodies, and a request appears when it finishes. Captured bodies: serve/webui.sh "
+        + "with WEBUI_MODE=proxy." : "";
     renderStatus(s);
     list();
     if (selected) await showDetail();
-    text("updated", `Live · ${clock(s.at)}${s.mode === "observe" ? " · observing" : " · recording"}`);
+    text("updated", `Live · ${clock(s.at)}` + (s.mode === "observe" ? " · observing"
+      : s.mode === "merged" ? " · inside the serve" : " · recording"));
     if (!actionError && s.error) notice(`upstream not answering: ${s.error}`);
     else if (!actionError) notice("");
   } catch (e) {

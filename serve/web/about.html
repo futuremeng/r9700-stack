@@ -59,7 +59,7 @@
     <section class="card">
       <span class="card-title">Connect your tools</span>
       <p class="muted">Any OpenAI-compatible client works with these. The base URL is the serve itself —
-        this page is a sidecar, not a proxy, unless it was started with <code>--proxy</code>.</p>
+        <span id="api-note">this page is a sidecar, not a proxy, unless it was started with <code>--proxy</code>.</span></p>
       <dl class="facts" id="facts-api"></dl>
       <div class="code-block">
         <pre class="code" id="curl"></pre>
@@ -78,7 +78,7 @@
         <button class="st-toggle" data-theme-toggle role="switch" aria-checked="true" aria-label="Dark theme"></button></div>
       <dl class="facts" id="facts-self"></dl>
       <p class="small note">The key lives in this browser tab only, and is sent only to this port. Nothing this page
-        reads is written anywhere: the request list is memory, and it is gone when the sidecar stops.</p>
+        reads is written anywhere: the request list is memory, and it is gone when this process stops.</p>
     </section>
   </div>
 

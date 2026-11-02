@@ -33,6 +33,11 @@ function render() {
   const host = s.host || {};
   text("mode", s.mode === "proxy" ? "recording requests"
     : s.mode === "merged" ? "inside this serve (serve/plugin)" : "observing (read-only)");
+  // "this page is a sidecar" is not true of the merged page, and a page that describes itself wrongly is
+  // worse than one that describes nothing.
+  if (s.mode === "merged")
+    $("api-note").textContent = "this page IS the serve: it was mounted by serve/plugin on this same port, "
+      + "it does not relay, and it never sees a request body.";
 
   facts($("facts-engine"), [
     ["Model", model],
