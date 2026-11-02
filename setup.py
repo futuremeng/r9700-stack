@@ -480,7 +480,18 @@ def launch(cfg, have="docker"):
     say(f"    $ WEBUI={'0' if cfg.no_webui else '1'} bash serve/{pick}")
     if not cfg.yes and not ask(cfg, f"start serve/{pick} now (GPUs go busy for ~75 s)?"):
         return
-    subprocess.call(["bash", str(ROOT / "serve" / pick), *cfg.rest], env=env)
+    if pick.startswith("native"):
+        # the native launcher execs vllm in the foreground (its LOG= names the file); the container path is
+        # backgrounded by its own `docker run -d`. Same shape here: new session, log to file, then poll.
+        log = os.environ.get("LOG") or str(Path.home() / "logs" / f"setup-{time.strftime('%H%M%S')}.log")
+        Path(log).parent.mkdir(parents=True, exist_ok=True)
+        with open(log, "ab") as fh:
+            subprocess.Popen(["bash", str(ROOT / "serve" / pick), *cfg.rest], stdout=fh, stderr=subprocess.STDOUT,
+                             env=env, start_new_session=True)
+        say(f"    log: {log}   (tail -f it; the ranks ignore SIGTERM -- stop with "
+            f"STOP=1 bash serve/{pick})")
+    else:
+        subprocess.call(["bash", str(ROOT / "serve" / pick), *cfg.rest], env=env)
     port = int(os.environ.get("PORT", 8080))
     say(f"    waiting for http://127.0.0.1:{port}/health ...")
     t0 = time.time()

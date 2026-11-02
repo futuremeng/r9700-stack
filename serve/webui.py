@@ -59,7 +59,24 @@ LBL = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)="([^"]*)"')
 WANT = ("model_name", "model_compiler", "tensor_parallel_size", "pipeline_parallel_size", "data_parallel_size",
         "max_model_len", "block_size", "num_gpu_blocks", "num_cpu_blocks", "kv_cache_dtype", "cache_format",
         "speculative_config", "enable_prefix_caching", "enable_chunked_prefill", "scheduler_policy",
-        "num_lookahead_tokens", "num_speculative_tokens", "method", "version")
+        "num_lookahead_tokens", "num_speculative_tokens", "method", "version",
+        # the labels the native build (vllm 0.32.0+rocm723, measured 2026-11-02) actually carries on
+        # cache_config_info -- and kv_cache_size_tokens is the one that matters on a hybrid GDN model:
+        # 1230 blocks x 448 = 551,040 is the attention geometry, the pool holds 497,588 tokens
+        "kv_cache_size_tokens", "cache_dtype", "effective_attention_block_size", "gpu_memory_utilization",
+        "mamba_block_size", "mamba_cache_dtype", "kv_offloading_backend", "num_gpu_blocks_override")
+# The metric names move between vLLM releases: 0.32 renamed gpu_cache_usage_perc to kv_cache_usage_perc and
+# carries the per-output-token histogram as request_time_per_output_token_seconds (inter_token_latency_seconds
+# alongside it). Read whichever of the build publishes -- and say null when it publishes none.
+KV_USED = ("kv_cache_usage_perc", "gpu_cache_usage_perc")
+# NOT the same quantity, and the difference is speculation:
+#   inter_token_latency_seconds            one observation per engine STEP -- what a client feels as one delta
+#   request_time_per_output_token_seconds  one observation per REQUEST, that request's own mean per ACCEPTED
+#                                          token, so MTP's accepted drafts divide it (measured 2026-11-02 on the
+#                                          live native launch: 15.6 ms a step against 3.19 ms per accepted token,
+#                                          4.9 tokens a step at MTP=2). A stream's tok/s is 1/step, never 1/tpot.
+ITL_STEP = ("inter_token_latency_seconds",)
+TPOT = ("request_time_per_output_token_seconds", "time_per_output_token_seconds")
 
 
 # -------------------------------------------------------------------------------- upstream metrics
@@ -78,7 +95,7 @@ def parse_metrics(text):
         if not m:
             continue
         name = m.group(0)[5:]
-        if name.endswith("_bucket"):
+        if name.endswith("_bucket") or name.endswith("_created"):
             continue
         rest = line[m.end():].strip()
         labels = ""
@@ -100,10 +117,42 @@ def parse_metrics(text):
             b, bs = KVLBL.search(labels), BSLBL.search(labels)
             if b and bs:
                 cap = int(b.group(1)) * int(bs.group(1))
+                kvn = re.search(r'kv_cache_size_tokens="(\d+)"', labels)
+                if kvn:                       # the pool's real capacity, which on a hybrid model is not
+                    cap = int(kvn.group(1))   # blocks x block_size
         for k, v in LBL.findall(labels):
             if k in WANT and info.get(k) in (None, ""):
                 info[k] = v
     return out, cap, info
+
+
+def since(s, g):
+    """The same means over the engine's WHOLE run, from the cumulative counters.
+
+    Every histogram in vLLM is observed when a request FINISHES, so a window mean is undefined for the
+    whole time a long request is in flight -- a 2 s poll of a 600-token generation would read "no data"
+    for TTFT, queue, prefill and decode the entire time. The cumulative ratio is not a window mean and is
+    labelled as such on the page ("since launch"), which is what the panel falls back to. The engine's
+    counters are cumulative from its own start, so that is exactly the span they describe."""
+    am = lambda h: (g(h + "_sum") / g(h + "_count") * 1e3) if g(h + "_count") > 0 else None
+    ac = lambda h: (g(h + "_sum") / g(h + "_count")) if g(h + "_count") > 0 else None
+    ma = lambda fam: next((m for m in (am(h) for h in fam) if m is not None), None)
+    dgrams = g("spec_decode_num_draft_tokens_total")
+    return {"ttft_ms": am("time_to_first_token_seconds"), "itl_ms": ma(ITL_STEP) or ma(TPOT),
+            "tpot_ms": ma(TPOT),
+            "e2e_ms": am("e2e_request_latency_seconds"), "queue_ms": am("request_queue_time_seconds"),
+            "prefill_ms": am("request_prefill_time_seconds"), "decode_ms": am("request_decode_time_seconds"),
+            # NOT x1e3: these families count tokens, not seconds. The live run caught it -- the first
+            # /api/status of a real engine reported a mean prompt of 2,028,442 tokens because the time
+            # scaling was applied to a token count (it is 2,028).
+            "prompt_tokens_mean": ac("request_prompt_tokens"),
+            "generation_tokens_mean": ac("request_generation_tokens"),
+            "tokens_per_iter": (g("iteration_tokens_total_sum") / g("iteration_tokens_total_count"))
+                                if g("iteration_tokens_total_count") > 0 else None,
+            "accept_pct": (100.0 * g("spec_decode_num_accepted_tokens_total") / dgrams) if dgrams > 0 else None,
+            "iters_per_req": (g("iteration_tokens_total_count") / g("e2e_request_latency_seconds_count"))
+                             if g("e2e_request_latency_seconds_count") > 0 else None,
+            "requests": g("e2e_request_latency_seconds_count") if s.get("e2e_request_latency_seconds_count") else 0}
 
 
 def derive(cur, prev, dt, cap, info, mode, kept, hist):
@@ -118,27 +167,31 @@ def derive(cur, prev, dt, cap, info, mode, kept, hist):
     per = lambda v: v / dt if have else None
     nrec = max(d("e2e_request_latency_seconds_count"), 0.0)
     mean = lambda h: (d(h + "_sum") / d(h + "_count") * 1e3) if d(h + "_count") > 0 else None
-    itl = mean("time_per_output_token_seconds")
-    if itl is None:                                                       # 0.30+ renamed it
-        itl = mean("inter_token_latency_seconds")
+    meanc = lambda h: (d(h + "_sum") / d(h + "_count")) if d(h + "_count") > 0 else None   # token families
     drafts, accepted = d("spec_decode_num_drafts_total"), d("spec_decode_num_accepted_tokens_total")
     dgrams = d("spec_decode_num_draft_tokens_total")          # tokens drafted (0.31+ name)
     hitq, hits = (d("prefix_cache_queries_total"), d("prefix_cache_hits_total")) if have \
         else (g("prefix_cache_queries_total"), g("prefix_cache_hits_total"))
+    mean_any = lambda fam: next((m for m in (mean(h) for h in fam) if m is not None), None)
+    itl = mean_any(ITL_STEP) or mean_any(TPOT)          # a stream's rate is 1 / step; older builds only have
+    tpot = mean_any(TPOT)                               # the per-token family, which then stands in for both
+    kv_used = next((n for n in KV_USED if cur.get(n)), None)
+    swapped = cur.get("num_requests_swapped")
     live = {"running": g("num_requests_running", 1), "waiting": g("num_requests_waiting", 1),
-            "swapped": g("num_requests_swapped", 1), "preempting": g("num_preemptions_total") > 0,
-            "kv_used_pct": 100.0 * g("gpu_cache_usage_perc", 1),
-            "kv_used_pct_mean": 100.0 * g("gpu_cache_usage_perc"),
+            "swapped": (swapped[1] if swapped else None), "preempting": g("num_preemptions_total") > 0,
+            "kv_used_pct": 100.0 * g(kv_used, 1) if kv_used else None,
+            "kv_used_pct_mean": 100.0 * g(kv_used) if kv_used else None,
             "kv_tokens": cap,
             "prefix_hit_pct": (100.0 * hits / hitq) if hitq > 0 else None}
     rate = {"window_s": dt, "requests": nrec if have else None, "requests_per_min": per(nrec),
             "generation_tokens": d("generation_tokens_total") if have else None,
             "generation_tok_s": per(d("generation_tokens_total")), "prompt_tok_s": per(d("prompt_tokens_total")),
-            "ttft_ms": mean("time_to_first_token_seconds"), "itl_ms": itl,
+            "ttft_ms": mean("time_to_first_token_seconds"), "itl_ms": itl, "tpot_ms": tpot,
             "stream_tok_s": (1e3 / itl) if itl else None,
             "e2e_ms": mean("e2e_request_latency_seconds"), "queue_ms": mean("request_queue_time_seconds"),
             "prefill_ms": mean("request_prefill_time_seconds"), "decode_ms": mean("request_decode_time_seconds"),
-            "prompt_tokens_mean": mean("request_prompt_tokens"), "generation_tokens_mean": mean("request_generation_tokens"),
+            "prompt_tokens_mean": meanc("request_prompt_tokens"),
+            "generation_tokens_mean": meanc("request_generation_tokens"),
             "iters_per_req": (d("iteration_tokens_total_count") / nrec) if nrec else None,
             "tokens_per_iter": (d("iteration_tokens_total_sum") / d("iteration_tokens_total_count"))
                                if d("iteration_tokens_total_count") > 0 else None,
@@ -146,7 +199,7 @@ def derive(cur, prev, dt, cap, info, mode, kept, hist):
             "accept_pct": (100.0 * accepted / dgrams) if dgrams > 0 else None,
             "preemptions": d("num_preemptions_total") if have else None}
     return {"mode": mode, "at": time.time(), "model_name": info.get("model_name"), "config": info,
-            "live": live, "rate": rate,
+            "live": live, "rate": rate, "since": since(cur, g),
             "history": hist, "requests_kept": kept, "metrics_seen": len(cur)}
 
 

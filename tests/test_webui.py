@@ -134,6 +134,96 @@ ck("prefix hit rate", abs(st["live"]["prefix_hit_pct"] - 100.0 / 3.0) < 1e-6)
 ck("a counter that did not move reads None, not 0", W.derive(cur2, cur2, 10.0, cap2, info2, "observe", 0, [])
    ["rate"]["ttft_ms"] is None)
 
+# The names vLLM 0.32.0+rocm723 actually publishes on this box (captured from a live native launch,
+# 2026-11-02): kv_cache_usage_perc instead of gpu_cache_usage_perc, request_time_per_output_token_seconds,
+# no num_requests_swapped at all, `_created` stamps beside every counter, and a hybrid GDN model whose real
+# KV pool (497,588 tokens) is NOT num_gpu_blocks x block_size (1,230 x 448 = 551,040).
+METRICS32 = """
+vllm:kv_cache_usage_perc{engine="0",model_name="Qwen3.8"} 0.25
+vllm:num_requests_running{engine="0",model_name="Qwen3.8"} 2.0
+vllm:num_requests_waiting{engine="0",model_name="Qwen3.8"} 1.0
+vllm:cache_config_info{block_size="448",cache_dtype="auto",engine="0",gpu_memory_utilization="0.97",\
+    kv_cache_size_tokens="497588",model_name="Qwen3.8",num_gpu_blocks="1230"} 1.0
+vllm:generation_tokens_total{engine="0",model_name="Qwen3.8"} 100.0
+vllm:generation_tokens_created{engine="0",model_name="Qwen3.8"} 1762000000.0
+vllm:inter_token_latency_seconds_sum{engine="0",model_name="Qwen3.8"} 3.0
+vllm:inter_token_latency_seconds_count{engine="0",model_name="Qwen3.8"} 150.0
+vllm:prefix_cache_queries_total{engine="0",model_name="Qwen3.8"} 0.0
+vllm:prefix_cache_hits_total{engine="0",model_name="Qwen3.8"} 0.0
+"""
+cur32, cap32, info32 = W.parse_metrics(METRICS32)
+prev32, _, _ = W.parse_metrics(METRICS32.replace('model_name="Qwen3.8"} 100.0', 'model_name="Qwen3.8"} 40.0')
+                 .replace("inter_token_latency_seconds_sum{engine=\"0\",model_name=\"Qwen3.8\"} 3.0",
+                          "inter_token_latency_seconds_sum{engine=\"0\",model_name=\"Qwen3.8\"} 1.0")
+                 .replace("inter_token_latency_seconds_count{engine=\"0\",model_name=\"Qwen3.8\"} 150.0",
+                          "inter_token_latency_seconds_count{engine=\"0\",model_name=\"Qwen3.8\"} 50.0"))
+st32 = W.derive(cur32, prev32, 2.0, cap32, info32, "observe", 0, [])
+ck("the 0.32 KV gauge name is read (kv_cache_usage_perc)", abs(st32["live"]["kv_used_pct"] - 25.0) < 1e-9,
+   str(st32["live"]["kv_used_pct"]))
+ck("the 0.32 step family is read (inter_token_latency_seconds)", abs(st32["rate"]["itl_ms"] - 20.0) < 1e-9,
+   str(st32["rate"]["itl_ms"]))
+ck("a build with no per-token family reports it absent, not equal", st32["rate"]["tpot_ms"] is None,
+   str(st32["rate"]["tpot_ms"]))
+
+# The two inter-token families are NOT the same quantity, and the gap is speculation: one observation per
+# engine step against one per request of that request's mean per ACCEPTED token. Measured on the live
+# native launch 2026-11-02: 15.6 ms a step, 3.19 ms per accepted token (4.9 tokens a step at MTP=2). A
+# stream's tok/s is 1/step.
+STEPF = ('vllm:inter_token_latency_seconds_sum{model_name="Qwen3.8"} 30.0\n'
+         'vllm:inter_token_latency_seconds_count{model_name="Qwen3.8"} 2000.0\n'
+         'vllm:request_time_per_output_token_seconds_sum{model_name="Qwen3.8"} 6.0\n'
+         'vllm:request_time_per_output_token_seconds_count{model_name="Qwen3.8"} 20.0\n')
+STEPF0 = (STEPF.replace("} 30.0", "} 15.0").replace("} 2000.0", "} 1000.0")
+          .replace("} 6.0", "} 3.0").replace("seconds_count{model_name=\"Qwen3.8\"} 20.0",
+                                             "seconds_count{model_name=\"Qwen3.8\"} 10.0"))
+scur, scam, sinfo = W.parse_metrics(STEPF)
+sp, _, _ = W.parse_metrics(STEPF0)
+ss = W.derive(scur, sp, 1.0, scam, sinfo, "observe", 0, [])
+ck("a step family and a per-accepted-token family stay apart",
+   abs(ss["rate"]["itl_ms"] - 15.0) < 1e-9 and abs(ss["rate"]["tpot_ms"] - 300.0) < 1e-9,
+   str((ss["rate"]["itl_ms"], ss["rate"]["tpot_ms"])))
+ck("a stream's tok/s is 1 / step", abs(ss["rate"]["stream_tok_s"] - 1e3 / 15.0) < 1e-9,
+   str(ss["rate"]["stream_tok_s"]))
+ck("a hybrid model's KV pool is kv_cache_size_tokens, not blocks x block_size", cap32 == 497588, str(cap32))
+ck("a gauge the build does not have reads absent, not zero", st32["live"]["swapped"] is None,
+   str(st32["live"]["swapped"]))
+ck("_created stamps are not mistaken for series", "generation_tokens_created" not in cur32, str(sorted(cur32)))
+ck("labels the newer build carries are harvested", info32.get("cache_dtype") == "auto"
+   and info32.get("gpu_memory_utilization") == "0.97", str(sorted(info32)))
+
+# A histogram is observed when a request FINISHES, so the window a long request spans holds no observation
+# at all. The page falls back to the cumulative mean and says so; the first poll, which has no window, still
+# gets the cumulative one.
+first = W.derive(cur, {}, None, cap, info, "observe", 0, [])
+ck("with no window the rates are None and the cumulative means are not",
+   first["rate"]["ttft_ms"] is None and abs(first["since"]["ttft_ms"] - 500.0) < 1e-9,
+   f"{first['rate']['ttft_ms']} {first['since']['ttft_ms']}")
+ck("cumulative acceptance is over the whole run", abs(first["since"]["accept_pct"] - 75.0) < 1e-9,
+   str(first["since"]["accept_pct"]))
+ck("cumulative steps per request", abs(first["since"]["iters_per_req"] - 16.0) < 1e-9,
+   str(first["since"]["iters_per_req"]))
+ck("requests finished since the engine started", first["since"]["requests"] == 8.0)
+
+# ...and the scaling bug that only a live engine shows: request_prompt_tokens counts TOKENS. Scaling it
+# like a seconds family made the first real /api/status report a mean prompt of 2,028,442 tokens.
+TOKF = ('vllm:request_prompt_tokens_sum{model_name="Qwen3.8"} 4000.0\n'
+        'vllm:request_prompt_tokens_count{model_name="Qwen3.8"} 8.0\n'
+        'vllm:request_generation_tokens_sum{model_name="Qwen3.8"} 400.0\n'
+        'vllm:request_generation_tokens_count{model_name="Qwen3.8"} 8.0\n'
+        'vllm:e2e_request_latency_seconds_sum{model_name="Qwen3.8"} 16.0\n'
+        'vllm:e2e_request_latency_seconds_count{model_name="Qwen3.8"} 8.0\n')
+TOKF0 = (TOKF.replace("} 4000.0", "} 2000.0").replace("} 400.0", "} 200.0")
+        .replace("} 16.0", "} 8.0").replace("count{model_name=\"Qwen3.8\"} 8.0",
+                                            "count{model_name=\"Qwen3.8\"} 4.0"))
+tcur, tcap, tinfo = W.parse_metrics(TOKF)
+tp, _, _ = W.parse_metrics(TOKF0)
+ts = W.derive(tcur, tp, 10.0, tcap, tinfo, "observe", 0, [])
+ck("a token family is not scaled like a seconds family",
+   ts["rate"]["prompt_tokens_mean"] == 500.0 and ts["rate"]["generation_tokens_mean"] == 50.0
+   and ts["since"]["prompt_tokens_mean"] == 500.0, str((ts["rate"]["prompt_tokens_mean"],
+                                                        ts["since"]["prompt_tokens_mean"])))
+ck("a seconds family still is", abs(ts["rate"]["e2e_ms"] - 2000.0) < 1e-9, str(ts["rate"]["e2e_ms"]))
+
 
 # ------------------------------------------------------------------ (2) the request ring ---------
 ring = W.Records(keep=3)
@@ -473,6 +563,10 @@ ck("no CSS variable is used without being defined", not (used - defined), f"{sor
 ck("every page carries a theme switch and an API key control",
    all('data-theme-toggle' in (WEB / h).read_text() and 'id="key-btn"' in (WEB / h).read_text()
        for h in ("monitor.html", "about.html")))
+monjs = (WEB / "monitor.js").read_text()
+ck("a cumulative mean is labelled as one on the page",
+   monjs.count("(since launch)") >= 2 and "const pick = (k) =>" in monjs,
+   f"{monjs.count('(since launch)')} labels")
 
 for srvx in (srv, srv2, srv3):
     srvx.shutdown()

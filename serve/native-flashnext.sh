@@ -86,6 +86,26 @@ CC=()
 [ -n "${CGSIZES:-}" ] && CC+=("\"cudagraph_capture_sizes\": [$CGSIZES], \"max_cudagraph_capture_size\": ${CGSIZES##*,}")
 [ ${#CC[@]} -gt 0 ] && ARGS+=(--compilation-config "{$(IFS=,; echo "${CC[*]}")}")
 
+# WEBUI=1: the Monitor/About pages on this same host at PORT+1 (serve/webui.py; notes/webui.md). observe mode
+# by default -- it only GETs /health, /v1/models and /metrics, so the launch itself is untouched -- plus this
+# launch's recipe as a meta file, which is what the About page shows as the recipe. Started before vllm is up
+# on purpose: the sidecar says "engine unreachable" until it answers, rather than dying with the launch.
+if [ "${WEBUI:-0}" = 1 ]; then
+  WPORT=${WEBUI_PORT:-$(( ${PORT:-8080} + 1 ))}
+  META=${WEBUI_META:-$HOME/r9700-web-meta-$WPORT.json}
+  D="$(dirname "$(realpath "$0")")"
+  VER=$($VENV/bin/python -c "import importlib.metadata as m; print('native vllm '+m.version('vllm'))" 2>/dev/null \
+        || echo "native")
+  META=$META bash "$D/webmeta.sh" venv="$VENV" model="$MODEL" served_name="${SERVED_NAME:-Qwen3.8}" \
+    gpus="${GPUS:-0,1,2,3}" tp="${TP:-4}" maxlen="${MAXLEN:-32768}" nseq="$NSEQ" nbt="$NBT" \
+    util="${UTIL:-$([ "${TP:-4}" = 4 ] && echo 0.97 || echo 0.94)}" offload_gb="${OFFLOAD_GB:-0}" \
+    kvdtype="${KVDTYPE:-}" mtp="$MTP" attn="${ATTN:-}" cg_sizes="${CGSIZES:-}" prefix_cache="${PREFIX_CACHE:-0}" \
+    eager="${EAGER:-0}" log="$LOG" fold="${R9K_FOLD:-1}" ar_quant="${R9K_AR_QUANT:-1}" hc_fp8="${R9K_HC_FP8:-r9k}" \
+    hc_fp8_decode="${R9K_HC_FP8_DECODE:-1}" fp8_block="${R9K_FP8_BLOCK:-block}" fp8_qa="${R9K_FP8_QA:-1}" \
+    target_lmhead="${R9K_TARGET_LMHEAD:-mxfp4}" draft_lmhead="${R9K_DRAFT_LMHEAD:-mxfp4}" \
+    mtp_quant_rows="${R9K_MTP_QUANT_ROWS:-}" extra="${EXTRA:-}"
+  WEBUI_PORT=$WPORT UPSTREAM=http://127.0.0.1:${PORT:-8080} META=$META VERSION="$VER" bash "$D/webui.sh"
+fi
 [ "${DRY:-0}" = 1 ] && { echo "launch: $VENV/bin/vllm serve $MODEL ${ARGS[*]} $EXTRA"; exit 0; }
 echo "launch: $VENV/bin/vllm serve $MODEL ${ARGS[*]} $EXTRA  (log: $LOG)"
 exec "$VENV/bin/vllm" serve "$MODEL" "${ARGS[@]}" $EXTRA

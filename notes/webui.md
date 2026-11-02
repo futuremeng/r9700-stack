@@ -67,6 +67,21 @@ perturbation, not a read. Keep it off during gates and soaks; keep it on when yo
 `power_w`/`temp_c` come back `N/A` from rocm-smi in the state this box was in after the
 watchdog/PSU events ([notes/incident-2026-11-02/](incident-2026-11-02)) — dropped, not zeroed.
 
+**What the refusals correlate with is not what I guessed.** Follow-up reads, same host, same
+card set, with the native launch up and then stopped:
+
+| state of the box | `gpu_busy_percent` |
+|---|---|
+| nothing running (first observation, 2026-11-02 morning) | EBUSY on all four; VRAM answers (57 MiB) |
+| native launch up, engine idle | answers 24-29% |
+| native launch up, three 600-token streams | answers 46-100% |
+| native launch stopped, nothing running | answers 0%, `unread` empty |
+
+So "a compute context holds the card" is not the rule — it refused with nothing running and answered
+while the engine was up. What it does guarantee: any of these attributes can fail on any poll, and the
+page says which one failed instead of printing 0. Both directions have been exercised against the live
+sidecar without restarting it (four cards refusing, then four answering).
+
 ## Endpoints
 
 ```
@@ -126,16 +141,84 @@ prompt, so its share falls as the request gets longer.
 
 So: about **1 ms per request** for the hop (one extra loopback connection and a thread), flat in
 prompt length, and **recording is free inside that** -- relay and record are within noise of each
-other, because the delta parsing happens on bytes that were already being copied. Against a real
-launch, where a request costs 100-4000 ms, that is ~0.1% and it will not move a gate. This is the
-floor, not the serve's number: the live A/B is still owed --
+other, because the delta parsing happens on bytes that were already being copied.
+
+### On the live launch
+
+Native vLLM 0.32.0, four cards, MTP=2, warmed, box otherwise idle, `--n 8` per cell (prompt tokens are
+what the engine reports, so the chat template's overhead is included: asking for 45 gets 76):
+
+| prompt tok | shape | direct | relay | record | hop | recording |
+|---|---|---|---|---|---|---|
+| 76 | `max_tokens=1` | 47.5 ms | 50.0 | 50.3 | **+2.54 ms (+5.3%)** | +0.23 ms |
+| 76 | streamed 64 | 660.7 ms | 659.3 | 658.1 | -1.37 ms (-0.2%) | -1.16 ms |
+| 2,099 | `max_tokens=1` | 241.6 ms | 243.5 | 243.8 | **+1.96 ms (+0.8%)** | +0.23 ms |
+| 2,099 | streamed 64 | 476.0 ms | 478.8 | 479.0 | **+2.78 ms (+0.6%)** | +0.18 ms |
+| 4,399 | `max_tokens=1` | 454.6 ms | 457.0 | 458.0 | **+2.43 ms (+0.5%)** | +0.99 ms |
+| 4,399 | streamed 64 | 710.0 ms | 713.2 | 713.5 | **+3.18 ms (+0.45%)** | +0.35 ms |
+
+The hop is **2-3 ms and flat in prompt length**, so its share falls from 5.3% of a 76-token request to
+0.45% of a 4.4k-token one, and recording costs **0.2-1 ms on top of relaying**. It is larger than the
+stand-in's ~1 ms (the engine's own first-token path is longer, and the relay adds a connection to a
+process that is not the one holding the model). The one negative row is arm order, not a win: the arms
+always run direct, relay, record, and at `n=8` the engine warming between arms is the same order of
+magnitude as the hop. Read the single-request cells at a 76-token prompt as roughly the resolution floor
+of the measurement.
+
+```bash
+python3 bench/webui_ab.py http://127.0.0.1:8080 --n 8 --tiers 45,1500,3000 --shape all
+```
+
+## What the live launch taught the parser
+
+The fake engine in `tests/test_webui.py` was written from the container image's `/metrics`. The native
+vLLM 0.32.0+rocm723 differs, and each difference showed up as a panel reading `—`:
+
+| 0.32.0 native | older / container | what the sidecar does now |
+|---|---|---|
+| `vllm:kv_cache_usage_perc` | `vllm:gpu_cache_usage_perc` | tries both, first one wins |
+| `vllm:inter_token_latency_seconds` | `vllm:time_per_output_token_seconds` | the engine **step** family -> `itl_ms` |
+| `vllm:request_time_per_output_token_seconds` | — | per **accepted token** -> `tpot_ms`, a different quantity |
+| (absent) | `vllm:num_requests_swapped` | `swapped: null`, not 0 — vLLM retired that counter |
+| `vllm:*_created` | — | skipped: a `_created` Unix stamp is not a sample |
+
+**Two inter-token families, and the gap between them is MTP.** `inter_token_latency_seconds` gets one
+observation per engine **step** — what a streaming client feels as one delta.
+`request_time_per_output_token_seconds` gets one per **request**, holding that request's mean per
+*accepted* token, so MTP's accepted drafts divide it. From `/api/status` and by hand from `/metrics`, same
+numbers:
 
 ```
-python3 bench/webui_ab.py http://127.0.0.1:8080 --n 10        # warmed, box otherwise idle; ~10 min
+cumulative step = 15.62 ms    per accepted token = 3.19 ms    accept = 59.7%    requests = 156
+by hand: 36.055 / 2309 = 15.62 ms     0.4979 / 156 = 3.19 ms
 ```
 
-the container was not reachable from the shell that wrote this (`docker` not on PATH, `sudo` wants a
-password), and the box had just rebooted, so nothing was serving.
+A stream's tok/s is 1 / step (64 tok/s), never 1 / per-token (313 tok/s). Both are on the page, labelled.
+
+**A token family is not a seconds family.** Cumulative means are `_sum / _count`, and for time families that
+ratio is seconds, so it is multiplied by 1000 to print ms. Applying that scaling to `request_prompt_tokens`
+made the first real `/api/status` report a **mean prompt of 2,028,442 tokens** — the answer is 2,028, and the
+engine's context is 32,768. Scaling now applies only to time families; a test asserts a token mean of 500
+stays 500.
+
+**A window mean is undefined while a request is in flight.** vLLM observes a latency histogram when a request
+**finishes**. Polling every 2 s, a 600-token generation shows `ttft_ms`, `queue_ms`, `prefill_ms` and
+`decode_ms` as em-dash for its whole duration, because no observation lands in any of those windows — which
+reads as a broken monitor rather than an honest one. The payload carries `since`, the same ratios over the
+engine's whole run, and the page falls back to it marked "(since launch)":
+
+```
+ttft 237.6 ms · queue 0.01 ms · prefill 224.1 ms · decode 231.1 ms · prompt 2028 tok · accept 59.7%
+```
+
+A cumulative mean is not a window mean, so it is labelled as one wherever it shows.
+
+**The KV pool's block label overstates capacity on a hybrid model.** The live launch reports
+`num_gpu_blocks=1230, block_size=448, kv_cache_size_tokens="497588"` — and 1230 x 448 = **551,040**, 11% too
+high. A hybrid KV has an attention part sized `blocks x block_size` and a mamba state sized per request, so
+multiplying them lands on no axis tokens are counted on. The sidecar prefers `kv_cache_size_tokens` whenever
+it is labelled, and falls back to the product with the older build's labels, where it is exact
+(`block_size=1088, num_gpu_blocks=456` → 496,128 tokens).
 
 Writing that script found a bug worth recording: the pump used `res.read(8192)`, and on a body with no
 Content-Length `read(n)` **blocks until n bytes or EOF**. A 300-byte-per-second stream therefore reached

@@ -116,7 +116,7 @@ function renderStatus(s) {
   text("active", inflight ? `${Math.round(inflight)} running / waiting at the engine`
     : s.mode === "proxy" ? "Nothing in flight" : "Nothing routed here");
   text("wall", last ? seconds(last.wallclock_s) : "—");
-  const speed = last?.timings?.predicted_per_second ?? rate.stream_tok_s;
+  const speed = last?.timings?.predicted_per_second ?? (isnum(rate.itl_ms) ? 1e3 / rate.itl_ms : null);
   $("speed").innerHTML = `${isnum(speed) ? fmt(speed, 1) : "—"}<span class="unit">tok/s</span>`;
 
   text("kv-pct", pct(live.kv_used_pct, 1));
@@ -130,17 +130,27 @@ function renderStatus(s) {
   $("gen-toks").textContent = isnum(rate.generation_tok_s) ? fmt(rate.generation_tok_s, 1) : "—";
   text("prompt-toks", `${isnum(rate.prompt_tok_s) ? fmt(rate.prompt_tok_s, 0) : "—"} prompt tok/s`
     + (isnum(rate.requests_per_min) ? ` · ${fmt(rate.requests_per_min, 1)} req/min` : ""));
-  text("accept", pct(rate.accept_pct, 1));
-  text("drafts", isnum(rate.drafts_per_req) ? `${fmt(rate.drafts_per_req, 2)} drafts per request` : "no speculation counters");
-  text("iters", isnum(rate.tokens_per_iter) ? `${fmt(rate.tokens_per_iter, 2)} tokens per engine step · `
-    + `${fmt(rate.iters_per_req, 2)} steps per request` : "");
+  // vLLM observes a latency histogram when a request FINISHES, so a window holds no observation at all
+  // while a long one is in flight. The cumulative ratio is not a window mean: the page says which it shows.
+  const since = s.since || {};
+  const pick = (k) => (isnum(rate[k]) ? rate[k] : (isnum(since[k]) ? since[k] : null));
+  text("accept", pct(pick("accept_pct"), 1) + (isnum(rate.accept_pct) || !isnum(since.accept_pct) ? ""
+    : " (since launch)"));
+  text("drafts", isnum(rate.drafts_per_req) ? `${fmt(rate.drafts_per_req, 2)} drafts per request`
+    : isnum(since.accept_pct) ? `${fmt(since.requests, 0)} requests finished since the engine started`
+      : "no speculation counters");
+  const tpi = pick("tokens_per_iter"), ipr = pick("iters_per_req");
+  text("iters", isnum(tpi) ? `${fmt(tpi, 2)} tokens per engine step`
+    + (isnum(ipr) ? ` · ${fmt(ipr, 2)} steps per request` : "")
+    + (isnum(rate.tokens_per_iter) || !isnum(since.tokens_per_iter) ? "" : " (since launch)") : "");
 
   const hist = s.history || [];
   spark($("gen-spark"), hist.map((h) => h.gen_tok_s));
   spark($("kv-spark"), hist.map((h) => h.kv_used_pct));
 
-  for (const [id, v] of [["t-ttft", rate.ttft_ms], ["t-queue", rate.queue_ms], ["t-prefill", rate.prefill_ms],
-                         ["t-decode", rate.decode_ms]]) text(id, ms(v));
+  for (const [id, k] of [["t-ttft", "ttft_ms"], ["t-queue", "queue_ms"], ["t-prefill", "prefill_ms"],
+                         ["t-decode", "decode_ms"], ["t-step", "itl_ms"], ["t-tpot", "tpot_ms"]])
+    text(id, ms(pick(k)) + (isnum(rate[k]) || !isnum(since[k]) ? "" : " (since launch)"));
   text("window", isnum(rate.window_s) ? `${rate.window_s.toFixed(1)} s` : "—");
 
   const gpus = s.gpus || [];

@@ -17,7 +17,7 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   means, speculation acceptance, prefix-cache hits and per-card busy%/VRAM/sclk; the About page carries
   the configuration, the machine, the base URL and the recipe `serve/serve.sh` wrote for it (`WEBUI=1`).
   Cards whose sysfs attributes answer EBUSY name what they refused instead of reporting 0%, and `SMI=1`
-  fills the gaps from rocm-smi joined by PCI bus id (opt-in: it opens `/dev/kfd`). 90 checks in
+  fills the gaps from rocm-smi joined by PCI bus id (opt-in: it opens `/dev/kfd`). 106 checks in
   `tests/test_webui.py`: metrics collapsing (buckets skipped, gauges max-ed not summed, no data before
   the first window), the request ring, the sysfs and rocm-smi readers, an end-to-end relay against a
   fake vLLM (SSE passed through, a 500 recorded as an error, `observe` relaying while recording nothing,
@@ -26,8 +26,11 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   Content-Length that blocks until n bytes or EOF, so a slow stream would have arrived all at once and
   every first-token number on the page would have been a lie (+70 ms on a 272 ms request). It reads
   `read1()` now. `bench/webui_ab.py` A/Bs direct / relay / record: about **1 ms per request** for the
-  hop against a loopback stand-in, and recording costs nothing beyond that (the live A/B on a real
-  launch is still owed -- run `bench/webui_ab.py http://127.0.0.1:8080` when one is up).
+  hop against a loopback stand-in, and recording costs nothing beyond that. Measured on the live native
+  launch (4 cards, MTP=2, warmed, `--n 8`): the hop is **2-3 ms and flat in prompt length** — +2.54 ms
+  (+5.3%) on a 76-token request, +1.96 ms (+0.8%) at 2,099, +2.43 ms (+0.5%) at 4,399 — and **recording
+  costs 0.2-1 ms on top of relaying**, so the Monitor in proxy mode does not move a request's cost.
+  [notes/webui.md](notes/webui.md) has the full table and the arm-order caveat.
 - **`setup.sh` / `setup.py` / `update.sh`**: bring a box up, or re-check one that already runs it. One pass over
   what this repo actually needs, with the file each requirement came from named on the line: the cards as the guest
   sees them **and the size BAR0 was really placed at** (the starved card on a PLX switch reports `current size:
@@ -43,6 +46,40 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   and the tests that need no GPU. `--check` runs nothing that changes anything; `--launch flashnext` starts one and
   waits for `/health`. `update.sh` pulls with the guard Strata's has (it refuses while tracked files are edited and
   prints what `git status` says) and touches no weights, no launch caches, no running launch.
+- **`WEBUI=1` on the native path too** (`serve/native-flashnext.sh`), and the recipe file it writes moved out of
+  `serve/serve.sh` into `serve/webmeta.sh` so both launchers write the same JSON the About page reads. The sidecar
+  starts **before** the engine: it has to answer `/health` for a serve that takes four minutes to load 120 GB, and
+  it shows the cards while it does. `setup.py --launch native-flashnext.sh` now starts one (in its own process
+  group, logging to `~/logs/setup-<time>.log` — the native launcher `exec`s vLLM in the foreground, and
+  `notes/launch-methodology.md` records that vLLM's ranks can ignore `SIGTERM` in the model-load phase, so a
+  child of a TTY-interrupted setup is how you get two launches on four cards).
+
+### Fixed
+- **A token family was being scaled like a seconds family.** Cumulative means are a histogram's `_sum/_count`,
+  and for time families that ratio is seconds so it gets ×1000 to print ms. Applied to `request_prompt_tokens`
+  it made the Monitor report a **mean prompt of 2,028,442 tokens** on the first real launch (it is 2,028, and
+  the engine's context is 32,768). The scaling is now only on time families; a test asserts a token mean of
+  500 stays 500. This one only a live engine could catch — the fake in the tests was written from the
+  container image's `/metrics`.
+- **The native vLLM 0.32.0+rocm723 publishes different metric names than the pinned image, and reading only
+  the old ones showed nothing at all**: `kv_cache_usage_perc` (not `gpu_cache_usage_perc`),
+  `inter_token_latency_seconds` alongside `request_time_per_output_token_seconds`, no `num_requests_swapped`
+  (now `swapped: null` rather than a false 0 — vLLM retired it), `_created` stamps (skipped: not samples).
+- **`inter_token_latency_seconds` and `request_time_per_output_token_seconds` are not the same quantity, and
+  the gap is MTP.** One is observed per engine **step** — what a client feels as one delta — the other per
+  **request** as that request's mean per *accepted* token, so accepted drafts divide it. Live: **15.62 ms a step
+  against 3.19 ms per accepted token** at MTP=2, 59.7% acceptance. A stream's tok/s is 1/step (64 tok/s), never
+  1/per-token (313 tok/s); the old code preferred the per-token family, which would have overstated every
+  stream's speed fivefold. Both are on the page now, labelled, with a test that keeps them apart.
+- **KV capacity on a hybrid model is not `blocks x block_size`.** The live launch labels
+  `num_gpu_blocks=1230, block_size=448` — 551,040 — while its own `kv_cache_size_tokens` says **497,588**: a
+  hybrid pool's attention part is `blocks x block_size` and its mamba state is per request, so the product is on
+  no axis tokens are counted on (11% too high). The label is preferred when present, the product used when not
+  (on the older build it is exact: 456 x 1088 = 496,128).
+- **A window mean is undefined while a long request is in flight**, because vLLM observes a latency histogram
+  when a request *finishes*: polling every 2 s, TTFT/queue/prefill/decode read as no-data for the whole
+  duration of a 600-token generation. The payload now carries `since` — the same ratios over the engine's whole
+  run — and the page marks those numbers "(since launch)" instead of showing a dash it cannot justify.
 
 ## [0.3.8] - 2026-10-31
 

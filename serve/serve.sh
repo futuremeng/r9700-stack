@@ -147,7 +147,8 @@ echo "started stock vLLM + r9700 plugin (offload ${OFFLOAD_GB:-34} GB/rank, maxl
 if [ "${WEBUI:-0}" = 1 ]; then
   WPORT=${WEBUI_PORT:-$(( ${PORT:-8080} + 1 ))}
   META=${WEBUI_META:-$HOME/r9700-web-meta-$WPORT.json}
-  python3 -c 'import json,sys; open(sys.argv[1],"w").write(json.dumps(dict(a.split("=",1) for a in sys.argv[2:]),indent=1)+"\n")' "$META" \
+  D="$(dirname "$(realpath "$0")")"
+  META=$META bash "$D/webmeta.sh" \
     image="$IMG" container="${NAME:-vllmstock}" port="${PORT:-8080}" gpus="${GPUS:-0,1}" model="${MODEL:-/models/Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ}" \
     served_name="${SERVED_NAME:-Qwen3.8}" tp="${TP:-2}" maxlen="${MAXLEN:-32768}" nseq="${NSEQ:-4}" nbt="${NBT:-4096}" \
     util="$UTIL" offload_gb="${OFFLOAD_GB:-34}" kvdtype="${KVDTYPE:-}" mtp="${MTP:-}" draft="${DRAFT:-}" spec="${SPEC:-}" \
@@ -155,5 +156,5 @@ if [ "${WEBUI:-0}" = 1 ]; then
     expert_cache_slots="${R9K_EXPERT_CACHE_SLOTS:-}" target_lmhead="${R9K_TARGET_LMHEAD:-}" draft_lmhead="${R9K_DRAFT_LMHEAD:-}" \
     overlays="${OVERLAYS:-}" extra="${EXTRA:-}"
   WEBUI_PORT=$WPORT UPSTREAM=http://127.0.0.1:${PORT:-8080} META=$META VERSION="$(printf '%s' "${IMG:-}")" \
-    bash "$(dirname "$(realpath "$0")")/webui.sh"
+    bash "$D/webui.sh"
 fi

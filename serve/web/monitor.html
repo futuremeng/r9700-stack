@@ -110,10 +110,16 @@
       <div><span class="label">Queue wait</span><div class="value value--sm" id="t-queue">—</div></div>
       <div><span class="label">Prefill</span><div class="value value--sm" id="t-prefill">—</div></div>
       <div><span class="label">Decode</span><div class="value value--sm" id="t-decode">—</div></div>
+      <div><span class="label">Engine step</span><div class="value value--sm" id="t-step">—</div></div>
+      <div><span class="label">Per accepted token</span><div class="value value--sm" id="t-tpot">—</div></div>
     </div>
     <p class="small note">Stock vLLM answers these per request only as counters, so the queue/prefill/decode split
       above is the mean over the window, not a per-request number — and the per-request rows below cannot carry it.
-      For the per-request breakdown: <code>bench/ttft_breakdown.py</code>.</p>
+      For the per-request breakdown: <code>bench/ttft_breakdown.py</code>. "Engine step" is one engine iteration
+      (<code>inter_token_latency_seconds</code>) — what a client feels as one delta; "per accepted token"
+      (<code>request_time_per_output_token_seconds</code>) divides it by the drafts MTP gets accepted, so with MTP=2
+      it reads far smaller (15.6 ms a step against 3.19 ms per token, measured 2026-11-02). A stream's tok/s is
+      1 / step, never 1 / per-token.</p>
   </section>
 
   <!-- the request list: only filled while the client is pointed at this page (--proxy) -->
