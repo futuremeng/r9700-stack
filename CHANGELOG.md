@@ -271,6 +271,22 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   boot and then a line. `tools/cardwave-check.js` runs the card renderer under node against a live `/api/status`
   with a stub DOM (two waveforms, no bar, caption text) -- the browser is still the real test, but the failure it
   catches is a card silently drawing nothing.
+
+- **Power, temperature and the SM clock joined the per-card waves** — five labelled rows per card (`busy`,
+  `VRAM`, `sclk`, `W`, `°C`), stacked rather than overlaid, because watts, degrees and megahertz share no axis and
+  three autoscaled series in one box is the exact shape of lie a sparkline tells. Fixed ceilings: busy 0..100, VRAM
+  0..the card's own size, sclk 0..observed peak (this kernel exposes no max-frequency file), power 0..`max(cap,
+  observed)`, temperature 0..110 °C so 65 and 95 are comparable across cards and refreshes. Live caption: `temp
+  peak 68 · avg 66 °C · power peak 494 · avg 283 W · sclk peak 3,331 · avg 2,735 MHz · busy avg 94% · 90 pts over
+  91 s`. Two facts came out of wiring it. **The sensors were being read from the wrong path**: the hwmon directory
+  here is `device/hwmon/hwmonN`, the reader globbed `device/hwmon*` (the older layout), so temperature, power and
+  clock drew as `—` for weeks on a box whose files read fine all along — both layouts are globbed now and the
+  fixture keeps one card of each so it cannot regress. And **`power1_cap` is not the limit on this uncapped box**:
+  the cap reads 300 W while the cards draw 232–494 W, so the axis takes the larger of cap and observed, the cap
+  stays in the text line as contrast, and only temperature gets a warning colour (passing the cap is the
+  configuration here; 95 °C is a fault anywhere). The `read_gpus` docstring also carried a claim this day
+  disproved — that a compute context is what makes the attributes answer; they refused with nothing running and
+  answered with the launch holding all four.
 - **The native install recipe now says what is actually fetchable** (`README.md`, `notes/native-4xr9700.md`,
   `setup.py`), and the upstream sweep that found it is written up in [notes/vllm-0.33.md](notes/vllm-0.33.md).
   Checking "is there a new vLLM, should we follow" turned up a broken step in our own quickstart: the ROCm wheel

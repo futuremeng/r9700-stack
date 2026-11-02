@@ -15,7 +15,7 @@ const code = [grab(/^const isnum = .*$/m), grab(/^const fmt = .*$/m), grab(/^con
 
 const caps = [];                                    // what the caption slot was told to show
 const mkEl = (tag) => ({
-  tag, attrs: {}, children: [], _html: "",
+  tag, attrs: {}, children: [], dataset: {}, _html: "",
   set innerHTML(v) { this._html = v; }, get innerHTML() { return this._html; },
   setAttribute(a, v) { this.attrs[a] = v; },
   replaceChildren(...c) { this.children = c; }, append(...c) { this.children.push(...c); },
@@ -45,8 +45,8 @@ fetch(process.argv[3]).then((r) => r.json()).then((s) => {
   console.log("cards:", s.gpus.length, "| ring:", gh.length, "samples over",
               (gh.length > 1 ? gh[gh.length - 1].at - gh[0].at : 0).toFixed(0) + "s");
   console.log("first card", s.gpus[0].card, "bus", s.gpus[0].bus,
-              "| spark slots:", (d.innerHTML.match(/spark--gpu/g) || []).length,
+              "| wave rows:", (d.innerHTML.match(/spark--gpu/g) || []).length,
               "| busy bars left:", (d.innerHTML.match(/class="bar"/g) || []).length);
   console.log("vram text:", (d.innerHTML.match(/[\d.]+ \/ [\d.]+ GiB VRAM/) || ["(none)"])[0]);
-  console.log("captions:", caps.slice(0, 2).map((c) => `"${c}"`).join("  |  ") || "(none)");
+  console.log("captions:", caps.slice(0, 2).map((c) => `"${c}"`).join("\n           ") || "(none)");
 }).catch((e) => console.log("ERR", e.message));

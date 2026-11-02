@@ -116,36 +116,61 @@ function gpuCard(g, ghist = [], i = 0) {
   const smi = (g.from_smi || []).length
     ? `<div class="muted small">from rocm-smi: ${(g.from_smi || []).join(", ")}</div>` : "";
   const busy = isnum(g.busy_pct) ? `${fmt(g.busy_pct, 0)}<span class="unit">busy</span>` : `<span class="q">—</span>`;
+  // One labelled row per sensor wave. They are stacked, not overlaid: power in watts, temperature in degrees
+  // and the SM clock in MHz have no shared axis, and drawing three autoscaled series in one box is exactly the
+  // shape of lie a sparkline can tell -- a card pinned at its power cap and one idling at 205 of 500 W look
+  // identical that way. Each gets its own anchored ceiling below.
+  const rows = ["busy", "VRAM", "sclk", "W", "°C"];
   d.innerHTML = `<b>${g.name || g.card}</b><span class="small">${g.card}</span>`
     + `<div class="pct">${busy}</div>`
-    + `<div class="sparkline spark--gpu"></div>`
+    + rows.map((lab) => `<div class="sparkrow"><span>${lab}</span>`
+        + `<div class="sparkline spark--gpu"></div></div>`).join("")
     + `<div class="muted small">${isnum(g.vram_used) || isnum(g.vram_total) ? `${gb(g.vram_used)} / ${gb(g.vram_total)} GiB VRAM` : ""}</div>`
-    + `<div class="sparkline spark--gpu"></div>`
     + `<div class="muted small" data-wave></div>`
     + `<div class="muted small">${line([isnum(g.mem_busy_pct) ? `VRAM ${fmt(g.mem_busy_pct, 0)}% busy` : "",
         isnum(g.sclk_mhz) ? `sclk ${fmt(g.sclk_mhz, 0)} MHz` : "", isnum(g.mclk_mhz) ? `mclk ${fmt(g.mclk_mhz, 0)} MHz` : "",
-        isnum(g.temp_c) ? `${g.temp_c.toFixed(0)} °C` : "", isnum(g.power_w) ? `${g.power_w.toFixed(0)} W` : ""])}</div>`
+        isnum(g.temp_c) ? `${g.temp_c.toFixed(0)} °C` : "", isnum(g.power_w) ? `${g.power_w.toFixed(0)} W` : "",
+        isnum(g.power_cap_w) ? `cap ${g.power_cap_w.toFixed(0)} W` : ""])}</div>`
     + unread + smi;
-  // Busy and VRAM as waveforms, on the honest axes: busy over 0..100 (a card at 40% is 40% of the box, not the
-  // tallest bar in the ring), VRAM over 0..the card's own total -- which is the leak question asked without a
-  // script: the soak runs used to log per-card VRAM to a side file to show flat is flat, and this is the same
-  // evidence, always on. Align by bus id / card name rather than by index: if a card disappears from sysfs the
-  // series keeps meaning instead of quietly plotting the neighbour's numbers.
+  // Align by bus id / card name, not by position: if a card disappears from sysfs the series must keep meaning
+  // instead of quietly plotting its neighbour's numbers. A refused read (EBUSY) is a null, so the wave breaks
+  // rather than dipping to idle.
   const at = (s) => (s.cards || []).find((c) => (g.bus && c.bus === g.bus) || c.card === g.card) || null;
   const series = (k) => ghist.map((s) => { const c = at(s); return c ? c[k] : null; });
-  const busyS = series("busy_pct");
-  const sparks = d.querySelectorAll(".spark--gpu");
-  spark(sparks[0], busyS, { baseLo: 0, baseHi: 100 });
-  const vramS = series("vram_used");
-  const total = g.vram_total || Math.max(...vramS.filter(isnum), 0);
-  spark(sparks[1], vramS.map((v) => (isnum(v) ? v / 2 ** 30 : null)),
-        { baseLo: 0, baseHi: total / 2 ** 30 });
-  const xs = busyS.filter(isnum);
+  const vramS = series("vram_used").map((v) => (isnum(v) ? v / 2 ** 30 : null));
+  const vramCeil = (g.vram_total || Math.max(...vramS.filter(isnum), 0)) / 2 ** 30;
+  // Ceilings: VRAM is the card's own size, power its cap (a wave against the cap is a throttling question),
+  // temperature 110 C (the junction neighbourhood -- a fixed ceiling is what makes 65 and 95 comparable), and
+  // the clock its own observed peak, since this kernel exposes no max frequency file.
+  const sclkPeak = Math.max(...series("sclk_mhz").filter(isnum), 0);
+  const powerPeak = Math.max(...series("power_w").filter(isnum), 0);
+  // The cap is the sensor's default, not the operating limit: this box runs uncapped and draws 440 W against a
+  // power1_cap of 300 W (measured), so the axis is whichever is larger -- clipping a wave at a cap the card is
+  // allowed to exceed would hide exactly the thing worth seeing. The cap stays in the text line for contrast.
+  const powerCeil = Math.max(g.power_cap_w || 0, powerPeak);
+  const vals = [series("busy_pct"), vramS, series("sclk_mhz"), series("power_w"), series("temp_c")];
+  const ceils = [100, vramCeil, sclkPeak, powerCeil, 110];
+  d.querySelectorAll(".spark--gpu").forEach((el, j) => {
+    spark(el, vals[j], { baseLo: 0, baseHi: ceils[j] });
+    // Only temperature gets a warning colour: on an uncapped box exceeding power1_cap is the configuration,
+    // not a fault, while 95 C is a fault wherever the card is.
+    el.dataset.tone = j === 4 && isnum(g.temp_c) && g.temp_c > 95 ? "danger" : "";
+  });
+  // One summary line for the thermal trio, because those are the waves read by peak and average rather than
+  // by shape: did it ever throttle, and how hot did it get.
+  const stat = (k, unit, d2 = 0) => {
+    const xs = series(k).filter(isnum);
+    return xs.length < 2 ? null
+      : `${k === "temp_c" ? "temp" : k === "power_w" ? "power" : "sclk"} peak ${fmt(Math.max(...xs), d2)} · `
+        + `avg ${fmt(xs.reduce((a, b) => a + b, 0) / xs.length, d2)}${unit}`;
+  };
   const cap = d.querySelector("[data-wave]");
+  const xs = vals[0].filter(isnum);
   const spanS = ghist.length > 1 ? ghist[ghist.length - 1].at - ghist[0].at : 0;
-  if (cap) cap.textContent = xs.length < 2 ? ""
-    : `busy peak ${fmt(Math.max(...xs), 0)} · avg ${fmt(xs.reduce((a, b) => a + b, 0) / xs.length, 0)}% `
-      + `· ${xs.length}/${ghist.length} pts over ${spanS.toFixed(0)} s`;
+  const parts = [stat("temp_c", " °C", 0), stat("power_w", " W"), stat("sclk_mhz", " MHz"),
+                 xs.length >= 2 ? `busy avg ${fmt(xs.reduce((a, b) => a + b, 0) / xs.length, 0)}%` : null];
+  if (cap) cap.textContent = parts.filter((x) => x).length
+    ? `${parts.filter((x) => x).join(" · ")} · ${ghist.length} pts over ${spanS.toFixed(0)} s` : "";
   return d;
 }
 

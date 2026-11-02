@@ -340,7 +340,9 @@ for card, (busy, used, total, temp, bus) in {"card0": (87, 31 * 2**30, 32 * 2**3
     (dev / "mem_info_vram_used").write_text(f"{used}\n")
     (dev / "mem_info_vram_total").write_text(f"{total}\n")
     (dev / "product_name").write_text("Radeon AI PRO R9700\n")
-    hm = dev / "hwmon0"
+    if card != "card0":
+        continue                                            # card3's sensors: the nested layout, below
+    hm = dev / "hwmon0"                                      # card0: the older device/hwmonN layout
     hm.mkdir(exist_ok=True)
     (hm / "name").write_text("amdgpu\n")
     (hm / "temp1_input").write_text(f"{temp}\n")
@@ -350,6 +352,18 @@ for card, (busy, used, total, temp, bus) in {"card0": (87, 31 * 2**30, 32 * 2**3
     (hm / "freq2_label").write_text("mclk\n")
     (hm / "freq2_input").write_text("2520000000\n")
 (fake / "card1").mkdir(parents=True, exist_ok=True)          # a DRM node with no amdgpu counters
+# card3's sensors live in the OTHER layout this box actually runs: device/hwmon/hwmonN, not device/hwmonN.
+# Globbing only the flat form is how the Monitor showed a blank temperature, power and clock for weeks on a
+# machine whose files read fine (found 2026-11-02: temp1_input 65000, power1_average 205000000 sitting there
+# under hwmon/hwmon2 while the page drew "—").
+deep = fake / "card3" / "device" / "hwmon" / "hwmon2"
+deep.mkdir(parents=True, exist_ok=True)
+(deep / "name").write_text("amdgpu\n")
+(deep / "temp1_input").write_text("33000\n")
+(deep / "power1_average").write_text("199870000\n")
+(deep / "power1_cap").write_text("205000000\n")
+(deep / "freq1_label").write_text("sclk\n")
+(deep / "freq1_input").write_text("1180000000\n")
 # and one that refuses to answer: on this box gpu_busy_percent and the whole hwmon set come back EBUSY
 # -- with no compute context open as well as with one -- so that is a state the reader has to survive.
 # It must read as "not readable", never as "0% busy".
@@ -359,6 +373,9 @@ stub.joinpath("uevent").write_text("DRIVER=amdgpu\nPCI_SLOT_NAME=0000:08:00.0\n"
 (stub / "gpu_busy_percent").mkdir()                          # reading it raises, like EBUSY does
 (stub / "mem_info_vram_total").write_text(f"{32 * 2**30}\n")
 gpus = W.read_gpus(fake)
+ck("both hwmon layouts are read (the kernel here uses device/hwmon/hwmonN)",
+   any(g["card"] == "card3" and g["temp_c"] == 33.0 and g["power_w"] == 199.87 and g["power_cap_w"] == 205.0
+       for g in gpus), str([(g["card"], g["temp_c"], g["power_w"], g.get("power_cap_w")) for g in gpus]))
 ck("only cards with amdgpu counters", [g["card"] for g in gpus] == ["card0", "card3", "card5"],
    str([g["card"] for g in gpus]))
 ck("busy, VRAM and temperature read", gpus[0]["busy_pct"] == 87 and gpus[0]["vram_total"] == 32 * 2**30
@@ -527,6 +544,9 @@ ck("a card that refuses sysfs reads is a gap in its own waveform, not a zero",
    str(_gh[-1]["cards"]) if _gh else "no history")
 ck("the slot carries the leak question too (vram_used, and the card's own total)",
    all(k in _gh[-1]["cards"][0] for k in ("vram_used", "vram_total", "bus", "sclk_mhz")), str(_gh[-1]["cards"][0]))
+# The thermal sensors ride the ring too, which is what the per-card W and °C waves are drawn from.
+ck("temperature, power and the card's power cap ride the ring",
+   all(k in _gh[-1]["cards"][0] for k in ("temp_c", "power_w", "power_cap_w")), str(_gh[-1]["cards"][0]))
 ck("status carries models", s["models"][0]["id"] == "Qwen3.8")
 ck("status engine version", s["engine"]["vllm_version"] == "test")
 ck("the sparkline ring carries the live rates too",
@@ -747,20 +767,24 @@ ck("sparklines take an axis from the caller instead of always autoscaling",
 # The per-card cards: busy and VRAM as waveforms on honest axes (0..100, and 0..the card's own VRAM), and
 # aligned by bus id / card name so a card vanishing from sysfs cannot plot its neighbour's numbers.
 _ck2 = (WEB / "common.js").read_text()
-ck("a GPU card draws busy and VRAM waveforms, not a busy bar",
-   _ck2.count('spark--gpu') >= 2 and 'class="bar"' not in _ck2
-   and "{ baseLo: 0, baseHi: 100 }" in _ck2 and "total / 2 ** 30" in _ck2)
+ck("a GPU card draws one labelled wave per sensor, and no busy bar",
+   _ck2.count('spark--gpu') >= 1 and 'class="bar"' not in _ck2
+   and '["busy", "VRAM", "sclk", "W", "°C"]' in _ck2
+   and "{ baseLo: 0, baseHi: ceils[j] }" in _ck2 and "/ 2 ** 30" in _ck2)
+ck("each wave gets its own ceiling, not an autoscaled one",
+   "ceils = [100, vramCeil, sclkPeak, powerCeil, 110]" in _ck2
+   and "Math.max(g.power_cap_w || 0, powerPeak)" in _ck2)
 ck("each card's waveform is matched by bus/card id, not by position",
    "c.bus === g.bus" in _ck2 and "c.card === g.card" in _ck2)
 ck("both pages feed the card history to it",
    "gpuCard(g, s.gpus_history || [])" in monjs and "gpuCard(g, s.gpus_history || [])" in (WEB / "about.js").read_text())
-ck("a card's caption carries busy peak and average, and names the span",
-   "busy peak" in _ck2 and "pts over" in _ck2)
-# gpu_busy_percent on this box reads ~99 whenever a launch holds the card, request or none (measured: avg
-# 95-99% over rings in which nothing was asked of the serve). The page has to say that, or a flat busy wave
-# reads as load.
-ck("the cards line says busy % is a context-alive signal here, not a load signal",
-   "context-alive" in monjs and "amdgpu sysfs" in monjs)
+ck("a card's caption carries the thermal trio and busy, each as peak and average, with the span named",
+   all(x in _ck2 for x in ('"temp"', '"power"', '"sclk"', "busy avg", "pts over")))
+# gpu_busy_percent on this box is coarse, not finely readable: refused with nothing running, 0 stopped, 24-29
+# idle, 46-100 under load, 95-99 through long decode. The page says so, because otherwise a flat 99 reads as
+# "fully loaded" and a 0 as "healthy idle" when either could also mean "the launch let go".
+ck("the cards line says busy % is coarse here, with the observed spread",
+   "busy % is coarse here" in monjs and "amdgpu sysfs" in monjs)
 ck("each waveform carries last, peak and average",
    'avg ${fmt' in monjs and 'peak ${fmt' in monjs
    and all(f'id="{i}"' in monhtml for i in ("stream-spark-note", "gen-spark-note",

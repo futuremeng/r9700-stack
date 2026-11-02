@@ -390,10 +390,11 @@ def read_host():
 def read_gpus(root):
     """Per-card state from the amdgpu sysfs: no ROCm runtime, no container, nothing started on the card.
 
-    Read tolerantly and say what could not be read: on this box, with a live compute context, several
-    of these attributes answer EBUSY (gpu_busy_percent, the hwmon temperature and clock files). A card
-    that answers nothing is reported as unreadable rather than as busy 0% -- the difference is the
-    whole point of the page."""
+    Read tolerantly and say what could not be read: which attributes answer depends on the state of the card,
+    and on this box it has flipped within a day. With nothing running, all four answered EBUSY and only the VRAM
+    files replied (57 MiB); with the serve holding a context on each, gpu_busy_percent (99), temp1_input (61-72
+    C), power1_average (232-440 W) and the labelled sclk (2.7-3.3 GHz) all answer. So "refused" and "zero" are
+    different states and the page must not confuse them: a card that answers nothing is unreadable, never busy 0%."""
     gpus = []
     for card in sorted(Path(root).glob("card[0-9]*")):
         dev = card / "device"
@@ -420,11 +421,16 @@ def read_gpus(root):
         if not vals:                                      # not a GPU (or no readable counters at all)
             continue
         # hwmon: names move between kernels -- power1_input / power1_average, and the clock files are
-        # labelled sclk and mclk, which is the SM clock the load-time mysteries are always about.
-        temp = power = sclk = mclk = None
-        for hm in sorted(dev.glob("hwmon*")):
+        # labelled sclk and mclk, which is the SM clock the load-time mysteries are always about. The sensor
+        # directory itself moves too: on the stack this box runs it is device/hwmon/hwmonN, and it used to be
+        # device/hwmonN. Globbing only the second form is how the Monitor showed a blank temperature and power
+        # for months on a box whose files read perfectly well (measured 2026-11-02: temp1_input 65000,
+        # power1_average 205000000, freq1_label "sclk" -> 3311000000, and `unread` empty the whole time).
+        temp = power = sclk = mclk = cap = None
+        for hm in sorted(dev.glob("hwmon*")) + sorted(dev.glob("hwmon*/hwmon*")):
             temp = temp if temp is not None else num(hm / "temp1_input")
             power = power if power is not None else (num(hm / "power1_input") or num(hm / "power1_average"))
+            cap = cap if cap is not None else (num(hm / "power1_cap") or num(hm / "power1_cap_max"))
             for f in hm.glob("freq*_label"):
                 try:
                     lab = f.read_text().strip()
@@ -450,6 +456,9 @@ def read_gpus(root):
         vals.update({"card": card.name, "name": name, "bus": bus,
                      "temp_c": (temp / 1e3) if temp else None,
                      "power_w": (power / 1e6) if power else None,
+                     # The power ceiling is what makes a power waveform mean anything: a card pinned at its cap
+                     # and one idling at 205 of 500 W look identical on an autoscaled axis.
+                     "power_cap_w": (cap / 1e6) if cap else None,
                      "sclk_mhz": (sclk / 1e6) if sclk else None, "mclk_mhz": (mclk / 1e6) if mclk else None,
                      "unread": unread})
         gpus.append(vals)
@@ -758,7 +767,9 @@ class Hub:
             self.gpuhist.append({"at": time.time(), "cards": [
                 {"card": g.get("card"), "bus": g.get("bus"), "busy_pct": g.get("busy_pct"),
                  "vram_used": g.get("vram_used"), "vram_total": g.get("vram_total"),
-                 "sclk_mhz": g.get("sclk_mhz"), "power_w": g.get("power_w")} for g in self.gpus]})
+                 "sclk_mhz": g.get("sclk_mhz"), "power_w": g.get("power_w"),
+                 "power_cap_w": g.get("power_cap_w"), "temp_c": g.get("temp_c")}
+                for g in self.gpus]})
             self.host = read_host()
             time.sleep(max(1.0, self.cfg["poll"]))
 

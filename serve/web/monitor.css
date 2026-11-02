@@ -18,9 +18,14 @@ section{margin:18px 0}
 .gpu b{display:block;font-size:var(--st-fs-md);font-weight:700}
 .gpu .pct{font-size:var(--st-fs-stat);font-weight:900;letter-spacing:-.01em;line-height:1;margin:8px 0 0;font-variant-numeric:tabular-nums}
 .gpu .muted{margin-top:6px}
-/* Per-card busy and VRAM as waveforms (0..100 and 0..the card's own VRAM total), replacing the busy bar. */
-.gpu .spark--gpu{display:block;margin-top:8px}
-.gpu .spark--gpu .spark{height:26px}
+/* Per-card sensor waves: busy, VRAM, sclk, watts, degrees -- stacked rows, one labelled wave each, because
+   they share no axis. Tone colours a wave when the card is at its power cap or running hot. */
+.gpu .sparkrow{display:grid;grid-template-columns:3.2em 1fr;align-items:center;gap:6px;margin-top:6px}
+.gpu .sparkrow span{font-size:var(--st-fs-xs);color:var(--st-ink-muted);font-variant-numeric:tabular-nums}
+.gpu .spark--gpu{display:block}
+.gpu .spark--gpu .spark{height:22px}
+.gpu .spark--gpu[data-tone=warn] .spark{color:var(--st-warn)}
+.gpu .spark--gpu[data-tone=danger] .spark{color:var(--st-danger)}
 .gpu .q,.value .q{color:var(--st-ink-muted);font-weight:500;font-size:var(--st-fs-xl)}
 
 .panel-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}

@@ -403,10 +403,11 @@ either way, so one point is one poll of time whatever the series was doing in be
 sysfs cannot plot its neighbour's numbers), and each card draws busy on 0..100 and VRAM on 0..that card's own
 total, captioned `busy peak 100 · avg 95% · 65/65 pts over 65 s`. Two honest readings, learned while wiring it:
 
-- **busy % on this box is a context-alive signal, not a load signal.** `gpu_busy_percent` reads ~99 the whole
-  time a launch holds the card — measured avg 95-99% over rings in which nothing at all was asked of the serve.
-  The panel line says so, because otherwise a flat line at 99 reads as "fully loaded" and a drop to 0 as "idle
-  and healthy" when it actually means "the launch let go of the card".
+- **busy % is coarse on this box, not a load meter you can read finely.** Same card set, measured across a day:
+  refused (EBUSY) with nothing running, 0% after a launch stopped, 24-29% with the engine idle, 46-100% under
+  three 600-token streams, and 95-99% for long stretches of MTP-heavy decode. The panel line carries that spread,
+  because otherwise a flat 99 reads as "fully loaded" and a fall to 0 as "healthy idle" when either could also
+  mean "the launch let go of the card".
 - **VRAM on 0..total is the leak question with no script.** The soak runs used to log per-card VRAM to a side
   file to show flat is flat (`min == max` on all four cards); the wave is that evidence, always on, and the
   launch preallocates the pool so the expected shape is a step at boot and a line — anything sloping up is the
@@ -415,6 +416,31 @@ total, captioned `busy peak 100 · avg 95% · 65/65 pts over 65 s`. Two honest r
 `tools/cardwave-check.js` runs the card renderer under node against a live `/api/status` with a stub DOM, and
 prints what it produced (two waveforms, no bar, the caption text) — the browser is still the real test, but the
 silent failure this catches is the card drawing nothing at all.
+
+**Power, temperature and the SM clock joined them** — five labelled waves per card: `busy`, `VRAM`, `sclk`, `W`,
+`°C`. They are **stacked, not overlaid**: watts, degrees and megahertz share no axis, and three autoscaled series
+in one box is the exact shape of lie a sparkline tells (a card pinned at its power cap and one idling at 205 of
+500 W look identical). Ceilings are fixed per wave: busy 0..100, VRAM 0..the card's own size, sclk 0..observed
+peak (this kernel exposes no max-frequency file), power 0..`max(power1_cap, observed)`, temperature 0..110 °C, so
+65 °C and 95 °C are comparable between cards and across refreshes. One caption line carries the readings that are
+read by number rather than shape — live: `temp peak 68 · avg 66 °C · power peak 494 · avg 283 W · sclk peak 3,331
+· avg 2,735 MHz · busy avg 94% · 90 pts over 91 s`. Only temperature gets a warning colour: this box is uncapped,
+so passing `power1_cap` is the configuration and not a fault, whereas 95 °C is a fault anywhere.
+
+Two things that came out of wiring the thermal waves:
+
+- **the sensors were being read from the wrong path.** The Monitor had shown a blank temperature, power and clock
+  for weeks on a box whose files read fine: the hwmon directory here is `device/hwmon/hwmonN`, and the reader
+  globbed `device/hwmon*` — the older layout — so it found the container directory and no files. Both forms are
+  globbed now, and the test fixture carries one card of each so this cannot silently regress.
+- **`power1_cap` is not the limit here.** Cap reads 300 W while the cards draw 232–494 W (measured over a 90 s
+  ring) — this is the uncapped native box, so the axis takes the larger of cap and observed, and the cap stays in
+  the text line as a contrast instead of clipping the wave.
+
+The sensor set that answers **depends on what holds the card**: with nothing running, all four answered EBUSY and
+only the VRAM files replied (57 MiB); with the serve holding a context, busy 99%, 61–72 °C, 232–494 W and 2.7–3.3
+GHz all come back. Refused and zero stay different states in the code — a card that answers nothing is
+unreadable, never "0% busy", and its wave breaks instead of dipping to idle.
 
 One caveat on the KV-growth estimate, because it is a difference of a gauge sampled at the poll rate: it is good
 on large prefills (5,787 against 5,459 measured) and can spike on small ones and at request boundaries — a peak
