@@ -163,8 +163,10 @@ function gpuCard(g, ghist = [], i = 0) {
       + "(junction) and memory numbers came later"
     : "one temperature sensor, which one it is, this build does not say"]);
   if (hasMem) {
-    rows.push(["mem", "GDDR7. No published threshold in sysfs on these cards, so it is drawn uncoloured and "
-      + "read against its neighbours"]);
+    rows.push(["mem", `GDDR7 (crit ${isnum(g.temp_mem_crit_c) ? g.temp_mem_crit_c.toFixed(0) : "?"} C, emergency `
+      + `${isnum(g.temp_mem_emerg_c) ? g.temp_mem_emerg_c.toFixed(0) : "?"} C) -- its own limits, not the die's. `
+      + "It is the sensor that separates these four cards, so read it both ways: against its limit and against "
+      + "its neighbours"]);
   }
   d.innerHTML = `<b>${g.name || g.card}</b><span class="small">${g.card}</span>`
     + `<div class="pct">${busy}</div>`
@@ -201,10 +203,15 @@ function gpuCard(g, ghist = [], i = 0) {
   const vals = [series("busy_pct"), vramS, series("sclk_mhz"), series("power_w")];
   const ceils = [100, vramCeil, sclkPeak, powerCeil];
   const tempIdx = [];
+  let memIdx = -1, memCeil = tempCeil;
   vals.push(series("temp_c")); ceils.push(tempCeil); tempIdx.push(vals.length - 1);
   if (hasMem) {
     vals.push(series("temp_mem_c"));
-    ceils.push(Math.max(tempCeil, ...vals[vals.length - 1].filter(isnum), 0));
+    // the memory wave runs against the memory card's own crit (108 C on these cards, published as temp3_crit),
+    // not against the die's: they are different limits and the memory one is lower
+    memCeil = g.temp_mem_crit_c || tempCeil;
+    ceils.push(Math.max(memCeil, ...vals[vals.length - 1].filter(isnum), 0));
+    memIdx = vals.length - 1;
   }
   d.querySelectorAll(".spark--gpu").forEach((el, j) => {
     spark(el, vals[j], { baseLo: 0, baseHi: ceils[j] });
@@ -214,12 +221,12 @@ function gpuCard(g, ghist = [], i = 0) {
     // either: no published limit, so any threshold would be invented; it is read against its neighbours.
     // An unlabelled build's single temperature sensor is not coloured either: without knowing which
     // sensor it is, a threshold is a guess.
-    const isDie = tempIdx.includes(j) && tlab === "junction";
-    el.dataset.tone = isDie && isnum(g.temp_c)
-      ? (isnum(g.temp_crit_c)
-         ? (g.temp_c > 0.98 * g.temp_crit_c ? "danger" : g.temp_c > 0.95 * g.temp_crit_c ? "warn" : "")
-         : (g.temp_c > 105 ? "danger" : ""))
-      : "";
+    // each temperature wave is graded against its own sensor's published crit: die 110 / mem 108 C
+    const kt = j === memIdx ? "temp_mem_c" : "temp_c";
+    const kc = j === memIdx ? g.temp_mem_crit_c : g.temp_crit_c;
+    const near = (tlab === "junction" || j === memIdx) && isnum(g[kt]) && isnum(kc)
+      ? (g[kt] > 0.98 * kc ? "danger" : g[kt] > 0.95 * kc ? "warn" : "") : "";
+    el.dataset.tone = near;
   });
   // One summary line for the thermal readings, because those waves are read by peak and average rather than by
   // shape: did it ever get near its limit, and how hot did the memory actually get.
@@ -233,7 +240,9 @@ function gpuCard(g, ghist = [], i = 0) {
   const spanS = ghist.length > 1 ? ghist[ghist.length - 1].at - ghist[0].at : 0;
   const critTxt = isnum(g.temp_crit_c) ? ` (crit ${g.temp_crit_c.toFixed(0)})` : "";
   const parts = [stat("temp_c", tlab, ` \u00b0C${tlab === "junction" ? critTxt : ""}`, 0),
-                 hasMem ? stat("temp_mem_c", "mem", " \u00b0C", 0) : null,
+                 hasMem ? stat("temp_mem_c", "mem",
+                              ` \u00b0C${isnum(g.temp_mem_crit_c) ? ` (crit ${g.temp_mem_crit_c.toFixed(0)})` : ""}`,
+                              0) : null,
                  stat("power_w", "power", " W"), stat("sclk_mhz", "sclk", " MHz"),
                  xs.length >= 2 ? `busy avg ${fmt(xs.reduce((a, b) => a + b, 0) / xs.length, 0)}%` : null];
   if (cap) cap.textContent = parts.filter((x) => x).length

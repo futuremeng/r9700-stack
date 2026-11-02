@@ -366,6 +366,22 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   like an uncorrectable fault. Serving traffic does not move these counters; launches do — recorded in the incident
   note, where the takeaway is that a mid-decode event is now the out-of-pattern thing to look for.
 
+- **Is it safe, and would a power cap buy anything?** Measured before recommending, and the answer is no (see
+  [notes/observe-2026-11-02.md](notes/observe-2026-11-02.md), "is this safe"). 90 s at 1 Hz against the published
+  envelopes: every card averages **293-294 W into a 300 W PPT** — `power1_cap` sits at its vendor default (range
+  210-330) and this guest installs no cap service, so the wall is already there; "uncapped" in older notes meant
+  the *average* is pinned at the cap while short transients exceed it. Junction 89.0 / 102.3 / 99.3 / 98.4 avg
+  (worst peak 105) against crit 110 / emergency 115; mem 83.9 / 85.2 / 81.6 / **94.4** (worst peak 96) against crit
+  108 / emergency 113 — no sample in any window today crossed either. The deciding measurement: **card2 runs
+  2,798 MHz at junction ≥103 and 3,134 MHz below 100** — the DPM already trades ~11% of clock for temperature, so a
+  lower wall deepens a tax already being paid instead of preventing one, and this repo's own 210 W gate numbers
+  price a deep cap at **−25 to −33% of prefill** (5.2-7.2k against 7.7-9.6k tok/s) — today's exact bottleneck.
+  Recommended first, both root-only writes: raise `fan1_target` (fans run at 4.0-4.6k of `fan1_max` 5000, and
+  card4 runs 4435 while holding the hottest memory on the box) on card4 and card2 and re-read — if card4's mem
+  falls, airflow; if it does not, the memory-side interface; and if card2's clocks recover, that is free
+  throughput. Keep a cap (270 W, not 210) for a real trigger: mem over ~103 sustained, junction ≥106-108 across the
+  pack, or peak draw correlating with the PCIe story.
+
 - **card4 was never the hot card: `temp1` was the wrong sensor** (227 checks). Started as "why does one card sit
   10 °C hotter" and the answer is that the panel read `temp1_input`, which on these cards is `edge`, and there are
   three sensors. 180 s at 1 Hz under real traffic, four cards at **291-293 W each** — cards 1-4: edge 68.0 / 67.8 /
@@ -379,8 +395,8 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   measurements that would (idle series, cool-down slopes, BMC inlet/slot/fan sensors, physical slot inspection, a
   one-card memory-bandwidth load). Monitor now reads temperatures **by label**, puts junction on the headline with
   its own `crit` as the axis (colour only in the last few degrees — these cards normally sit 90-106 °C at crit
-  110, so a borrowed "95 °C = fault" rule would scream all day), gives mem an uncoloured wave because sysfs
-  publishes no memory threshold and inventing one is not instrumentation, keeps edge in text, rides fan rpm/duty
+  gives mem a wave on its own published `temp3_crit` (108 C, emergency 113 -- corrected mid-investigation: memory does publish limits, and grading it by the die's 110 is wrong in both directions), keeps edge in text,
+  rides fan rpm/duty
   along, and labels the headline from whatever the running build actually reports (`junction`/`edge`/`temp`) so a
   new page cannot name a sensor an older serve never read. Also fixes a live bug in the sampler that wrote this:
   a late-bound closure made all four cards read one card's hwmon, which is why the first table looked like four

@@ -559,8 +559,10 @@ than invented. One caption line carries the readings that are read by number rat
 Colour means *near the wall*, and the wall is per sensor. **Junction** is coloured against its own `crit` (warn at
 95%, danger at 98%) — measured, these cards sit at **90-106 °C junction under real load with crit 110**, so an
 absolute "95 °C is a fault" rule would have screamed at normal operation. **Power is never coloured** (this box is
-uncapped: passing `power1_cap` is the configuration). **Mem is never coloured** — sysfs publishes no memory
-threshold on these cards, so any cut would be made up; mem is read against its neighbours instead, which is
+uncapped: passing `power1_cap` is the configuration). **Mem is graded against its own `temp3_crit` (108 °C,
+emergency 113)** — lower than the die's 110/115, so grading memory by the die limit would be wrong in both
+directions; each sensor's limits ride the payload (`temp_crit_c`, `temp_mem_crit_c`, `temp_mem_emerg_c`).
+Memory is read against its neighbours as well as its limit — that is how its story was found.
 exactly how its story was found.
 
 **There are three temperature sensors per card, and reading the first one is nearly worthless.** Measured while

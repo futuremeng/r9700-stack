@@ -440,7 +440,7 @@ def read_gpus(root):
         # which temp1 cannot see. Junction is the headline because it is the sensor with a published limit
         # (temp*_crit = 110 C) and the one the fan map follows; mem has no published threshold on these cards,
         # so it is shown and never coloured.
-        temps, crit, fan, pwm = {}, None, None, None
+        temps, crit, crits, fan, pwm = {}, None, {}, None, None
         power = sclk = mclk = cap = None
         for hm in sorted(dev.glob("hwmon*")) + sorted(dev.glob("hwmon*/hwmon*")):
             for f in hm.glob("temp*_label"):
@@ -453,9 +453,14 @@ def read_gpus(root):
                 if got is None:
                     continue
                 temps.setdefault(lab, got / 1e3)
+                e = num(hm / (stem + "_emergency"))
+                if e is not None:
+                    crits.setdefault(lab + "_emergency", e / 1e3)
                 c = num(hm / (stem + "_crit"))
-                if c is not None and crit is None:
-                    crit = c / 1e3
+                if c is not None:
+                    crits.setdefault(lab, c / 1e3)      # every sensor carries its OWN limit and its own
+                    if crit is None:                    # emergency point: junction 110/115, mem 108/113
+                        crit = c / 1e3
             t1 = num(hm / "temp1_input")                # a kernel with no labels still gets what it had
             if t1 is not None:
                 temps.setdefault("edge", t1 / 1e3)
@@ -490,7 +495,9 @@ def read_gpus(root):
                      # fan-relevant), edge only as the fallback an unlabelled kernel leaves us with.
                      "temp_c": temps.get("junction") or temps.get("edge"),
                      "temp_junction_c": temps.get("junction"), "temp_edge_c": temps.get("edge"),
-                     "temp_mem_c": temps.get("mem"), "temp_crit_c": crit,
+                     "temp_mem_c": temps.get("mem"), "temp_crit_c": crits.get("junction") or crit,
+                     "temp_mem_crit_c": crits.get("mem"),
+                     "temp_mem_emerg_c": crits.get("mem_emergency"),
                      # Fan duty belongs in the thermal story: the loop follows the junction, so a card can run a
                      # lower duty than its neighbours while its memory is the hottest thing on the box.
                      "fan_rpm": fan, "pwm": pwm,

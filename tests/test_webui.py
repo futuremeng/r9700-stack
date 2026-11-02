@@ -452,6 +452,8 @@ deep.mkdir(parents=True, exist_ok=True)
 (deep / "temp2_crit").write_text("110000\n")
 (deep / "temp3_label").write_text("mem\n")
 (deep / "temp3_input").write_text("41000\n")
+(deep / "temp3_crit").write_text("108000\n")
+(deep / "temp3_emergency").write_text("113000\n")
 (deep / "fan1_input").write_text("4400\n")
 (deep / "pwm1").write_text("186\n")
 (deep / "power1_average").write_text("199870000\n")
@@ -530,7 +532,8 @@ ck("both hwmon layouts are read (the kernel here uses device/hwmon/hwmonN)",
 _c3 = next(g for g in gpus if g["card"] == "card3")
 ck("temperatures are read by label: junction is temp_c, edge and mem ride along, and the crit limit comes with them",
    _c3["temp_c"] == 45.0 and _c3["temp_edge_c"] == 33.0 and _c3["temp_mem_c"] == 41.0
-   and _c3["temp_crit_c"] == 110.0, str(_c3))
+   and _c3["temp_crit_c"] == 110.0 and _c3["temp_mem_crit_c"] == 108.0
+   and _c3["temp_mem_emerg_c"] == 113.0, str(_c3))
 ck("an unlabelled kernel still gets its temp1 as the headline",
    gpus[0]["temp_c"] == 61.0 and gpus[0]["temp_junction_c"] is None, str(gpus[0]))
 ck("fan rpm and duty ride the payload, because the fan map follows the junction and can be calm while the "
@@ -1047,9 +1050,10 @@ ck("each wave gets its own ceiling, not an autoscaled one, and the temperature a
    "ceils = [100, vramCeil, sclkPeak, powerCeil]" in _ck2 and "ceils.push(tempCeil)" in _ck2
    and "const tempCeil = g.temp_crit_c || 110;" in _ck2
    and "Math.max(g.power_cap_w || 0, powerPeak)" in _ck2)
-ck("tone is per sensor and honest: the die sensor against its own crit, power and mem never coloured",
-   "g.temp_c > 0.98 * g.temp_crit_c" in _ck2 and "0.95 * g.temp_crit_c" in _ck2
-   and "const isDie = tempIdx.includes(j)" in _ck2)
+ck("each temperature wave is graded against its own sensor's published crit, and power never gets coloured",
+   "g[kt] > 0.98 * kc" in _ck2 and "g[kt] > 0.95 * kc" in _ck2
+   and "j === memIdx ? \"temp_mem_c\" : \"temp_c\"" in _ck2
+   and "memCeil = g.temp_mem_crit_c || tempCeil" in _ck2)
 # A page newer than the serve it reads must not name a sensor that build never took: an in-serve Monitor started
 # before the three-sensor read reports temp1 only, so the headline row is labelled from the payload and the mem
 # row is drawn only when there is a mem number behind it.

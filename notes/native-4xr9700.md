@@ -425,7 +425,15 @@ The power envelope is *not* the explanation, and the earlier suspicion of it was
 around a 6-second wave gives a 258 W median. Gated on `gpu_busy_percent == 100` (140 samples) the cards sit at
 **299 W median, 300.0 W max on all four**, flat, with GPU busy at 100 and 44-47 C -- exactly the ~300 W ceiling
 recorded above, and no powercap is installed in this guest (`/usr/local/sbin` empty, no `r9700-*` units; the 225 W
-cap belongs to the production guests, see `host/README.md`). Other fingerprints: GPU KV cache **496,374 tokens**
+cap belongs to the production guests, see `host/README.md`). **What "uncapped" means, precisely:** `power1_cap`
+reads **300 W on all four cards, which is `power1_cap_default`** — the vendor PPT, range `power1_cap_min` 210 to
+`power1_cap_max` 330. These cards are not running with no limit; they run at the stock 300 W PPT, which is why a
+busy-gated sample medians 299 W with a 300.0 W max, while 1 s `power1_average` sampling catches short transients
+above 400 W (enforcement is on an average, not the instant). The published thermal envelope from hwmon: junction
+`temp2_crit` **110 / emergency 115**, memory `temp3_crit` **108 / emergency 113** — memory's limit is *lower* than
+the die's — edge `temp1_crit` 110; fans at `fan1_target` 4.0-4.6k rpm against `fan1_max` 5000. `power1_cap` and
+`fan1_target` are both root-only writes; current margins and the cap decision are in
+[observe-2026-11-02.md](observe-2026-11-02.md). Other fingerprints: GPU KV cache **496,374 tokens**
 (15.15x at 32k) against 502,442 recorded for MTP=2 (-1.2%), `Available KV cache memory: 7.25 GiB`; GSM8K 98/100 and
 needles 3/3; temps and counters clean. Open, low priority: whether that -5% and the 1.2% smaller KV pool are
 instance drift or something real -- settle it by rerunning `probe32.sh` on the next launch rather than by trusting
