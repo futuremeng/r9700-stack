@@ -1547,7 +1547,17 @@ function), `R9K_LOAD_COPIES=1` (`copy_` accounting, fault deltas, slow-call name
 stream-ahead readahead, default 0: no effect on the target pass, see above), `R9K_CACHE_WINDOW=<MiB>` (the C6
 consumed-page handback, default 0: neutral, see above), `R9K_PWAL_PROBE=0|1` and `R9K_PWAL_PROBE_MS=<ms>` (the window
 probe, default on at 200 ms: submission cost, whole-device latency, and a fixed host loop sampled inside the window),
-`R9K_PWAL_WARM=0|1` (warm the post-load helpers before the window, default 1: worth ~1 s per rank on a clean window).
+`R9K_PWAL_WARM=0|1` (warm the post-load helpers before the window, default 1: worth ~1 s per rank on a clean window),
+`R9K_SPLIT=0|1` and `R9K_SPLIT_MS=<ms>` (the issue/wait split on the repack calls, default on above 50 ms -- what
+C23 is written from), `R9K_PWAL_SERIAL=1` with `R9K_PWAL_LOCK=<path>` (default `/tmp/r9k-pwal.lock`) and
+`R9K_PWAL_SERIAL_TO=<s>` (default 240): one rank's window at a time, which tail48 showed is not the cause of a slow
+window, `R9K_PWAL_BEAT=1` with `R9K_PWAL_BEAT_S=<s>` (default 0.05): the heartbeat experiment, a measured negative,
+`R9K_PWAL_PRESTAGE=populate|lock` with `R9K_PWAL_GIB=<n>` (utils/pin.py: pay the window's paging up front, default
+off -- a measured negative), `R9K_SLOWCALL=<s>` (default 2.0: a single load-path call over it names itself),
+`R9K_FOLD_SAMPLE=<values>` (default 1<<20: how many values the fold guard walks before it decides a tensor may fold)
+with `R9K_FOLD_MARGIN=<int>` (exact re-walk when a sampled exponent gap lands within it of a threshold),
+`R9K_FOLD_MAX_INEXACT` (default 0.05: largest share of blocks with d > 8 a folded tensor may carry) and
+`R9K_FOLD_MAX_FLUSH` (default 0.001: largest share with d > 12) are the guard's own thresholds.
 Read all three device/host numbers together: `submit` stays ~0.05 ms and `submit+sync` ~0.1 ms in both regimes, the
 cards sit at 2.85 GHz while busy in both regimes, and the host loop baseline is 42-46 ns/iter.
 Read the pair: the log's `slow call` offsets (`+N s into the load`, with `probe at HH:MM:SS` in the header line) line up
