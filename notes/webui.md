@@ -89,11 +89,22 @@ and a test asserts the repo's own plugin survives it.
 | tok/s, req/min, prompt tok/s | counter deltas over the poll window (`generation_tokens_total`, `prompt_tokens_total`, `e2e_request_latency_seconds_count`); `prompt_tokens_total` is credited when a request FINISHES, so the line is labelled "credited at request end" |
 | prefill speed of one request | inside the serve: that request's own `prompt - cached` tokens over its own `prefill_time` (whole prompt when nothing was cached), computed when the record is made. Through a relay: prompt tokens over first-token latency, printed with that basis because it includes engine queue |
 | first token, queue, prefill, decode means | `_sum`/`_count` deltas of `time_to_first_token_seconds`, `request_queue_time_seconds`, `request_prefill_time_seconds`, `request_decode_time_seconds` (`bench/ttft_breakdown.py` reads the same family) |
-| speculation acceptance %, drafts/request | `spec_decode_num_accepted_tokens_total` ÷ `spec_decode_num_draft_tokens_total` (the older builds only have `..._num_drafts_total`, which gives drafts per request but not the token ratio) |
-| tokens per engine step, steps per request | `iteration_tokens_total_{sum,count}` |
+| speculation acceptance %, drafts/request, accepted tokens/draft | `spec_decode_num_accepted_tokens_total` ÷ `spec_decode_num_draft_tokens_total` (the older builds only have `..._num_drafts_total`, which gives drafts per request but not the token ratio); `accepted ÷ num_drafts_total` is accepted tokens per draft, which cannot exceed `num_speculative_tokens` — 2.0 at MTP=2, and that ceiling is on the card because it is the check that catches a wrong counter pair |
+| tokens per iteration record, records per request | `iteration_tokens_total_{sum,count}` — **not a step size despite the metric's own HELP text**; see below |
 | prefix cache hits % | `prefix_cache_hits_total` ÷ `prefix_cache_queries_total` |
 | card busy % / VRAM / temperature / sclk / mclk | `/sys/class/drm/card*/device` (`gpu_busy_percent`, `mem_info_*`, `hwmon*/{temp1_input,power1_average}`, `hwmon*/freq*_label` matched by `sclk`/`mclk`, not by index) |
 | the launch recipe on About | the meta file `serve/serve.sh` and `serve/native-flashnext.sh` write when `WEBUI` is set (`--meta`), not something inferred. It is named after the port the **pages** are served on — `PORT+1` for the sidecar, `PORT` for `WEBUI=same`, since merged mode has no second port. Write it to one name and read it from the other and the card silently disappears: that is how the merged About page lost it |
+
+**`iteration_tokens_total` is labelled "tokens per engine_step" and is not one.** Measured against single
+requests on 0.32.0 (delta of `_sum` and `_count` across one request, plus which histogram buckets moved): a
+4,893-token prompt produced **2 records** (4,893 and 4) and a 29,969-token prompt produced **3** (29,969, 4, 1),
+against `--max-num-batched-tokens 8192`. So `loggers.py:1273`, which observes
+`prompt_token_stats.computed + num_generation_tokens`, credits a whole chunked prefill in **one** record while a
+decode step gets a record of its own. Two consequences: the sum/count ratio tracks prompt size rather than the
+step budget and can sit far above NBT (9,621 since launch, 14,999 in a 2 s window on the 262k launch), and
+`iteration_tokens_total_count / requests` is records per request, not steps. The card says "tokens per iteration
+record (prompt whole, decode per step)"; the tooltip carries this measurement. Anyone who wants a real step rate
+has to count steps themselves — nothing in `/metrics` gives one.
 
 **`prompt_tokens_total` is credited when a request finishes, not as prefill proceeds.** Measured against a
 single 180,066-token prompt: the counter sat at 432,262 through the whole prefill and jumped to 612,332 in one
@@ -222,10 +233,14 @@ serves (`/v1/*`, `/metrics`) is untouched apart from `GET /`, which the plugin r
 
 ## Tests
 
-`tests/test_webui.py` (109 checks, no GPU and no network needed) and `tests/test_webui_plugin.py`
+`tests/test_webui.py` (135 checks, no GPU and no network needed) and `tests/test_webui_plugin.py`
 (32 checks; the record store and the stat logger run anywhere, the routes need FastAPI, and vLLM's own
 route-replacement tier runs only where vLLM imports — `LD_LIBRARY_PATH=~/opt/openmpi/usr/lib/x86_64-linux-gnu
-~/venv-r9700/bin/python tests/test_webui_plugin.py`).
+~/venv-r9700/bin/python tests/test_webui_plugin.py`). Two more cover the parts that are not the sidecar:
+`tests/test_readme.py` (21 checks: the README's card figure re-draws from the committed `/api/status` poll string
+for string, no line runs off the canvas, and the caption cannot state a number the figure does not show), and
+`tests/render-monitor.mjs`, which runs the page's own JavaScript unmodified in a stub DOM against a live serve and
+prints what its cards and rows actually render — the JS and its payloads, not CSS or layout.
 
 - `/metrics` collapsing: buckets skipped, counters summed over ranks, gauges taken as max, KV capacity
   and configuration read out of labels, and a counter that did not move reporting *no data* rather

@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="502" viewBox="0 0 1000 502" font-family="Outfit, 'DejaVu Sans', system-ui, sans-serif">
+<rect width="1000" height="502" fill="#0e1113"/>
+<text x="0" y="30" font-size="17" font-weight="700" fill="#eef1f3">The Monitor's cards</text>
+<text x="212" y="30" font-size="14" fill="#8e979f">drawn from the /api/status poll the sampler kept, not screenshotted &#183; mode: merged</text>
+<rect x="0.0" y="52" width="320" height="173" rx="10" fill="#161a1d" stroke="#2a3036"/>
+<text x="18.0" y="82" font-size="12" letter-spacing="1.2" fill="#8e979f">MODEL</text>
+<text x="18.0" y="124" font-size="30" font-weight="900" fill="#eef1f3">Qwen3.8</text>
+<text x="18.0" y="152" font-size="14.5" fill="#c7cdd3">context 262,144 tokens</text>
+<text x="18.0" y="173" font-size="13.0" fill="#8e979f">TP4 · MAXLEN 262,144 · NSEQ 32 · NBT</text>
+<text x="18.0" y="192" font-size="13.0" fill="#8e979f">8,192 · prefix cache off</text>
+<rect x="340.0" y="52" width="320" height="173" rx="10" fill="#161a1d" stroke="#2a3036"/>
+<text x="358.0" y="82" font-size="12" letter-spacing="1.2" fill="#8e979f">KV POOL</text>
+<text x="358.0" y="124" font-size="30" font-weight="900" fill="#eef1f3">10.1%</text>
+<text x="358.0" y="152" font-size="14.5" fill="#c7cdd3">pool 540,644 tokens</text>
+<text x="358.0" y="173" font-size="13.0" fill="#8e979f">used now, not reserved</text>
+<rect x="358.0" y="208" width="284" height="7" rx="3.5" fill="#2a3036"/>
+<rect x="358.0" y="208" width="28.8" height="7" rx="3.5" fill="#34d399"/>
+<rect x="680.0" y="52" width="320" height="173" rx="10" fill="#161a1d" stroke="#2a3036"/>
+<text x="698.0" y="82" font-size="12" letter-spacing="1.2" fill="#8e979f">REQUESTS</text>
+<text x="698.0" y="124" font-size="30" font-weight="900" fill="#eef1f3">2 running</text>
+<text x="698.0" y="152" font-size="14.5" fill="#c7cdd3">6 waiting · 6 for scheduling</text>
+<text x="698.0" y="173" font-size="14.5" fill="#c7cdd3">capacity · 0 deferred</text>
+<text x="698.0" y="194" font-size="13.0" fill="#8e979f">0 finished in the poll window</text>
+<rect x="170.0" y="245" width="320" height="211" rx="10" fill="#161a1d" stroke="#2a3036"/>
+<text x="188.0" y="275" font-size="12" letter-spacing="1.2" fill="#8e979f">GENERATION</text>
+<text x="188.0" y="317" font-size="30" font-weight="900" fill="#eef1f3">2.0 tok/s</text>
+<text x="188.0" y="345" font-size="14.5" fill="#c7cdd3">14,915 prompt tok/s (credited at</text>
+<text x="188.0" y="366" font-size="14.5" fill="#c7cdd3">request end) · 0.0 req/min</text>
+<text x="188.0" y="387" font-size="13.0" fill="#8e979f">14,999 tokens per iteration record</text>
+<text x="188.0" y="406" font-size="13.0" fill="#8e979f">(prompt whole, decode per step) ·</text>
+<text x="188.0" y="425" font-size="13.0" fill="#8e979f">last 2 s</text>
+<rect x="510.0" y="245" width="320" height="211" rx="10" fill="#161a1d" stroke="#2a3036"/>
+<text x="528.0" y="275" font-size="12" letter-spacing="1.2" fill="#8e979f">SPECULATION</text>
+<text x="528.0" y="317" font-size="24" font-weight="900" fill="#eef1f3">100.0% accepted</text>
+<text x="528.0" y="345" font-size="14.5" fill="#c7cdd3">20 requests finished since the</text>
+<text x="528.0" y="366" font-size="14.5" fill="#c7cdd3">engine started</text>
+<text x="528.0" y="387" font-size="13.0" fill="#8e979f">2.00 accepted tokens per draft ·</text>
+<text x="528.0" y="406" font-size="13.0" fill="#8e979f">last 2 s</text>
+<text x="0" y="488" font-size="13" fill="#8e979f">the poll it was drawn from: docs/r9700-stack-monitor-cards.json</text>
+<text x="0" y="468" font-size="13" fill="#8e979f">GET http://127.0.0.1:8080/api/status at 2026-11-02 06:47:35 UTC &#183; Qwen3.8 from Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ</text>
+</svg>

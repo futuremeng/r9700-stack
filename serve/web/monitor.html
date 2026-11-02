@@ -79,20 +79,32 @@
     <div class="card">
       <div class="label">Requests</div>
       <div class="value value--sm"><span id="running">0</span><span class="unit">running</span></div>
-      <div class="small" id="waiting">0 waiting · 0 preempted</div>
+      <div class="small" id="waiting" title="The engine's waiting queue, split by reason when it publishes them:
+'scheduling capacity' = it wants a slot in the schedule (blocks, or the token budget of the step); 'deferred' = a
+transient constraint (LoRA budget, KV transfer, blocked status). The two sum to the total.">0 waiting · 0
+preempted</div>
       <div class="sparkline" id="kv-spark"></div>
     </div>
     <div class="card">
       <div class="label">Generation</div>
       <div class="value value--sm"><span id="gen-toks">—</span><span class="unit">tok/s</span></div>
       <div class="small" id="prompt-toks">—</div>
+      <div class="small" id="step-size" title="vllm:iteration_tokens_total, whose own HELP text says 'number of tokens
+per engine_step' but which does not behave like that at 0.32.0: it observes computed prompt tokens + generation
+tokens, and measured here one 4,893-token prompt produced 2 observations (one of 4,893, one of 4) and one
+29,969-token prompt produced 3 (one of 29,969, two of 1-4). So a chunked prefill is credited whole in one
+observation (v1/metrics/loggers.py:1273 observes prompt_token_stats.computed + num_generation_tokens) while a
+decode step gets its own -- the ratio can sit above max-num-batched-tokens, which is why this line does not claim
+a chunk size.">—</div>
       <div class="sparkline" id="gen-spark"></div>
     </div>
     <div class="card">
       <div class="label">Speculation</div>
       <div class="value value--sm"><span id="accept">—</span><span class="unit">accepted</span></div>
       <div class="small" id="drafts">—</div>
-      <div class="small" id="iters">—</div>
+      <div class="small" id="per-draft" title="spec_decode_num_accepted_tokens_total /
+spec_decode_num_drafts_total: how many draft tokens one step got accepted. With MTP=2 the ceiling is 2.0 -- a
+number above it means the two counters are not the pair this line thinks they are.">—</div>
     </div>
   </section>
 

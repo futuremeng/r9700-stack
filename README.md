@@ -225,6 +225,23 @@ How each number above was produced, and what was tried and rejected: [PROGRESS.m
   click it for the pixels.</sub>
 </p>
 
+<p align="center">
+  <img src="docs/r9700-stack-monitor-cards.svg" alt="The Monitor's five headline cards, drawn from one kept GET /api/status: model Qwen3.8 at a 262,144-token context, TP4 MAXLEN 262,144 NSEQ 32 NBT 8,192 prefix cache off; KV pool 10.1% of 540,644 tokens; 2 running, 6 waiting, 6 for scheduling capacity, 0 deferred, 0 finished in the poll window; generation 2.0 tok/s, 14,915 prompt tok/s, 0.0 req/min, 14,999 tokens per iteration record prompt whole decode per step over the last 2 s; speculation 100.0% accepted, 20 requests finished since the engine started, 2.00 accepted tokens per draft over the last 2 s">
+  <br><sub>The same five cards drawn rather than screenshotted: `docs/monitor-cards.py`, stdlib, drawing one
+  recorded `GET /api/status` (the poll itself is committed next to it as `docs/r9700-stack-monitor-cards.json`, so
+  the figure can be re-drawn and checked without a serve). `bench/capture-cards.py` caught it 4 seconds into eight
+  concurrent ~30,000-token prompts on the standing 262k launch: two prefills run, six wait **for scheduling
+  capacity**, none deferred, and the pool is only 10.1% full -- a queue, not a memory wall, and the reason the
+  Requests card prints the split. Every rate on the figure says what it was averaged over: the Generation card's
+  2.0 tok/s and 14,999-token iteration record are both means of the last 2 s, and that pair is the engine crediting
+  whole prefills while its two running streams crawl. (That number is `vllm:iteration_tokens_total`, which calls
+  itself "tokens per engine step" and is not one on this build -- a chunked prefill is credited in a single record,
+  measured at 29,969 tokens in one record against NBT 8,192. The card says "iteration record" for that reason.)
+  Drawn because the screenshot above lands at 0.58 scale inside this
+  column and its text is unreadable, and a cropped wide strip would be smaller per panel, not larger: the column
+  width is the limit for the whole strip.</sub>
+</p>
+
 A stdlib sidecar (`serve/webui.py`: no framework, nothing extra to install) that reads what a running launch already
 publishes, `/health`, `/v1/models`, `/metrics`, plus the amdgpu sysfs of every card. Two shapes, and each page says
 which one it is:
@@ -244,11 +261,23 @@ the page (`/v1` for the OpenAI SDK and LiteLLM, the root for curl), `openai/<ser
 checkpoint path, the API key never printed, and the reasoning parser accounted for (`--reasoning-parser qwen3`
 makes reasoning tokens count against `max_tokens`, so a small budget returns `content = None`).
 
+The Requests card splits the waiting queue the way the engine labels it: `N waiting · M for scheduling capacity ·
+K deferred`, and the split is the whole point on this model. Eight ~30,000-token prompts measured holding
+`running 2 · waiting 6 · capacity 6 · deferred 0` with the KV pool at 8.8-10.2%: the queue is long prefills taking
+the step one chunk at a time, not memory, and "waiting" alone would have read like the opposite.
+
 What the pages refuse to invent: vLLM publishes nothing about a request while it is in flight, so there is no
 prefill progress bar -- `prompt_tokens_total` is credited when a request ends, and the one live signal during a
 long prefill is the KV pool filling (measured: 5.1 -> 32.1% in 3.0% steps for a single 180,066-token prompt).
 Cards whose sysfs answers `EBUSY` are shown as unread rather than as 0%. Where every number comes from, and what
 cannot be answered per request from outside: [notes/webui.md](notes/webui.md).
+
+What the page's own JavaScript renders can be checked against a live serve without a browser: `node
+tests/render-monitor.mjs` runs `serve/web/monitor.js` unmodified in a stub DOM and prints the cards and the request
+rows. That covers the JS and the payloads it is fed (a per-request card borrowing an engine-wide number, a real 0
+printed as a dash, a token count scaled wrong); it does not cover CSS, fonts or layout, which need a real browser.
+The figure above is covered too: `tests/test_readme.py` checks that every number in its caption is a number the
+drawn figure actually contains, so the caption cannot drift from the poll it claims to describe.
 
 ## Deploying it
 

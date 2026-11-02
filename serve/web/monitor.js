@@ -179,7 +179,15 @@ function renderStatus(s) {
   $("kv-bar").firstElementChild.style.width = `${kv}%`;
   text("kv-tokens", isnum(live.kv_tokens) ? `KV pool ${fmt(live.kv_tokens)} tokens` : "pool size not in /metrics");
   text("running", String(Math.round(live.running || 0)));
-  text("waiting", `${Math.round(live.waiting || 0)} waiting · ${fmt(rate.preemptions ?? 0)} preempted in the window`
+  text("waiting", `${Math.round(live.waiting || 0)} waiting`
+    // Why they wait, when this vLLM says why (0.32 does): "capacity" is waiting for scheduling capacity,
+    // "deferred" is a transient constraint (LoRA budget, KV transfer, blocked status), and the two sum to the
+    // waiting count. The total alone misleads on this model: measured, 8 x 30k prompts queued with the KV pool
+    // 11.7% full, because long prefills take the 8,192-token step one at a time. A real 0 stays visible --
+    // "nothing waiting" is a fact, not a missing value.
+    + (isnum(live.waiting_capacity) ? ` · ${Math.round(live.waiting_capacity)} for scheduling capacity` : "")
+    + (isnum(live.waiting_deferred) ? ` · ${Math.round(live.waiting_deferred)} deferred` : "")
+    + ` · ${fmt(rate.preemptions ?? 0)} preempted in the window`
     + (live.swapped ? ` · ${Math.round(live.swapped)} swapped` : ""));
   $("gen-toks").textContent = isnum(rate.generation_tok_s) ? fmt(rate.generation_tok_s, 1) : "—";
   text("prompt-toks", `${isnum(rate.prompt_tok_s) ? fmt(rate.prompt_tok_s, 0) : "—"} prompt tok/s`
@@ -197,9 +205,23 @@ function renderStatus(s) {
   text("drafts", isnum(rate.drafts_per_req) ? `${fmt(rate.drafts_per_req, 2)} drafts per request`
     : isnum(since.accept_pct) ? `${fmt(since.requests, 0)} requests finished since the engine started`
       : "no speculation counters");
+  // MTP=2 accepts at most 2 draft tokens a step, so this line has a ceiling the reader can check by eye.
+  text("per-draft", isnum(pick("accepted_per_draft"))
+    ? `${fmt(pick("accepted_per_draft"), 2)} accepted tokens per draft`
+      + (isnum(rate.accepted_per_draft) || !isnum(since.accepted_per_draft) ? "" : " (since launch)")
+    : "")
+  // This line belongs on the Generation card, not under Speculation: on a launch that has run any long prefill the
+  // number is in the thousands (9,621 since launch, measured), and under a speculation heading it reads as "MTP
+  // accepts 9,620 tokens a step". What it is NOT is a step size. vllm:iteration_tokens_total's own HELP text says
+  // "number of tokens per engine_step", but at 0.32.0 the observation is computed prompt tokens + generation
+  // tokens (v1/metrics/loggers.py:1273) and a chunked prefill lands in ONE record holding the whole prompt:
+  // measured, one 4,893-token prompt produced 2 records (4,893 and 4) and one 29,969-token prompt produced 3
+  // (29,969, then 4, then 1), while decode steps get a record each. The ratio therefore tracks prompt size and can
+  // sit above max-num-batched-tokens -- 29,969 in one record with NBT=8,192 -- so the line names the counter's
+  // unit instead of claiming a chunk size. Window and since-launch values are both labelled: not the same span.
   const tpi = pick("tokens_per_iter"), ipr = pick("iters_per_req");
-  text("iters", isnum(tpi) ? `${fmt(tpi, 2)} tokens per engine step`
-    + (isnum(ipr) ? ` · ${fmt(ipr, 2)} steps per request` : "")
+  text("step-size", isnum(tpi) ? `${fmt(tpi, 0)} tokens per iteration record (prompt whole, decode per step)`
+    + (isnum(ipr) ? ` · ${fmt(ipr, 2)} records per request` : "")
     + (isnum(rate.tokens_per_iter) || !isnum(since.tokens_per_iter) ? "" : " (since launch)") : "");
 
   const hist = s.history || [];

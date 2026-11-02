@@ -2343,3 +2343,34 @@ the instrument for it is the copy accounting that exists but is not switched on 
 (`R9K_LOAD_COPIES=1`), or `prof.split` extended with "copies +N (+X GiB) since the last note". Left running instead:
 **tail118** -- weights 61.36 s + draft requant 6.51 s, KV **495,160 tokens**, all four windows 5.3 s, health 200,
 GSM8K **98/100**, needles **3/3**.
+
+## 2026-11-02: what `iteration_tokens_total` counts, and the Monitor's cards put on paper
+
+`vllm:iteration_tokens_total` exports HELP "Histogram of number of tokens per engine_step". One request at a time,
+delta of `_sum` and `_count` across it, plus which buckets moved (`serve/webui.py`'s own counters, 0.32.0 native):
+
+| request | `_sum` delta | `_count` delta | records, read off the buckets |
+|---|---|---|---|
+| 4,893-token prompt, 4 generated | 4,897 | 2 | **4,893** and 4 |
+| 29,969-token prompt, 4 generated | 29,973 | 3 | **29,969**, 4, 1 |
+
+against `--max-num-batched-tokens 8192`. A chunked prefill is credited in **one** record holding the entire prompt
+while each decode step gets a record of its own, so the `sum/count` ratio tracks prompt size, not the step budget:
+9,621 tokens since launch and 14,999 in a 2 s window on the 262k launch, both above NBT. `iteration_tokens_total_count
+/ requests` is records per request, not steps per request. Consequences: the Monitor's Generation card says "tokens
+per iteration record (prompt whole, decode per step)" with this table in its tooltip (`serve/web/monitor.js`), and
+the 2026-09-29 "ms per iteration / requests per iteration" table above -- measured on short prompts, where the
+records really were decode steps -- should not be reused on a prefill-heavy load. Nothing in `/metrics` gives a
+real step count; getting one means counting them in the plugin.
+
+**The Monitor's five headline cards are drawn, not screenshotted** (`docs/monitor-cards.py`, README figure). The
+screenshot is 1688 x 1953, so github.com's ~980 px column scales it to 0.58 and its text is unreadable, and
+cropping it into a wide strip divides the same column five ways -- so the figure is drawn to the column instead
+(1000 px, 3 + 2 cards), text measured against its own font size at 0.6 em a glyph and wrapped, with anything that
+still does not fit reported rather than drawn off-canvas. `bench/capture-cards.py` supplies the sample: eight
+concurrent prompts sized by a calibration request (this filler costs 24.3 prompt_tokens a repeat, so a word count
+lands 3x off -- 46,165 repeats came back as 93,544 tokens), `/api/status` polled at 1 Hz, and the whole payload of
+the poll with the longest waiting queue kept and committed as `docs/r9700-stack-monitor-cards.json`. Kept poll,
+2026-11-02 06:47:35 UTC: `running 2 / waiting 6 / capacity 6 / deferred 0` at KV **10.1%** of 540,644 tokens,
+prompt_tokens 29,984-29,994. Re-drawing the figure from that committed poll is a test
+(`tests/test_readme.py`, 21 checks), so the picture, the poll and the caption cannot drift apart.

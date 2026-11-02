@@ -78,12 +78,23 @@ nicer-looking queue):
   three concurrent 250k prefills peaked at 30.6 GiB a card.
 
 `vllm:num_requests_waiting_by_reason` is worth reading with care, because its labels do not mean what they
-look like: `reason="capacity"` is `scheduler_stats.num_waiting_reqs` (the ordinary waiting queue) and
-`reason="deferred"` is `num_skipped_waiting_reqs` (requests the scheduler deliberately skipped this step) --
-`v1/metrics/loggers.py:1155-1159` at 0.32.0. **Neither one proves KV exhaustion**: the 8 × 30k load showed 7
-"capacity" waiting with the pool at 11.7%. `vllm:kv_cache_usage_perc` has the opposite failure -- it read 32.3%
-during 4 × 150k, when the hybrid groups were the resource that was actually short. Read `running` and `waiting`
-together with it, not one alone.
+look like. vLLM's own HELP text says "'capacity' = waiting for scheduling capacity; 'deferred' = deferred by
+transient constraints (LoRA budget, KV transfer, blocked status). Sum of all reasons equals
+`vllm:num_requests_waiting`". What the code actually assigns (`v1/metrics/loggers.py:1150-1159` at 0.32.0,
+and `v1/core/sched/scheduler.py:2947-2948`): `waiting = num_waiting_reqs + num_skipped_waiting_reqs`, with
+`capacity = num_waiting_reqs` (the ordinary queue) and `deferred = num_skipped_waiting_reqs` (requests the
+scheduler passed over this step). So "capacity" is a name for the queue, not a claim about blocks: **neither
+reason proves KV exhaustion**. The 8 × 30k load showed 7 "capacity" waiting with the pool at 11.7%, and the same
+load re-sampled through the Monitor says the same thing more exactly: `bench/capture-cards.py` fired eight
+concurrent prompts (the serve's own `prompt_tokens`: 29,984-29,994) at the standing 262k launch and kept the poll
+with the longest queue -- at 2026-11-02 06:47:35 UTC, `running 2 · waiting 6 · capacity 6 · deferred 0` at KV
+10.1% of a 540,644-token pool, with 8.8-10.2% across the seconds around it. Six requests waiting for a slot in
+the schedule while the pool sits nearly empty. That kept poll is what the README's card figure draws, and its
+`/api/status` payload is committed beside the figure (`docs/r9700-stack-monitor-cards.json`), so the sentence and
+the picture are checkable against the same sample.
+`vllm:kv_cache_usage_perc` has the opposite
+failure: it read 32.3% during 4 × 150k, when the hybrid groups were the resource that was actually short. Read
+`running`, `waiting` and the pool together, never one alone -- which is what the Requests card now prints.
 
 ## `--long-prefill-token-threshold`: it moves latency, it does not create capacity
 

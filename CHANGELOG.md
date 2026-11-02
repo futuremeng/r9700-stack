@@ -151,7 +151,51 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   uncapped single-stream decode reads 186.7 here against 225 at the 210 W release gate, and that is recorded, not
   reconciled -- the 210 W figure has never been re-measured on this box.
 
+### Changed
+- **The Requests card says why the queue is waiting** (`serve/webui.py`, `serve/web/monitor.js`,
+  `serve/web/monitor.html`). vLLM 0.32 publishes `vllm:num_requests_waiting_by_reason`, and the line is now
+  `N waiting · M for scheduling capacity · K deferred`. Its HELP text says "'capacity' = waiting for scheduling
+  capacity; 'deferred' = deferred by transient constraints (LoRA budget, KV transfer, blocked status)"; what the
+  code assigns (`v1/metrics/loggers.py:1150-1159`, `v1/core/sched/scheduler.py:2947-2948`) is
+  `capacity = num_waiting_reqs` and `deferred = num_skipped_waiting_reqs` -- so "capacity" is a name for the queue,
+  not a claim about KV blocks. Which is the whole point on this model: eight ~30,000-token prompts on the standing
+  262k launch held `running 2 / waiting 6 / capacity 6 / deferred 0` with the pool 8.8-10.2% full, six requests
+  waiting for a slot in the schedule while the pool sat nearly empty. A build that publishes no reason labels
+  reports the split absent, not zero (two checks in `tests/test_webui.py`).
+- **Speculation carries a number with a ceiling the eye can check**: `accepted_per_draft` =
+  `spec_decode_num_accepted_tokens_total / spec_decode_num_drafts_total`, which cannot exceed 2.0 at MTP=2
+  (`v1/spec_decode/metrics.py`: `observe_draft` adds one draft and at most `num_spec_tokens` accepted a step).
+  Measured 1.50 and 2.00 in poll windows on the 262k launch, 0.90 over the whole run.
+- **The five headline cards are drawn, not screenshotted** (`docs/monitor-cards.py` →
+  `docs/r9700-stack-monitor-cards.svg`, + `tests/render-monitor.mjs`). A README image lands inside github.com's
+  ~980 px column, so the 1688 x 1953 Monitor screenshot renders at 0.58 scale and its text is unreadable; cropping
+  it into a wide strip makes each panel smaller, not larger, because the column is the limit for the whole strip.
+  The figure is drawn to the column instead (1000 px, five cards in two rows), every line measured against its own
+  font size and wrapped, with any line that still cannot fit reported as a warning instead of leaving the canvas.
+  `tests/render-monitor.mjs` runs the page's own `monitor.js` unmodified in a stub DOM against a live serve and
+  prints what the cards actually render -- the JS and its payloads, not CSS, fonts or layout.
+- **`bench/capture-cards.py`: the sampler that produces that figure.** It fires N concurrent long prompts, polls
+  `/api/status` once a second, keeps the whole payload of the poll with the longest waiting queue, and hands that
+  file to the drawer -- so the figure is one measured poll rather than a hand-picked second, and the poll is
+  committed beside the figure (`docs/r9700-stack-monitor-cards.json`) so the picture can be re-drawn with no serve
+  in the loop. Prompt length is calibrated by measurement: one cheap request decides the word count, because this
+  filler costs 24.3 prompt_tokens a repeat and a word count landed 3x off (46,165 repeats came back as 93,544
+  tokens). It replaces the ad-hoc `/tmp` script that a reboot deleted mid-run.
+
 ### Fixed
+- **"tokens per engine step" was not a step size, on either card.** `vllm:iteration_tokens_total`'s own HELP text
+  says "Histogram of number of tokens per engine_step", and `loggers.py:1273` observes
+  `prompt_token_stats.computed + num_generation_tokens` -- but measured against a single request on 0.32.0, a
+  4,893-token prompt produced 2 records (4,893 and 4) and a 29,969-token prompt produced 3 (29,969, 4, 1): a
+  chunked prefill is credited in **one** record holding the whole prompt, while decode steps record individually.
+  So the ratio tracks prompt size and sits above `--max-num-batched-tokens 8192` (29,969 in one record; window
+  means of 9,621-14,999 seen here), and the page now calls it what it is -- "tokens per iteration record (prompt
+  whole, decode per step)" with the measurement in the tooltip. The number also moved off the Speculation card,
+  where "8,019.73 tokens per engine step" sat under a heading about MTP and read as "MTP accepts 8,020 tokens a
+  step".
+- **The README's card figure and its caption could drift apart, and did.** `tests/test_readme.py` re-draws the
+  committed poll and compares it string for string, fails on the drawer's own overflow warnings, and requires every
+  number in the alt text and every card number in the caption to be a number the drawn figure contains.
 - **The README's 262k throughput row compared two different protocols.** It said "32 concurrent 300-token streams:
   1,186-1,257 tok/s", a wall-clock figure from the issuing process, and readers would compare it against the 32k
   recipe's `bench/probe32.sh` band of 1,574-1,598 and conclude the full context cost 25%. `probe32.sh` run on the

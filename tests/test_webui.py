@@ -142,6 +142,8 @@ METRICS32 = """
 vllm:kv_cache_usage_perc{engine="0",model_name="Qwen3.8"} 0.25
 vllm:num_requests_running{engine="0",model_name="Qwen3.8"} 2.0
 vllm:num_requests_waiting{engine="0",model_name="Qwen3.8"} 1.0
+vllm:num_requests_waiting_by_reason{engine="0",model_name="Qwen3.8",reason="capacity"} 1.0
+vllm:num_requests_waiting_by_reason{engine="0",model_name="Qwen3.8",reason="deferred"} 0.0
 vllm:cache_config_info{block_size="448",cache_dtype="auto",engine="0",gpu_memory_utilization="0.97",\
     kv_cache_size_tokens="497588",model_name="Qwen3.8",num_gpu_blocks="1230"} 1.0
 vllm:generation_tokens_total{engine="0",model_name="Qwen3.8"} 100.0
@@ -190,6 +192,17 @@ ck("a gauge the build does not have reads absent, not zero", st32["live"]["swapp
 ck("_created stamps are not mistaken for series", "generation_tokens_created" not in cur32, str(sorted(cur32)))
 ck("labels the newer build carries are harvested", info32.get("cache_dtype") == "auto"
    and info32.get("gpu_memory_utilization") == "0.97", str(sorted(info32)))
+# The waiting queue arrives twice on 0.32: once whole, once by reason. Its own HELP text: "'capacity' = waiting for
+# scheduling capacity; 'deferred' = deferred by transient constraints (LoRA budget, KV transfer, blocked status).
+# Sum of all reasons equals vllm:num_requests_waiting." The split matters because the total alone misleads: measured
+# on the live 262k launch, 8 x 30k queued with the KV pool 11.7% full -- scheduling capacity, not blocks.
+ck("a labelled gauge is kept per label value too", cur32["num_requests_waiting_by_reason;capacity"][1] == 1.0
+   and cur32["num_requests_waiting_by_reason;deferred"][1] == 0.0, str(sorted(cur32)))
+ck("the queue split reaches the page, and a real 0 stays a 0",
+   st32["live"]["waiting_capacity"] == 1.0 and st32["live"]["waiting_deferred"] == 0.0,
+   str(st32["live"]))
+ck("a build that publishes no reason labels reports it absent, not zero",
+   st["live"]["waiting_capacity"] is None and st["live"]["waiting_deferred"] is None, str(st["live"]))
 
 # A histogram is observed when a request FINISHES, so the window a long request spans holds no observation
 # at all. The page falls back to the cumulative mean and says so; the first poll, which has no window, still
@@ -580,6 +593,20 @@ ck("every page carries a theme switch and an API key control",
    all('data-theme-toggle' in (WEB / h).read_text() and 'id="key-btn"' in (WEB / h).read_text()
        for h in ("monitor.html", "about.html")))
 monjs = (WEB / "monitor.js").read_text()
+# The queue line says WHY requests wait when the engine says why, and says nothing invented when it does not.
+ck("the queue line splits waiting into scheduling capacity and deferred when the engine publishes it",
+   "for scheduling capacity" in monjs and "deferred" in monjs
+   and 'live.waiting_capacity' in monjs and 'live.waiting_deferred' in monjs
+   and 'title="The engine' in (WEB / "monitor.html").read_text())
+# vllm:iteration_tokens_total calls itself "tokens per engine step" and is not one on 0.32.0: a whole chunked
+# prefill arrives in a single record (measured: a 29,969-token prompt produced records 29,969 / 4 / 1). The page
+# has to name the counter's unit, not a chunk size it cannot verify -- and the measurement goes in the tooltip.
+ck("the iteration line names the counter's unit instead of claiming a step size",
+   "iteration record" in monjs and "prompt whole, decode per step" in monjs
+   and "tokens per engine step" not in monjs and "steps per request" not in monjs)
+ck("and the tooltip carries the measurement that made the wording change",
+   "29,969" in (WEB / "monitor.html").read_text()
+   and "max-num-batched-tokens" in (WEB / "monitor.html").read_text())
 ck("a cumulative mean is labelled as one on the page",
    monjs.count("(since launch)") >= 2 and "const pick = (k) =>" in monjs,
    f"{monjs.count('(since launch)')} labels")

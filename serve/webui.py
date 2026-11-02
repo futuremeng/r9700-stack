@@ -56,6 +56,15 @@ BSLBL = re.compile(r'block_size="(\d+)"')
 # vLLM has no "what am I configured as" endpoint; the geometry it does publish sits in the labels of
 # its own counters, and which labels exist moves between releases. Harvest whatever is there.
 LBL = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)="([^"]*)"')
+# vLLM 0.32 publishes the waiting queue twice, once whole and once by reason. Its HELP text says "'capacity' =
+# waiting for scheduling capacity; 'deferred' = deferred by transient constraints (LoRA budget, KV transfer,
+# blocked status). Sum of all reasons equals vllm:num_requests_waiting"; what the code assigns
+# (v1/metrics/loggers.py:1150-1159, v1/core/sched/scheduler.py:2947-2948) is capacity = num_waiting_reqs (the
+# ordinary queue) and deferred = num_skipped_waiting_reqs. "capacity" is therefore a name for the queue, not a
+# claim about KV blocks -- measured on the live 262k launch: 8 x 30k prompts held running 2 / waiting 6 /
+# capacity 6 / deferred 0 with the pool 8.8-10.2% full, because long prefills take the 8,192-token step one at
+# a time. Showing the split is what makes that readable without reading the source.
+REASON = re.compile(r'reason="([^"]*)"')
 WANT = ("model_name", "model_compiler", "tensor_parallel_size", "pipeline_parallel_size", "data_parallel_size",
         "max_model_len", "block_size", "num_gpu_blocks", "num_cpu_blocks", "kv_cache_dtype", "cache_format",
         "speculative_config", "enable_prefix_caching", "enable_chunked_prefill", "scheduler_policy",
@@ -113,6 +122,15 @@ def parse_metrics(text):
             s[0] += value
             s[1] = max(s[1], value)
             s[2] += 1
+        rsn = REASON.search(labels)
+        if rsn:                               # a labelled gauge, kept per label value as well
+            sub = out.get(f"{name};{rsn.group(1)}")
+            if sub is None:
+                out[f"{name};{rsn.group(1)}"] = [value, value, 1]
+            else:
+                sub[0] += value
+                sub[1] = max(sub[1], value)
+                sub[2] += 1
         if cap is None and "num_gpu_blocks" in labels:
             b, bs = KVLBL.search(labels), BSLBL.search(labels)
             if b and bs:
@@ -147,9 +165,24 @@ def since(s, g):
             # scaling was applied to a token count (it is 2,028).
             "prompt_tokens_mean": ac("request_prompt_tokens"),
             "generation_tokens_mean": ac("request_generation_tokens"),
+            # iteration_tokens_total is labelled "tokens per engine_step" and is not one: at 0.32.0 the observation
+            # is computed prompt tokens + generation tokens (v1/metrics/loggers.py:1273), and a chunked prefill is
+            # credited in a single record holding the whole prompt -- measured: a 4,893-token prompt produced
+            # records 4,893 and 4; a 29,969-token one produced 29,969, 4 and 1, while decode steps record
+            # individually. So this ratio tracks prompt size, can exceed max-num-batched-tokens, and
+            # iters_per_req below is records per request rather than steps. The page says so on the line.
             "tokens_per_iter": (g("iteration_tokens_total_sum") / g("iteration_tokens_total_count"))
                                 if g("iteration_tokens_total_count") > 0 else None,
             "accept_pct": (100.0 * g("spec_decode_num_accepted_tokens_total") / dgrams) if dgrams > 0 else None,
+            # accepted tokens per DRAFT, from the two counters that mean exactly that
+            # (v1/spec_decode/metrics.py: observe_draft adds one to num_drafts and <= num_spec_tokens to
+            # num_accepted_tokens). With MTP=2 it cannot exceed 2.0, which is the sanity check the page has been
+            # missing -- and it is a number that belongs nowhere near the iteration-record ratio above, which is
+            # four orders of magnitude larger on a prefill-heavy launch and reads as a speculation figure if put
+            # under that heading.
+            "accepted_per_draft": (g("spec_decode_num_accepted_tokens_total")
+                                   / g("spec_decode_num_drafts_total"))
+                                  if g("spec_decode_num_drafts_total") > 0 else None,
             "iters_per_req": (g("iteration_tokens_total_count") / g("e2e_request_latency_seconds_count"))
                              if g("e2e_request_latency_seconds_count") > 0 else None,
             "requests": g("e2e_request_latency_seconds_count") if s.get("e2e_request_latency_seconds_count") else 0}
@@ -177,7 +210,9 @@ def derive(cur, prev, dt, cap, info, mode, kept, hist):
     tpot = mean_any(TPOT)                               # the per-token family, which then stands in for both
     kv_used = next((n for n in KV_USED if cur.get(n)), None)
     swapped = cur.get("num_requests_swapped")
+    wr = lambda r: (cur.get(f"num_requests_waiting_by_reason;{r}") or [None, None, 0])[1]
     live = {"running": g("num_requests_running", 1), "waiting": g("num_requests_waiting", 1),
+            "waiting_capacity": wr("capacity"), "waiting_deferred": wr("deferred"),
             "swapped": (swapped[1] if swapped else None), "preempting": g("num_preemptions_total") > 0,
             "kv_used_pct": 100.0 * g(kv_used, 1) if kv_used else None,
             "kv_used_pct_mean": 100.0 * g(kv_used) if kv_used else None,
@@ -197,6 +232,7 @@ def derive(cur, prev, dt, cap, info, mode, kept, hist):
                                if d("iteration_tokens_total_count") > 0 else None,
             "drafts_per_req": (drafts / nrec) if nrec else None,
             "accept_pct": (100.0 * accepted / dgrams) if dgrams > 0 else None,
+            "accepted_per_draft": (accepted / drafts) if drafts > 0 else None,
             "preemptions": d("num_preemptions_total") if have else None}
     return {"mode": mode, "at": time.time(), "model_name": info.get("model_name"), "config": info,
             "live": live, "rate": rate, "since": since(cur, g),
