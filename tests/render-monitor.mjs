@@ -33,6 +33,11 @@ class El {
   }
   get textContent() {
     if (this.children.length && !this._text) return this.children.map((c) => c.textContent).join(" ");
+    // A value written as innerHTML (the number-plus-qualifier pattern) still has to read back as text, or the
+    // harness reports a card as blank while the browser shows it filled.
+    if (!this._text && this.innerHTML) {
+      return String(this.innerHTML).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+    }
     return this._text;
   }
   set textContent(v) { this._text = String(v); this.children = []; }
@@ -43,7 +48,14 @@ class El {
   setAttribute(k, v) { this.attrs[k] = String(v); }
   getAttribute(k) { return this.attrs[k] ?? null; }
   addEventListener() {}
-  querySelectorAll() { return []; }
+  querySelectorAll(sel) {
+    // Renderers ask for the slots inside a card they are about to fill (the per-sensor wave rows, the caption
+    // slot). Hand back real stub elements so what they write is observable instead of silently skipped.
+    if (!this._qsa) this._qsa = new Map();
+    if (!this._qsa.has(sel)) this._qsa.set(sel, Array.from({ length: 5 }, () => new El("div")));
+    return this._qsa.get(sel);
+  }
+  querySelector(sel) { return this.querySelectorAll(sel)[0]; }
   focus() {}
   remove() {}
 }
@@ -98,6 +110,17 @@ for (const [k, v] of Object.entries({
   "Engine timings": ["t-ttft", "t-queue", "t-prefill", "t-decode", "t-step", "t-tpot", "window"]
     .map((x) => `${x.replace("t-", "")}=${t(x)}`).join(" · "),
 })) console.log(`${k}: ${v}`);
+
+// The card grids are built by gpuCard / pcieCard in common.js and monitor.js: print what the first card of
+// each actually says, because a panel that renders an empty div looks identical to a panel with nothing to show.
+for (const [label, id] of [["cards", "gpus"], ["pcie", "pcie"]]) {
+  const kids = (byId.get(id) || new El()).children;
+  console.log(`\n${label} cards rendered: ${kids.length}`);
+  for (const k of kids.slice(0, 2)) {
+    const waves = k.querySelectorAll(".spark--gpu").length;
+    console.log("  " + k.textContent.replace(/\s+/g, " ").trim().slice(0, 200) + ` [${waves} waves]`);
+  }
+}
 
 console.log(`\nrequest rows rendered: ${rows.length}`);
 for (const r of rows.slice(0, 6)) console.log("  " + r.textContent.replace(/\s+/g, " ").trim());
