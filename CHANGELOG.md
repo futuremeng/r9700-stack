@@ -101,6 +101,12 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   NBT=8192 against 1.35 GiB of headroom -- and `R9K_QSA_SCORE=stock` would put that allocation back.
 
 ### Fixed
+- **`bench/needle_long.py` called a repeat run a prefix-cache hit.** The warm line ended in "(prefix cache)"
+  whatever happened; this launch runs `--no-enable-prefix-caching` and the second prefill costs the same
+  (60,061 tokens: 6.74 s cold, 6.73 s warm, 8,639 against 8,759 tok/s). The line now says which it was: a
+  reuse line quoting both TTFTs when the second run really is cheaper (with prefix caching on, the same script
+  measured 0.28-0.70 s warm against 4.25-36.52 s cold), or `warm: no reuse, prefill repeated
+  (9,023 -> 9,492 tok/s)` when it is not.
 - **The Monitor's per-request numbers were not per request.** The request list and the top cards read the row
   payload, and `usage`/`timings` were left out of it, so the "Last decode speed ... One stream" card fell back
   to the engine-wide `1/inter_token_latency` and still described itself as one stream: on the live merged page

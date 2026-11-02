@@ -208,9 +208,16 @@ def main():
             try:
                 t2, pt2, ct2, ttft2, total2, fin2 = ask(prompt, MAXOUT)
                 res2 = "generation (ASK set)" if gen else ("hit" if str(key) in t2 else "MISS")
+                # Whether the second run reused the first one's work is a measurement, not a label. This launch
+                # runs --no-enable-prefix-caching and the second prefill costs the same (60,061 tokens: 6.74 s
+                # cold against 6.73 s "warm"), which a line ending in "(prefix cache)" would describe backwards.
+                reused = bool(ttft and ttft2 and ttft2 < 0.5 * ttft)
+                tail = (f"warm: prefix cache reused, ttft {ttft:.2f} -> {ttft2:.2f} s" if reused
+                        else f"warm: no reuse, prefill repeated ({prefill:.0f} -> "
+                             f"{pt2 / ttft2 if ttft2 else 0:.0f} tok/s)")
                 print(f"{n:>8} {pt2:>8} {depth:>7} {ttft2:>7.2f}s {pt2 / ttft2 if ttft2 else 0:>7.0f}/s "
                       f"{(ct2 - 1) / (total2 - ttft2) if ttft2 and ct2 > 1 else 0:>7.1f}/s {'(same ctx)':>13}  "
-                      f"{res2} warm (prefix cache)")
+                      f"{res2} {tail}")
             except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
                 print(f"{n:>8} {'-':>8} {'-':>7} {'-':>8} {'-':>9} {'-':>8} {'-':>13}  warm FAILED: {exc}")
     return 0
