@@ -214,9 +214,11 @@ function renderStatus(s) {
       : "no speed for that record");
 
   text("kv-pct", pct(live.kv_used_pct, 1));
+  // The pool card draws a waveform (below, where the history ring is) instead of a progress bar: the bar said
+  // only "how full right now", which the number above it says too, while the shape is what a long-context
+  // question is really about -- how fast it filled, and whether it ever stopped. The tone (ok / warn /
+  // danger past 85 and 95%) carries over to the line's colour, so the bar's warning job survives.
   const kv = Math.max(0, Math.min(100, live.kv_used_pct || 0));
-  $("kv-bar").dataset.tone = kv > 95 ? "danger" : kv > 85 ? "warn" : "ok";
-  $("kv-bar").firstElementChild.style.width = `${kv}%`;
   text("kv-tokens", isnum(live.kv_tokens) ? `KV pool ${fmt(live.kv_tokens)} tokens` : "pool size not in /metrics");
   text("running", String(Math.round(live.running || 0)));
   text("waiting", `${Math.round(live.waiting || 0)} waiting`
@@ -270,9 +272,13 @@ function renderStatus(s) {
   // changes what a waveform is looking back at. A series that was null for part of it (the prefill estimate
   // before anything ran) draws through the gap rather than as a flat 0, which is why the point count is on
   // the line: 12 of 90 pts means the shape is only as old as those 12 samples.
-  const trend = (sparkId, noteId, values, unit, d, { keep = (v) => v !== 0, label = " while running" } = {}) => {
-    spark($(sparkId), values);
+  const trend = (sparkId, noteId, values, unit, d, { keep = (v) => v !== 0, label = " while running",
+                                                    lo = null, hi = null } = {}) => {
     const xs = values.filter(isnum);
+    // The axis, per series. Autoscaling a rate to its own min/max makes a series that spends most of the
+    // window at zero look like a full-height oscillation, so rates run on 0..peak and are comparable to each
+    // other; hi: "peak" takes the peak of what is actually plotted.
+    spark($(sparkId), values, { baseLo: lo, baseHi: hi === "peak" ? Math.max(...xs) : hi });
     // Which samples count toward peak and average, per series. A 0 in a rate series is not a measured rate:
     // it is a window where the counter was flat because nothing was being generated (mid-prefill, say), and
     // counting those made a 200 tok/s stream average 31.5. The KV-growth series keeps only the windows where
@@ -285,14 +291,27 @@ function renderStatus(s) {
         + ` · ${used.length}/${values.length} pts over ${(values.length * (s.poll_s || 0)).toFixed(0)} s`);
   };
   const hist = s.history || [];
-  trend("stream-spark", "stream-spark-note", hist.map((h) => h.stream_tok_s), "tok/s", 1);
-  trend("gen-spark", "gen-spark-note", hist.map((h) => h.gen_tok_s), "tok/s", 1);
+  trend("stream-spark", "stream-spark-note", hist.map((h) => h.stream_tok_s), "tok/s", 1,
+        { lo: 0, hi: "peak" });
+  trend("gen-spark", "gen-spark-note", hist.map((h) => h.gen_tok_s), "tok/s", 1, { lo: 0, hi: "peak" });
   // The prefill waveform is the live estimate (KV growth), not the counter rate: over a long prefill the
   // counter series is a flat line with one spike at the end, which is a fact about vLLM, not about the work.
+  // It stays autoscaled: it goes negative when finishing requests free blocks, and a 0 baseline would clip
+  // the half that says "the pool is draining".
   trend("prefill-spark", "prefill-spark-note", hist.map((h) => h.kv_tok_s), "tok/s", 0,
         { keep: (v) => v > 0, label: " while the pool grew" });
-  trend("kv-spark", "kv-spark-note", hist.map((h) => h.kv_used_pct), "%", 1,
-        { keep: () => true, label: "" });
+  // The fourth waveform is how many streams the engine is actually running: at NSEQ=32 the aggregate rate is
+  // a function of this line, and the knee (PROGRESS: the spread past 32) is visible in its shape.
+  trend("running-spark", "running-spark-note", hist.map((h) => h.running), "streams", 0,
+        { lo: 0, hi: "peak" });
+  // The KV pool's own waveform lives on its card, not here: its axis is 0..100 (a quarter-full pool is a
+  // quarter of the box), which would flatten every other series if it shared the trends row's scale.
+  spark($("kv-spark"), hist.map((h) => h.kv_used_pct), { baseLo: 0, baseHi: 100 });
+  $("kv-spark").dataset.tone = kv > 95 ? "danger" : kv > 85 ? "warn" : "ok";
+  text("kv-spark-note", isnum(live.kv_tokens)
+    ? `${fmt(live.kv_tokens, 0)} tokens in the pool · ${(hist.length * (s.poll_s || 0)).toFixed(0)} s back`
+      + (kv > 85 ? ` · ${kv > 95 ? "at the limit" : "nearly full"}` : "")
+    : "pool size not in /metrics");
 
   for (const [id, k] of [["t-ttft", "ttft_ms"], ["t-queue", "queue_ms"], ["t-prefill", "prefill_ms"],
                          ["t-decode", "decode_ms"], ["t-step", "itl_ms"], ["t-tpot", "tpot_ms"]])

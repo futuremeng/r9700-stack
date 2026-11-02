@@ -65,13 +65,30 @@ function text(id, value) {
 
 // -- sparkline ---------------------------------------------------------------------
 // A polyline of the last N polls, drawn as an SVG the token owns so the theme colours it.
-function spark(el, values, {fill = true} = {}) {
-  const xs = (values || []).filter(isnum);
+function spark(el, values, {fill = true, baseLo = null, baseHi = null} = {}) {
+  const vs = values || [];
+  const xs = vs.filter(isnum);
   if (xs.length < 2) { el.replaceChildren(); return; }
-  const W = 240, H = 36, lo = Math.min(...xs), hi = Math.max(...xs), span = hi - lo || 1;
-  const px = (i) => (i * W) / (xs.length - 1);
-  const py = (v) => H - 2 - ((v - lo) / span) * (H - 6);
-  const d = xs.map((v, i) => `${i ? "L" : "M"}${px(i).toFixed(1)},${py(v).toFixed(1)}`).join("");
+  const W = 240, H = 36;
+  // Autoscaling to the series' own min and max is what makes a sparkline lie: a KV pool creeping from 0.0% to
+  // 2.4% fills the box like a stock chart, and a rate that sits at zero most of the time gets a baseline at
+  // zero's height only by accident. A caller that knows the axis anchors it (the pool at 0..100, a rate at
+  // 0..peak), and then a sliver reads as a sliver.
+  const lo = baseLo !== null ? baseLo : Math.min(...xs);
+  const hi = baseHi !== null ? baseHi : Math.max(...xs);
+  const span = hi - lo || 1;
+  const px = (i) => (i * W) / (vs.length - 1);
+  const py = (v) => H - 2 - ((Math.max(lo, Math.min(hi, v)) - lo) / span) * (H - 6);
+  // Nulls are gaps, not zeros, and x spans the whole ring either way: one sample stays one slot of time no
+  // matter what the series was doing in between (the prefill estimate has no value at all before the first
+  // request ran). The filled area under the line only closes over one subpath, so it is dropped when the
+  // series has a gap -- shading across a gap reads as "it was at baseline there", the opposite of a null.
+  let d = "", pen = false, gaps = 0;
+  vs.forEach((v, i) => {
+    if (!isnum(v)) { if (pen) gaps++; pen = false; return; }
+    d += `${pen ? "L" : "M"}${px(i).toFixed(1)},${py(v).toFixed(1)}`;
+    pen = true;
+  });
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   svg.setAttribute("preserveAspectRatio", "none");
@@ -82,7 +99,7 @@ function spark(el, values, {fill = true} = {}) {
     for (const k in attrs) n.setAttribute(k, attrs[k]);
     return n;
   };
-  if (fill) svg.append(mk("path", {d: `${d}L${W},${H}L0,${H}Z`, fill: "currentColor", "fill-opacity": ".14", stroke: "none"}));
+  if (fill && !gaps) svg.append(mk("path", {d: `${d}L${W},${H}L0,${H}Z`, fill: "currentColor", "fill-opacity": ".14", stroke: "none"}));
   svg.append(mk("path", {d, fill: "none", stroke: "currentColor", "stroke-width": "1.6", "stroke-linejoin": "round"}));
   el.replaceChildren(svg);
 }

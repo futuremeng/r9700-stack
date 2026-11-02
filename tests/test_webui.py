@@ -717,20 +717,35 @@ ck("the page refetches on the engine's beat", "setTimeout(poll, 1000)" in monjs)
 # each with last/peak/avg attached. (The aggregate series used to be drawn twice -- once big, once small.)
 _trend = monhtml.split('grid--trends')[1].split("</section>")[0]
 _rates = monhtml.split('grid--rates')[1].split("</section>")[0]
-ck("every waveform is in the one trends row",
-   all(f'id="{i}"' in _trend for i in ("stream-spark", "gen-spark", "prefill-spark", "kv-spark")))
+ck("every activity waveform is in the one trends row",
+   all(f'id="{i}"' in _trend for i in ("stream-spark", "gen-spark", "prefill-spark", "running-spark")))
 ck("no waveform is left behind in the value cards",
    'class="sparkline' not in _rates
-   and monhtml.split('class="grid grid--4 engine"')[1].split("</section>")[0].count('class="sparkline') == 0)
+   and monhtml.split('class="grid grid--4 engine"')[1].split("</section>")[0]
+       .count('id="gen-spark"') == 0)
+ck("the KV pool draws a waveform on a 0-100 axis, and the progress bar is gone",
+   'id="kv-spark"' in monhtml and 'id="kv-bar"' not in monhtml
+   and "{ baseLo: 0, baseHi: 100 }" in monjs
+   and ".sparkline[data-tone=warn] .spark{color:var(--st-warn)}" in (WEB / "web.css").read_text())
+ck("sparklines take an axis from the caller instead of always autoscaling",
+   "baseLo = null" in (WEB / "common.js").read_text()
+   and '{ lo: 0, hi: "peak" }' in monjs)
 ck("each waveform carries last, peak and average",
    'avg ${fmt' in monjs and 'peak ${fmt' in monjs
    and all(f'id="{i}"' in monhtml for i in ("stream-spark-note", "gen-spark-note",
-                                            "prefill-spark-note", "kv-spark-note")))
+                                            "prefill-spark-note", "running-spark-note", "kv-spark-note")))
+# A null is "no sample in this window", not "the series was at zero": the line has to break, and the filled
+# area under it has to stop, or the gap reads as a measurement at the baseline.
+_ck = (WEB / "common.js").read_text()
+ck("a gap in a series is drawn as a gap, and its fill is dropped",
+   "if (!isnum(v)) { if (pen) gaps++; pen = false; return; }" in _ck and "if (fill && !gaps)" in _ck)
 ck("the span is named in points and seconds, since the ring counts points",
    "pts over" in monjs and "s.history" in monjs)
-ck("a rate waveform averages only the windows that carried a rate; the pool's does not",
-   'keep = (v) => v !== 0' in monjs and 'keep: (v) => v > 0' in monjs and "keep: () => true" in monjs
+ck("a rate waveform averages only the windows that carried a rate, and the estimate only the growing ones",
+   'keep = (v) => v !== 0' in monjs and 'keep: (v) => v > 0' in monjs
    and 'label: " while the pool grew"' in monjs)
+ck("the pool's own waveform is plotted straight, with no sample filtering",
+   'spark($("kv-spark"), hist.map((h) => h.kv_used_pct)' in monjs)
 ck("the sidecar polls the engine at 1 s by default, both modes",
    'os.environ.get("R9K_WEB_POLL", 1.0)' in (Path(ROOT) / "serve" / "webui.py").read_text()
    and 'os.environ.get("R9700_WEBUI_POLL", "1")'

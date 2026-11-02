@@ -47,6 +47,9 @@ main{max-width:1560px;padding:28px var(--st-s-8) 56px;margin:auto}
 .bar{height:8px;border-radius:var(--st-r-pill);background:var(--st-surface-2);border:1px solid var(--st-line-soft);overflow:hidden;margin-top:10px}
 .bar>div{height:100%;border-radius:inherit;background:var(--st-accent);transition:width var(--st-dur) var(--st-ease)}
 .bar[data-tone=warn]>div{background:var(--st-warn)}.bar[data-tone=danger]>div{background:var(--st-danger)}
+/* The KV pool waveform carries the same warning the bar used to, as the line's own colour. */
+.sparkline[data-tone=warn] .spark{color:var(--st-warn)}
+.sparkline[data-tone=danger] .spark{color:var(--st-danger)}
 
 /* facts (the About page's definition lists) ---------------------------------------- */
 dl.facts{display:grid;grid-template-columns:170px minmax(0,1fr);gap:10px 18px;margin:14px 0 0}

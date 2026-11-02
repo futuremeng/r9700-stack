@@ -249,6 +249,16 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   (its average read `-1,004 tok/s` before that, and its peak `19,217 tok/s` right after a 62-token prompt -- a
   pool reclaimed and re-allocated between two polls, which is why the exact counter figure stays beside the
   estimate), and the KV pool series keeps every sample because an idle pool at 0% is the value.
+  **The KV pool's progress bar became a waveform.** The bar said what the number above it already said (how full
+  right now); the shape says how fast the pool filled, whether it stopped, and how fast it drains -- which is what
+  the long-context questions are about. The colour keeps the bar's warning (warn past 85%, danger past 95%), and
+  it stays on its own card because its axis is its own: `spark()` now takes `baseLo`/`baseHi` from the caller,
+  the pool draws on 0-100 (measured: a pool at 0.1-0.3% renders at y=33.9 of 36 -- a sliver, where autoscaled it
+  filled the box), the rate waveforms on 0..peak, and the KV-growth estimate stays autoscaled because it goes
+  negative when finished requests free blocks. A null in a series is now drawn as a gap (line breaks, area fill
+  dropped) rather than a value at the baseline, which for the prefill estimate would have invented a flat prefill
+  over the ~30 windows where it has no value at all. The fourth trends slot, freed by the pool's move, is streams
+  running -- the shape the NSEQ=32 knee lives in.
 - **The native install recipe now says what is actually fetchable** (`README.md`, `notes/native-4xr9700.md`,
   `setup.py`), and the upstream sweep that found it is written up in [notes/vllm-0.33.md](notes/vllm-0.33.md).
   Checking "is there a new vLLM, should we follow" turned up a broken step in our own quickstart: the ROCm wheel

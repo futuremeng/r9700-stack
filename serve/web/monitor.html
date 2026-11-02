@@ -94,9 +94,9 @@ engine polls, so a rate is at most that old -- plus this snapshot's age.">—</d
       <div class="small" id="prefill-spark-note">—</div>
     </div>
     <div class="card">
-      <div class="label">KV pool used</div>
-      <div class="sparkline sparkline--lg" id="kv-spark"></div>
-      <div class="small" id="kv-spark-note">—</div>
+      <div class="label">Streams running</div>
+      <div class="sparkline sparkline--lg" id="running-spark"></div>
+      <div class="small" id="running-spark-note">—</div>
     </div>
   </section>
 
@@ -131,7 +131,10 @@ engine polls, so a rate is at most that old -- plus this snapshot's age.">—</d
     <div class="card">
       <div class="label">KV pool</div>
       <div class="value value--sm" id="kv-pct">—</div>
-      <div class="bar" id="kv-bar"><div style="width:0%"></div></div>
+      <div class="sparkline" id="kv-spark" title="The pool over the last 90 points, drawn on a 0-100% axis (so a
+quarter-full pool is a quarter of the box) rather than autoscaled to its own min and max. The colour carries the
+old progress bar's warning: warn past 85%, danger past 95%."></div>
+      <div class="small" id="kv-spark-note">—</div>
       <div class="small" id="kv-tokens">—</div>
     </div>
     <div class="card">

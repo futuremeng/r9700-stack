@@ -380,6 +380,24 @@ those made a 200 tok/s stream average 31.5); the KV pool series opts out, becaus
 value. Per-request cards come next, speed and wall-clock before the model name; the aggregate waveform used to be
 drawn twice (once large, once small in the Generation card) and is now drawn once.
 
+**The KV pool's progress bar became a waveform too.** The bar said one thing the number above it already said
+(“how full right now”); the shape says the thing a long-context question is actually about — how fast the pool
+filled, whether it ever stopped, how fast it drains. Its colour keeps the bar’s warning job (warn past 85%,
+danger past 95%). It lives on its own card rather than in the trends row because its axis is different — and that
+axis is the part that decides whether a waveform means anything:
+
+| series | axis | why |
+|---|---|---|
+| decode one stream / all streams / streams running | **0 .. peak** | autoscaled, a rate that is zero for 80 of 90 windows draws as a full-height oscillation |
+| prefill (KV growth estimate) | autoscaled | it goes negative when finished requests free blocks; a 0 baseline would clip the half that says “the pool is draining” |
+| KV pool % | **0 .. 100** | measured: a pool sitting at 0.1-0.3% renders at y=33.9 of 36 — a sliver, which is what it is; autoscaled it filled the box |
+
+`spark()` now takes the axis from the caller (`baseLo` / `baseHi`), and treats a null as a **gap**: the line
+breaks into a new subpath and the filled area under it is dropped for that series. Filling across a gap draws
+“the series was at baseline there”, which is the opposite of what a null means — for the prefill estimate, whose
+first ~30 windows have no value at all, that would have invented a flat prefill. The x axis spans the whole ring
+either way, so one point is one poll of time whatever the series was doing in between.
+
 One caveat on the KV-growth estimate, because it is a difference of a gauge sampled at the poll rate: it is good
 on large prefills (5,787 against 5,459 measured) and can spike on small ones and at request boundaries — a peak
 of **19,217 tok/s** in the ring right after a 62-token prompt is the pool being reclaimed and re-allocated
