@@ -204,10 +204,10 @@ That is the shape of a link that is working but not clean. It is not yet evidenc
 errors have ever been counted here), but it is now a continuous trace with timestamps rather than a hand-run
 snapshot, which is what a correlation with a reset needs.
 
-## Serving traffic does not move them (read 13:26 UTC)
+## What moves them: a start, and a long prefill — but not short traffic (13:26, corrected 14:20 UTC)
 
-The other half of that correlation, taken deliberately: eight concurrent 400-token streams through the running
-serve, sampling every chain's correctable total every second for the whole burst.
+The first half, taken deliberately at 13:26: eight concurrent 400-token streams through the running serve,
+sampling every chain's correctable total every second for the whole burst.
 
 | | before | after | delta |
 |---|---|---|---|
@@ -215,14 +215,42 @@ serve, sampling every chain's correctable total every second for the whole burst
 | card4 chain (`06:00.0 → 05:00.0 → 04:00.0 → 00:03.1`) | 8 | 8 | **0** |
 | card1, card3 | 0 | 0 | 0 |
 
-And over 90 consecutive one-second samples of an idle serve: **0** had a nonzero AER delta. So the counters move
-around a **start** — the renegotiation/allocation storm of bringing four GPUs up — and not during the traffic that
-follows. Two consequences:
+Over 90 consecutive one-second samples of an idle serve: also **0** nonzero deltas. The conclusion written at that
+moment — "launches move them, traffic does not" — was **too strong, and real traffic falsified it inside an hour**.
 
-- The panel is no longer drawn as waveforms. A signal that is silent for an hour and then jumps twelve times in a
-  minute is an event log, not a curve; the panel now shows one row per chain (link, totals since boot, which
-  counters are non-zero, this window's delta) plus a single box-wide events-per-second spark and a timestamped
-  list of the last events. Rationale and the naming trap (`NonFatalErr` is a *correctable* counter) in
-  [notes/webui.md](../webui.md).
-- For the reset question, watch the counters **at launch** and treat a mid-decode event as the interesting case:
-  steady-state traffic is clean, so an event that appears while a request is in flight is out of pattern.
+### The real load, observed only (14:11–14:17)
+
+Actual user concurrency arrived: 4–5 requests in flight, prompts 5k–170k tokens, 54–3,097 generated each. The
+sidecar's event list captured **6 correctable events in 34 minutes**, every one `BadTLP` at the same two **switch
+upstream ports** the restart-clustered ones used, and the journal made the correlation checkable — each event's
+timestamp against the rows whose `started_at … started_at+wallclock` covers it:
+
+| event | chain | in flight | of those, still prefilling | largest in-flight prompt |
+|---|---|---:|---:|---:|
+| 14:11:49 | card2 `c4:00.0` | 4 | 1 | 67,502 |
+| 14:09:46 | card4 `04:00.0` | 4 | 1 | 144,375 |
+| 13:53:55 | card4 `04:00.0` | 2 | 0 | 148,718 |
+| 13:47:26 | card2 `c4:00.0` | 1 | 1 | 93,400 |
+| 13:42:13 | card4 `04:00.0` | 2 | 1 | 133,551 |
+| 13:37:42 | card4 `04:00.0` | 1 | 1 | 72,788 |
+
+So: not "traffic" in general — a burst of short requests moved nothing — but **long-context traffic does move
+them**, ~1 event per 5 minutes at 4–5 concurrent 60k–170k streams, and 5 of the 6 landed while a 72k–144k-token
+prompt was being prefilled. That is the shape you would expect if the trigger is the large TLP/DMA load a big
+prefill puts on the link rather than anything about starting a process. Card2's chain went 36 → 38 and card4's
+8 → 12 across the hour.
+
+Still true, and the part that matters for the reset question: **every event is correctable**. `TOTAL_ERR_NONFATAL`
+and `TOTAL_ERR_FATAL` are 0 on every device, no link has ever renegotiated below **32.0 GT/s ×16** in ~90 minutes
+of sampled history, and the box has been up since 11:07 (3 h 09 m through all of this) after a morning of 15
+boots. Correctable-but-repeating on two specific upstream ports is a link that is working but not clean; it is
+not yet an explanation of the hard resets.
+
+Two consequences stand:
+
+- The panel is drawn as rows plus an event list, not waveforms. ~1 event per 5 minutes is still an event log, not
+  a curve. Rationale and the naming trap (`NonFatalErr` is a *correctable* counter) in [notes/webui.md](../webui.md).
+- What counts as out of pattern is now sharper: a correctable during a long prefill is **expected**; what would
+  matter is an **uncorrectable** counter, a link that renegotiates, a counter being **zeroed** under us, or an
+  event with **no request in flight** while the cards are idle (the box has done all four of those things at a
+  reset, and has never done them during serving).

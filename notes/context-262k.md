@@ -165,6 +165,57 @@ GSM8K **99/100** with 33,909 prompt tokens in 40 s, and `bench/quality.py`'s nee
 30,354 tokens. (The `GSM8K 10/10` line earlier in this note is the 10-question sample taken during the first 262k
 launch; the 100-question gate is 99%, where every other launch of this recipe has been.)
 
+## Real traffic through it, observed and not manufactured (2026-11-02 14:11–14:17 UTC)
+
+Someone used the box. Actual concurrent tasks arrived on the standing 262k launch, and the only instrument pointed
+at them was `tools/watch-live.py`, which **samples and never sends** — measuring this properly requires not adding
+load to the very concurrency being read. What the serve reported, over 150 one-second samples and the 100 request
+rows it still held (the journal held 279 back to 12:53):
+
+| what | reading |
+|---|---|
+| prompt tokens, kept rows | p50 **53,855** · p95 149,913 · max 153,568 · 37% ≥ 60k, 14% ≥ 120k |
+| generated tokens | p50 403 · p95 2,434 |
+| wall clock per request | p50 25.6 s · p95 90.8 s |
+| **first token** | p50 **8.5 s** · p95 **25.1 s** · max 35.6 s |
+| decode, that request's own mean | p10 11.1 · p50 **33.1** · p90 116.4 tok/s |
+| in flight | p50 **4** · p95 5 (of `NSEQ=32`) · waiting max 2 · **preemptions 0** |
+| KV pool | p50 48% · p95 74% · max 78% of 540,202 tokens |
+| engine step interval | p50 **951 ms** · p95 1,160 ms |
+| aggregate generation | avg **58 tok/s** (0–416 second to second) |
+| aggregate prefill, from the engine's own row timings | 6,410,492 prompt tok / 839 s = **7,638 tok/s** |
+| cards | 100% busy all four · 2.5–3.4 GHz · 111–491 W · **card4 76–78 °C against 64–68 °C for the other three** |
+
+**What it confirms.** "Long prefills serialize, and that is the wall you hit first" — with a vengeance: 7,638 tok/s
+aggregate prefill sits inside the 6.8–9.1k band measured by the synthetic ladder, and a 150k prompt costs 21 s of
+prefill before its first token. The step interval p50 of ~950 ms is one 8192-token chunk at that rate. Summed
+per-request time splits 27% prefill / 73% decode, yet the decode seconds are stretched: a stream's decode shares
+the pipe with other people's prefills.
+
+**What it adds.** The synthetic loads in "What actually queues" peaked at **2** running for ≥30k prompts; real
+traffic held **4–5** at once, with waiting never above 2 and the pool at 48–74%. Mixed lengths are the difference:
+short requests slip between the long prefills, so the scheduler runs more than two while the prefill pipe stays
+the constraint. Still no KV exhaustion and zero preemptions — the queue is a prefill queue, exactly as that
+section argued.
+
+**A reading trap this exposes in the Monitor.** Per-second live rates look awful under this load — per-stream
+`stream_tok_s_live` p50 **1.8 tok/s**, aggregate often 0 — while the same requests report 33 tok/s each end to
+end. Both are right: vLLM credits generation tokens **per engine step**, and a step here is ~1 s long, so a
+1-second sampler aliases against the step cadence and lands between credits. The page's per-second sparkline is
+therefore an *activity* trace, not a rate you should quote; the request row's `wallclock − first token` figure is
+the rate. Worth remembering before anyone screenshots the aggregate card during long-context work.
+
+**The flag this traffic was made for.** "If mixed lengths arrive at once (agent traffic behind the same endpoint
+as long documents), use **4096**" — this is the first real traffic on the box that fits that description (prompt
+p50 54k with a 14% tail at ≥120k, four to five at once). It was **not** switched: it needs a restart, the box had
+15 boots that morning, and the gain it buys is TTFT fairness for the short requests, not throughput. Re-measure
+when a restart is happening anyway.
+
+The hardware side of the same window is in
+[the incident note](../incident-2026-11-02/README.md): six correctable PCIe events in 34 minutes, five of them
+while a 72k–144k prompt was prefilling — long-context work moves the link counters where short-request bursts do
+not.
+
 ## Why the GLM-5.3-Flash 262k failure did not repeat here
 
 [release-v0.3.7.md](release-v0.3.7.md) records GLM-5.3-Flash TP8 coming up at 262k and then dying inside

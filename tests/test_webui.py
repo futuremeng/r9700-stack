@@ -1041,6 +1041,12 @@ ck("an AER counter name is shown with its kind, so a correctable NonFatalErr is 
    and 'class="unc"' in monjs)
 ck("a link below its maximum names the width it fell short of and turns to danger",
    "(max \u00d7${maxw})" in monjs and 'c.degraded || unc ? "danger"' in monjs)
+# tools/watch-live.py is the page's questions asked from a terminal. Its one hard property is that it observes:
+# measuring someone else's concurrency by adding your own requests would contaminate exactly what is being read.
+_wl = open(os.path.join(ROOT, "tools", "watch-live.py")).read()
+compile(_wl, "watch-live.py", "exec")            # syntax only -- running it would sample and print
+ck("the live watcher only reads: it never builds a request or sends a body to the serve it is watching",
+   "urlopen(" in _wl and "Request(" not in _wl and "data=" not in _wl and "POST" not in _wl)
 # gpu_busy_percent on this box is coarse, not finely readable: refused with nothing running, 0 stopped, 24-29
 # idle, 46-100 under load, 95-99 through long decode. The page says so, because otherwise a flat 99 reads as
 # "fully loaded" and a 0 as "healthy idle" when either could also mean "the launch let go".

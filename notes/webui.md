@@ -462,6 +462,11 @@ are *static-or-eventual*, which is the worst thing for a curve:
   A signal that is silent for hours and then jumps twelve times is an *event log*, and a waveform of it is flat
   99.9% of the time while claiming the space.
 
+  That reasoning was corrected the same afternoon, by real traffic rather than by argument: 4–5 concurrent
+  60k–170k-token streams produce **~1 event per 5 minutes**, mostly while a big prompt is being prefilled (the
+  incident note has the table, with each event matched to the requests in flight at its timestamp). "Eventual"
+  survived — an event every few minutes is still an event log, not a curve — but "only at launch" did not.
+
 So a chain is now **one row**: card, the device chain (`c6:00.0 → c5:00.0 → c4:00.0 → c0:03.1`), the negotiated
 link (`32.0 GT/s ×16`, and `(max ×16)` stated when it fell short), totals since boot (`36 corr · 0 uncorr`), the
 non-zero counter names, and this window's delta (`+0`). One box-wide spark stays — AER events per second across
@@ -531,8 +536,14 @@ total, captioned `busy peak 100 · avg 95% · 65/65 pts over 65 s`. Two honest r
   finding.
 
 `tools/cardwave-check.js` runs the card renderer under node against a live `/api/status` with a stub DOM, and
-prints what it produced (two waveforms, no bar, the caption text) — the browser is still the real test, but the
-silent failure this catches is the card drawing nothing at all.
+prints what it produced (five waves per card, no bar, the caption text; one text row per PCIe chain) — the browser
+is still the real test, but the silent failure this catches is a panel drawing nothing at all.
+
+`tools/watch-live.py` is the same idea for the whole page: it samples a running serve (engine gauges, live rates,
+per-card sensors, PCIe chains, `/api/requests`) and prints percentiles, per-card sensor ranges and every AER event
+with its timestamp next to what the serve was doing at that instant. It **never sends a request** — measuring
+someone else's concurrency by adding your own would contaminate the numbers — which is why it reads the sidecar
+when the in-serve build predates the event list.
 
 **Power, temperature and the SM clock joined them** — five labelled waves per card: `busy`, `VRAM`, `sclk`, `W`,
 `°C`. They are **stacked, not overlaid**: watts, degrees and megahertz share no axis, and three autoscaled series

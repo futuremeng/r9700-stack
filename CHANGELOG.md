@@ -366,6 +366,27 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   like an uncorrectable fault. Serving traffic does not move these counters; launches do — recorded in the incident
   note, where the takeaway is that a mid-decode event is now the out-of-pattern thing to look for.
 
+- **Real traffic went through the box, and it corrected two things written an hour earlier** (218 checks).
+  `tools/watch-live.py` (new) samples a live serve — gauges, live rates, per-card sensors, PCIe chains, request
+  rows — and **never sends a request**, because measuring someone else's concurrency by adding your own ruins the
+  number; the suite compiles it and asserts it builds no request. Under 4-5 concurrent real streams (prompt p50
+  **53,855** tokens, p95 149,913; generated p50 403): first token p50 **8.5 s**, p95 **25.1 s**, max 35.6; each
+  request's own decode 11 / 33 / 116 tok/s (p10/p50/p90); engine step interval p50 **951 ms** = one 8192-token
+  prefill chunk; aggregate prefill from the engine's own rows **7,638 tok/s** (inside the 6.8-9.1k synthetic band);
+  running p50 4 of `NSEQ=32`, waiting max 2, **preemptions 0**, KV 48-74% — so, again, the queue is a prefill
+  queue, and real mixed lengths hold 4-5 in flight where synthetic ≥30k loads peaked at 2. Two corrections:
+  (1) "serving traffic does not move the AER counters" — it does, if the traffic is long-context: **6 correctable
+  BadTLP in 34 minutes**, all at the same two switch upstream ports, 5 of them while a 72k-144k prompt was
+  prefilling, each matched to the requests in flight by journal-row overlap (`started_at … +wallclock`); a burst
+  of short requests still moves nothing. What counts as out of pattern is now an uncorrectable, a renegotiated
+  link, a zeroed counter, or an event with nothing in flight. (2) the live per-second rates on the Monitor alias
+  against the step cadence under this load (per-stream p50 1.8 tok/s while the same requests average 33 end to
+  end, because vLLM credits tokens per ~1 s step) — the per-second sparkline is an activity trace, not a rate to
+  quote. Also recorded: card4 sits at **76-78 °C** against 64-68 °C for the other three at similar draw, and the
+  serving power band is 111-491 W a card, not the 288-334 the steady-state concurrency table implies. Notes: a
+  "Real traffic through it" section in `notes/context-262k.md`, a corrected AER section in the incident note, and a
+  per-card temperature bullet in `notes/native-4xr9700.md`.
+
   browser on demand is the part that never worked.
 
   configuration here; 95 °C is a fault anywhere). The `read_gpus` docstring also carried a claim this day

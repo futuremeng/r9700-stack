@@ -193,6 +193,16 @@ or an in-tree load profiler. `R9K_MTP_MLP=off` is not a usable probe: the draft 
   sclk from 3.3 GHz (single stream) down through 2.0-2.3 GHz at 16-32 streams. Efficiency therefore improves
   ~6x from one stream to 32 (0.21 -> 1.30 tok/J) and then flattens -- the same wall the 210 W reference caps
   sit on the far side of.
+* **The four cards are not at the same temperature, and long-context work widens the power band.** Sampled every
+  second under real 262k traffic (4-5 streams, prompts 5k-154k, 2026-11-02 14:1x, `tools/watch-live.py`):
+  card1/2/3 sat at **64-68 °C** while **card4 sat at 76-78 °C**, all four at 100% busy and 2.5-3.4 GHz, on
+  similar draw (card4 peaked 375 W, card1 peaked 491 W). So the per-card W range during serving is far wider than
+  the steady-state conc table above suggests — 111-491 W, not 288-334 — because a prefill-dominated second and a
+  decode-only second are different machines. 76-78 °C is nowhere near the 95 °C the Monitor calls a fault, but a
+  stable 10 °C outlier is the card to watch, and it happens to be one of the two chains whose switch upstream
+  ports account for every PCIe AER event this box has ever counted (the other is card2's; see
+  [incident-2026-11-02](incident-2026-11-02/README.md)). Not evidence of anything yet — just two things about the
+  same card worth keeping side by side.
 * **Host RAM**: 56 GiB used + 39 GiB cache, `MemAvailable` 37 GiB; Pss 12.0 GiB a worker, of which the int6 PLE
   table is 9.7 GiB pinned (`hipHostRegister`, so it does not show in `Unevictable`, which reads 30 MB).
   Swap holds 4 GiB and the lifetime `pswpout` is 96.4M pages (~360 GiB): the load streams 110.6 GiB through a
