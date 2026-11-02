@@ -300,6 +300,27 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   in the middle, a series crossing zero, one sample — and prints the paths, because summoning those states in a
   browser on demand is the part that never worked.
 
+- **A PCIe panel, built from what can actually be read here.** The traffic counters are not collectable on these
+  RDNA4 cards: `amd-smi metric --pcie` answers `N/A` for `BANDWIDTH`, `CURRENT_BANDWIDTH_SENT`/`_RECEIVED`,
+  `MAX_PACKET_SIZE`, `REPLAY_COUNT` and the NAK counters on all four GPUs, `--profiling` isn't a valid flag in the
+  `amd-smi` shipped here, there is no `amdgpu` PMU under `/sys/bus/event_source/devices/`, and the kernel exposes
+  no byte counter. What IS free — ordinary user, no root, no `/dev/kfd` — is negotiated link state and the kernel's
+  AER counters, so `read_pcie` walks the sysfs topology (a device's resolved path sits under its upstream bridge,
+  giving endpoint → downstream port → upstream port → root port without parsing `lspci`) and the Monitor draws one
+  card per chain: **GT/s** and **lanes** against each link's own maximum, and **correctable** and
+  **non-fatal+fatal** as per-poll deltas, because the raw counters are since-boot and the slope of a rising line
+  hides when the event happened while a spike has a time that can be lined up against a stall. A counter that went
+  down is the kernel zeroing it, so that window is a gap plus a flag rather than a bar of −24. First reading on
+  this box: card2's chain 28 → 31 correctable in seven quiet minutes (upstream port `c4:00.0`, BadTLP 24 → 27 —
+  the same port named as a reset site in the incident note), card4's chain 5, card1 and card3 clean, nothing
+  non-fatal or fatal anywhere, and every link still at its maximum 32.0 GT/s x16. Two parse-level traps fixed on
+  the way: an AER row parsed by the value string's length, so every count of 10 or more was silently dropped —
+  including the one number that mattered, 24 BadTLP; and `NonFatalErr` living *inside* `aer_dev_correctable`, which
+  is a correctable-status bit and not a non-fatal error. 194 checks, and `tools/restart-sidecar.sh` so restarting
+  the sidecar stops killing the shell that asks for it (`pkill -f` matches the calling command's own line).
+
+  browser on demand is the part that never worked.
+
   configuration here; 95 °C is a fault anywhere). The `read_gpus` docstring also carried a claim this day
   disproved — that a compute context is what makes the attributes answer; they refused with nothing running and
   answered with the launch holding all four.

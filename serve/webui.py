@@ -465,6 +465,147 @@ def read_gpus(root):
     return gpus
 
 
+# --------------------------------------------------------------------------------------- pcie sysfs
+# PCIe: what is actually collectable here, measured rather than assumed.
+#
+# Not throughput. The counters that would answer "how many bytes crossed the link" -- BANDWIDTH,
+# CURRENT_BANDWIDTH_SENT / _RECEIVED, MAX_PACKET_SIZE, REPLAY_COUNT -- all answer N/A on these RDNA4 cards for
+# every GPU (one amd-smi probe each), and the kernel exposes no byte counter either. What CAN be watched, for
+# free, is the link layer: the speed and width every link negotiated, and the AER error counters the kernel keeps
+# for each device and for every bridge above it. Ordinary user, no root, no /dev/kfd, a few dozen file reads.
+#
+# That is exactly the evidence the reset storm was missing. Measured on this box since the 11:07 boot: upstream
+# port 0000:c4:00.0 holding 24 correctable (all BadTLP), 0000:c1:00.0 holding 3, the switch downstream ports
+# 0000:c5:00.0 and 0000:05:00.0 one each, the GPU endpoints 0000:c6:00.0 and 0000:06:00.0 one each, and every
+# link still at its maximum 32.0 GT/s x16 -- the reassuring half of that picture.
+
+PCI_BDF = re.compile(r"^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-9a-f]$")
+AER_FILES = {"cor": "aer_dev_correctable", "nonfatal": "aer_dev_nonfatal", "fatal": "aer_dev_fatal"}
+AER_TOTAL = {"cor": "TOTAL_ERR_COR", "nonfatal": "TOTAL_ERR_NONFATAL", "fatal": "TOTAL_ERR_FATAL"}
+
+
+def _num(v):
+    """A counter that answered is a number; one that did not is None, never 0 -- "the file refused" and
+    "the link is at zero" have to stay different all the way to the waveform."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _pci_num(path):
+    try:
+        return int((path).read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _pci_speed(path):
+    try:
+        return float(path.read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _read_str(path):
+    try:
+        return path.read_text().strip() or None
+    except OSError:
+        return None
+
+
+def _aer(path):
+    """An aer_dev_* file: 'BadTLP 24' one per line. Totals split out, the rest kept only if non-zero --
+    the full list is 23 counters wide and the ones that matter are the ones that moved.
+
+    Two tokens per line, and the value parsed as a whole number: an earlier version of this tested the value
+    string's length instead of the row's, so every count of 10 or more failed to parse -- on this box that
+    silently dropped the single most interesting number, 24 correctable BadTLP on 0000:c4:00.0."""
+    try:
+        rows = [ln.split() for ln in path.read_text().splitlines() if ln.strip()]
+    except OSError:
+        return None, {}
+    vals = {row[0]: int(row[1]) for row in rows
+            if len(row) == 2 and re.fullmatch(r"-?\d+", row[1])}
+    return vals, {n: v for n, v in vals.items() if v and not n.startswith("TOTAL")}
+
+
+def read_pcie(root):
+    """One chain per GPU endpoint: the card, then each bridge above it, with link state and AER counters."""
+    root = Path(root)
+    chains = []
+    for dev in sorted(root.glob("*")):
+        if not PCI_BDF.match(dev.name):
+            continue
+        try:
+            if "amdgpu" not in (dev / "uevent").read_text():
+                continue
+        except OSError:
+            continue
+        # sysfs resolves a PCI device into its physical topology, so the parent of the resolved path is the
+        # bridge the link hangs off -- walking it gives the whole chain without parsing lspci.
+        chain = []
+        real = Path(os.path.realpath(dev))
+        while True:
+            chain.append(_pci_node(root / real.name, real.name, len(chain)))
+            if not PCI_BDF.match(real.parent.name):
+                break
+            real = real.parent
+        lows = {k: [d[k] for d in chain if _num(d[k])] for k in ("speed", "width")}
+        chains.append({"bus": dev.name.replace("0000:", ""), "card": None,
+                       "devices": chain,
+                       "speed": min(lows["speed"]) if lows["speed"] else None,
+                       "width": min(lows["width"]) if lows["width"] else None,
+                       "degraded": any(_num(d["speed"]) and _num(d["max_speed"]) and d["speed"] < d["max_speed"]
+                                       or _num(d["width"]) and _num(d["max_width"]) and d["width"] < d["max_width"]
+                                       for d in chain)})
+    return chains
+
+
+def _pci_node(path, bdf, depth):
+    role = {0: "endpoint", 1: "downstream port", 2: "upstream port"}.get(depth, "bridge")
+    cor, cor_named = _aer(path / AER_FILES["cor"])
+    nf, nf_named = _aer(path / AER_FILES["nonfatal"])
+    ft, ft_named = _aer(path / AER_FILES["fatal"])
+    return {"bdf": bdf, "role": role,
+            "speed": _pci_speed(path / "current_link_speed"), "max_speed": _pci_speed(path / "max_link_speed"),
+            "width": _pci_num(path / "current_link_width"), "max_width": _pci_num(path / "max_link_width"),
+            "power_state": _read_str(path / "power_state"),
+            "cor": (cor or {}).get(AER_TOTAL["cor"]), "nonfatal": (nf or {}).get(AER_TOTAL["nonfatal"]),
+            "fatal": (ft or {}).get(AER_TOTAL["fatal"]),
+            "notable": {**cor_named, **{f"{k}#nf": v for k, v in nf_named.items()},
+                        **{f"{k}#ft": v for k, v in ft_named.items()}}}
+
+
+def aer_deltas(chains, last):
+    """Per-poll AER deltas per chain, from counters that are cumulative since boot.
+
+    A counter that went DOWN is not negative traffic: the kernel zeroes these on a link recovery or a driver
+    reload, so the window's delta is unknown (None) and the chain is flagged as reset -- drawing -24 as a bar
+    would be worse than drawing a gap. Returns (per-chain deltas, the new last-totals map)."""
+    out, nxt = [], {}
+    for ch in chains:
+        d = {"bus": ch["bus"], "speed": ch["speed"], "width": ch["width"], "degraded": ch["degraded"]}
+        reset = False
+        for k in ("cor", "nonfatal", "fatal"):
+            tot, acc = 0, 0
+            for dev in ch["devices"]:
+                v, prev = dev.get(k), last.get((dev["bdf"], k))
+                nxt[(dev["bdf"], k)] = v
+                if v is None:
+                    continue
+                if prev is None:
+                    acc = None if acc == 0 else acc          # first sighting: no delta for this window
+                    continue
+                if v < prev:
+                    reset = True
+                    acc = None
+                    continue
+                if acc is not None:
+                    acc += v - prev
+            d[f"{k}_d"] = acc
+        d["reset"] = reset
+        out.append(d)
+    return out, nxt
+
+
 # --------------------------------------------------------------------------------- request record
 # What a row in the request list carries, in one place because two different backends build rows: the
 # relay (`Records`, which sees bytes) and the engine's own stat logger (`EngineRecords`, which sees the
@@ -667,6 +808,9 @@ class Hub:
         # is a number people ask us to prove by hand -- the soak runs log it to a side file to show a leak is
         # not happening -- and a ring on the page is the same evidence, continuously, with no script.
         self.gpuhist = deque(maxlen=HIST)
+        # PCIe chain state and its ring, same beat as the cards. The waves are per-poll deltas of counters that
+        # are cumulative since boot, which is why the sidecar keeps the last totals to difference against.
+        self.pcie, self.pciehist, self.aer_last = [], deque(maxlen=HIST), {}
         self.health, self.engine, self.host = None, {}, read_host()
         self.key_needed, self.smi_error = False, None
         self.lock = threading.Lock()
@@ -714,6 +858,8 @@ class Hub:
                     payload["engine"] = self.engine
                     payload["gpus"] = self.gpus
                     payload["gpus_history"] = list(self.gpuhist)
+                    payload["pcie"] = self.pcie
+                    payload["pcie_history"] = list(self.pciehist)
                     payload["smi"] = bool(self.cfg["smi"])
                     payload["smi_error"] = self.smi_error
                     payload["meta"] = self.meta
@@ -736,6 +882,7 @@ class Hub:
                                        upstream=self.cfg["upstream"], error=str(e)[:300],
                                        key_needed=self.key_needed or bool(self.cfg["key"]),
                                        gpus=self.gpus, gpus_history=list(self.gpuhist),
+                                       pcie=self.pcie, pcie_history=list(self.pciehist),
                                        models=self.models, engine=self.engine,
                                        meta=self.meta, requests_kept=self.kept())
             time.sleep(self.cfg["poll"])
@@ -771,6 +918,14 @@ class Hub:
                  "power_cap_w": g.get("power_cap_w"), "temp_c": g.get("temp_c")}
                 for g in self.gpus]})
             self.host = read_host()
+            if self.cfg["pci"]:
+                chains = read_pcie(self.cfg["pci"])
+                by_bus = {g.get("bus"): g.get("card") for g in self.gpus}      # name the chain by its card
+                for ch in chains:
+                    ch["card"] = by_bus.get(ch["bus"])
+                deltas, self.aer_last = aer_deltas(chains, self.aer_last)
+                self.pcie = chains
+                self.pciehist.append({"at": time.time(), "chains": deltas})
             time.sleep(max(1.0, self.cfg["poll"]))
 
     # ---- the API the pages read -------------------------------------------------------------------
@@ -1049,6 +1204,9 @@ def main(argv=None):
     ap.add_argument("--keep", type=int, default=int(os.environ.get("R9K_WEB_KEEP", 100)))
     ap.add_argument("--meta", default=os.environ.get("R9K_WEB_META", ""))
     ap.add_argument("--gpus", default=os.environ.get("R9K_WEB_GPUS", "/sys/class/drm"))
+    ap.add_argument("--pci", default=os.environ.get("R9K_WEB_PCI", "/sys/bus/pci/devices"),
+                    help="PCIe sysfs root for the link/AER card (empty = off). Read-only and needs no root "
+                         "and no /dev/kfd, unlike the byte counters, which answer N/A on these cards.")
     ap.add_argument("--smi", default=os.environ.get("R9K_WEB_SMI", ""),
                     help="fill what the sysfs refuses from rocm-smi (empty = off; pass a command to override "
                          "the default -- opens /dev/kfd on every poll, so keep it off while measuring)")
@@ -1057,7 +1215,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     cfg = {"port": a.port, "upstream": a.upstream.rstrip("/"), "mode": "proxy" if a.proxy else "observe",
            "key": a.key, "poll": a.poll, "keep": a.keep, "meta": a.meta,
-           "gpus": a.gpus, "smi": (SMI_DEFAULT if a.smi == "1" else a.smi.split()) if a.smi else None,
+           "gpus": a.gpus, "pci": a.pci, "smi": (SMI_DEFAULT if a.smi == "1" else a.smi.split()) if a.smi else None,
            "timeout": 600.0, "verbose": a.verbose, "version": a.version}
     _, srv = build(cfg)
     print(f"webui: http://127.0.0.1:{cfg['port']}/monitor  upstream {cfg['upstream']}  "

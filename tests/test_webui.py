@@ -372,6 +372,60 @@ stub.mkdir(parents=True, exist_ok=True)
 stub.joinpath("uevent").write_text("DRIVER=amdgpu\nPCI_SLOT_NAME=0000:08:00.0\n")
 (stub / "gpu_busy_percent").mkdir()                          # reading it raises, like EBUSY does
 (stub / "mem_info_vram_total").write_text(f"{32 * 2**30}\n")
+
+# ------------------------------------------------------------------ the PCI tree the link card reads
+# Built the way sysfs actually looks: the devices live in a physical topology under devices/pciNNNN:BB and
+# /sys/bus/pci/devices/<bdf> is a symlink into it -- that is how the chain of bridges above a card is found
+# without parsing lspci. The fixture carries a four-level chain (endpoint, downstream port, upstream port, root
+# port), a second chain that came up x8 on an x16 link, and a root port with no AER files at all.
+fakepci = Path("/tmp/r9700-webui-sysfs-pci")
+shutil.rmtree(fakepci, ignore_errors=True)
+pnodevs = fakepci / "bus" / "pci" / "devices"
+pnodevs.mkdir(parents=True)
+
+
+def pci_dev(parent, bdf, driver="pcieport", speed="32.0 GT/s PCIe", width="16",
+            max_speed="32.0 GT/s PCIe", max_width="16", aer=None):
+    d = parent / bdf
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "uevent").write_text(f"DRIVER={driver}\nPCI_SLOT_NAME=0000:{bdf}\n")
+    (d / "current_link_speed").write_text(speed + "\n")
+    (d / "current_link_width").write_text(width + "\n")
+    (d / "max_link_speed").write_text(max_speed + "\n")
+    (d / "max_link_width").write_text(max_width + "\n")
+    (d / "power_state").write_text("D0\n")
+    for name, rows in (aer or {}).items():
+        (d / name).write_text("".join(f"{k} {v}\n" for k, v in rows))
+    (pnodevs / bdf).symlink_to(d, target_is_directory=True)     # sysfs links the same way, absolute here
+    return d
+
+
+AER_COR = [("RxErr", 0), ("BadTLP", 0), ("BadDLLP", 0), ("TOTAL_ERR_COR", 0)]
+AER_NF = [("DLP", 0), ("TOTAL_ERR_NONFATAL", 0)]
+AER_FT = [("DLP", 0), ("TOTAL_ERR_FATAL", 0)]
+root_a = pci_dev(fakepci / "devices" / "pci0000:c0", "0000:c0:03.1")          # root port, no AER files here
+up_a = pci_dev(root_a, "0000:c4:00.0", aer={"aer_dev_correctable":
+                                            [("RxErr", 0), ("BadTLP", 24), ("NonFatalErr", 1),
+                                             ("TOTAL_ERR_COR", 24)],
+                                            "aer_dev_nonfatal": AER_NF, "aer_dev_fatal": AER_FT})
+down_a = pci_dev(up_a, "0000:c5:00.0", aer={"aer_dev_correctable":
+                                            [("BadTLP", 7), ("TOTAL_ERR_COR", 7)],
+                                            "aer_dev_nonfatal": AER_NF, "aer_dev_fatal": AER_FT})
+endpoint_a = pci_dev(down_a, "0000:c6:00.0", driver="amdgpu", aer={"aer_dev_correctable":
+                                                                   [("BadTLP", 1), ("TOTAL_ERR_COR", 1)],
+                                                                   "aer_dev_nonfatal": AER_NF,
+                                                                   "aer_dev_fatal": AER_FT})
+root_b = pci_dev(fakepci / "devices" / "pci0000:00", "0000:00:03.1", aer={"aer_dev_correctable": AER_COR,
+                                                                          "aer_dev_nonfatal": AER_NF,
+                                                                          "aer_dev_fatal": AER_FT})
+up_b = pci_dev(root_b, "0000:04:00.0", aer={"aer_dev_correctable": AER_COR,
+                                            "aer_dev_nonfatal": AER_NF, "aer_dev_fatal": AER_FT})
+down_b = pci_dev(up_b, "0000:05:00.0", aer={"aer_dev_correctable": AER_COR,
+                                            "aer_dev_nonfatal": AER_NF, "aer_dev_fatal": AER_FT})
+endpoint_b = pci_dev(down_b, "0000:06:00.0", driver="amdgpu", width="8",      # came up x8 on an x16 link
+                     aer={"aer_dev_correctable": AER_COR, "aer_dev_nonfatal": AER_NF,
+                          "aer_dev_fatal": AER_FT})
+pci_dev(fakepci / "devices" / "pci0000:02", "0000:07:00.0", driver="nvme")     # not a GPU chain, ignore it
 gpus = W.read_gpus(fake)
 ck("both hwmon layouts are read (the kernel here uses device/hwmon/hwmonN)",
    any(g["card"] == "card3" and g["temp_c"] == 33.0 and g["power_w"] == 199.87 and g["power_cap_w"] == 205.0
@@ -503,8 +557,8 @@ threading.Thread(target=up.serve_forever, daemon=True).start()
 
 def sidecar(mode="proxy", key="", keep=50):
     cfg = {"port": 0, "upstream": f"http://127.0.0.1:{up_port}", "mode": mode, "key": key, "poll": 0.2,
-           "keep": keep, "meta": "", "gpus": str(fake), "smi": None, "timeout": 10.0, "verbose": False,
-           "version": "test"}
+           "keep": keep, "meta": "", "gpus": str(fake), "pci": str(pnodevs), "smi": None,
+           "timeout": 10.0, "verbose": False, "version": "test"}
     hub, srv = W.build(cfg)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return hub, srv, srv.server_address[1]
@@ -547,6 +601,44 @@ ck("the slot carries the leak question too (vram_used, and the card's own total)
 # The thermal sensors ride the ring too, which is what the per-card W and °C waves are drawn from.
 ck("temperature, power and the card's power cap ride the ring",
    all(k in _gh[-1]["cards"][0] for k in ("temp_c", "power_w", "power_cap_w")), str(_gh[-1]["cards"][0]))
+
+# ---- PCIe: the link the cards hang off. Byte counters answer N/A on these cards, so what is collected is
+# negotiated link state and the kernel's AER error counters -- and the incident's evidence.
+_pc = W.read_pcie(pnodevs)
+_ck_ch = {c["bus"]: c for c in _pc}
+ck("PCIe chains walk the sysfs topology: endpoint, downstream port, upstream port, root port",
+   len(_pc) == 2 and [d["bdf"] for d in _ck_ch["c6:00.0"]["devices"]]
+   == ["0000:c6:00.0", "0000:c5:00.0", "0000:c4:00.0", "0000:c0:03.1"],
+   str([(c["bus"], [d["bdf"] for d in c["devices"]]) for c in _pc]))
+ck("only GPU endpoints start a chain (an nvme on the box is not one)",
+   set(_ck_ch) == {"c6:00.0", "06:00.0"}, str(sorted(_ck_ch)))
+ck("multi-digit AER counts parse -- 24 BadTLP is exactly the number that matters on the live box",
+   _ck_ch["c6:00.0"]["devices"][2]["cor"] == 24
+   and _ck_ch["c6:00.0"]["devices"][2]["notable"].get("BadTLP") == 24,
+   str(_ck_ch["c6:00.0"]["devices"][2]))
+ck("a bridge whose AER files are missing reads as unknown, never as zero",
+   _ck_ch["c6:00.0"]["devices"][3]["cor"] is None, str(_ck_ch["c6:00.0"]["devices"][3]))
+ck("a link that came up x8 on an x16 lane is flagged, and the chain reports its weakest link",
+   _ck_ch["06:00.0"]["degraded"] and _ck_ch["06:00.0"]["width"] == 8 and not _ck_ch["c6:00.0"]["degraded"],
+   str([(c["bus"], c["width"], c["degraded"]) for c in _pc]))
+_d1, _last = W.aer_deltas(_pc, {})
+ck("the first window has no delta to show, which is a gap rather than a zero",
+   all(d["cor_d"] is None for d in _d1), str([(d["bus"], d["cor_d"]) for d in _d1]))
+(down_a / "aer_dev_correctable").write_text("BadTLP 12\nTOTAL_ERR_COR 12\n")      # five more, one bridge
+_d2, _last2 = W.aer_deltas(W.read_pcie(pnodevs), _last)
+ck("the AER wave is the per-window delta, not the cumulative counter",
+   [d for d in _d2 if d["bus"] == "c6:00.0"][0]["cor_d"] == 5,
+   str([(d["bus"], d["cor_d"]) for d in _d2]))
+(down_a / "aer_dev_correctable").write_text("BadTLP 1\nTOTAL_ERR_COR 1\n")        # kernel zeroed it
+_d3, _ = W.aer_deltas(W.read_pcie(pnodevs), _last2)
+ck("a counter that went down is a reset: a gap and a flag, never a bar of -11",
+   [d for d in _d3 if d["bus"] == "c6:00.0"][0]["cor_d"] is None
+   and [d for d in _d3 if d["bus"] == "c6:00.0"][0]["reset"],
+   str([(d["bus"], d["cor_d"], d["reset"]) for d in _d3]))
+ck("PCIe chain state and its ring ride the payload, capped at the same HIST",
+   s.get("pcie") and s.get("pcie_history") and len(s["pcie_history"]) <= W.HIST
+   and all(len(h["chains"]) == len(s["pcie"]) for h in s["pcie_history"]),
+   f"{len(s.get('pcie_history') or [])} samples x {len(s.get('pcie') or [])} chains")
 ck("status carries models", s["models"][0]["id"] == "Qwen3.8")
 ck("status engine version", s["engine"]["vllm_version"] == "test")
 ck("the sparkline ring carries the live rates too",
@@ -806,6 +898,16 @@ ck("both pages feed the card history to it",
    "gpuCard(g, s.gpus_history || [])" in monjs and "gpuCard(g, s.gpus_history || [])" in (WEB / "about.js").read_text())
 ck("a card's caption carries the thermal trio and busy, each as peak and average, with the span named",
    all(x in _ck2 for x in ('"temp"', '"power"', '"sclk"', "busy avg", "pts over")))
+# The PCIe panel. The wording is part of the test because the honest scope is the whole point: this is not
+# bandwidth (the byte counters answer N/A on these cards), it is negotiated link state and AER errors.
+ck("the PCIe panel exists and says what it is not",
+   'id="pcie"' in monhtml and 'id="pcie-note"' in monhtml and "pcieCard(" in monjs
+   and "N/A" in monjs and "no root and no /dev/kfd" in monjs)
+ck("PCIe waves run on anchored axes -- each link's own max -- and a degraded link is coloured",
+   "Math.max(...devs.map((x) => x.max_speed || 0), 0)" in monjs
+   and "(j < 2 && c.degraded)" in monjs and "baseHi: ceils[j]" in monjs)
+ck("a PCIe chain is named by its card and drawn as endpoint -> bridge -> bridge",
+   "c.card || short(c.bus)" in monjs and '.join(" \u2192 ")' in monjs)
 # gpu_busy_percent on this box is coarse, not finely readable: refused with nothing running, 0 stopped, 24-29
 # idle, 46-100 under load, 95-99 through long decode. The page says so, because otherwise a flat 99 reads as
 # "fully loaded" and a 0 as "healthy idle" when either could also mean "the launch let go".

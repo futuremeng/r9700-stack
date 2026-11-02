@@ -8,6 +8,57 @@ let paused = false, actionError = "";
 const active = (r) => !["completed", "error", "disconnected"].includes(r.state);
 const rid = (r) => r.id || `req-${r.seq}`;
 
+// -- one PCIe chain: the card's endpoint and every bridge above it ---------------------------------
+// Link state and error counters, because the traffic counters are not there to ask: amd-smi's BANDWIDTH,
+// CURRENT_BANDWIDTH_SENT / _RECEIVED, MAX_PACKET_SIZE and REPLAY_COUNT answer N/A for every GPU on these RDNA4
+// cards, and the kernel exposes no byte counter either. What IS free (ordinary user, no root, no /dev/kfd) is the
+// speed and width each link negotiated, and the kernel's AER counters for each device and bridge in the chain.
+// Those counters are cumulative since boot, so the waveform is the per-poll delta: a spike is an event with a time
+// that can be lined up against a stall, where the slope of a cumulative line hides it. A counter that went down is
+// the kernel zeroing it (link recovery, driver reload) -- that draws a gap and says so, because a bar of -24
+// would be a fabrication.
+function pcieCard(c, phist = []) {
+  const d = document.createElement("div");
+  d.className = "gpu pcie";
+  const devs = c.devices || [];
+  const short = (b) => String(b || "").replace(/^0000:/, "");
+  const sum = (k) => devs.reduce((a, x) => a + (x[k] || 0), 0);
+  const named = {};
+  devs.forEach((x) => Object.entries(x.notable || {}).forEach(([k, v]) => { named[k] = (named[k] || 0) + v; }));
+  const maxSpeed = Math.max(...devs.map((x) => x.max_speed || 0), 0);
+  const maxWidth = Math.max(...devs.map((x) => x.max_width || 0), 0);
+  const link = devs.map((x) => `${short(x.bdf)} ${isnum(x.speed) ? x.speed.toFixed(1) : "?"} x${x.width ?? "?"}`).join(", ");
+  d.innerHTML = `<b>${c.card || short(c.bus)}</b><span class="small">${devs.map((x) => short(x.bdf)).join(" → ")}</span>`
+    + `<div class="pct">${isnum(c.speed) ? `${fmt(c.speed, 1)}<span class="unit">GT/s x${c.width}</span>`
+        : `<span class="q">—</span>`}</div>`
+    + ["GT/s", "lanes", "corr", "uncorr"].map((lab) => `<div class="sparkrow"><span>${lab}</span>`
+        + `<div class="sparkline spark--gpu"></div></div>`).join("")
+    + `<div class="muted small" data-wave></div>`
+    + `<div class="muted small">${devs.length} links · ${link}</div>`
+    + `<div class="muted small">${Object.keys(named).length
+        ? `counters: ${Object.entries(named).map(([k, v]) => `${k} ${v}`).join(", ")}` : ""}</div>`;
+  const at = (s2) => (s2.chains || []).find((x) => x.bus === c.bus) || null;
+  const series = (k) => phist.map((s2) => { const x = at(s2); return x ? x[k] : null; });
+  const vals = [series("speed"), series("width"), series("cor_d"),
+                phist.map((s2) => { const x = at(s2);
+                  return x && isnum(x.nonfatal_d) && isnum(x.fatal_d) ? x.nonfatal_d + x.fatal_d : null; })];
+  const peak = (xs) => Math.max(...xs.filter(isnum), 0);
+  const ceils = [maxSpeed, maxWidth, Math.max(peak(vals[2]), 1), Math.max(peak(vals[3]), 1)];
+  d.querySelectorAll(".spark--gpu").forEach((el, j) => {
+    spark(el, vals[j], { baseLo: 0, baseHi: ceils[j] });
+    // Colour means "look here": a link below its maximum, an uncorrectable error inside a window, or the
+    // counters having been zeroed under us -- in which case the wave has a hole where the event was.
+    el.dataset.tone = (j < 2 && c.degraded) || (j === 3 && peak(vals[3]) > 0) ? "danger"
+      : (j === 2 && peak(vals[2]) > 0) ? "warn" : "";
+  });
+  const resets = phist.filter((s2) => { const x = at(s2); return x && x.reset; }).length;
+  const cap = d.querySelector("[data-wave]");
+  if (cap) cap.textContent = `since boot ${sum("cor")} correctable · ${sum("nonfatal")} non-fatal · `
+    + `${sum("fatal")} fatal` + (resets ? ` · ${resets} window${resets > 1 ? "s" : ""} reset` : "")
+    + (c.degraded ? " · LINK BELOW MAXIMUM" : "");
+  return d;
+}
+
 // -- the notice bar -------------------------------------------------------------------------------
 function notice(message, info) {
   const el = $("error");
@@ -343,6 +394,21 @@ function renderStatus(s) {
     + (s.smi ? " + rocm-smi" : "") + (quiet ? ` · ${quiet} refusing sysfs reads` : "")
     : "no amdgpu sysfs readable here");
   $("gpus").replaceChildren(...gpus.map((g) => gpuCard(g, s.gpus_history || [])));
+  // The PCIe chains get their own panel because they answer a different question than the cards: the cards say
+  // what the GPU did, this says whether the wire under it was clean. The wording has to stay honest about scope:
+  // this is not bandwidth, it is negotiated link state and the kernel's error counters.
+  const chains = s.pcie || [];
+  const chainSum = (c2) => (c2.devices || []).reduce((a, x) => a + (x.cor || 0), 0);
+  const worst = chains.reduce((a, c2) => Math.max(a, chainSum(c2)), 0);
+  text("pcie-note", chains.length
+    ? `${chains.length} link chain${chains.length > 1 ? "s" : ""} · sysfs, no root and no /dev/kfd · `
+      + `byte counters answer N/A on these cards, so this is link state and AER errors`
+      + (worst ? ` · ${worst} correctable since boot on the worst chain` : " · no correctable errors since boot")
+      + (chains.some((c2) => c2.degraded) ? " · a link is below its maximum" : "")
+      + (s.pcie_history && s.pcie_history.some((h) => (h.chains || []).some((x) => x.reset))
+        ? " · counters were reset during the window" : "")
+    : "no PCIe sysfs readable here");
+  $("pcie").replaceChildren(...chains.map((c2) => pcieCard(c2, s.pcie_history || [])));
 }
 
 // -- one tick -------------------------------------------------------------------------------------

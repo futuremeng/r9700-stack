@@ -431,6 +431,45 @@ One trap this closed on the way: a `hi: "peak"` axis over an empty series is `Ma
 `-Infinity` — the axis is clamped to 0 and a series whose bounds are not finite draws nothing rather than a box
 full of NaN.
 
+### PCIe: the link under the cards
+
+Asked whether PCIe traffic could be waved, the answer came out **partly**, and the split is the interesting part.
+
+- **Bytes: not collectable here.** Every counter that would answer "how much crossed the link" replies `N/A` on
+  these RDNA4 cards — `amd-smi metric --pcie` gives `BANDWIDTH`, `CURRENT_BANDWIDTH_SENT`,
+  `CURRENT_BANDWIDTH_RECEIVED`, `MAX_PACKET_SIZE`, `REPLAY_COUNT`, `NAK_SENT/RECEIVED_COUNT` as `N/A` for all four
+  GPUs; `--profiling` is not even a valid flag in the `amd-smi` this box ships; there is no `amdgpu` PMU under
+  `/sys/bus/event_source/devices/` (only `amd_iommu_*`); and the kernel exposes no byte counter in the device
+  directory. So no waveform gets built out of a hope.
+- **The link layer: free, and it is the evidence the reset storm was asking for.** `/sys/bus/pci/devices/<bdf>/`
+  answers as an ordinary user with no `/dev/kfd`: `current_link_speed` / `current_link_width` against
+  `max_link_speed` / `max_link_width`, `power_state`, and the AER counters `aer_dev_correctable` /
+  `aer_dev_nonfatal` / `aer_dev_fatal` — each a list of named counters ending in a total.
+
+`read_pcie` walks the **sysfs topology** rather than parsing `lspci`: a PCI device's resolved path sits under its
+upstream bridge, so following parents turns an endpoint into a chain — endpoint → switch downstream port →
+upstream port → root port — and every level carries its own counters. The Monitor's PCIe panel draws one card per
+chain with four waves each: negotiated **GT/s** (axis 0..that link's max), **lanes** (0..max), and the
+**correctable** and **non-fatal+fatal** counters as **per-poll deltas**. Deltas, not the cumulative value: the
+kernel's counters are since-boot and the slope of a rising line hides when the event happened, while a spike has a
+time that can be lined up against a stall. A counter that went *down* is the kernel zeroing it (link recovery,
+driver reload), so that window draws a gap and flags itself rather than a bar of −24.
+
+What it showed in its first running hour (this box, the 11:07 boot, read 12:07–12:14 UTC):
+
+| chain | correctable since boot | what they are | non-fatal / fatal |
+|---|---|---|---|
+| card2 `c6:00.0 → c5:00.0 → c4:00.0 → c0:03.1` | 28 → **31** | `c4:00.0` upstream port BadTLP 24 → 27; `c0:03.1` Timeout 2; endpoint and downstream port 1 each | 0 / 0 |
+| card4 `06:00.0 → 05:00.0 → 04:00.0 → 00:03.1` | 5 | `04:00.0` upstream port BadTLP 3; endpoint and downstream port 1 each | 0 / 0 |
+| card1 `c3:00.0 → c2:00.0 → c1:00.0 → c0:01.1` | 0 | — | 0 / 0 |
+| card3 `03:00.0 → 02:00.0 → 01:00.0 → 00:01.1` | 0 | — | 0 / 0 |
+
+Three correctable errors landed on card2's upstream port during the seven minutes of watching, while every link
+stayed at its maximum **32.0 GT/s x16** — nothing is falling back. Two quirks worth knowing before reading those
+numbers: `NonFatalErr` appears *inside* `aer_dev_correctable` (a bit in the correctable status set, not a non-fatal
+error — `TOTAL_ERR_NONFATAL` is the one that means that, and it reads 0 here), and the totals can be zeroed by the
+kernel, which is why the deltas treat a decrease as unknown rather than negative.
+
 **Per-card waveforms: busy and VRAM replace the busy bar.** `gpu_poll` keeps its own ring
 (`gpus_history`, same 90 points, one slot per card, aligned by PCI bus id / card name so a card vanishing from
 sysfs cannot plot its neighbour's numbers), and each card draws busy on 0..100 and VRAM on 0..that card's own

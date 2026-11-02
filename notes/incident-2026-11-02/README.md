@@ -148,3 +148,29 @@ that dies loudly is a software bug, and the pages inside the serve (`serve/plugi
 resets without ever writing a `shutdown` record, at idle, is not — and that is the case for keeping the
 out-of-process sidecar on 8081, whose own log and whose card readings survive the engine, and for keeping a
 watch on the BMC side rather than only on the OS side: the only clock that can date these deaths is the BMC's.
+
+## The AER counters are now on the Monitor, and they are still moving
+
+`amd-smi metric --pcie` cannot answer bandwidth on these cards — `BANDWIDTH`, `CURRENT_BANDWIDTH_SENT` /
+`_RECEIVED`, `MAX_PACKET_SIZE` and `REPLAY_COUNT` all read `N/A` for all four GPUs — but the kernel's AER counters
+read as an ordinary user with no `/dev/kfd`, which is what the hand-collected
+[aer-by-boot-port.txt](../incident-2026-11-01b/aer-by-boot-port.txt) was made of. The Monitor now polls them
+(`read_pcie` in `serve/webui.py`, the PCIe panel), so the evidence accrues with timestamps instead of being
+grabbed by hand after the fact.
+
+Read between 12:07 and 12:14 UTC, this boot (11:07):
+
+| chain | correctable | detail | non-fatal / fatal |
+|---|---|---|---|
+| card2 `c6:00.0 → c5:00.0 → c4:00.0 → c0:03.1` | 28 → **31** | upstream port `c4:00.0` BadTLP 24 → 27; root port `c0:03.1` Timeout 2; endpoint and downstream port 1 each | 0 / 0 |
+| card4 `06:00.0 → 05:00.0 → 04:00.0 → 00:03.1` | 5 | upstream port `04:00.0` BadTLP 3; endpoint and downstream port 1 each | 0 / 0 |
+| card1 `c3:00.0 → …`, card3 `03:00.0 → …` | 0 | — | 0 / 0 |
+
+Three new correctable errors on card2's upstream port in seven quiet minutes — the serve up, one stream finishing,
+no reset — and every link still at its maximum 32.0 GT/s x16. `c4:00.0` is the same port named in this note as a
+reset site, which is the reason to keep watching it by waveform rather than by snapshot.
+
+Two reading cautions recorded so the numbers are not over-read: `NonFatalErr` inside `aer_dev_correctable` is a
+bit of the correctable status set, not a non-fatal error (`TOTAL_ERR_NONFATAL` is the one that means that, and it
+is 0 here); and the kernel zeroes these counters on link recovery, so the panel's waves are per-poll deltas that
+treat a decrease as unknown, never as a negative count.

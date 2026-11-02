@@ -173,6 +173,13 @@ number above it means the two counters are not the pair this line thinks they ar
     <div class="grid gpus" id="gpus"></div>
   </section>
 
+  <!-- the link the cards hang off. Not throughput: the byte counters answer N/A on these cards, so this is
+       link state plus the kernel's AER error counters -- the evidence the reset storm wanted. -->
+  <section class="card pcie-card">
+    <div class="panel-bar"><h2>PCIe</h2><span class="small" id="pcie-note">sysfs link state and AER counters</span></div>
+    <div class="grid gpus" id="pcie"></div>
+  </section>
+
   <!-- timings the engine only reports as averages: the honest version of "queue wait per request" -->
   <section class="card">
     <div class="panel-bar"><h2>Engine timings</h2>
