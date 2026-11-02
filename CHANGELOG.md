@@ -157,9 +157,12 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   font that viewer happens to have), and the release image is used exactly once, under the heading that carries it.
   And `tests/test_lockup.py` draws it and looks at the pixels: the word has to render as eleven separate letters,
   the mark as four separate bands, nothing clipped at a canvas edge, the wordmark title-sized rather than shrunk,
-  mark and word on one middle line with air between them, and the two schemes one silhouette. It skips, saying so,
-  where there is no cairo -- and its docstring is the recipe for getting cairo without root, unpacking the distro's
-  `.deb` beside the venv and pointing `LD_LIBRARY_PATH` at it.
+  mark and word on one middle line with air between them, and the two schemes one silhouette. It takes whichever
+  renderer the box has -- `rsvg-convert` (the distro's `librsvg2-bin`) or `cairosvg` -- and both paths pass on the
+  same files; with neither installed it skips, saying so. The docstring carries the apt line, the pip line, the
+  no-root way to get cairo (unpack the distro's `.deb` beside the venv and set `LD_LIBRARY_PATH`; nothing is
+  written to `/usr`), and the three `rsvg-convert` commands for looking at the README's figures at github.com's
+  column width instead of measuring them.
 - **A Speed table for the four cards uncapped at 32k.** The prefill and aggregate headline numbers had lived only
   in [notes/native-4xr9700.md](notes/native-4xr9700.md); they are in the README now with their sample lists: single
   stream 186.7 tok/s, `bench.py` at 4 / 8 / 16 streams 372 / 841 / 1,164, `probe32.sh` at 32 in flight 1,598 (300-token
