@@ -240,6 +240,12 @@ prompt was being prefilled. That is the shape you would expect if the trigger is
 prefill puts on the link rather than anything about starting a process. Card2's chain went 36 → 38 and card4's
 8 → 12 across the hour.
 
+Two more arrived while watching (14:30:39 and 14:32:11, both `04:00.0`, both with 5-7 requests in flight and the
+pool over 60%), bringing it to **9 events in ~55 minutes of real load** — and both of those two landed on the
+chain of **card4, the card that runs 10 °C hotter than the others** (78 °C against 66-69 °C, steady rather than
+climbing across 120 samples). Not evidence of a causal chain, just two more facts about the same card sitting
+next to each other.
+
 Still true, and the part that matters for the reset question: **every event is correctable**. `TOTAL_ERR_NONFATAL`
 and `TOTAL_ERR_FATAL` are 0 on every device, no link has ever renegotiated below **32.0 GT/s ×16** in ~90 minutes
 of sampled history, and the box has been up since 11:07 (3 h 09 m through all of this) after a morning of 15

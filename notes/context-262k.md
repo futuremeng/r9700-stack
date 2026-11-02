@@ -198,6 +198,43 @@ short requests slip between the long prefills, so the scheduler runs more than t
 the constraint. Still no KV exhaustion and zero preemptions — the queue is a prefill queue, exactly as that
 section argued.
 
+### Then it went one request too far, and the box preempted for the first time
+
+The load kept arriving and got longer. Read through the whole journal (385 rows, 12:53 → 14:34 — the Monitor only
+keeps the last 100), in ten-minute buckets:
+
+| bucket | rows | prompt p50 | first token p50 / p95 | that requests' own decode p50 | busy streams | aggregate generation |
+|---|---:|---:|---:|---:|---:|---:|
+| 13:30 | 72 | 49,384 | 5.6 / 9.8 s | 163.2 tok/s | 1.1 | 40 tok/s |
+| 13:40 | 48 | 86,833 | 10.8 / 23.9 s | 127.0 | 1.5 | 51 |
+| 13:50 | 42 | 108,515 | 15.0 / 29.8 s | 52.0 | 2.0 | 53 |
+| 14:00 | 62 | 48,395 | 6.6 / 27.1 s | 50.3 | 2.4 | 52 |
+| 14:10 | 63 | 66,923 | 9.5 / 35.6 s | 21.0 | 4.0 | 56 |
+| 14:20 | 57 | 78,096 | 11.5 / 31.5 s | 18.3 | 4.9 | 64 |
+| 14:30 | 25 | 28,985 | **26.1 / 48.9 s** | **12.2** | 4.6 | 39 |
+
+The aggregate never leaves ~40–65 tok/s while TTFT rises ~5× and per-request decode falls ~13×. **That is the
+prefill-bound regime stated out loud: past the pipe's ceiling, concurrency is not bought with throughput, it is
+paid for in latency.**
+
+And then `vllm:num_preemptions_total` — 0.0 all morning through 32 × 300 waves, 250k prefills and the reset storm —
+went to **1** and then **2**:
+
+| started | prompt | preemptions | first token | wall | its own decode |
+|---|---:|---:|---:|---:|---:|
+| 14:24:39 | **157,542** | 1 | 20.9 s | 63.0 s | 14.8 tok/s |
+| 14:29:27 | **159,950** | 1 | **30.2 s** | 60.8 s | **3.4 tok/s** (129 tokens) |
+
+Those are the two longest prompts in the journal, and they are what the pool math predicts: the pool holds
+**540,202 tokens**, so it fits **3.4** 160k-token contexts, 5.4 at 100k, 9.0 at 60k — while `running` was sitting
+at p50 6 with prompt p50 78k and the pool touching **100.0%** (2 samples over 99%, 13 over 95% in a 300 s
+window). A preempt is not free and the row says so: vLLM v1 re-prefills, so the victim's first token went to
+20.9 / 30.2 s and its own decode average fell to 14.8 / 3.4 tok/s.
+
+So the honest capacity statement for long-context work is not `NSEQ=32` at all — it is **pool ÷ prompt**: keep
+`running × prompt_length` under ~500k tokens. At 150k prompts that is **three** in flight; the box will run more
+than that, and will do it by stealing decode from everyone and then preempting whoever asked for the most.
+
 **A reading trap this exposes in the Monitor.** Per-second live rates look awful under this load — per-stream
 `stream_tok_s_live` p50 **1.8 tok/s**, aggregate often 0 — while the same requests report 33 tok/s each end to
 end. Both are right: vLLM credits generation tokens **per engine step**, and a step here is ~1 s long, so a

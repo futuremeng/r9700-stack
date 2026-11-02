@@ -222,9 +222,16 @@ def derive(cur, prev, dt, cap, info, mode, kept, hist):
     kv_used = next((n for n in KV_USED if cur.get(n)), None)
     swapped = cur.get("num_requests_swapped")
     wr = lambda r: (cur.get(f"num_requests_waiting_by_reason;{r}") or [None, None, 0])[1]
+    prem_tot = cur.get("num_preemptions_total")
     live = {"running": g("num_requests_running", 1), "waiting": g("num_requests_waiting", 1),
             "waiting_capacity": wr("capacity"), "waiting_deferred": wr("deferred"),
             "swapped": (swapped[1] if swapped else None), "preempting": g("num_preemptions_total") > 0,
+            # Cumulative since launch, not just "is it happening" -- a preempt costs the victim a whole re-prefill,
+            # so the count over a session is the number that predicts the pain (measured: two 160k-token requests
+            # at a 100%-full pool, first token 20.9 s / 30.2 s, their own decode 14.8 / 3.4 tok/s). Read the
+            # series' presence rather than g(), so "never preempted" is a real 0 and an older build that does not
+            # publish the counter stays unknown.
+            "preemptions_total": (prem_tot[0] if prem_tot else None),
             "kv_used_pct": 100.0 * g(kv_used, 1) if kv_used else None,
             "kv_used_pct_mean": 100.0 * g(kv_used) if kv_used else None,
             "kv_tokens": cap,

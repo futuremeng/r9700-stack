@@ -199,7 +199,8 @@ or an in-tree load profiler. `R9K_MTP_MLP=off` is not a usable probe: the draft 
   similar draw (card4 peaked 375 W, card1 peaked 491 W). So the per-card W range during serving is far wider than
   the steady-state conc table above suggests — 111-491 W, not 288-334 — because a prefill-dominated second and a
   decode-only second are different machines. 76-78 °C is nowhere near the 95 °C the Monitor calls a fault, but a
-  stable 10 °C outlier is the card to watch, and it happens to be one of the two chains whose switch upstream
+  stable 10 °C outlier is the card to watch — it held at 77-78 °C across 120 one-second samples rather than
+  climbing, so it is an offset and not a trend — and it happens to be one of the two chains whose switch upstream
   ports account for every PCIe AER event this box has ever counted (the other is card2's; see
   [incident-2026-11-02](incident-2026-11-02/README.md)). Not evidence of anything yet — just two things about the
   same card worth keeping side by side.

@@ -387,6 +387,24 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   "Real traffic through it" section in `notes/context-262k.md`, a corrected AER section in the incident note, and a
   per-card temperature bullet in `notes/native-4xr9700.md`.
 
+- **Kept watching, and the load crossed a line: the first preemptions this box has ever counted** (221 checks).
+  Over 300 one-second samples: running p50 6 (max 8), waiting up to 4, KV pool p50 80.3% with **13 samples over
+  95% and 2 over 99%, max 100.0%** — and `vllm:num_preemptions_total` went 0 → 1 → 2. The journal shows who paid:
+  the two longest prompts in it (157,542 and 159,950 tokens, 14:24:39 and 14:29:27), each with `preemptions: 1`,
+  first token **20.9 s / 30.2 s**, their own decode down to **14.8 / 3.4 tok/s** (the second generated 129 tokens
+  in 60.8 s). That is the pool arithmetic, not bad luck: **540,202 pool tokens ÷ 160k = 3.4 contexts**, while
+  `running` sat at 6 with prompt p50 78k. So the capacity statement for long-context work is *pool ÷ prompt*, not
+  `NSEQ=32`. Reading the whole session in 10-minute buckets (385 journalled rows — the Monitor keeps 100):
+  aggregate generation stays at **39-64 tok/s** while first token p50 goes 5.6 → 11.5 → **26.1 s** (p95 48.9 s) and
+  per-request decode p50 goes 163 → 18.3 → **12.2 tok/s** — the prefill-bound regime stated out loud: past the
+  pipe's ceiling, concurrency is paid for in latency, not bought with throughput. The Monitor now shows
+  **`N preempted since launch`** beside the window count (`live.preemptions_total`; a real 0 stays a 0, an older
+  build that omits the counter stays a dash), because the window count alone would have shown `0` for the whole
+  afternoon. Cards steady, not drifting: 100% busy, 2.5-3.4 GHz, 110-534 W, and card4 holding **77-78 °C against
+  66-69 °C** across 120 samples — an offset, not a trend. Two more AER events landed (14:30:39, 14:32:11, both
+  `04:00.0`), **9 in ~55 minutes** of real load, both on the hot card's chain; still no uncorrectable, no
+  renegotiated link, and the box is still up from 11:07.
+
   browser on demand is the part that never worked.
 
   configuration here; 95 °C is a fault anywhere). The `read_gpus` docstring also carried a claim this day

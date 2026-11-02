@@ -309,6 +309,10 @@ function renderStatus(s) {
     + (isnum(live.waiting_capacity) ? ` · ${Math.round(live.waiting_capacity)} for scheduling capacity` : "")
     + (isnum(live.waiting_deferred) ? ` · ${Math.round(live.waiting_deferred)} deferred` : "")
     + ` · ${fmt(rate.preemptions ?? 0)} preempted in the window`
+    // Since launch is the number that predicts the pain: vLLM v1 re-prefills a preempted request, and the first
+    // two seen on this box (160k-token prompts with the pool at 100%) cost their requests a 20.9 s / 30.2 s first
+    // token and a decode average of 14.8 / 3.4 tok/s. The window only says whether it happened just now.
+    + (isnum(live.preemptions_total) ? ` · ${Math.round(live.preemptions_total)} since launch` : "")
     + (live.swapped ? ` · ${Math.round(live.swapped)} swapped` : ""));
   $("gen-toks").textContent = isnum(rate.generation_tok_s) ? fmt(rate.generation_tok_s, 1) : "—";
   text("prompt-toks", `${isnum(rate.prompt_tok_s) ? fmt(rate.prompt_tok_s, 0) : "—"} prompt tok/s`

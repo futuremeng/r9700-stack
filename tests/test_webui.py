@@ -190,6 +190,8 @@ vllm:inter_token_latency_seconds_sum{engine="0",model_name="Qwen3.8"} 3.0
 vllm:inter_token_latency_seconds_count{engine="0",model_name="Qwen3.8"} 150.0
 vllm:prefix_cache_queries_total{engine="0",model_name="Qwen3.8"} 0.0
 vllm:prefix_cache_hits_total{engine="0",model_name="Qwen3.8"} 0.0
+vllm:num_preemptions_total{engine="0",model_name="Qwen3.8"} 0.0
+vllm:num_preemptions_created{engine="0",model_name="Qwen3.8"} 1762000000.0
 """
 cur32, cap32, info32 = W.parse_metrics(METRICS32)
 prev32, _, _ = W.parse_metrics(METRICS32.replace('model_name="Qwen3.8"} 100.0', 'model_name="Qwen3.8"} 40.0')
@@ -248,6 +250,15 @@ ck("the queue split reaches the page, and a real 0 stays a 0",
    str(st32["live"]))
 ck("a build that publishes no reason labels reports it absent, not zero",
    st["live"]["waiting_capacity"] is None and st["live"]["waiting_deferred"] is None, str(st["live"]))
+# Preemptions are the counter that says a long-context load has gone past what the KV pool can hold: 540,202 pool
+# tokens against 160k prompts is 3.4 contexts, and the first two preemptions on this box came from exactly that.
+ck("preemptions since launch ride the payload, and never-preempted reads as a real 0, not as unknown",
+   st32["live"]["preemptions_total"] == 0.0, str(st32["live"]["preemptions_total"]))
+_cur_noprem, _cap_n, _info_n = W.parse_metrics(METRICS32.replace(
+    'vllm:num_preemptions_total{engine="0",model_name="Qwen3.8"} 0.0\n', ""))
+ck("a build that does not publish the preempt counter leaves it unknown rather than claiming 0",
+   W.derive(_cur_noprem, _cur_noprem, 2.0, _cap_n, _info_n, "observe", 0, [])["live"]["preemptions_total"]
+   is None)
 
 # A histogram is observed when a request FINISHES, so the window a long request spans holds no observation
 # at all. The page falls back to the cumulative mean and says so; the first poll, which has no window, still
@@ -896,7 +907,10 @@ monjs = (WEB / "monitor.js").read_text()
 ck("the queue line splits waiting into scheduling capacity and deferred when the engine publishes it",
    "for scheduling capacity" in monjs and "deferred" in monjs
    and 'live.waiting_capacity' in monjs and 'live.waiting_deferred' in monjs
+   and 'live.preemptions_total' in monjs and "preempted in the window" in monjs
    and 'title="The engine' in (WEB / "monitor.html").read_text())
+ck("preemptions since launch are shown next to the window count, because a preempt costs a whole re-prefill",
+   "live.preemptions_total" in monjs and "re-prefills" in monjs)
 # vllm:iteration_tokens_total calls itself "tokens per engine step" and is not one on 0.32.0: a whole chunked
 # prefill arrives in a single record (measured: a 29,969-token prompt produced records 29,969 / 4 / 1). The page
 # has to name the counter's unit, not a chunk size it cannot verify -- and the measurement goes in the tooltip.
