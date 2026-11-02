@@ -90,7 +90,15 @@ CC=()
 # by default -- it only GETs /health, /v1/models and /metrics, so the launch itself is untouched -- plus this
 # launch's recipe as a meta file, which is what the About page shows as the recipe. Started before vllm is up
 # on purpose: the sidecar says "engine unreachable" until it answers, rather than dying with the launch.
-if [ "${WEBUI:-0}" = 1 ]; then
+#
+# WEBUI=same: the same pages INSIDE this serve, on its own port, from serve/plugin (an endpoint plugin for the
+# routes and a stat-logger plugin for the per-request records). Cheaper and richer: /metrics comes from this
+# process's own registry instead of a socket, and every finished request carries the engine's own
+# queued/prefill/decode split instead of a window mean. It costs two things a route cannot invent: the pages
+# die with the launch, and no request TEXT is ever seen (the engine reports tokens and timings, not bodies).
+# Needs the plugin installed in $VENV: pip install -e serve/plugin. Needs one API server: with
+# --api-server-count N>1 each server has its own registry, its own poller and its own request ring.
+if [ "${WEBUI:-0}" = 1 ] || [ "${WEBUI:-}" = same ]; then
   WPORT=${WEBUI_PORT:-$(( ${PORT:-8080} + 1 ))}
   META=${WEBUI_META:-$HOME/r9700-web-meta-$WPORT.json}
   D="$(dirname "$(realpath "$0")")"
@@ -104,7 +112,27 @@ if [ "${WEBUI:-0}" = 1 ]; then
     hc_fp8_decode="${R9K_HC_FP8_DECODE:-1}" fp8_block="${R9K_FP8_BLOCK:-block}" fp8_qa="${R9K_FP8_QA:-1}" \
     target_lmhead="${R9K_TARGET_LMHEAD:-mxfp4}" draft_lmhead="${R9K_DRAFT_LMHEAD:-mxfp4}" \
     mtp_quant_rows="${R9K_MTP_QUANT_ROWS:-}" extra="${EXTRA:-}"
-  WEBUI_PORT=$WPORT UPSTREAM=http://127.0.0.1:${PORT:-8080} META=$META VERSION="$VER" bash "$D/webui.sh"
+  if [ "${WEBUI:-}" = same ]; then
+    D="$(dirname "$(realpath "$0")")"
+    META=${WEBUI_META:-$HOME/r9700-web-meta-${PORT:-8080}.json}
+    if ! "$VENV/bin/python" -c 'import sys; from importlib.metadata import entry_points
+sys.exit(0 if any(e.name == "r9700_webui" for e in entry_points(group="vllm.endpoint_plugins")) else 1)'; then
+      echo "WARN WEBUI=same: the monitor plugin is not installed in $VENV; starting WITHOUT the pages."
+      echo "WARN   install it with:  $VENV/bin/pip install -e $D/plugin   (or run ./setup.sh)"
+    else
+      # VLLM_PLUGINS is a STRICT allowlist, not an "also load these" list. Naming only ours silently
+      # disables this repo's own r9700 plugin -- the compressed-tensors scheme for this checkpoint -- and
+      # the engine dies four minutes into the load with NotImplementedError on in_proj_qkvz. Build it from
+      # what is discoverable (serve/webui-plugins.py), never by hand.
+      PLG=$("$VENV/bin/python" "$D/webui-plugins.py" --require r9700 --quiet)
+      VLLM_PLUGINS=$PLG; export VLLM_PLUGINS
+      export WEBUI_META=$META                                  # the About page's recipe file
+      echo "Monitor and About pages on http://127.0.0.1:${PORT:-8080}/monitor (inside the serve itself)"
+      echo "  VLLM_PLUGINS=$VLLM_PLUGINS"
+    fi
+  else
+    WEBUI_PORT=$WPORT UPSTREAM=http://127.0.0.1:${PORT:-8080} META=$META VERSION="$VER" bash "$D/webui.sh"
+  fi
 fi
 [ "${DRY:-0}" = 1 ] && { echo "launch: $VENV/bin/vllm serve $MODEL ${ARGS[*]} $EXTRA"; exit 0; }
 echo "launch: $VENV/bin/vllm serve $MODEL ${ARGS[*]} $EXTRA  (log: $LOG)"

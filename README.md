@@ -134,7 +134,10 @@ Requirements: 2x, 4x or 8x Radeon AI PRO R9700, ROCm 10 on the host, docker, the
    defaults with the reason next to each knob; `R9K_*=stock` or `=0` switches any kernel back to vLLM's.
    Add `WEBUI=1` to any of them (or run `bash serve/webui.sh` against a launch that is already up) for the
    Monitor and About pages on port 8081 -- engine state, KV pool, per-card busy%/VRAM, and with
-   `WEBUI_MODE=proxy` every request; read-only by default ([notes/webui.md](notes/webui.md)).
+   `WEBUI_MODE=proxy` every request; read-only by default ([notes/webui.md](notes/webui.md)). `WEBUI=same`
+   serves the same pages from the launch itself, on its own port (`serve/plugin`), where the engine hands over
+   each request's own queue/prefill/decode split; it needs `pip install -e serve/plugin` and its pages die with
+   the launch.
 3. **Check it**: `python3 bench/warmup.py`, then `bench/sanity_stress.py` (strict 8-way sanity under load),
    `bench/soak.py` (mixed-length soak), `bench/eval.py` (paired GSM8K), `bench/humaneval.py`,
    `bench/webui_ab.py` (what the Monitor's relay costs a request). Kernel unit tests

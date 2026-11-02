@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "r9700-webui"
+version = "0.1"
+description = "Monitor and About pages inside the vLLM serve, on its own port (r9700-stack)"
+requires-python = ">=3.10"
+
+# Two entry points, one name: VLLM_PLUGINS=r9700_webui allowlists both. An endpoint plugin may only add
+# HTTP surface, so the per-request records come from the engine through the stat-logger group and the
+# routes read what it collected -- the pairing vLLM documents in
+# vllm/plugins/endpoint_plugins/interface.py.
+[project.entry-points."vllm.endpoint_plugins"]
+r9700_webui = "r9700_webui:WebMonitor"
+
+[project.entry-points."vllm.stat_logger_plugins"]
+r9700_webui = "r9700_webui:RequestLog"
+
+[tool.setuptools]
+packages = ["r9700_webui"]

@@ -568,6 +568,28 @@ ck("a cumulative mean is labelled as one on the page",
    monjs.count("(since launch)") >= 2 and "const pick = (k) =>" in monjs,
    f"{monjs.count('(since launch)')} labels")
 
+# VLLM_PLUGINS is a STRICT allowlist, not an "also load these" list. Writing VLLM_PLUGINS=r9700_webui by
+# hand (the first version) turned "load everything discoverable" into "load exactly this", which silently
+# disabled this repo's own r9700 plugin -- the compressed-tensors scheme for this checkpoint -- and the
+# engine died four minutes into the load with NotImplementedError on ...in_proj_qkvz. So the value is
+# built from discovery, and a test says the plugin that must survive does.
+import importlib.util                                     # noqa: E402
+import subprocess                                         # noqa: E402
+spec = importlib.util.spec_from_file_location("webui_plugins", ROOT + "/serve/webui-plugins.py")
+WP = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(WP)
+ck("an existing allowlist survives being added to",
+   {"r9700", "r9700_webui"} <= set(WP.allowlist(["r9700"]).split(",")), WP.allowlist(["r9700"]))
+ck("and the monitor's own name is always there", "r9700_webui" in WP.allowlist([]).split(","))
+native = Path.home() / "venv-r9700" / "bin" / "python"
+if native.exists():
+    got = subprocess.run([str(native), ROOT + "/serve/webui-plugins.py", "--quiet"],
+                         capture_output=True, text=True).stdout.strip()
+    ck("discovered in the venv that runs the serve: this repo's r9700 plugin is NOT dropped",
+       "r9700" in got.split(",") and "r9700_webui" in got.split(","), got)
+else:
+    ck("native venv absent here: discovery not checked", True)
+
 for srvx in (srv, srv2, srv3):
     srvx.shutdown()
 up.shutdown()

@@ -46,9 +46,11 @@ function list() {
     const time = document.createElement("span"); time.textContent = clock(r.started_at);
     const tag = document.createElement("span"); tag.className = `tag tag--${r.state}`; tag.textContent = r.state;
     row.append(time, tag);
-    const ep = document.createElement("div"); ep.className = "endpoint"; ep.textContent = `POST ${r.path}`;
+    const ep = document.createElement("div"); ep.className = "endpoint";
+    ep.textContent = r.path ? `POST ${r.path}` : "reported by the engine (no endpoint in its stats)";
     const meta = document.createElement("div"); meta.className = "small";
-    meta.textContent = `${rid(r)} · ${seconds(r.wallclock_s)} · ${r.stream ? "stream" : "JSON"}`
+    meta.textContent = `${rid(r)} · ${seconds(r.wallclock_s)} `
+      + `${r.response_format === "engine" ? "engine record" : r.stream ? "stream" : "JSON"}`
       + `${r.http_status ? ` · HTTP ${r.http_status}` : ""}`;
     b.append(row, ep, meta);
     b.onclick = () => { selected = rid(r); detail = null; list(); showDetail().catch((e) => notice(e.message)); };
@@ -60,6 +62,14 @@ function list() {
 // -- one request, read in full ---------------------------------------------------------------------
 function content() {
   if (!detail) return;
+  if (detail.source === "engine") {
+    // The merged monitor reads the engine's own per-request stats: tokens and timings, never the text.
+    // Saying so beats three panes that each invent a different apology.
+    text("content", detail.input_note || "The engine reports timings and token counts, not the text.");
+    text("content-note", "From vLLM's FinishedRequestStats. To capture bodies, run the separate sidecar "
+      + "(serve/webui.sh with WEBUI_MODE=proxy): it sits between the client and the serve.");
+    return;
+  }
   let value = detail[pane];
   if (pane === "output" && !value && detail.response) value = "";
   if (value === undefined || value === null || value === "") {
@@ -90,11 +100,16 @@ async function showDetail() {
   text("detail-time", stamp(value.started_at));
   text("detail-wall", seconds(value.wallclock_s ?? (isnum(value.started_at) ? Date.now() / 1000 - value.started_at : null)));
   text("detail-first", seconds(value.first_token_s));
+  const t = value.timings || {};
+  for (const [id, k] of [["detail-queue", "queue_s"], ["detail-prefill", "prefill_s"],
+                         ["detail-decode", "decode_s"]])
+    text(id, seconds(t[k]));
   const u = value.usage || {};
   text("detail-prompt", isnum(u.prompt_tokens) ? fmt(u.prompt_tokens) : "—");
   text("detail-tokens", isnum(u.completion_tokens) ? fmt(u.completion_tokens)
     : value.timings?.tokens_are_estimate ? "≈ estimated" : "—");
-  text("detail-speed", isnum(value.timings?.predicted_per_second) ? fmt(value.timings.predicted_per_second, 1) : "—");
+  text("detail-speed", (isnum(t.predicted_per_second) ? fmt(t.predicted_per_second, 1) : "—")
+    + (t.speed_basis && isnum(t.predicted_per_second) ? ` (${t.speed_basis})` : ""));
   text("detail-format", value.response_format || "text");
   $("detail-error").hidden = !value.error;
   text("detail-error", value.error?.message || "");
@@ -105,7 +120,8 @@ async function showDetail() {
 function renderStatus(s) {
   const live = s.live || {}, rate = s.rate || {};
   const inflight = (live.running || 0) + (live.waiting || 0);
-  text("mode", s.mode === "proxy" ? "in the path (recording)" : "observing (read-only)");
+  text("mode", s.mode === "proxy" ? "in the path (recording)"
+    : s.mode === "merged" ? "inside the serve (engine records)" : "observing (read-only)");
   text("loaded", !s.reachable ? "Unreachable" : inflight ? "In use" : "Idle");
   $("model-state").className = `value value--sm${inflight ? " busy" : ""}`;
   $("model-state").firstElementChild.className = `dot${inflight ? " dot--busy" : s.reachable ? " dot--live" : " dot--off"}`;
@@ -114,7 +130,9 @@ function renderStatus(s) {
   const last = records.find((r) => !active(r));
   text("count", String(records.length));
   text("active", inflight ? `${Math.round(inflight)} running / waiting at the engine`
-    : s.mode === "proxy" ? "Nothing in flight" : "Nothing routed here");
+    : s.mode === "proxy" ? "Nothing in flight"
+      : s.mode === "merged" ? "Finished requests only: the engine reports a request when it ends"
+        : "Nothing routed here");
   text("wall", last ? seconds(last.wallclock_s) : "—");
   const speed = last?.timings?.predicted_per_second ?? (isnum(rate.itl_ms) ? 1e3 / rate.itl_ms : null);
   $("speed").innerHTML = `${isnum(speed) ? fmt(speed, 1) : "—"}<span class="unit">tok/s</span>`;

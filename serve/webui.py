@@ -387,6 +387,86 @@ def read_gpus(root):
 
 
 # --------------------------------------------------------------------------------- request record
+class EngineRecords:
+    """Per-request records taken from the engine itself, not from a relay.
+
+    vLLM 0.32 hands a stat logger (`vllm.stat_logger_plugins`) an `IterationStats` whose
+    `finished_requests` list carries, per request: prompt / generation tokens, queued, prefill,
+    inference and decode seconds, mean time per output token, cached tokens, max_tokens and the finish
+    reason (vllm/v1/metrics/stats.py:288-306). That is a BETTER record than the relay can build -- the
+    queue/prefill/decode split is what the engine measured, where the proxy can only see bytes and infer
+    -- with two gaps it cannot close: it has no request text, and it only sees a request when it FINISHES,
+    so the list has no in-flight rows (the counts above it do, from the gauges).
+
+    Keys are the ones the page already reads from `Records`, so one renderer serves both.
+    """
+
+    def __init__(self, keep=100):
+        self.keep, self.items, self.n, self.lock = keep, deque(), 0, threading.Lock()
+
+    def add(self, f, now=None):
+        """One FinishedRequestStats (duck-typed: this file must import without vllm installed)."""
+        now = now if now is not None else time.time()
+        q, pre, inf, dec = (float(getattr(f, "queued_time", 0) or 0), float(getattr(f, "prefill_time", 0) or 0),
+                            float(getattr(f, "inference_time", 0) or 0), float(getattr(f, "decode_time", 0) or 0))
+        gen = int(getattr(f, "num_generation_tokens", 0) or 0)
+        e2e = inf if inf > 0 else (q + pre + dec)
+        with self.lock:
+            self.n += 1
+            r = {"id": getattr(f, "request_id", None) or f"eng-{self.n}", "seq": self.n, "path": None,
+                 "model": None, "state": "completed",
+                 "started_at": now - e2e, "finished_at": now,
+                 "wallclock_s": e2e, "first_token_s": q + pre, "queue_s": q,
+                 "stream": None, "response_format": "engine", "http_status": None,
+                 "usage": {"prompt_tokens": int(getattr(f, "num_prompt_tokens", 0) or 0),
+                           "completion_tokens": gen,
+                           "prompt_tokens_details": {"cached_tokens": int(getattr(f, "num_cached_tokens", 0) or 0)}},
+                 "timings": {"predicted_per_second": (gen / dec) if gen and dec > 0 else None,
+                             "speed_basis": "per accepted token (the engine's own mean)",
+                             "tokens_are_estimate": False,
+                             "queue_s": q, "prefill_s": pre, "decode_s": dec,
+                             "preemptions": int(getattr(f, "num_preemptions", 0) or 0),
+                             "max_tokens_param": getattr(f, "max_tokens_param", None),
+                             "finish_reason": getattr(f, "finish_reason", None)},
+                 "error": None}
+            self.items.appendleft(r)
+            while len(self.items) > self.keep:
+                self.items.pop()
+            return r
+
+    def listing(self):
+        with self.lock:
+            return [{k: r.get(k) for k in ("id", "seq", "path", "model", "state", "started_at",
+                                           "wallclock_s", "first_token_s", "stream", "http_status",
+                                           "response_format")} for r in self.items]
+
+    def get(self, rid):
+        with self.lock:
+            for r in self.items:
+                if rid in (r["id"], f"req-{r['seq']}"):
+                    return dict(r, source="engine", input=None, output=None, response=None, reasoning=None,
+                                input_note="The engine reports timings and token counts per request, not the "
+                                           "text: this monitor runs inside the serve (serve/plugin), it never "
+                                           "sits between the client and the model. Captured bodies need the "
+                                           "separate sidecar: serve/webui.sh with WEBUI_MODE=proxy.")
+        return None
+
+    def __len__(self):
+        with self.lock:
+            return len(self.items)
+
+
+def web_asset(web, rel):
+    """Resolve a /web/<rel> request to a file under `web`, or None. A path COMPONENT check, not a prefix one:
+    serve/webui.py starts with "serve/web", so a plain startswith() would happily serve the sidecar's own
+    source to anyone who asks. Shared by the sidecar and the in-serve plugin so the guard is one function."""
+    p = (Path(web) / rel).resolve()
+    root = Path(web).resolve()
+    if p != root and not str(p).startswith(str(root) + os.sep):
+        return None
+    return p if p.is_file() else None
+
+
 class Records:
     """The last --keep requests, newest first, kept in a lock so the poll thread and the page can
     read them while a request is still filling its own entry in."""
@@ -467,6 +547,10 @@ class Hub:
     def __init__(self, cfg):
         self.cfg = cfg
         self.rec = Records(cfg["keep"])
+        # When the monitor runs INSIDE the serve (serve/plugin), the per-request records come from the
+        # engine's own stat logger instead of a relay, and /metrics is read from the process's Prometheus
+        # registry instead of over a socket it happens to be serving itself.
+        self.eng = cfg.get("engine_records")
         self.status = {"mode": cfg["mode"], "at": 0.0, "reachable": False, "upstream": cfg["upstream"],
                        "live": {}, "rate": {}, "history": [], "requests_kept": 0, "models": []}
         self.gpus, self.models, self.meta = [], [], {}
@@ -487,16 +571,30 @@ class Hub:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, r.read()
 
+    def metrics_text(self):
+        fn = self.cfg.get("metrics_fn")
+        if fn:
+            return fn()
+        return self.get("/metrics")[1].decode("utf-8", "replace")
+
+    def kept(self):
+        return len(self.eng) if self.eng is not None else len(self.rec.items)
+
+    def record_detail(self, rid):
+        """One request's detail, engine records first: in merged mode there are no relay records."""
+        if self.eng is not None:
+            return self.eng.get(rid)
+        return self.rec.get(rid)
+
     def poll(self):
         while True:
             t0 = time.time()
             try:
-                code, body = self.get("/metrics")
-                cur, cap, info = parse_metrics(body.decode("utf-8", "replace"))
+                cur, cap, info = parse_metrics(self.metrics_text())
                 dt = (t0 - self.prev_t) if self.prev_t else None
                 with self.lock:
                     payload = derive(cur, self.prev, dt, cap, info, self.cfg["mode"],
-                                     len(self.rec.items), list(self.hist))
+                                     self.kept(), list(self.hist))
                     payload["upstream"] = self.cfg["upstream"]
                     payload["reachable"] = True
                     payload["health"] = self.health
@@ -509,6 +607,8 @@ class Hub:
                     payload["meta_src"] = self.cfg["meta"] or None
                     payload["poll_s"] = self.cfg["poll"]
                     payload["key_needed"] = self.key_needed or bool(self.cfg["key"])
+                    payload["merged"] = self.eng is not None     # `is not None`, not bool(): an empty
+                                                                  # EngineRecords is falsy by __len__
                     self.prev, self.prev_t, self.status = cur, t0, payload
                 self.hist.append({"at": t0, "gen_tok_s": payload["rate"].get("generation_tok_s"),
                                   "kv_used_pct": payload["live"].get("kv_used_pct"),
@@ -521,7 +621,7 @@ class Hub:
                                        upstream=self.cfg["upstream"], error=str(e)[:300],
                                        key_needed=self.key_needed or bool(self.cfg["key"]),
                                        gpus=self.gpus, models=self.models, engine=self.engine,
-                                       meta=self.meta, requests_kept=len(self.rec.items))
+                                       meta=self.meta, requests_kept=self.kept())
             time.sleep(self.cfg["poll"])
 
     def slow_poll(self):
@@ -552,9 +652,11 @@ class Hub:
     def api(self, path):
         if path == "/api/status":
             with self.lock:
-                return dict(self.status, requests_kept=len(self.rec.items))
+                return dict(self.status, requests_kept=self.kept())
         if path == "/api/requests":
-            return {"requests": self.rec.listing(), "kept": self.cfg["keep"], "mode": self.cfg["mode"]}
+            return {"requests": (self.eng.listing() if self.eng is not None else self.rec.listing()),
+                    "kept": self.cfg["keep"], "mode": self.cfg["mode"],
+                    "source": "engine" if self.eng is not None else "relay"}
         if path == "/api/host":
             return self.host
         return None
@@ -624,14 +726,11 @@ class H(BaseHTTPRequestHandler):
         if path in ("/", "/monitor", "/about"):
             return self.page("about.html" if path == "/about" else "monitor.html")
         if path.startswith("/web/"):
-            rel = urllib.parse.unquote(path[5:])
-            p = (WEB / rel).resolve()
-            # a path component check, not a prefix one: serve/webui.py starts with "serve/web", so a
-            # plain startswith() would happily serve the sidecar's own source to anyone who asks.
-            under = p == WEB.resolve() or str(p).startswith(str(WEB.resolve()) + os.sep)
-            if not under or not p.is_file():
-                return self.json(404, {"error": {"message": f"{rel} not found"}})
-            return self.page(rel)
+            p = web_asset(WEB, urllib.parse.unquote(path[5:]))
+            if p is None:
+                return self.json(404, {"error": {"message": f"{path[5:]} not found"}})
+            return self.page(str(p.relative_to(WEB.resolve())))   # the validated RELATIVE path, not p.name:
+                                                                  # the fonts live in serve/web/fonts/
         if path == "/favicon.svg":
             return self.page("favicon.svg")
         if path.startswith("/api/"):
@@ -639,7 +738,7 @@ class H(BaseHTTPRequestHandler):
                 return
             r = q.get("id", [None])[0]
             if path == "/api/requests" and r:
-                d = self.hub.rec.get(r)
+                d = self.hub.record_detail(r)
                 return self.json(404 if not d else 200, d or {"error": {"message": r + " not kept"}})
             out = self.hub.api(path)
             return self.json(404 if out is None else 200, out if out is not None

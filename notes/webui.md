@@ -21,12 +21,63 @@ keeps those records in its own process; here, nothing does. So:
 | mode | what it does | what it costs |
 |---|---|---|
 | `observe` (default) | `GET /health`, `/v1/models`, `/metrics` every `POLL_S` (2 s), plus amdgpu sysfs reads | nothing in the inference path at all; the request list stays empty and the page says why |
-| `--proxy` | the same, plus it relays API traffic and records it | one extra TCP hop and one thread per in-flight request. Not measured against a stock launch yet — do not read a run through it as a baseline |
+| `--proxy` | the same, plus it relays API traffic and records it | one extra TCP hop and one thread per in-flight request: **2-3 ms per request, flat in prompt length** (+5.3% of a 76-token request, +0.45% of a 4.4k-token one, [measured live](#on-the-live-launch)) |
+| `merged` (`WEBUI=same`) | the pages served by the serve itself, on its own port, from `serve/plugin` | ~11 ms of registry render every 2 s on a thread inside the serve; and two capabilities no in-process route can have (below) |
 
 Request records (input, output, reasoning, wall-clock, first token, token counts) exist **only** in
 `--proxy`, and only for the traffic that came through this port. `--key` guards the API and the relay
 (not the HTML, which holds nothing): without it an open relay to a keyed upstream is worse than no
 monitor.
+
+## Merged into the serve's own port (`WEBUI=same`, `serve/plugin`)
+
+One package, two entry points, installed with
+`~/venv-r9700/bin/pip install --no-build-isolation -e serve/plugin` (`setup.sh` checks it and says so):
+
+| group | class | what it does |
+|---|---|---|
+| `vllm.endpoint_plugins` | `WebMonitor` | the routes: `/`, `/monitor`, `/about`, `/web/*`, `/api/*`. `attach_endpoint_plugins` puts a plugin's `GET /` **ahead of** the server's own root, by design |
+| `vllm.stat_logger_plugins` | `RequestLog` | sees every finished request as the engine reports it: `IterationStats.finished_requests` → `FinishedRequestStats` (`vllm/v1/metrics/stats.py:288-306`) |
+
+The second one is why merging is not a downgrade. vLLM's per-request stats carry `queued_time`,
+`prefill_time`, `inference_time`, `decode_time`, `mean_time_per_output_token`, `num_cached_tokens`,
+`max_tokens_param` and the finish reason. **The queue/prefill/decode split per request is measured here
+and cannot be measured from outside at all** — the sidecar can only average histograms over a window, and
+`monitor.html` said so. Live, one request through the merged serve:
+
+```
+queue 0.000 s   prefill 0.040 s   decode 0.650 s   66 -> 120 tokens (0 cached)   184.5 tok/s per accepted token
+```
+
+`/metrics` also stops being a socket round-trip: the poller renders the process's own Prometheus registry
+(`generate_latest(get_prometheus_registry())`) — the same bytes the serve's `/metrics` returns.
+Measured cost of that render: **~11 ms per 2 s poll** for 65 KB (0.5% of a core, on a thread, never on
+the event loop: every route handler is a plain `def`, so FastAPI runs it on its threadpool, and the sysfs
+reads — which can block on EBUSY — and the rocm-smi subprocess live on their own threads).
+
+What merged mode cannot have, and no route can invent:
+
+- **the request text.** The engine reports tokens and timings, never bodies. Captured bodies need the
+  sidecar in `--proxy`. The detail pane says so in one line instead of showing three empty panes.
+- **in-flight rows.** A stat logger sees a request when it *finishes*. The running/waiting counts are
+  still live, from the gauges.
+- **a page that outlives the engine.** Same port, same process: when the launch dies the monitor dies
+  with it, and the cards panel goes with it — which is the reason the sidecar stays, and why on a box with
+  [watchdog and PSU incidents](incident-2026-11-02/) the sidecar on 8081 is the one to leave running.
+
+**`VLLM_PLUGINS` is a strict allowlist, not an "also load these" list — writing it by hand cost a launch.**
+Endpoint plugins load only when named, so `WEBUI=same` has to set `VLLM_PLUGINS`. But for the other groups
+vLLM loads *everything discoverable* when that variable is unset, and only the named ones when it is set.
+So `VLLM_PLUGINS=r9700_webui` silently disabled **this repo's own `r9700` plugin** — the one that teaches
+compressed-tensors the MXFP4-pack-quantized scheme — and the engine died four minutes into the load with
+`NotImplementedError: No compressed-tensors compatible scheme was found for layer_name=...in_proj_qkvz`.
+The value is therefore built from discovery (`serve/webui-plugins.py`), never typed:
+
+```
+lora_filesystem_resolver,lora_hf_hub_resolver,quark_online_quant,r9700,r9700_webui
+```
+
+and a test asserts the repo's own plugin survives it.
 
 ## Where each number comes from
 
@@ -86,19 +137,24 @@ sidecar without restarting it (four cards refusing, then four answering).
 
 ```
 GET /                     Monitor          GET /web/<file>      this page's own assets
-GET /monitor  /about      the two pages    GET /healthz         the sidecar's own state
+GET /monitor  /about      the two pages    GET /healthz         the sidecar's own state (sidecar only)
 GET /api/status           engine config + live + per-window rates + history + cards + host + meta
 GET /api/requests         the retained list (last --keep, newest first)
-GET /api/requests?id=...  one request, with input/output/reasoning/response (256 KiB each, flagged)
+GET /api/requests?id=...  one request: bodies from the relay, timings from the engine
 GET /api/host             CPU, threads, RAM, kernel, uptime
 ```
 
 Everything else is relayed to the upstream. Nothing is written to disk; the list is memory and dies
-with the process. `--keep 100` default, `--poll 2` default.
+with the process. `--keep 100` default, `--poll 2` default. Merged mode (`serve/plugin`) serves the same
+paths on the serve's port — no `/healthz` (the serve has `/health`), and everything the serve itself
+serves (`/v1/*`, `/metrics`) is untouched apart from `GET /`, which the plugin replaces on purpose.
 
 ## Tests
 
-`tests/test_webui.py` (89 checks, no GPU and no network needed):
+`tests/test_webui.py` (109 checks, no GPU and no network needed) and `tests/test_webui_plugin.py`
+(32 checks; the record store and the stat logger run anywhere, the routes need FastAPI, and vLLM's own
+route-replacement tier runs only where vLLM imports — `LD_LIBRARY_PATH=~/opt/openmpi/usr/lib/x86_64-linux-gnu
+~/venv-r9700/bin/python tests/test_webui_plugin.py`).
 
 - `/metrics` collapsing: buckets skipped, counters summed over ranks, gauges taken as max, KV capacity
   and configuration read out of labels, and a counter that did not move reporting *no data* rather
@@ -115,6 +171,11 @@ with the process. `--keep 100` default, `--poll 2` default.
   `/web/../` traversal refused (a plain `startswith` check would have served this file: `serve/webui.py`
   starts with `serve/web`), and the pages' ids/assets/CSS variables cross-checked against the HTML so a
   renamed id fails a test instead of blanking a card.
+- merged mode: the engine record's queue/prefill/decode split and what a `0` means there (a request that
+  never queued must read 0.000 s, not a dash — found live), `/web/` subpaths (the fonts) on the merged
+  port, that a `merged` hub knows it is merged before its first request finishes (`bool(EngineRecords)` is
+  False while empty), that it sees the cards (`cfg["gpus"]` defaulted to None and the page came up
+  cardless), and that building `VLLM_PLUGINS` keeps `r9700`.
 
 ## What the relay costs, and what recording costs
 

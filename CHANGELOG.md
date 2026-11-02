@@ -53,8 +53,37 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   group, logging to `~/logs/setup-<time>.log` — the native launcher `exec`s vLLM in the foreground, and
   `notes/launch-methodology.md` records that vLLM's ranks can ignore `SIGTERM` in the model-load phase, so a
   child of a TTY-interrupted setup is how you get two launches on four cards).
+- **The Monitor and About pages can now run on the serve's OWN port** (`WEBUI=same`, `serve/plugin`,
+  `./setup.sh --webui same`; [notes/webui.md](notes/webui.md)). One package, two entry points: a
+  `vllm.endpoint_plugins` plugin for the routes (`/`, `/monitor`, `/about`, `/web/*`, `/api/*` — vLLM's
+  `attach_endpoint_plugins` puts a plugin's `GET /` ahead of the server's own root, by design) and a
+  `vllm.stat_logger_plugins` plugin for the records. That second one is the point: vLLM's per-request stats
+  (`FinishedRequestStats`, vllm/v1/metrics/stats.py:288-306) carry **queued / prefill / inference / decode
+  seconds, mean time per output token and cached tokens per request**, which is a split the sidecar cannot
+  get from outside at all — it can only average histograms over a window. Live: `queue 0.000 s · prefill
+  0.040 s · decode 0.650 s · 66 → 120 tokens · 184.5 tok/s per accepted token`. `/metrics` stops being a
+  socket round-trip too (the poller renders the process's own Prometheus registry: **~11 ms per 2 s poll**
+  for 65 KB, on a thread, with every route handler a plain `def` so FastAPI runs it off the event loop).
+  What merged mode cannot have is stated on the page rather than papered over: no request bodies (the engine
+  reports tokens and timings, never text), no in-flight rows (a stat logger sees a request when it finishes),
+  and no page that outlives the launch — which is why the 8081 sidecar stays, and on a box with watchdog and
+  PSU incidents is the one to leave running. 32 checks in `tests/test_webui_plugin.py`.
 
 ### Fixed
+- **`VLLM_PLUGINS` is a strict allowlist, and setting it by hand killed the launch.** An endpoint plugin
+  loads only when named, so the merged monitor has to set it — but for every other group vLLM loads
+  *everything discoverable* when the variable is unset and only the named ones when it is set. Writing
+  `VLLM_PLUGINS=r9700_webui` therefore silently disabled **this repo's own `r9700` plugin**, the one that
+  teaches compressed-tensors the MXFP4-pack-quantized scheme, and the engine died four minutes into the load
+  with `NotImplementedError: No compressed-tensors compatible scheme was found for
+  layer_name='language_model.model.layers.0.linear_attn.in_proj_qkvz'`. The value is now built from
+  discovery (`serve/webui-plugins.py`) and a test asserts `r9700` survives it.
+- **Merged mode came up with no cards and no "merged" flag.** `cfg["gpus"]` defaulted to `None` (the sidecar's
+  default is `/sys/class/drm`), and `payload["merged"] = bool(self.eng)` was False for an empty
+  `EngineRecords` because it defines `__len__` — so the first seconds of a launch described itself as an
+  observing sidecar. Both found by reading the live `/api/status`, both asserted now.
+- **A request that never queued read as a dash.** `q or None` in the engine record conflated "no queue wait"
+  (a real 0.000 s) with "not reported"; the engine's own number is kept as-is.
 - **A token family was being scaled like a seconds family.** Cumulative means are a histogram's `_sum/_count`,
   and for time families that ratio is seconds so it gets ×1000 to print ms. Applied to `request_prompt_tokens`
   it made the Monitor report a **mean prompt of 2,028,442 tokens** on the first real launch (it is 2,028, and

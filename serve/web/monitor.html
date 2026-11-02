@@ -114,8 +114,10 @@
       <div><span class="label">Per accepted token</span><div class="value value--sm" id="t-tpot">—</div></div>
     </div>
     <p class="small note">Stock vLLM answers these per request only as counters, so the queue/prefill/decode split
-      above is the mean over the window, not a per-request number — and the per-request rows below cannot carry it.
-      For the per-request breakdown: <code>bench/ttft_breakdown.py</code>. "Engine step" is one engine iteration
+      above is the mean over the window, not a per-request number — unless the monitor runs inside the serve
+      (`serve/plugin`, mode <code>merged</code>), where the engine hands over each request's own split and it
+      appears on the request row instead. For the per-request breakdown from outside: <code>bench/ttft_breakdown.py</code>.
+      "Engine step" is one engine iteration
       (<code>inter_token_latency_seconds</code>) — what a client feels as one delta; "per accepted token"
       (<code>request_time_per_output_token_seconds</code>) divides it by the drafts MTP gets accepted, so with MTP=2
       it reads far smaller (15.6 ms a step against 3.19 ms per token, measured 2026-11-02). A stream's tok/s is
@@ -145,6 +147,9 @@
           <div class="facts">
             <div class="fact"><span>Wall-clock</span><b id="detail-wall">—</b></div>
             <div class="fact"><span>First token</span><b id="detail-first">—</b></div>
+            <div class="fact"><span>Queue wait</span><b id="detail-queue">—</b></div>
+            <div class="fact"><span>Prefill</span><b id="detail-prefill">—</b></div>
+            <div class="fact"><span>Decode</span><b id="detail-decode">—</b></div>
             <div class="fact"><span>Prompt tokens</span><b id="detail-prompt">—</b></div>
             <div class="fact"><span>Output tokens</span><b id="detail-tokens">—</b></div>
             <div class="fact"><span>Decode speed</span><b id="detail-speed">—</b></div>

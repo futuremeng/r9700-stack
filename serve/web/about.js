@@ -31,7 +31,8 @@ function render() {
   const c = s.config || {}, meta = s.meta || {}, models = s.models || [];
   const model = s.model_name || models[0]?.id || null;
   const host = s.host || {};
-  text("mode", s.mode === "proxy" ? "recording requests" : "observing (read-only)");
+  text("mode", s.mode === "proxy" ? "recording requests"
+    : s.mode === "merged" ? "inside this serve (serve/plugin)" : "observing (read-only)");
 
   facts($("facts-engine"), [
     ["Model", model],

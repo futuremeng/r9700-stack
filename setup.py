@@ -36,6 +36,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 STATE = ROOT / ".r9700-state"
 DRM = Path("/sys/class/drm")
+NATIVE_VENV = Path(os.environ.get("VENV", Path.home() / "venv-r9700"))
+# WEBUI is what the launch scripts read: 1 = the sidecar on PORT+1, same = the pages inside the serve
+# (serve/plugin), 0 = neither. Names kept as the scripts spell them, so setup.py cannot invent a value.
+WEBUI_ENV = {"side": "1", "same": "same", "off": "0"}
 
 
 # -------------------------------------------------------------------------------------------- reporting ---
@@ -279,7 +283,7 @@ def shutil_which(x):
 def native(cfg):
     """The no-docker, no-root path: serve/native-flashnext.sh. Its wheels are ~20 GB, so they are reported,
     never fetched here."""
-    venv = Path(os.environ.get("VENV", Path.home() / "venv-r9700"))
+    venv = NATIVE_VENV
     py = venv / "bin" / "python3"
     if not py.exists():
         warn(f"native path needs a venv with stock ROCm vLLM at {venv} (missing)",
@@ -451,12 +455,24 @@ def tests(cfg):
 
 def sidecar(cfg):
     step(7, "the Monitor / About pages (notes/webui.md)")
-    ok("stdlib only, nothing to install")
+    ok("stdlib only for the sidecar; the merged plugin needs only FastAPI, which the serve already has")
     note("watch a launch that is already up:  bash serve/webui.sh          (http://127.0.0.1:8081/monitor)")
     note("start it with the launch, with this launch's recipe:  WEBUI=1 bash serve/serve.sh")
     note("it records per-request detail only in --proxy mode, which costs 2-3 ms per request, flat in prompt "
          "length (bench/webui_ab.py: +5.3% of a 76-token request, +0.5% of a 4.4k-token one); observe mode, the "
          "default, changes nothing in the inference path")
+    note("OR put the pages on the serve's OWN port -- WEBUI=same, serve/plugin: /metrics from the process's own "
+         "registry, and per-request queue/prefill/decode as the ENGINE measured them, at the cost of a page that "
+         "dies with the launch and never sees a request body")
+    py = str(NATIVE_VENV / "bin" / "python") if (NATIVE_VENV / "bin" / "python").exists() else sys.executable
+    code = ("import sys; from importlib.metadata import entry_points as ep; "
+            "sys.exit(0 if any(e.name == 'r9700_webui' for g in ('vllm.endpoint_plugins', "
+            "'vllm.stat_logger_plugins') for e in ep(group=g)) else 1)")
+    if subprocess.run([py, "-c", code], capture_output=True).returncode == 0:
+        ok(f"monitor plugin installed in {py.rsplit('/python', 1)[0]}: the merged routes will load")
+    else:
+        warn(f"monitor plugin not installed: WEBUI=same would start the launch WITHOUT the pages. "
+             f"Install with:  {py} -m pip install --no-build-isolation -e {ROOT / 'serve' / 'plugin'}")
 
 
 def launch(cfg, have="docker"):
@@ -485,8 +501,8 @@ def launch(cfg, have="docker"):
         if pick not in names:
             bad(f"no serve/{pick}")
             return
-    env = dict(os.environ, WEBUI="0" if cfg.no_webui else "1")
-    say(f"    $ WEBUI={'0' if cfg.no_webui else '1'} bash serve/{pick}")
+    env = dict(os.environ, WEBUI=WEBUI_ENV[cfg.webui])
+    say(f"    $ WEBUI={WEBUI_ENV[cfg.webui]} bash serve/{pick}")
     if not cfg.yes and not ask(cfg, f"start serve/{pick} now (GPUs go busy for ~75 s)?"):
         return
     if pick.startswith("native"):
@@ -528,10 +544,14 @@ def main():
     ap.add_argument("--rebuild", action="store_true", help="build the image even if the pin matches")
     ap.add_argument("--launch", default=None, help="serve/<name>.sh to start, or none")
     ap.add_argument("--no-webui", action="store_true", help="launch without the Monitor/About sidecar")
+    ap.add_argument("--webui", choices=("side", "same", "off"), default=None,
+                    help="side: the sidecar on PORT+1 (default). same: the pages INSIDE the serve, on its "
+                         "own port, via serve/plugin (needs: pip install -e serve/plugin). off: neither.")
     ap.add_argument("--img", default=os.environ.get("IMG", "r9700/vllm:dev"))
     ap.add_argument("--repo", default=os.environ.get("REPO", str(Path.home() / "r9700-build" / "repo")))
     cfg, extra = ap.parse_known_args()
     cfg.rest = extra
+    cfg.webui = cfg.webui or ("off" if cfg.no_webui else "side")
     say(f"r9700-stack bring-up -- {ROOT}")
     say(f"check-only: {cfg.check}   (every requirement below names the file it came from)")
     host(cfg)
