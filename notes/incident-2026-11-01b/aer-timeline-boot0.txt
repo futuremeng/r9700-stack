@@ -1,0 +1,26 @@
+# boot 0 (the post-crash boot): AER events vs the two 4-rank loads
+## load windows, from the driver/log timestamps
+  final50: gate PASS 23:29:5x, 'Model loading took 19.65 GiB memory and 67.820578 seconds' at 23:31:34, health 200 at 23:32:0x
+  final50 reached health 200 (two 'GET /health 200' lines) and was STOPPED at 23:32:31 (its log's last write)
+  by MY OWN stray 'bash bench/gate.sh' -- gate.sh's first step is STOP; see README rule 1
+  final51: gate PASS 23:33:1x, 'Model loading took ... 70.880741 seconds' at 23:35:09, health 200 at 23:36:2x
+## AER events this boot, per 10 s bucket (BadTLP / Timeout)
+      6 23:30:0x
+     25 23:31:0x
+     52 23:34:0x
+     16 23:35:0x
+      1 23:36:0x
+      6 23:30
+     25 23:31
+     52 23:34
+     16 23:35
+      1 23:36
+## first and last
+Nov 01 23:30:40 jiulu-9700 kernel: pcieport 0000:04:00.0:    [ 6] BadTLP                
+Nov 01 23:36:48 jiulu-9700 kernel: pcieport 0000:c4:00.0:    [ 6] BadTLP                
+## count after the last load finished (23:36 -> capture 23:42): idle box, no events
+1
+## MES timeouts this boot / boot -1 / boot -2 (the INVALIDATE_TLBS signature from notes/bug-mes-invalidate-tlbs.md)
+  boot -2: 0
+  boot -1: 0
+  boot 0: 0

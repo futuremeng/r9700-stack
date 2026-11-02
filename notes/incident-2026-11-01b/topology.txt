@@ -1,0 +1,50 @@
+# PCIe: the four cards each carry an onboard upstream/downstream switch pair
+01:00.0 PCI bridge: Advanced Micro Devices, Inc. [AMD/ATI] Navi 10 XL Upstream Port of PCI Express Switch (rev 24)
+02:00.0 PCI bridge: Advanced Micro Devices, Inc. [AMD/ATI] Navi 10 XL Downstream Port of PCI Express Switch (rev 24)
+03:00.0 VGA compatible controller: Advanced Micro Devices, Inc. [AMD/ATI] Device 7551 (rev c0)
+03:00.1 Audio device: Advanced Micro Devices, Inc. [AMD/ATI] Device ab40
+04:00.0 PCI bridge: Advanced Micro Devices, Inc. [AMD/ATI] Navi 10 XL Upstream Port of PCI Express Switch (rev 24)
+05:00.0 PCI bridge: Advanced Micro Devices, Inc. [AMD/ATI] Navi 10 XL Downstream Port of PCI Express Switch (rev 24)
+06:00.0 VGA compatible controller: Advanced Micro Devices, Inc. [AMD/ATI] Device 7551 (rev c0)
+06:00.1 Audio device: Advanced Micro Devices, Inc. [AMD/ATI] Device ab40
+c1:00.0 PCI bridge: Advanced Micro Devices, Inc. [AMD/ATI] Navi 10 XL Upstream Port of PCI Express Switch (rev 24)
+c2:00.0 PCI bridge: Advanced Micro Devices, Inc. [AMD/ATI] Navi 10 XL Downstream Port of PCI Express Switch (rev 24)
+c3:00.0 VGA compatible controller: Advanced Micro Devices, Inc. [AMD/ATI] Device 7551 (rev c0)
+c3:00.1 Audio device: Advanced Micro Devices, Inc. [AMD/ATI] Device ab40
+c4:00.0 PCI bridge: Advanced Micro Devices, Inc. [AMD/ATI] Navi 10 XL Upstream Port of PCI Express Switch (rev 24)
+c5:00.0 PCI bridge: Advanced Micro Devices, Inc. [AMD/ATI] Navi 10 XL Downstream Port of PCI Express Switch (rev 24)
+c6:00.0 VGA compatible controller: Advanced Micro Devices, Inc. [AMD/ATI] Device 7551 (rev c0)
+c6:00.1 Audio device: Advanced Micro Devices, Inc. [AMD/ATI] Device ab40
+
+# drm card -> PCI function
+  card0 -> 0000:c8:00.0
+  card0-DP-17 -> card0
+  card1 -> 0000:c3:00.0
+  card1-DP-1 -> card1
+  card1-DP-2 -> card1
+  card1-DP-3 -> card1
+  card1-DP-4 -> card1
+  card1-Writeback-1 -> card1
+  card2 -> 0000:c6:00.0
+  card2-DP-5 -> card2
+  card2-DP-6 -> card2
+  card2-DP-7 -> card2
+  card2-DP-8 -> card2
+  card2-Writeback-2 -> card2
+  card3 -> 0000:03:00.0
+  card3-DP-10 -> card3
+  card3-DP-11 -> card3
+  card3-DP-12 -> card3
+  card3-DP-9 -> card3
+  card3-Writeback-3 -> card3
+  card4 -> 0000:06:00.0
+  card4-DP-13 -> card4
+  card4-DP-14 -> card4
+  card4-DP-15 -> card4
+  card4-DP-16 -> card4
+  card4-Writeback-4 -> card4
+
+# rocm-smi bus ids
+
+# links of the two faulting chains (speed/width, both ends)
+  0000:04:00.0    0000:05:00.0    0000:06:00.0    0000:c4:00.0    0000:c5:00.0    0000:c6:00.0  

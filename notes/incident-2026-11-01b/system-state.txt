@@ -1,0 +1,45 @@
+# captured 2026-11-01 23:42 UTC from the post-crash boot (boot 0, up 21:03:37)
+
+## kernel / module
+Linux jiulu-9700 7.0.0-42-generic #42~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Mon Oct 19 14:43:01 UTC 2 x86_64 x86_64 x86_64 GNU/Linux
+amdgpu version: 7.1.9.31600000
+mes_log_enable:0
+gpu_recovery:-1
+vm_update_mode:-1
+ras_enable:-1
+taint (/proc/sys/kernel/tainted): 12292
+
+## cmdline
+BOOT_IMAGE=/vmlinuz-7.0.0-42-generic root=/dev/mapper/ubuntu--vg-ubuntu--lv ro amdgpu.ppfeaturemask=0xffffffff
+
+## modprobe.d amdgpu options
+
+## hung-task / panic sysctls (current boot)
+kernel.hung_task_panic = 0
+kernel.hung_task_timeout_secs = 120
+kernel.panic = 0
+kernel.panic_on_oops = 0
+kernel.watchdog_thresh = 10
+
+## memory / swap now
+                 total        used        free      shared  buff/cache   available
+  Mem:            93Gi        56Gi       1.2Gi       2.8Gi        39Gi        37Gi
+  Swap:          8.0Gi       4.0Gi       4.0Gi
+
+## AER counters exposed per port, now
+  /sys/bus/pci/devices/0000:04:00.0:
+    aer_dev_correctable: RxErr 0 BadTLP 27 BadDLLP 0 Rollover 0 Timeout 0 NonFatalErr 1 CorrIntErr 0 HeaderOF 0 TOTAL_ERR_COR 27 
+    aer_dev_fatal: Undefined 0 DLP 0 SDES 0 TLP 0 FCP 0 CmpltTO 0 CmpltAbrt 0 UnxCmplt 0 RxOF 0 MalfTLP 0 ECRC 0 UnsupReq 0 ACSViol 0 UncorrIntErr 0 BlockedTLP 0 AtomicOpBlocked 0 TLPBlockedErr 0 PoisonTLPBlocked 0 DMWrReqBlocked 0 IDECheck 0 MisIDETLP 0 PCRC_CHECK 0 TLPXlatBlocked 0 TOTAL_ERR_FATAL 0 
+    aer_dev_nonfatal: Undefined 0 DLP 0 SDES 0 TLP 0 FCP 0 CmpltTO 0 CmpltAbrt 0 UnxCmplt 0 RxOF 0 MalfTLP 0 ECRC 0 UnsupReq 0 ACSViol 0 UncorrIntErr 0 BlockedTLP 0 AtomicOpBlocked 0 TLPBlockedErr 0 PoisonTLPBlocked 0 DMWrReqBlocked 0 IDECheck 0 MisIDETLP 0 PCRC_CHECK 0 TLPXlatBlocked 0 TOTAL_ERR_NONFATAL 0 
+  /sys/bus/pci/devices/0000:c4:00.0:
+    aer_dev_correctable: RxErr 0 BadTLP 61 BadDLLP 0 Rollover 0 Timeout 2 NonFatalErr 1 CorrIntErr 0 HeaderOF 0 TOTAL_ERR_COR 63 
+    aer_dev_fatal: Undefined 0 DLP 0 SDES 0 TLP 0 FCP 0 CmpltTO 0 CmpltAbrt 0 UnxCmplt 0 RxOF 0 MalfTLP 0 ECRC 0 UnsupReq 0 ACSViol 0 UncorrIntErr 0 BlockedTLP 0 AtomicOpBlocked 0 TLPBlockedErr 0 PoisonTLPBlocked 0 DMWrReqBlocked 0 IDECheck 0 MisIDETLP 0 PCRC_CHECK 0 TLPXlatBlocked 0 TOTAL_ERR_FATAL 0 
+    aer_dev_nonfatal: Undefined 0 DLP 0 SDES 0 TLP 0 FCP 0 CmpltTO 0 CmpltAbrt 0 UnxCmplt 0 RxOF 0 MalfTLP 0 ECRC 0 UnsupReq 0 ACSViol 0 UncorrIntErr 0 BlockedTLP 0 AtomicOpBlocked 0 TLPBlockedErr 0 PoisonTLPBlocked 0 DMWrReqBlocked 0 IDECheck 0 MisIDETLP 0 PCRC_CHECK 0 TLPXlatBlocked 0 TOTAL_ERR_NONFATAL 0 
+  /sys/bus/pci/devices/0000:00:03.1:
+    aer_dev_correctable: RxErr 0 BadTLP 0 BadDLLP 0 Rollover 0 Timeout 2 NonFatalErr 0 CorrIntErr 0 HeaderOF 0 TOTAL_ERR_COR 2 
+    aer_dev_fatal: Undefined 0 DLP 0 SDES 0 TLP 0 FCP 0 CmpltTO 0 CmpltAbrt 0 UnxCmplt 0 RxOF 0 MalfTLP 0 ECRC 0 UnsupReq 0 ACSViol 0 UncorrIntErr 0 BlockedTLP 0 AtomicOpBlocked 0 TLPBlockedErr 0 PoisonTLPBlocked 0 DMWrReqBlocked 0 IDECheck 0 MisIDETLP 0 PCRC_CHECK 0 TLPXlatBlocked 0 TOTAL_ERR_FATAL 0 
+    aer_dev_nonfatal: Undefined 0 DLP 0 SDES 0 TLP 0 FCP 0 CmpltTO 0 CmpltAbrt 0 UnxCmplt 0 RxOF 0 MalfTLP 0 ECRC 0 UnsupReq 0 ACSViol 0 UncorrIntErr 0 BlockedTLP 0 AtomicOpBlocked 0 TLPBlockedErr 0 PoisonTLPBlocked 0 DMWrReqBlocked 0 IDECheck 0 MisIDETLP 0 PCRC_CHECK 0 TLPXlatBlocked 0 TOTAL_ERR_NONFATAL 0 
+  /sys/bus/pci/devices/0000:c0:03.1:
+    aer_dev_correctable: RxErr 0 BadTLP 0 BadDLLP 0 Rollover 0 Timeout 16 NonFatalErr 0 CorrIntErr 0 HeaderOF 0 TOTAL_ERR_COR 16 
+    aer_dev_fatal: Undefined 0 DLP 0 SDES 0 TLP 0 FCP 0 CmpltTO 0 CmpltAbrt 0 UnxCmplt 0 RxOF 0 MalfTLP 0 ECRC 0 UnsupReq 0 ACSViol 0 UncorrIntErr 0 BlockedTLP 0 AtomicOpBlocked 0 TLPBlockedErr 0 PoisonTLPBlocked 0 DMWrReqBlocked 0 IDECheck 0 MisIDETLP 0 PCRC_CHECK 0 TLPXlatBlocked 0 TOTAL_ERR_FATAL 0 
+    aer_dev_nonfatal: Undefined 0 DLP 0 SDES 0 TLP 0 FCP 0 CmpltTO 0 CmpltAbrt 0 UnxCmplt 0 RxOF 0 MalfTLP 0 ECRC 0 UnsupReq 0 ACSViol 0 UncorrIntErr 0 BlockedTLP 0 AtomicOpBlocked 0 TLPBlockedErr 0 PoisonTLPBlocked 0 DMWrReqBlocked 0 IDECheck 0 MisIDETLP 0 PCRC_CHECK 0 TLPXlatBlocked 0 TOTAL_ERR_NONFATAL 0 

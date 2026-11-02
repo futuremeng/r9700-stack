@@ -1,0 +1,10 @@
+# final49: how far the load actually got before the 21:02:15 reset (correcting a first reading of '1/23')
+# the progress lines are carriage-return separated, so a tail of this log shows the HEAD of the progress
+# line, not the last state. Grepped per match:
+  Completed | 22/23 [00:46<00:02
+  Completed | 23/23 [00:46<00:00
+  Completed | 0/23 [00:00<?
+  Completed | 1/23 [00:00<00:10
+  -> last recorded state 23/23 at 46 s of the shard loop, i.e. the reset landed as the shard loop ended and
+     the SVM/HMM remapping of the big mappings began (svm_range_restore_work count 4->5->7->11->19 in 21:02:01-21:02:15)
+  -> the log has no 'Model loading took' line, so the instance never came up; the load was lost

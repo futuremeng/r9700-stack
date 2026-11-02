@@ -1,0 +1,16 @@
+# the instance left serving after the crash (relaunch.sh final51, 2026-11-01 23:44 UTC)
+  == fingerprints (final51) ==
+    load: (Worker_TP3 pid=5752) INFO 11-01 23:35:09 [model_runner.py:424] Model loading took 19.65 GiB memory and 70.880741 seconds
+    place: pull 0.1 s, place 49.0 s | experts 192t/59.8GiB/37.1s, hc 387t/1.2GiB/1.0s, head 1t/1.2GiB/0.1s, mtp 31t/4.9GiB/0.0s, other 1306t/4.8GiB/10.8s, ple 265t/38.8GiB/0.0s
+    spec: 'speculative_config': {'method': 'mtp', 'num_speculative_tokens': 2}
+    at loader start: Available RAM: 78.75 GiB
+    after load:  MemAvailable:   45540196 kBSwapFree:        4194304 kB
+    health: 200
+  == load anatomy (final51) ==
+  GPU KV cache size: 484,642 tokens
+  health: 200
+  gate PASS times (mtime of the .gate files):
+    21:00:21 /home/jiulu/logs/relaunch-final49.gate
+    23:29:38 /home/jiulu/logs/relaunch-final50.gate
+    23:33:09 /home/jiulu/logs/relaunch-final51.gate
+  AER counters now (sysfs, cumulative this boot): 04:00.0 BadTLP=27 Timeout=0 c4:00.0 BadTLP=61 Timeout=2 

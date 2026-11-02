@@ -1,0 +1,57 @@
+# firmware/MCE records the two crashes left behind, read at the following boot
+## boot -1 boot messages (reset reason + BERT)
+Nov 01 20:36:38 jiulu-9700 kernel: ACPI: BERT 0x000000009CC97000 000030 (v01 AMD    AMD BERT 00000001 AMD  00000001)
+Nov 01 20:36:38 jiulu-9700 kernel: ACPI: Reserving BERT table memory at [mem 0x9cc97000-0x9cc9702f]
+Nov 01 20:36:38 jiulu-9700 kernel: mce: HEST corrected error threshold limit: 10
+Nov 01 20:36:38 jiulu-9700 kernel: x86/amd: Previous system reset reason [0x88000800]: an uncorrected error caused a data fabric sync flood event
+Nov 01 20:36:38 jiulu-9700 kernel: x86/amd: Previous system reset reason [0x88000800]: a software sync flood event occurred
+Nov 01 20:36:38 jiulu-9700 kernel: BERT: Error records from previous boot:
+Nov 01 20:36:38 jiulu-9700 kernel: [Hardware Error]: event severity: fatal
+Nov 01 20:36:38 jiulu-9700 kernel: [Hardware Error]:  Error 0, type: fatal
+Nov 01 20:36:38 jiulu-9700 kernel: [Hardware Error]:  fru_text: ProcessorError
+Nov 01 20:36:38 jiulu-9700 kernel: [Hardware Error]:   section_type: IA32/X64 processor error
+Nov 01 20:36:38 jiulu-9700 kernel: [Hardware Error]:   Local APIC_ID: 0x83
+Nov 01 20:36:38 jiulu-9700 kernel: [Hardware Error]:   CPUID Info:
+Nov 01 20:36:38 jiulu-9700 kernel: [Hardware Error]:   00000000: 00a10f11 00000000 83c00800 00000000
+Nov 01 20:36:38 jiulu-9700 kernel: [Hardware Error]:   00000010: 76fa320b 00000000 178bfbff 00000000
+Nov 01 20:36:38 jiulu-9700 kernel: [Hardware Error]:   00000020: 00000000 00000000 00000000 00000000
+Nov 01 20:36:38 jiulu-9700 kernel: [Hardware Error]:   Error Information Structure 0:
+Nov 01 20:36:38 jiulu-9700 kernel: [Hardware Error]:    Error Structure Type: cache error
+Nov 01 20:36:38 jiulu-9700 kernel: [Hardware Error]:    Check Information: 0x000000000602001f
+Nov 01 20:36:38 jiulu-9700 kernel: [Hardware Error]:     Transaction Type: 2, Generic
+Nov 01 20:36:38 jiulu-9700 kernel: [Hardware Error]:     Operation: 0, generic error
+Nov 01 20:36:38 jiulu-9700 kernel: [Hardware Error]:     Level: 0
+Nov 01 20:36:38 jiulu-9700 kernel: [Hardware Error]:     Processor Context Corrupt: true
+Nov 01 20:36:38 jiulu-9700 kernel: [Hardware Error]:     Uncorrected: true
+Nov 01 20:36:38 jiulu-9700 kernel: [Hardware Error]:   Context Information Structure 0:
+Nov 01 20:36:38 jiulu-9700 kernel: [Hardware Error]:    Register Context Type: MSR Registers (Machine Check and other MSRs)
+Nov 01 20:36:38 jiulu-9700 kernel: [Hardware Error]:    Register Array Size: 0x0050
+
+## boot 0 boot messages (reset reason + BERT)
+Nov 01 21:03:56 jiulu-9700 kernel: ACPI: BERT 0x000000009CC97000 000030 (v01 AMD    AMD BERT 00000001 AMD  00000001)
+Nov 01 21:03:56 jiulu-9700 kernel: ACPI: Reserving BERT table memory at [mem 0x9cc97000-0x9cc9702f]
+Nov 01 21:03:56 jiulu-9700 kernel: mce: HEST corrected error threshold limit: 10
+Nov 01 21:03:56 jiulu-9700 kernel: x86/amd: Previous system reset reason [0x88000800]: an uncorrected error caused a data fabric sync flood event
+Nov 01 21:03:56 jiulu-9700 kernel: x86/amd: Previous system reset reason [0x88000800]: a software sync flood event occurred
+Nov 01 21:03:56 jiulu-9700 kernel: BERT: Error records from previous boot:
+Nov 01 21:03:56 jiulu-9700 kernel: [Hardware Error]: event severity: fatal
+Nov 01 21:03:56 jiulu-9700 kernel: [Hardware Error]:  Error 0, type: fatal
+Nov 01 21:03:56 jiulu-9700 kernel: [Hardware Error]:  fru_text: ProcessorError
+Nov 01 21:03:56 jiulu-9700 kernel: [Hardware Error]:   section_type: IA32/X64 processor error
+Nov 01 21:03:56 jiulu-9700 kernel: [Hardware Error]:   Local APIC_ID: 0x82
+Nov 01 21:03:56 jiulu-9700 kernel: [Hardware Error]:   CPUID Info:
+Nov 01 21:03:56 jiulu-9700 kernel: [Hardware Error]:   00000000: 00a10f11 00000000 82c00800 00000000
+Nov 01 21:03:56 jiulu-9700 kernel: [Hardware Error]:   00000010: 76fa320b 00000000 178bfbff 00000000
+Nov 01 21:03:56 jiulu-9700 kernel: [Hardware Error]:   00000020: 00000000 00000000 00000000 00000000
+Nov 01 21:03:56 jiulu-9700 kernel: [Hardware Error]:   Error Information Structure 0:
+Nov 01 21:03:56 jiulu-9700 kernel: [Hardware Error]:    Error Structure Type: cache error
+Nov 01 21:03:56 jiulu-9700 kernel: [Hardware Error]:    Check Information: 0x000000000602001f
+Nov 01 21:03:56 jiulu-9700 kernel: [Hardware Error]:     Transaction Type: 2, Generic
+Nov 01 21:03:56 jiulu-9700 kernel: [Hardware Error]:     Operation: 0, generic error
+Nov 01 21:03:56 jiulu-9700 kernel: [Hardware Error]:     Level: 0
+Nov 01 21:03:56 jiulu-9700 kernel: [Hardware Error]:     Processor Context Corrupt: true
+Nov 01 21:03:56 jiulu-9700 kernel: [Hardware Error]:     Uncorrected: true
+Nov 01 21:03:56 jiulu-9700 kernel: [Hardware Error]:   Context Information Structure 0:
+Nov 01 21:03:56 jiulu-9700 kernel: [Hardware Error]:    Register Context Type: MSR Registers (Machine Check and other MSRs)
+Nov 01 21:03:56 jiulu-9700 kernel: [Hardware Error]:    Register Array Size: 0x0050
+

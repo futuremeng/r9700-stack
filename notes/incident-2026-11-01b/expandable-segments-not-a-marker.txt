@@ -1,0 +1,15 @@
+# the 'expandable_segments: memory mapping failed with OOM ... (free: 0)' lines are NOT a fault marker
+# they appear in healthy, completed loads as well (count of lines per relaunch log):
+  final49  expandable_segments=16  load-line-present=0
+  final50  expandable_segments=12  load-line-present=1
+  final51  expandable_segments=20  load-line-present=1
+  tail118  expandable_segments=16  load-line-present=1
+  tail117  expandable_segments=11  load-line-present=1
+  tail116  expandable_segments=13  load-line-present=1
+  tail115  expandable_segments=14  load-line-present=0
+  tail114  expandable_segments=15  load-line-present=1
+  tail113  expandable_segments=14  load-line-present=1
+  tail112  expandable_segments=17  load-line-present=1
+  tail111  expandable_segments=17  load-line-present=1
+# i.e. final50/final51 (both completed, health 200) carry the same warnings, and the allocator recovers from them;
+# the line is ROCm's caching allocator failing one 20 MiB expandable-segments map and retrying without it.

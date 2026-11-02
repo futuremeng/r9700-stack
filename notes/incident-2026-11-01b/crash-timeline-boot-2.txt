@@ -1,0 +1,56 @@
+# boot -2 (03:27:55 -> 20:30:41, 17 h 03 m): the earlier crash of the same day
+## last 4 journal lines of that boot -- nothing PCIe-shaped; the box simply stopped logging
+  Nov 01 20:30:04 jiulu-9700 systemd[1]: Finished sysstat-collect.service - system activity accounting tool.
+  Nov 01 20:30:40 jiulu-9700 systemd[1]: Starting fwupd-refresh.service - Refresh fwupd metadata and update motd...
+  Nov 01 20:30:41 jiulu-9700 systemd[1]: fwupd-refresh.service: Deactivated successfully.
+  Nov 01 20:30:41 jiulu-9700 systemd[1]: Finished fwupd-refresh.service - Refresh fwupd metadata and update motd.
+## last AER events before it died
+  Nov 01 19:40:20 jiulu-9700 kernel: pcieport 0000:c4:00.0:    [ 6] BadTLP                
+  Nov 01 19:42:01 jiulu-9700 kernel: pcieport 0000:c0:03.1:    [12] Timeout               
+  Nov 01 19:53:58 jiulu-9700 kernel: pcieport 0000:c0:03.1:    [12] Timeout               
+## SVM workqueue notes in that boot (the load-path signature from notes/load-oom-svm-wedge.md)
+  Nov 01 03:27:55 jiulu-9700 kernel: workqueue: local_pci_probe_callback hogged CPU for >10000us 4 times, consider switching to WQ_UNBOUND
+  Nov 01 03:27:55 jiulu-9700 kernel: workqueue: local_pci_probe_callback hogged CPU for >10000us 5 times, consider switching to WQ_UNBOUND
+  Nov 01 03:27:55 jiulu-9700 kernel: workqueue: local_pci_probe_callback hogged CPU for >10000us 7 times, consider switching to WQ_UNBOUND
+  Nov 01 03:33:12 jiulu-9700 kernel: workqueue: amdgpu_amdkfd_restore_userptr_worker [amdgpu] hogged CPU for >10000us 4 times, consider switching to WQ_UNBOUND
+  Nov 01 03:33:13 jiulu-9700 kernel: workqueue: svm_range_restore_work [amdgpu] hogged CPU for >10000us 4 times, consider switching to WQ_UNBOUND
+  Nov 01 03:33:13 jiulu-9700 kernel: workqueue: svm_range_restore_work [amdgpu] hogged CPU for >10000us 5 times, consider switching to WQ_UNBOUND
+  Nov 01 03:33:13 jiulu-9700 kernel: workqueue: svm_range_restore_work [amdgpu] hogged CPU for >10000us 7 times, consider switching to WQ_UNBOUND
+  Nov 01 03:33:13 jiulu-9700 kernel: workqueue: svm_range_restore_work [amdgpu] hogged CPU for >10000us 11 times, consider switching to WQ_UNBOUND
+  Nov 01 03:33:13 jiulu-9700 kernel: workqueue: svm_range_restore_work [amdgpu] hogged CPU for >10000us 19 times, consider switching to WQ_UNBOUND
+  Nov 01 03:33:16 jiulu-9700 kernel: workqueue: svm_range_restore_work [amdgpu] hogged CPU for >10000us 35 times, consider switching to WQ_UNBOUND
+  Nov 01 03:33:37 jiulu-9700 kernel: workqueue: svm_range_restore_work [amdgpu] hogged CPU for >10000us 67 times, consider switching to WQ_UNBOUND
+  Nov 01 03:34:02 jiulu-9700 kernel: workqueue: svm_range_restore_work [amdgpu] hogged CPU for >10000us 131 times, consider switching to WQ_UNBOUND
+  Nov 01 03:34:08 jiulu-9700 kernel: workqueue: amdgpu_amdkfd_restore_userptr_worker [amdgpu] hogged CPU for >10000us 5 times, consider switching to WQ_UNBOUND
+  Nov 01 03:35:27 jiulu-9700 kernel: workqueue: delayed_fput hogged CPU for >10000us 4 times, consider switching to WQ_UNBOUND
+  Nov 01 03:37:13 jiulu-9700 kernel: workqueue: amdgpu_amdkfd_restore_userptr_worker [amdgpu] hogged CPU for >10000us 7 times, consider switching to WQ_UNBOUND
+  Nov 01 03:37:15 jiulu-9700 kernel: workqueue: svm_range_restore_work [amdgpu] hogged CPU for >10000us 259 times, consider switching to WQ_UNBOUND
+  Nov 01 03:37:21 jiulu-9700 kernel: workqueue: svm_range_restore_work [amdgpu] hogged CPU for >10000us 515 times, consider switching to WQ_UNBOUND
+  Nov 01 03:37:33 jiulu-9700 kernel: workqueue: amdgpu_amdkfd_restore_userptr_worker [amdgpu] hogged CPU for >10000us 11 times, consider switching to WQ_UNBOUND
+  Nov 01 03:57:15 jiulu-9700 kernel: workqueue: delayed_fput hogged CPU for >10000us 5 times, consider switching to WQ_UNBOUND
+  Nov 01 03:57:15 jiulu-9700 kernel: workqueue: delayed_fput hogged CPU for >10000us 7 times, consider switching to WQ_UNBOUND
+  Nov 01 03:58:23 jiulu-9700 kernel: workqueue: amdgpu_amdkfd_restore_userptr_worker [amdgpu] hogged CPU for >10000us 19 times, consider switching to WQ_UNBOUND
+  Nov 01 03:58:30 jiulu-9700 kernel: workqueue: svm_range_restore_work [amdgpu] hogged CPU for >10000us 1027 times, consider switching to WQ_UNBOUND
+  Nov 01 03:59:16 jiulu-9700 kernel: workqueue: amdgpu_amdkfd_restore_userptr_worker [amdgpu] hogged CPU for >10000us 35 times, consider switching to WQ_UNBOUND
+  Nov 01 04:07:11 jiulu-9700 kernel: workqueue: amdgpu_amdkfd_restore_userptr_worker [amdgpu] hogged CPU for >10000us 67 times, consider switching to WQ_UNBOUND
+  Nov 01 04:08:01 jiulu-9700 kernel: workqueue: svm_range_restore_work [amdgpu] hogged CPU for >10000us 2051 times, consider switching to WQ_UNBOUND
+  Nov 01 04:12:10 jiulu-9700 kernel: workqueue: delayed_fput hogged CPU for >10000us 11 times, consider switching to WQ_UNBOUND
+  Nov 01 04:18:07 jiulu-9700 kernel: workqueue: amdgpu_amdkfd_restore_userptr_worker [amdgpu] hogged CPU for >10000us 131 times, consider switching to WQ_UNBOUND
+  Nov 01 04:32:02 jiulu-9700 kernel: workqueue: delayed_fput hogged CPU for >10000us 19 times, consider switching to WQ_UNBOUND
+  Nov 01 04:33:48 jiulu-9700 kernel: workqueue: svm_range_restore_work [amdgpu] hogged CPU for >10000us 4099 times, consider switching to WQ_UNBOUND
+  Nov 01 04:54:10 jiulu-9700 kernel: workqueue: delayed_fput hogged CPU for >10000us 35 times, consider switching to WQ_UNBOUND
+  Nov 01 04:55:39 jiulu-9700 kernel: workqueue: amdgpu_amdkfd_restore_userptr_worker [amdgpu] hogged CPU for >10000us 259 times, consider switching to WQ_UNBOUND
+  Nov 01 05:07:09 jiulu-9700 kernel: workqueue: svm_range_restore_work [amdgpu] hogged CPU for >10000us 8195 times, consider switching to WQ_UNBOUND
+  Nov 01 05:28:31 jiulu-9700 kernel: workqueue: svm_range_deferred_list_work [amdgpu] hogged CPU for >10000us 4 times, consider switching to WQ_UNBOUND
+  Nov 01 05:28:31 jiulu-9700 kernel: workqueue: svm_range_deferred_list_work [amdgpu] hogged CPU for >10000us 5 times, consider switching to WQ_UNBOUND
+  Nov 01 05:33:28 jiulu-9700 kernel: workqueue: delayed_fput hogged CPU for >10000us 67 times, consider switching to WQ_UNBOUND
+  Nov 01 05:35:18 jiulu-9700 kernel: workqueue: amdgpu_amdkfd_restore_userptr_worker [amdgpu] hogged CPU for >10000us 515 times, consider switching to WQ_UNBOUND
+  Nov 01 06:44:44 jiulu-9700 kernel: workqueue: svm_range_restore_work [amdgpu] hogged CPU for >10000us 16387 times, consider switching to WQ_UNBOUND
+  Nov 01 07:34:36 jiulu-9700 kernel: workqueue: delayed_fput hogged CPU for >10000us 131 times, consider switching to WQ_UNBOUND
+  Nov 01 07:35:59 jiulu-9700 kernel: workqueue: amdgpu_amdkfd_restore_userptr_worker [amdgpu] hogged CPU for >10000us 1027 times, consider switching to WQ_UNBOUND
+  Nov 01 11:01:09 jiulu-9700 kernel: workqueue: amdgpu_amdkfd_restore_userptr_worker [amdgpu] hogged CPU for >10000us 2051 times, consider switching to WQ_UNBOUND
+  Nov 01 11:18:18 jiulu-9700 kernel: workqueue: delayed_fput hogged CPU for >10000us 259 times, consider switching to WQ_UNBOUND
+  Nov 01 16:44:43 jiulu-9700 kernel: workqueue: svm_range_restore_work [amdgpu] hogged CPU for >10000us 32771 times, consider switching to WQ_UNBOUND
+  Nov 01 16:48:03 jiulu-9700 kernel: workqueue: amdgpu_amdkfd_restore_userptr_worker [amdgpu] hogged CPU for >10000us 4099 times, consider switching to WQ_UNBOUND
+## and the reset reason the NEXT boot (20:36:38) read from firmware: identical to the 21:02:15 crash --
+   'an uncorrected error caused a data fabric sync flood event' + fatal ProcessorError BERT (APIC 0x83 here, 0x82 for the 21:02 crash)
