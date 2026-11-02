@@ -76,6 +76,34 @@ sitting at 0 W could be a parked/standby redundant supply by design, or a second
 not really there). But it is a live fault on its own, and it removes the "not a power problem" assumption
 that `notes/bug-mes-invalidate-tlbs.md` and `notes/mes-timeouts.md` were leaning on. Worth:
 
+### 5b. 2026-11-02 15:2x: the operator says the supply is 2600 W, so redo the arithmetic
+
+That changes which concern survives. Measured on this box at 15:0x, under live 262k traffic:
+
+    GPUs        4 x 294 W averaged (1 s peaks 309-318 W in that window; other windows show
+                1 s samples of 439-534 W -- PPT is enforced on an average, not the instant)
+              = 1,176 W sustained, and a synchronized idle->prefill step of roughly +2 kW
+    platform    CPU_Power 96 W and Memory_Power 8 W at idle (BMC), plus board/fans/NVMe/NIC
+    serving     ~1,350-1,600 W total
+
+against a 2600 W unit: **~52-62% loaded at steady state, ~85-90% on a worst-case synchronized step** -- and
+the vendor's own budget for this chassis is 4 x 300 W PPT = 1,200 W of GPU, which a single 2600 W supply is
+evidently meant to carry. So **"the PSU is at its limit" is not a reason to lower the power wall**, and the
+cap recommendation in notes/observe-2026-11-02.md stands on thermal and throughput grounds only.
+
+What survives from this section is narrower but still live:
+
+- **No redundancy.** PSU2 has presence, standby (16 W in) and 0 W out. Whatever the rating, one unit is
+  carrying the box, and a 12 V excursion under a multi-kW step is exactly the shape of an OS death with no
+  kernel message and no firmware reset latch (death 4's `3b531c63`).
+- **Whether it is 2 x 2600 W and only one is fed** -- the question worth answering physically: is the second
+  cord seated, and on which PDU/circuit? That is also the cheapest possible fix for a box that reset 15 times
+  in a day.
+- **BMC PSU telemetry is status, not a meter.** `PSU1 In Current 6.4 A` at `240 V` is ~1.5 kVA against a
+  reported 208 W output -- inconsistent, so read these registers for presence/thresholds only.
+- Whether the 2600 W is per unit or the chassis budget is worth confirming from the FRU
+  (`sudo ipmitool -I open fru print` -- not readable without privilege here).
+
     sudo ipmitool -I open sdr get 'PSU2 Power In'
     sudo ipmitool -I open sdr get 'PSU2 Power Out'
     sudo ipmitool -I open sdr elist | grep -i psu      # re-read under load

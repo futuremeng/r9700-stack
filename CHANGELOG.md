@@ -366,6 +366,16 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   like an uncorrectable fault. Serving traffic does not move these counters; launches do — recorded in the incident
   note, where the takeaway is that a mid-decode event is now the out-of-pattern thing to look for.
 
+- **The supply is 2600 W, which removes the electrical argument for a cap** (operator-supplied rating, recorded in
+  [notes/incident-2026-11-02/bmc-sensors-watchdog-psu.txt](notes/incident-2026-11-02/bmc-sensors-watchdog-psu.txt)
+  §5b). Redone with measured load: 1,176 W of GPU (4 × 294 W averaged) plus ~100-400 W of platform is **~52-62% of
+  one unit at steady state**, ~85-90% on a worst-case synchronized idle→prefill step (~+2 kW), and the chassis' own
+  budget — 4 × 300 W PPT = 1,200 W of GPU — is written to sit on a single 2600 W supply. So the "no cap"
+  recommendation now rests on thermal and throughput grounds only, and what survives from the PSU finding is
+  narrower: **no redundancy** (PSU2 present, standby, 0 W out), the open physical question of whether a second cord
+  is seated and on which circuit, and the note that BMC PSU registers are status rather than metering (6.4 A at
+  240 V against a reported 208 W output is inconsistent).
+
 - **Is it safe, and would a power cap buy anything?** Measured before recommending, and the answer is no (see
   [notes/observe-2026-11-02.md](notes/observe-2026-11-02.md), "is this safe"). 90 s at 1 Hz against the published
   envelopes: every card averages **293-294 W into a 300 W PPT** — `power1_cap` sits at its vendor default (range
