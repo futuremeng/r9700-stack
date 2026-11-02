@@ -763,7 +763,25 @@ ck("the KV pool draws a waveform on a 0-100 axis, and the progress bar is gone",
    and ".sparkline[data-tone=warn] .spark{color:var(--st-warn)}" in (WEB / "web.css").read_text())
 ck("sparklines take an axis from the caller instead of always autoscaling",
    "baseLo = null" in (WEB / "common.js").read_text()
-   and '{ lo: 0, hi: "peak" }' in monjs)
+   and 'lo: 0, hi: "peak"' in monjs)
+# An anchored series with no samples drew nothing at all: an empty box reads as a broken page, when the truth is
+# "nothing is running". The axis's zero now gets drawn (faint, dashed, under the data) so a series at zero reads
+# as a line lying on the axis and a series with no samples still shows where nothing-happening is. For the
+# autoscaled series the line goes where zero is, because crossing it (the pool draining) is the event there.
+ck("the axis zero is drawn, under the data, and styled faint",
+   'class: "spark-base"' in (WEB / "common.js").read_text()
+   and ".spark .spark-base{stroke:var(--st-ink-muted);opacity:.5}" in (WEB / "web.css").read_text())
+ck("a series with no samples keeps its axis line instead of an empty box",
+   "if (xs.length < 2) { el.replaceChildren(svg); return; }"
+   in (WEB / "common.js").read_text())
+# "no series yet" made the reader guess between nothing-running, counter-dead and page-broken. Each waveform now
+# says which, in its own words, and names the axis the flat line sits on.
+ck("an empty waveform says why in the series' own terms, not 'no series yet'",
+   '"no series yet"' not in monjs
+   and "has no denominator" in monjs and "0 streams running" in monjs and "did not grow" in monjs
+   and "` · axis ${fmt(lo, 0)}..${fmt(top, 0)} ${unit}`" in monjs)
+ck("a peak axis is never computed as Math.max() of nothing (which is -Infinity)",
+   'Math.max(...xs, 0)' in monjs and "isFinite(lo) || !isFinite(hi)" in (WEB / "common.js").read_text())
 # The per-card cards: busy and VRAM as waveforms on honest axes (0..100, and 0..the card's own VRAM), and
 # aligned by bus id / card name so a card vanishing from sysfs cannot plot its neighbour's numbers.
 _ck2 = (WEB / "common.js").read_text()

@@ -398,6 +398,39 @@ breaks into a new subpath and the filled area under it is dropped for that serie
 first ~30 windows have no value at all, that would have invented a flat prefill. The x axis spans the whole ring
 either way, so one point is one poll of time whatever the series was doing in between.
 
+### The shapes a waveform draws when nothing is happening
+
+An anchored series with no samples drew **nothing at all** — the box went empty and the line under it said
+`no series yet`, which is the reader left guessing between "nothing is running", "the counter is dead" and "this
+page is broken". Two changes:
+
+- **The axis's zero is now drawn** — faint, dashed, under the data. A series with no samples (no streams running,
+  so a per-stream rate has no denominator: the payload carries null, not 0) still shows where nothing-happening
+  is, and a series genuinely at zero shows a line lying on the axis, which is the finding rather than a rendering
+  failure. For the one autoscaled series (the KV-growth estimate) the line goes where zero is, because crossing
+  it — the pool draining instead of growing — is the event worth seeing there. A fully autoscaled series with no
+  samples still draws an empty box, honestly: without samples there is no axis to state.
+- **Each waveform says why in its own terms**: `no stream running, so a per-stream rate has no denominator`,
+  `nothing was being generated`, `the KV pool did not grow`, `0 streams running`, each followed by the span and the
+  axis it is flat against (`· 90 s back · axis 0..152 tok/s`) when the axis is known. `no series yet` is gone.
+
+`tools/spark-check.js` runs the primitive over the shapes that matter — nothing running, everything zero, a gap in
+the middle, a series that goes negative, a single sample — and prints the paths out, since summoning those states in
+a browser on demand is the part that never worked:
+
+```
+all null, axis 0..peak             spark-base y=34..34
+all zero, axis 0..100              spark-base y=34..34 | fill y=34..36 | line y=34..34
+half null then 40s                 spark-base y=34..34 | fill y=22..36 | line y=22..22
+gap in the middle                  spark-base y=34..34 | line y=25..25
+prefill estimate spans zero        spark-base y=23.6..23.6 | fill y=4..36 | line y=4..34
+no samples, autoscaled             (no svg — empty box)
+```
+
+One trap this closed on the way: a `hi: "peak"` axis over an empty series is `Math.max()` of nothing, which is
+`-Infinity` — the axis is clamped to 0 and a series whose bounds are not finite draws nothing rather than a box
+full of NaN.
+
 **Per-card waveforms: busy and VRAM replace the busy bar.** `gpu_poll` keeps its own ring
 (`gpus_history`, same 90 points, one slot per card, aligned by PCI bus id / card name so a card vanishing from
 sysfs cannot plot its neighbour's numbers), and each card draws busy on 0..100 and VRAM on 0..that card's own

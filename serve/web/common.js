@@ -81,17 +81,39 @@ function qualText(id, value, note) {
 function spark(el, values, {fill = true, baseLo = null, baseHi = null} = {}) {
   const vs = values || [];
   const xs = vs.filter(isnum);
-  if (xs.length < 2) { el.replaceChildren(); return; }
   const W = 240, H = 36;
+  const mk = (tag, attrs) => {
+    const n = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const k in attrs) n.setAttribute(k, attrs[k]);
+    return n;
+  };
   // Autoscaling to the series' own min and max is what makes a sparkline lie: a KV pool creeping from 0.0% to
   // 2.4% fills the box like a stock chart, and a rate that sits at zero most of the time gets a baseline at
   // zero's height only by accident. A caller that knows the axis anchors it (the pool at 0..100, a rate at
   // 0..peak), and then a sliver reads as a sliver.
-  const lo = baseLo !== null ? baseLo : Math.min(...xs);
-  const hi = baseHi !== null ? baseHi : Math.max(...xs);
+  const lo = baseLo !== null ? baseLo : (xs.length ? Math.min(...xs) : 0);
+  const hi = baseHi !== null ? baseHi : (xs.length ? Math.max(...xs) : 0);
+  if (!isFinite(lo) || !isFinite(hi)) { el.replaceChildren(); return; }
   const span = hi - lo || 1;
-  const px = (i) => (i * W) / (vs.length - 1);
+  const px = (i) => (vs.length > 1 ? (i * W) / (vs.length - 1) : W / 2);
   const py = (v) => H - 2 - ((Math.max(lo, Math.min(hi, v)) - lo) / span) * (H - 6);
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("class", "spark");
+  svg.setAttribute("aria-hidden", "true");
+  // The zero line, drawn under the data and kept faint: on an anchored axis it says where nothing-happening
+  // is, so a series with no samples at all (no streams running, so a per-stream rate has no denominator)
+  // still reads as "flat on a known axis" instead of an empty box that looks broken -- and a series genuinely
+  // at zero reads as a line sitting ON the axis, which is the finding, not a rendering failure. For an
+  // autoscaled series the line goes where zero is when the range spans it, because crossing zero (the KV pool
+  // draining rather than growing) is the event worth seeing there.
+  const zero = baseLo !== null ? baseLo : (xs.length && lo <= 0 && hi >= 0 ? 0 : null);
+  if (zero !== null) {
+    svg.append(mk("path", {class: "spark-base", d: `M0,${py(zero).toFixed(1)}L${W},${py(zero).toFixed(1)}`,
+                           fill: "none", "stroke-width": "1", "stroke-dasharray": "3 3"}));
+  }
+  if (xs.length < 2) { el.replaceChildren(svg); return; }
   // Nulls are gaps, not zeros, and x spans the whole ring either way: one sample stays one slot of time no
   // matter what the series was doing in between (the prefill estimate has no value at all before the first
   // request ran). The filled area under the line only closes over one subpath, so it is dropped when the
@@ -102,16 +124,6 @@ function spark(el, values, {fill = true, baseLo = null, baseHi = null} = {}) {
     d += `${pen ? "L" : "M"}${px(i).toFixed(1)},${py(v).toFixed(1)}`;
     pen = true;
   });
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  svg.setAttribute("preserveAspectRatio", "none");
-  svg.setAttribute("class", "spark");
-  svg.setAttribute("aria-hidden", "true");
-  const mk = (tag, attrs) => {
-    const n = document.createElementNS("http://www.w3.org/2000/svg", tag);
-    for (const k in attrs) n.setAttribute(k, attrs[k]);
-    return n;
-  };
   if (fill && !gaps) svg.append(mk("path", {d: `${d}L${W},${H}L0,${H}Z`, fill: "currentColor", "fill-opacity": ".14", stroke: "none"}));
   svg.append(mk("path", {d, fill: "none", stroke: "currentColor", "stroke-width": "1.6", "stroke-linejoin": "round"}));
   el.replaceChildren(svg);

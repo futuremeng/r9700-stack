@@ -284,6 +284,22 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   fixture keeps one card of each so it cannot regress. And **`power1_cap` is not the limit on this uncapped box**:
   the cap reads 300 W while the cards draw 232–494 W, so the axis takes the larger of cap and observed, the cap
   stays in the text line as contrast, and only temperature gets a warning colour (passing the cap is the
+- **A waveform now shows its axis zero, and an empty series says why in its own terms.** A rate series with no
+  samples (no streams running, so a per-stream rate has no denominator and the payload carries null rather than 0)
+  drew an empty box under a line reading `no series yet` — the reader left guessing between "nothing is running",
+  "the counter is dead" and "the page is broken". The axis's zero is now drawn: faint, dashed, under the data, so
+  no-samples still shows where nothing-happening is, and a series genuinely at zero shows a line lying on the axis
+  — the finding, not a rendering failure. For the autoscaled KV-growth series the line goes where zero is, because
+  crossing it (the pool draining rather than growing) is the event there; a fully autoscaled series with no samples
+  still draws an empty box, because without samples there is no axis to state. Each waveform states its own empty
+  case (`no stream running, so a per-stream rate has no denominator`, `nothing was being generated`, `the KV pool
+  did not grow`, `0 streams running`) plus the span and, when known, the axis (`· 90 s back · axis 0..152 tok/s`).
+  Found by fixing a trap on the way: a `hi: "peak"` axis over an empty series is `Math.max()` of nothing, i.e.
+  `-Infinity`; bounds are clamped and non-finite axes draw nothing rather than a box of NaN.
+  `tools/spark-check.js` runs the primitive over the shapes that matter — nothing running, everything zero, a gap
+  in the middle, a series crossing zero, one sample — and prints the paths, because summoning those states in a
+  browser on demand is the part that never worked.
+
   configuration here; 95 °C is a fault anywhere). The `read_gpus` docstring also carried a claim this day
   disproved — that a compute context is what makes the attributes answer; they refused with nothing running and
   answered with the launch holding all four.
