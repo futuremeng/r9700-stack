@@ -564,6 +564,14 @@ cd ~/r9700-stack && GPUS=0,1,2,3 TP=4 OFFLOAD_GB=0 NSEQ=16 MAXLEN=32768 UTIL=0.9
 ~/venv-r9700/bin/python3 bench/quality.py 100 8
 ```
 
+The launch that is running now runs the same recipe at **`MAXLEN=262144`**, the checkpoint's own
+`max_position_embeddings`: the KV pool does not shrink when MAXLEN grows (540,202 tokens, vLLM's own
+`Maximum concurrency for 262,144 tokens per request: 2.06x`), the 32 × 300 throughput wave stays in the band
+above, and a needle at 250,078 tokens retrieves (36.5 s cold TTFT). What changes is where the limit is -- long
+prefills serialize, so 8 concurrent 30k prompts queue one after another while the pool sits 11.7% full, and the
+2.06× is a residency ceiling rather than a concurrency one. Ladder, queue measurements, the
+`--long-prefill-token-threshold` A/B, and the metric-reading traps: [context-262k.md](context-262k.md).
+
 Not done here: the 2-card offloaded-experts recipe (needs ~120 GiB of host RAM, this box has 93), the
 27B and GLM configs, `--kv-cache-dtype fp8`, the P2P communicator A/B, and a power-capped run for a
 like-for-like decode comparison against the 210 W gate numbers.

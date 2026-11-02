@@ -76,6 +76,29 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   with litellm 1.106.6 installed into `/tmp` (nothing added to either venv): the rendered snippet answered,
   and the YAML block loaded through `litellm.Router` answered too (`model used -> Qwen3.8`). See
   [notes/webui.md](notes/webui.md).
+- **262,144 tokens of context runs on this box, and it is not the KV pool that limits it**
+  (`bench/needle_long.py`; [notes/context-262k.md](notes/context-262k.md)). The checkpoint's own
+  `max_position_embeddings` is 262,144 (`rope_type: default`, theta 1e7 -- no extrapolation to argue about), and
+  raising MAXLEN from 32,768 **does not shrink the KV pool** (the memory-profiling run is bounded by
+  `--max-num-batched-tokens`, not by MAXLEN): 497,588 → **540,202 tokens**, with vLLM's own line
+  `Maximum concurrency for 262,144 tokens per request: 2.06x`. A needle ladder at 30,070 / 67,063 / 150,057 /
+  **250,078** tokens retrieves at every tier (36.5 s cold TTFT and 6,847 tok/s prefill at 250k, 0.70 s for the
+  same context with prefix caching on, 141 tok/s decoding 400 tokens inside it); GSM8K 10/10, `quality.py`
+  needle 3/3 and the 32×300 throughput wave (1,186-1,257 tok/s) are unchanged, per-card VRAM 30.5 of 31.86 GiB.
+  The limit is elsewhere: **8 concurrent 30k prompts leave the pool 11.7% full** while their TTFTs space out by
+  exactly one prefill each (3.3 s steps, 26.2 s total), 32 short requests run 32-at-once at 20.7%, and three
+  concurrent 250k requests queue to 36.9 / 73.7 / 109.2 s without OOM. Two metric-reading traps named: a third
+  250k request is queueing, not failure; `waiting_by_reason{reason="capacity"}` is the *ordinary waiting queue*
+  (`num_waiting_reqs`, `v1/metrics/loggers.py:1155-1159`) and read 7 there with the pool at 11.7%, while
+  `kv_cache_usage_perc` read 32.3% during 4 × 150k when the hybrid groups were the short resource.
+  `--long-prefill-token-threshold 2048 --long-prefill-token-threshold-adaptive` measured as a fairness knob, not
+  a speed one: six 30k requests behind a 250k one go 40.3-55.8 s → **7.8-27.7 s** at the same wall clock
+  (55.9 vs 56.8 s), but three 250k prefills in parallel drive the pool to **99.1%** and the load **22% slower**
+  (109.2 → 133.6 s) -- so the recipe keeps it off, and 4096 (= NBT/2, matching the 2.06× memory can hold) is
+  the value to use if mixed lengths arrive together. GLM-5.3-Flash's 262k indexer death
+  ([release-v0.3.7.md](release-v0.3.7.md)) does not repeat on this checkpoint because QSA scoring here is
+  `r9700_qsa_score`, which never materialises stock's fp32 `[rows, capacity]` logits -- 8.6 GiB a card at
+  NBT=8192 against 1.35 GiB of headroom -- and `R9K_QSA_SCORE=stock` would put that allocation back.
 
 ### Fixed
 - **The base URL the About page handed out was the wrong string in two ways.** It printed the sidecar's
