@@ -118,7 +118,7 @@ for scheme, path in SIZES.items():
         sys.exit(0)
     a = im.getchannel("A")
     w, h = a.size
-    px = list(a.getdata())
+    px = list(a.tobytes())                     # mode L: one byte per pixel, row-major
     inked = sum(1 for v in px if v > 8)
     cols = [sum(1 for r in range(h) if px[r * w + c] > 8) for c in range(w)]
     rows = [sum(1 for c in range(w) if px[r * w + c] > 8) for r in range(h)]
@@ -160,7 +160,7 @@ d, _ = render(SIZES["dark"], OUT)
 l, _ = render(SIZES["light"], OUT)
 if d is not None and l is not None:
     ck("dark and light are one drawing in two inks, not two drawings",
-       list(d.getchannel("A").getdata()) == list(l.getchannel("A").getdata()))
+       d.getchannel("A").tobytes() == l.getchannel("A").tobytes())
 
 print("FAIL" if fail else "PASS", f"({fail} failing)")
 sys.exit(1 if fail else 0)

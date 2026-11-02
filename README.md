@@ -60,12 +60,12 @@ sample lists and the measurements that were tried and rejected: <a href="#speed"
   <a href="docs/r9700-stack-v0.3.8.png"><img src="docs/r9700-stack-v0.3.8.svg" alt="r9700-stack v0.3.8: what runs on it, the weight formats, the speed"></a>
 </p>
 
-<sub>The release on one page: the configurations it runs, the formats it loads, the four-card numbers -- as measured
-for **v0.3.8** at the 210 W gate, which is why its Flash-Next row says 210 tok/s where the table above says
-**225**: the table carries the newer measurements (14.3-14.4 ms a step, same 210 W gate, 32k), and every row there
-names the machine and protocol it came from. Drawn by `docs/summary-image.py` from the release notes.
-Its smallest type is 9.8 px at github.com's column width, which is small: the picture links to
-`docs/r9700-stack-v0.3.8.png`, the same drawing at 2400 × 1220.</sub>
+<sub>The release on one page: what the stack is, the three model configurations it runs, and how fast they run --
+drawn by `docs/summary-page.py` from the same numbers the tables above carry, so the page and the tables cannot
+drift apart. Its canvas is 1000 px wide against github.com's ~980 px column, so the smallest type on it lands at
+about 14 px and reads where it sits; the picture links to `docs/r9700-stack-v0.3.8.png`, the same drawing at
+2000 × 1816, for zooming. Rows tagged "210 W gate" are the release configuration, rows tagged "the native box"
+are the uncapped four-card box, and the two are not comparable across.</sub>
 
 - **Stock vLLM 0.32 on stock ROCm 10.** Pinned to the 2026-10-25 ROCm 10 nightly (vLLM 0.32.1rc1, torch 2.13); the
   plugin registers through vLLM's platform, quantization, model and attention-backend entry points and carries its

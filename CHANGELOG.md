@@ -186,6 +186,27 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   ends on a connector. What the renders also showed, and what was left alone: the Monitor's dark cards are bordered
   in `--st-line: #2a3036`, which is faint at the column's width, but the figure matches `serve/web/tokens.css` and
   strengthening it there would make the figure the odd one out on the page it pictures.
+- **The README's two figures are looked at, not only measured** (`docs/summary-page.py`, `docs/lockup.py`,
+  `docs/monitor-cards.py`). Rendering them at the ~980 px github.com puts a README in found four things the
+  geometry checks had passed: the title's stack had a muted top bar while the release page's stack was one colour
+  (the mark is four bars in one accent now); a wrapped Monitor card line ended on a connector, reading as a broken
+  sentence (`docs/monitor-cards.py` moves a trailing `\u00b7` down with its clause, so the line breaks as
+  `(prompt whole, decode per step)` / `\u00b7 last 2 s`); and the release page was unreadable and out of date.
+- **The release page is generated now** (`docs/summary-page.py` \u2192 `docs/r9700-stack-v0.3.8.svg`, and the `.png`
+  at 2000 \u00d7 1816). The hand-built one it replaces sat on a 1200 px canvas, so its smallest type rendered at
+  **9.8 px** in the README column \u2014 unreadable without clicking \u2014 and its numbers were a release behind the
+  README's own tables: it said Flash-Next **210** and 27B **216** under a single "210 W cap per card" banner that
+  also covered uncapped numbers (913-933 at 16 streams, prefill 6,771-6,830), where the table says **225**. The new
+  one is drawn from data on a **1000 px canvas against the ~980 px column** with a **14 px floor** (13.7 px as
+  rendered), every box sized from the strings that have to fit in it, and every string measured first: what does not
+  fit prints `OVERFLOW` on stderr and the test fails on it, which is how five real overflows got caught while it was
+  being written. The numbers are current and each row names its gate: decode **225 / 222 / 100** tok/s labelled
+  "210 W gate", and the aggregate / prefill / context column labelled once, "the native box, uncapped" \u2014
+  **1,823 tok/s** at 32 in flight in 1,200-token waves, **9,633 tok/s** reading a 7,789-token prompt, **540,202**
+  tokens of KV pool at MAXLEN 262,144 with a needle found at **250,078**. `docs/summary-image.py` stays as the
+  provenance of the older v0.3.3 PNG. `tests/test_readme.py` is 36 \u2192 42 checks: the page re-draws text for text
+  from its script, the canvas and the type floor hold, every number on the page is a number the README carries, each
+  decode row names its gate, and the PNG is at least twice the canvas in both directions so the click is worth taking.
 - **A Speed table for the four cards uncapped at 32k.** The prefill and aggregate headline numbers had lived only
   in [notes/native-4xr9700.md](notes/native-4xr9700.md); they are in the README now with their sample lists: single
   stream 186.7 tok/s, `bench.py` at 4 / 8 / 16 streams 372 / 841 / 1,164, `probe32.sh` at 32 in flight 1,598 (300-token

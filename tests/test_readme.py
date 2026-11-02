@@ -190,26 +190,51 @@ if lock:
     ck("dark and light are one drawing in two inks, not two drawings", same)
     ck("the wordmark is outlined, not left to the reader's fonts", "<text" not in light.read_text())
 
-sec = re.search(r"^## What v0\.3\.8 gives you\n(.*?)(?=^## )", README, re.S | re.M)
+SUMPAGE = ROOT / "docs" / "summary-page.py"
+SEC = re.search(r"^## What v0\.3\.8 gives you\n(.*?)(?=^## )", README, re.S | re.M)
 ck("the one-image release page sits under the heading that describes the release",
-   bool(sec) and "r9700-stack-v0.3.8.svg" in sec.group(1))
+   bool(SEC) and "r9700-stack-v0.3.8.svg" in SEC.group(1))
 ck("and the README uses it in that one place", README.count("r9700-stack-v0.3.8.svg") == 1,
    f"{README.count('r9700-stack-v0.3.8.svg')} uses")
-ck("with a caption naming the script that draws it", bool(sec) and "summary-image.py" in sec.group(1))
-# its small print is 9.8 px at github.com's column width, so the figure has to link to the big PNG,
-# and that PNG has to actually be big enough for the click to buy anything
+ck("with a caption naming the script that draws it", bool(SEC) and "summary-page.py" in SEC.group(1))
+
+# the release page is generated, like the card figure: the numbers are data in docs/summary-page.py, and
+# the committed .svg is what that script emits. A figure nobody can re-draw is a figure that drifts -- the
+# one this replaced still said 210 and 216 tok/s where the README's table said 225 and 222
+import tempfile
+PAGE = (ROOT / "docs" / "r9700-stack-v0.3.8.svg").read_text()
+with tempfile.TemporaryDirectory() as td:
+    out = str(Path(td) / "page.svg")
+    r = subprocess.run([sys.executable, str(SUMPAGE), out], capture_output=True, text=True)
+    ck("the release page re-draws clean: no OVERFLOW from the generator",
+       r.returncode == 0 and not r.stderr.strip(), r.stderr.strip()[:200])
+    ck("and re-drawing it text for text reproduces the committed figure",
+       texts(Path(out).read_text()) == texts(PAGE),
+       f"{len(set(texts(Path(out).read_text())) ^ set(texts(PAGE)))} texts differ: "
+       f"{sorted(set(texts(Path(out).read_text())) ^ set(texts(PAGE)))[:4]}")
+sw, sh = re.search(r'<svg[^>]*width="(\d+)" height="(\d+)"', PAGE).groups()
+ck("the canvas is the column it renders in: 1000 px wide against github.com's ~980",
+   int(sw) == 1000, f"canvas {sw} x {sh}")
+sizes = [float(x) for x in re.findall(r'font-size="([\d.]+)"', PAGE)]
+ck("and nothing on it is smaller than 14 px, so the small print is not 9.8 px again",
+   min(sizes) >= 14, f"smallest {min(sizes)}px, which at this canvas renders at {min(sizes) * 980 / int(sw):.1f}px")
+ck("every number the release page shows is a number the README also carries",
+   all(n in README for n in ("225", "222", "100", "1,823", "9,633", "540,202", "250,078")))
+nbars = len(re.findall(r'fill="#7b93ff"', PAGE))
+ck("and every decode row carries the gate its number came from, and the fact column names its own",
+   PAGE.count("210 W gate") >= nbars and PAGE.count("the native box, uncapped") >= 1 and nbars == 3,
+   f"{nbars} bars, {PAGE.count('210 W gate')} gate labels")
+
+# its type is readable where it sits; the PNG stays for zooming, and has to be big enough to buy anything
 link = re.search(r'<a href="(docs/[^"]+\.png)"><img src="docs/r9700-stack-v0\.3\.8\.svg"', README)
-ck("the release figure links to a PNG rather than leaving the small print unreadable", bool(link),
-   link.group(1) if link else "no link")
-if link and bool(sec):
+ck("the release figure links to a PNG for zooming", bool(link), link.group(1) if link else "no link")
+if link and bool(SEC):
     def png_size(p):
         return struct.unpack(">II", p.read_bytes()[16:24])
-    svg_w = float(re.search(r'<svg[^>]*width="([\d.]+)"',
-                            (ROOT / "docs" / "r9700-stack-v0.3.8.svg").read_text()).group(1))
     pw, ph = png_size(ROOT / link.group(1))
-    ck("and that PNG is big enough for the click to be worth taking",
-       pw >= 2 * svg_w, f"PNG {pw} x {ph}, figure {svg_w:g} wide: {pw / svg_w:.1f}x")
-    ck("and the caption says what the link is for", "2400" in sec.group(1))
+    ck("and that PNG is at least twice the figure's canvas in both directions",
+       pw >= 2 * int(sw) and ph >= 2 * int(sh), f"PNG {pw} x {ph}, figure {sw} x {sh}")
+    ck("and the caption says what the link is for", f"{pw} × {ph}" in SEC.group(1))
 
 # --- the figure blocks close ------------------------------------------------------------------------------
 nblocks = README.count('<p align="center">')
