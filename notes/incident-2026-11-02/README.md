@@ -242,8 +242,9 @@ prefill puts on the link rather than anything about starting a process. Card2's 
 
 Two more arrived while watching (14:30:39 and 14:32:11, both `04:00.0`, both with 5-7 requests in flight and the
 pool over 60%), bringing it to **9 events in ~55 minutes of real load** — and both of those two landed on the
-chain of **card4, the card that runs 10 °C hotter than the others** (78 °C against 66-69 °C, steady rather than
-climbing across 120 samples). Not evidence of a causal chain, just two more facts about the same card sitting
+chain of **card4, the card that runs 10 °C hotter than the others on the sensor the Monitor was reading** (edge
+78 °C against 66-69 °C, steady rather than climbing across 120 samples — per sensor, its junction is normal and
+its **memory** is the hottest thing on the box; see [observe-2026-11-02.md](../observe-2026-11-02.md)). Not evidence of a causal chain, just two more facts about the same card sitting
 next to each other.
 
 Still true, and the part that matters for the reset question: **every event is correctable**. `TOTAL_ERR_NONFATAL`

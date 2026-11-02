@@ -194,16 +194,19 @@ or an in-tree load profiler. `R9K_MTP_MLP=off` is not a usable probe: the draft 
   ~6x from one stream to 32 (0.21 -> 1.30 tok/J) and then flattens -- the same wall the 210 W reference caps
   sit on the far side of.
 * **The four cards are not at the same temperature, and long-context work widens the power band.** Sampled every
-  second under real 262k traffic (4-5 streams, prompts 5k-154k, 2026-11-02 14:1x, `tools/watch-live.py`):
-  card1/2/3 sat at **64-68 °C** while **card4 sat at 76-78 °C**, all four at 100% busy and 2.5-3.4 GHz, on
-  similar draw (card4 peaked 375 W, card1 peaked 491 W). So the per-card W range during serving is far wider than
-  the steady-state conc table above suggests — 111-491 W, not 288-334 — because a prefill-dominated second and a
-  decode-only second are different machines. 76-78 °C is nowhere near the 95 °C the Monitor calls a fault, but a
-  stable 10 °C outlier is the card to watch — it held at 77-78 °C across 120 one-second samples rather than
-  climbing, so it is an offset and not a trend — and it happens to be one of the two chains whose switch upstream
+  second under real 262k traffic (4-5 streams, prompts 5k-154k, 2026-11-02 14:1x, `tools/watch-live.py`): all four
+  at 100% busy, 2.5-3.4 GHz, and a per-card W range of **111-534 W**, not the 288-334 the steady-state conc table
+  above suggests — a prefill-dominated second and a decode-only second are different machines. The first version of
+  this sentence said card4 ran "10 °C hotter"; that was an `edge`-sensor reading and it was the wrong story. All
+  three sensors, 180 s at 1 Hz with every card at 291-293 W (cards 1-4): **edge** 68.0 / 67.8 / 66.2 / **77.3**,
+  **junction** 89.7 / **102.4** / 99.4 / 99.1, **mem** 84.8 / 86.0 / 82.7 / **95.7 °C**. So card4's die is
+  indistinguishable from card3's while its **GDDR7 is the hottest thing on the box**, card2's die is the one
+  actually running hot (102.4 avg, peaking 106 against crit 110), and card1 is the best cooled on both — with the
+  lowest fan duty (180/255 vs 192/193). What survives from the earlier sentence: card4's edge held 77-78 °C across
+  180 samples without climbing (an offset, not a trend), and card4 is one of the two chains whose switch upstream
   ports account for every PCIe AER event this box has ever counted (the other is card2's; see
-  [incident-2026-11-02](incident-2026-11-02/README.md)). Not evidence of anything yet — just two things about the
-  same card worth keeping side by side.
+  [incident-2026-11-02](incident-2026-11-02/README.md)). Not evidence of a link between the two — but two facts
+  about the same card worth keeping side by side. Thermal write-up: [observe-2026-11-02.md](observe-2026-11-02.md).
 * **Host RAM**: 56 GiB used + 39 GiB cache, `MemAvailable` 37 GiB; Pss 12.0 GiB a worker, of which the int6 PLE
   table is 9.7 GiB pinned (`hipHostRegister`, so it does not show in `Unevictable`, which reads 30 MB).
   Swap holds 4 GiB and the lifetime `pswpout` is 96.4M pages (~360 GiB): the load streams 110.6 GiB through a

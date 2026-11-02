@@ -433,11 +433,36 @@ def read_gpus(root):
         # device/hwmonN. Globbing only the second form is how the Monitor showed a blank temperature and power
         # for months on a box whose files read perfectly well (measured 2026-11-02: temp1_input 65000,
         # power1_average 205000000, freq1_label "sclk" -> 3311000000, and `unread` empty the whole time).
-        temp = power = sclk = mclk = cap = None
+        # ...and temperatures are read BY LABEL, because there are three of them and the first is the least
+        # interesting: edge / junction / mem. Reading temp1 (edge) is what made one card look 10 C hotter than
+        # its neighbours while its die sat at everyone else's temperature and its GDDR7 sat at 96 C (measured
+        # 2026-11-02, 180 s at 1 Hz, four cards at 291-293 W each): the anomaly was in the board and memory,
+        # which temp1 cannot see. Junction is the headline because it is the sensor with a published limit
+        # (temp*_crit = 110 C) and the one the fan map follows; mem has no published threshold on these cards,
+        # so it is shown and never coloured.
+        temps, crit, fan, pwm = {}, None, None, None
+        power = sclk = mclk = cap = None
         for hm in sorted(dev.glob("hwmon*")) + sorted(dev.glob("hwmon*/hwmon*")):
-            temp = temp if temp is not None else num(hm / "temp1_input")
+            for f in hm.glob("temp*_label"):
+                try:
+                    lab = f.read_text().strip().lower()
+                except OSError:
+                    continue
+                stem = f.name[:-len("_label")]
+                got = num(hm / (stem + "_input"))
+                if got is None:
+                    continue
+                temps.setdefault(lab, got / 1e3)
+                c = num(hm / (stem + "_crit"))
+                if c is not None and crit is None:
+                    crit = c / 1e3
+            t1 = num(hm / "temp1_input")                # a kernel with no labels still gets what it had
+            if t1 is not None:
+                temps.setdefault("edge", t1 / 1e3)
             power = power if power is not None else (num(hm / "power1_input") or num(hm / "power1_average"))
             cap = cap if cap is not None else (num(hm / "power1_cap") or num(hm / "power1_cap_max"))
+            fan = fan if fan is not None else num(hm / "fan1_input")
+            pwm = pwm if pwm is not None else num(hm / "pwm1")
             for f in hm.glob("freq*_label"):
                 try:
                     lab = f.read_text().strip()
@@ -461,7 +486,14 @@ def read_gpus(root):
         except OSError:
             pass
         vals.update({"card": card.name, "name": name, "bus": bus,
-                     "temp_c": (temp / 1e3) if temp else None,
+                     # temp_c is the headline sensor: junction where the card publishes it (limit-bearing and
+                     # fan-relevant), edge only as the fallback an unlabelled kernel leaves us with.
+                     "temp_c": temps.get("junction") or temps.get("edge"),
+                     "temp_junction_c": temps.get("junction"), "temp_edge_c": temps.get("edge"),
+                     "temp_mem_c": temps.get("mem"), "temp_crit_c": crit,
+                     # Fan duty belongs in the thermal story: the loop follows the junction, so a card can run a
+                     # lower duty than its neighbours while its memory is the hottest thing on the box.
+                     "fan_rpm": fan, "pwm": pwm,
                      "power_w": (power / 1e6) if power else None,
                      # The power ceiling is what makes a power waveform mean anything: a card pinned at its cap
                      # and one idling at 205 of 500 W look identical on an autoscaled axis.
@@ -1078,7 +1110,11 @@ class Hub:
                 {"card": g.get("card"), "bus": g.get("bus"), "busy_pct": g.get("busy_pct"),
                  "vram_used": g.get("vram_used"), "vram_total": g.get("vram_total"),
                  "sclk_mhz": g.get("sclk_mhz"), "power_w": g.get("power_w"),
-                 "power_cap_w": g.get("power_cap_w"), "temp_c": g.get("temp_c")}
+                 "power_cap_w": g.get("power_cap_w"), "temp_c": g.get("temp_c"),
+                 # mem gets its own slot because on this box it is the sensor that separates the cards at all
+                 # (card4 95.7 C against 82.7-86.0 for the rest, with junction equal); edge stays out of the
+                 # ring, since three temperature waves per card is where a panel starts being unreadable.
+                 "temp_mem_c": g.get("temp_mem_c")}
                 for g in self.gpus]})
             self.host = read_host()
             # .get, not []: a cfg built by the other entry point (serve/plugin) is not guaranteed to carry the

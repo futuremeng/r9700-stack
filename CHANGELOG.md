@@ -366,6 +366,27 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   like an uncorrectable fault. Serving traffic does not move these counters; launches do — recorded in the incident
   note, where the takeaway is that a mid-decode event is now the out-of-pattern thing to look for.
 
+- **card4 was never the hot card: `temp1` was the wrong sensor** (227 checks). Started as "why does one card sit
+  10 °C hotter" and the answer is that the panel read `temp1_input`, which on these cards is `edge`, and there are
+  three sensors. 180 s at 1 Hz under real traffic, four cards at **291-293 W each** — cards 1-4: edge 68.0 / 67.8 /
+  66.2 / **77.3** °C, junction **89.7** / **102.4** / 99.4 / 99.1, mem 84.8 / 86.0 / 82.7 / **95.7**. So card4's die
+  matches card3's while its **GDDR7 runs 10-13 °C above the pack**, card2's die is the genuinely hot one (102.4 avg,
+  106 peak against `crit` 110), and card1 is best on both at the **lowest fan duty** (180/255 vs 192/193) — the fan
+  map follows junction, so a card with a healthy die does not spin up for its memory. Same SKU/revision/VBIOS
+  (`1efe:0058`, rev `c0`, `113-EXT127429-001`), same mclk, same power: not identity, not workload, not a calibration
+  offset (idle has them all in the pack). Surviving candidates: local airflow over that card's memory side vs its
+  memory-side thermal interface, and a software discriminator that cannot settle it alone — the log names the five
+  measurements that would (idle series, cool-down slopes, BMC inlet/slot/fan sensors, physical slot inspection, a
+  one-card memory-bandwidth load). Monitor now reads temperatures **by label**, puts junction on the headline with
+  its own `crit` as the axis (colour only in the last few degrees — these cards normally sit 90-106 °C at crit
+  110, so a borrowed "95 °C = fault" rule would scream all day), gives mem an uncoloured wave because sysfs
+  publishes no memory threshold and inventing one is not instrumentation, keeps edge in text, rides fan rpm/duty
+  along, and labels the headline from whatever the running build actually reports (`junction`/`edge`/`temp`) so a
+  new page cannot name a sensor an older serve never read. Also fixes a live bug in the sampler that wrote this:
+  a late-bound closure made all four cards read one card's hwmon, which is why the first table looked like four
+  identical cards. New note: [notes/observe-2026-11-02.md](notes/observe-2026-11-02.md), the day's observation
+  log — traffic shape, the preemptions, the AER correlation, and this.
+
 - **Real traffic went through the box, and it corrected two things written an hour earlier** (218 checks).
   `tools/watch-live.py` (new) samples a live serve — gauges, live rates, per-card sensors, PCIe chains, request
   rows — and **never sends a request**, because measuring someone else's concurrency by adding your own ruins the

@@ -546,17 +546,37 @@ with its timestamp next to what the serve was doing at that instant. It **never 
 someone else's concurrency by adding your own would contaminate the numbers — which is why it reads the sidecar
 when the in-serve build predates the event list.
 
-**Power, temperature and the SM clock joined them** — five labelled waves per card: `busy`, `VRAM`, `sclk`, `W`,
-`°C`. They are **stacked, not overlaid**: watts, degrees and megahertz share no axis, and three autoscaled series
+**Power, temperature and the SM clock joined them** — labelled waves per card: `busy`, `VRAM`, `sclk`, `W`, and
+**two temperatures** (`junction`, `mem`; see below). They are **stacked, not overlaid**: watts, degrees and megahertz share no axis, and three autoscaled series
 in one box is the exact shape of lie a sparkline tells (a card pinned at its power cap and one idling at 205 of
 500 W look identical). Ceilings are fixed per wave: busy 0..100, VRAM 0..the card's own size, sclk 0..observed
-peak (this kernel exposes no max-frequency file), power 0..`max(power1_cap, observed)`, temperature 0..110 °C, so
-65 °C and 95 °C are comparable between cards and across refreshes. One caption line carries the readings that are
-read by number rather than shape — live: `temp peak 68 · avg 66 °C · power peak 494 · avg 283 W · sclk peak 3,331
-· avg 2,735 MHz · busy avg 94% · 90 pts over 91 s`. Only temperature gets a warning colour: this box is uncapped,
-so passing `power1_cap` is the configuration and not a fault, whereas 95 °C is a fault anywhere.
+peak (this kernel exposes no max-frequency file), power 0..`max(power1_cap, observed)`, and **temperature
+0..the card's own published `temp*_crit` (110 °C here)** — the distance to the wall is read off the card rather
+than invented. One caption line carries the readings that are read by number rather than shape — live:
+`junction peak 95 · avg 90 °C (crit 110) · mem peak 86 · avg 85 °C · power peak 442 · avg 293 W · sclk peak 3,286
+· avg 2,876 MHz · busy avg 100% · 90 pts over 92 s`.
 
-Two things that came out of wiring the thermal waves:
+Colour means *near the wall*, and the wall is per sensor. **Junction** is coloured against its own `crit` (warn at
+95%, danger at 98%) — measured, these cards sit at **90-106 °C junction under real load with crit 110**, so an
+absolute "95 °C is a fault" rule would have screamed at normal operation. **Power is never coloured** (this box is
+uncapped: passing `power1_cap` is the configuration). **Mem is never coloured** — sysfs publishes no memory
+threshold on these cards, so any cut would be made up; mem is read against its neighbours instead, which is
+exactly how its story was found.
+
+**There are three temperature sensors per card, and reading the first one is nearly worthless.** Measured while
+real traffic ran (180 s at 1 Hz, four cards each drawing 291-293 W): `edge` 68.0 / 67.8 / 66.2 / **77.3** °C,
+`junction` **89.7** / **102.4** / 99.4 / 99.1 °C, `mem` 84.8 / 86.0 / 82.7 / **95.7** °C across cards 1-4. The card
+the panel had been calling "10 °C hotter" was not hotter at the die at all — its junction equalled card3's — while
+its **GDDR7 was 10-13 °C above the pack**, and `temp1` (edge) is the only one of the three that could not see it.
+So the sensors are read **by label** now (`temp*_label` → `edge`/`junction`/`mem`), the headline is `junction`
+(limit-bearing, and the sensor the fan map follows), `mem` gets its own wave, `edge` stays in the text line, and
+the card's `crit` and fan (`fan1_input`, `pwm1`) ride along — fan duty matters because the loop follows the
+junction, and card4 runs a *lower* duty (187/255) than cards 2-3 (192/193) while holding the hottest memory on the
+box. A page newer than the serve it reads labels the headline from what the payload actually carries (`junction`,
+`edge`, or a plain `temp`) rather than inventing a sensor the running build never read. The full thermal write-up
+is in [observe-2026-11-02.md](observe-2026-11-02.md).
+
+Three things that came out of wiring the thermal waves:
 
 - **the sensors were being read from the wrong path.** The Monitor had shown a blank temperature, power and clock
   for weeks on a box whose files read fine: the hwmon directory here is `device/hwmon/hwmonN`, and the reader

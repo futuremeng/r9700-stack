@@ -144,17 +144,39 @@ function gpuCard(g, ghist = [], i = 0) {
   // One labelled row per sensor wave. They are stacked, not overlaid: power in watts, temperature in degrees
   // and the SM clock in MHz have no shared axis, and drawing three autoscaled series in one box is exactly the
   // shape of lie a sparkline can tell -- a card pinned at its power cap and one idling at 205 of 500 W look
-  // identical that way. Each gets its own anchored ceiling below.
-  const rows = ["busy", "VRAM", "sclk", "W", "°C"];
+  // identical that way. Each gets its own anchored ceiling below. Two temperature waves rather than one:
+  // junction is the sensor with a published limit and the one the fan map follows, mem is the one that actually
+  // separates these four cards (measured 2026-11-02: card4 mem 95.7 C against 82.7-86.0 for the others, with its
+  // junction equal to card3's). Edge -- what this panel used to draw -- is the least informative of the three and
+  // stays in the text line.
+  const rows = [["busy", "gpu_busy_percent"], ["VRAM", "mem_info_vram_used"], ["sclk", "freq1 (sclk)"],
+                ["W", "power1_average"]];
+  // A page newer than the serve it is talking to must not claim a sensor that build never read: an in-serve
+  // Monitor started before this change reports temp1 only, so the headline is labelled by what the payload
+  // actually carries, and the mem row appears only when there is a mem number to plot.
+  const hasMem = isnum(g.temp_mem_c) || ghist.some((s) => (s.cards || []).some((c) => isnum(c.temp_mem_c)));
+  const tlab = isnum(g.temp_junction_c) ? "junction"
+    : isnum(g.temp_edge_c) ? "edge" : "temp";
+  rows.push([tlab, tlab === "junction"
+    ? `the die sensor: the one with a published limit (temp*_crit${isnum(g.temp_crit_c) ? ` = ${g.temp_crit_c.toFixed(0)} C` : ""}) and the one the fan map follows`
+    : tlab === "edge" ? "the board sensor. This build reports edge separately from the headline; the die "
+      + "(junction) and memory numbers came later"
+    : "one temperature sensor, which one it is, this build does not say"]);
+  if (hasMem) {
+    rows.push(["mem", "GDDR7. No published threshold in sysfs on these cards, so it is drawn uncoloured and "
+      + "read against its neighbours"]);
+  }
   d.innerHTML = `<b>${g.name || g.card}</b><span class="small">${g.card}</span>`
     + `<div class="pct">${busy}</div>`
-    + rows.map((lab) => `<div class="sparkrow"><span>${lab}</span>`
+    + rows.map(([lab, title]) => `<div class="sparkrow"><span title="${title}">${lab}</span>`
         + `<div class="sparkline spark--gpu"></div></div>`).join("")
     + `<div class="muted small">${isnum(g.vram_used) || isnum(g.vram_total) ? `${gb(g.vram_used)} / ${gb(g.vram_total)} GiB VRAM` : ""}</div>`
     + `<div class="muted small" data-wave></div>`
     + `<div class="muted small">${line([isnum(g.mem_busy_pct) ? `VRAM ${fmt(g.mem_busy_pct, 0)}% busy` : "",
         isnum(g.sclk_mhz) ? `sclk ${fmt(g.sclk_mhz, 0)} MHz` : "", isnum(g.mclk_mhz) ? `mclk ${fmt(g.mclk_mhz, 0)} MHz` : "",
-        isnum(g.temp_c) ? `${g.temp_c.toFixed(0)} °C` : "", isnum(g.power_w) ? `${g.power_w.toFixed(0)} W` : "",
+        isnum(g.temp_edge_c) ? `edge ${g.temp_edge_c.toFixed(0)} °C` : "",
+        isnum(g.fan_rpm) ? `fan ${fmt(g.fan_rpm, 0)} rpm${isnum(g.pwm) ? ` duty ${g.pwm}/255` : ""}` : "",
+        isnum(g.power_w) ? `${g.power_w.toFixed(0)} W` : "",
         isnum(g.power_cap_w) ? `cap ${g.power_cap_w.toFixed(0)} W` : ""])}</div>`
     + unread + smi;
   // Align by bus id / card name, not by position: if a card disappears from sysfs the series must keep meaning
@@ -173,26 +195,46 @@ function gpuCard(g, ghist = [], i = 0) {
   // power1_cap of 300 W (measured), so the axis is whichever is larger -- clipping a wave at a cap the card is
   // allowed to exceed would hide exactly the thing worth seeing. The cap stays in the text line for contrast.
   const powerCeil = Math.max(g.power_cap_w || 0, powerPeak);
-  const vals = [series("busy_pct"), vramS, series("sclk_mhz"), series("power_w"), series("temp_c")];
-  const ceils = [100, vramCeil, sclkPeak, powerCeil, 110];
+  // The temperature axis comes from the card's own published limit where it publishes one (temp*_crit = 110 C
+  // here), so the distance to the wall is visible rather than invented.
+  const tempCeil = g.temp_crit_c || 110;
+  const vals = [series("busy_pct"), vramS, series("sclk_mhz"), series("power_w")];
+  const ceils = [100, vramCeil, sclkPeak, powerCeil];
+  const tempIdx = [];
+  vals.push(series("temp_c")); ceils.push(tempCeil); tempIdx.push(vals.length - 1);
+  if (hasMem) {
+    vals.push(series("temp_mem_c"));
+    ceils.push(Math.max(tempCeil, ...vals[vals.length - 1].filter(isnum), 0));
+  }
   d.querySelectorAll(".spark--gpu").forEach((el, j) => {
     spark(el, vals[j], { baseLo: 0, baseHi: ceils[j] });
-    // Only temperature gets a warning colour: on an uncapped box exceeding power1_cap is the configuration,
-    // not a fault, while 95 C is a fault wherever the card is.
-    el.dataset.tone = j === 4 && isnum(g.temp_c) && g.temp_c > 95 ? "danger" : "";
+    // Colour means "near the wall", and the wall is per sensor. Junction against its own crit: these cards sit
+    // at 90-106 C under load with crit 110, so warn/danger belong in the last few degrees, not at a borrowed
+    // 95. Power never gets coloured -- on an uncapped box passing power1_cap is the configuration. Mem never
+    // either: no published limit, so any threshold would be invented; it is read against its neighbours.
+    // An unlabelled build's single temperature sensor is not coloured either: without knowing which
+    // sensor it is, a threshold is a guess.
+    const isDie = tempIdx.includes(j) && tlab === "junction";
+    el.dataset.tone = isDie && isnum(g.temp_c)
+      ? (isnum(g.temp_crit_c)
+         ? (g.temp_c > 0.98 * g.temp_crit_c ? "danger" : g.temp_c > 0.95 * g.temp_crit_c ? "warn" : "")
+         : (g.temp_c > 105 ? "danger" : ""))
+      : "";
   });
-  // One summary line for the thermal trio, because those are the waves read by peak and average rather than
-  // by shape: did it ever throttle, and how hot did it get.
-  const stat = (k, unit, d2 = 0) => {
+  // One summary line for the thermal readings, because those waves are read by peak and average rather than by
+  // shape: did it ever get near its limit, and how hot did the memory actually get.
+  const stat = (k, lab, unit, d2 = 0) => {
     const xs = series(k).filter(isnum);
     return xs.length < 2 ? null
-      : `${k === "temp_c" ? "temp" : k === "power_w" ? "power" : "sclk"} peak ${fmt(Math.max(...xs), d2)} · `
-        + `avg ${fmt(xs.reduce((a, b) => a + b, 0) / xs.length, d2)}${unit}`;
+      : `${lab} peak ${fmt(Math.max(...xs), d2)} \u00b7 avg ${fmt(xs.reduce((a, b) => a + b, 0) / xs.length, d2)}${unit}`;
   };
   const cap = d.querySelector("[data-wave]");
   const xs = vals[0].filter(isnum);
   const spanS = ghist.length > 1 ? ghist[ghist.length - 1].at - ghist[0].at : 0;
-  const parts = [stat("temp_c", " °C", 0), stat("power_w", " W"), stat("sclk_mhz", " MHz"),
+  const critTxt = isnum(g.temp_crit_c) ? ` (crit ${g.temp_crit_c.toFixed(0)})` : "";
+  const parts = [stat("temp_c", tlab, ` \u00b0C${tlab === "junction" ? critTxt : ""}`, 0),
+                 hasMem ? stat("temp_mem_c", "mem", " \u00b0C", 0) : null,
+                 stat("power_w", "power", " W"), stat("sclk_mhz", "sclk", " MHz"),
                  xs.length >= 2 ? `busy avg ${fmt(xs.reduce((a, b) => a + b, 0) / xs.length, 0)}%` : null];
   if (cap) cap.textContent = parts.filter((x) => x).length
     ? `${parts.filter((x) => x).join(" · ")} · ${ghist.length} pts over ${spanS.toFixed(0)} s` : "";

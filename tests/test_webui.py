@@ -442,6 +442,18 @@ deep = fake / "card3" / "device" / "hwmon" / "hwmon2"
 deep.mkdir(parents=True, exist_ok=True)
 (deep / "name").write_text("amdgpu\n")
 (deep / "temp1_input").write_text("33000\n")
+# ...and labelled, because this box's kernel labels all three of its temperature sensors (edge / junction /
+# mem), and the headline sensor has to be the junction: measured on the live box, one card's edge ran 9-11 C
+# above its neighbours while its junction matched theirs and its GDDR7 ran 10-13 C hotter. temp1 alone cannot
+# see that at all.
+(deep / "temp1_label").write_text("edge\n")
+(deep / "temp2_label").write_text("junction\n")
+(deep / "temp2_input").write_text("45000\n")
+(deep / "temp2_crit").write_text("110000\n")
+(deep / "temp3_label").write_text("mem\n")
+(deep / "temp3_input").write_text("41000\n")
+(deep / "fan1_input").write_text("4400\n")
+(deep / "pwm1").write_text("186\n")
 (deep / "power1_average").write_text("199870000\n")
 (deep / "power1_cap").write_text("205000000\n")
 (deep / "freq1_label").write_text("sclk\n")
@@ -510,8 +522,20 @@ endpoint_b = pci_dev(down_b, "0000:06:00.0", driver="amdgpu", width="8",      # 
 pci_dev(fakepci / "devices" / "pci0000:02", "0000:07:00.0", driver="nvme")     # not a GPU chain, ignore it
 gpus = W.read_gpus(fake)
 ck("both hwmon layouts are read (the kernel here uses device/hwmon/hwmonN)",
-   any(g["card"] == "card3" and g["temp_c"] == 33.0 and g["power_w"] == 199.87 and g["power_cap_w"] == 205.0
+   any(g["card"] == "card3" and g["temp_c"] == 45.0 and g["power_w"] == 199.87 and g["power_cap_w"] == 205.0
        for g in gpus), str([(g["card"], g["temp_c"], g["power_w"], g.get("power_cap_w")) for g in gpus]))
+# The three temperature sensors are read by label, and the headline is the junction -- the limit-bearing,
+# fan-relevant one. card0's fixture has no labels at all, which is what an older kernel looks like, and keeps
+# temp1 as the headline rather than reporting nothing.
+_c3 = next(g for g in gpus if g["card"] == "card3")
+ck("temperatures are read by label: junction is temp_c, edge and mem ride along, and the crit limit comes with them",
+   _c3["temp_c"] == 45.0 and _c3["temp_edge_c"] == 33.0 and _c3["temp_mem_c"] == 41.0
+   and _c3["temp_crit_c"] == 110.0, str(_c3))
+ck("an unlabelled kernel still gets its temp1 as the headline",
+   gpus[0]["temp_c"] == 61.0 and gpus[0]["temp_junction_c"] is None, str(gpus[0]))
+ck("fan rpm and duty ride the payload, because the fan map follows the junction and can be calm while the "
+   "memory is the hottest thing on the box",
+   _c3["fan_rpm"] == 4400.0 and _c3["pwm"] == 186.0, str(_c3))
 ck("only cards with amdgpu counters", [g["card"] for g in gpus] == ["card0", "card3", "card5"],
    str([g["card"] for g in gpus]))
 ck("busy, VRAM and temperature read", gpus[0]["busy_pct"] == 87 and gpus[0]["vram_total"] == 32 * 2**30
@@ -1013,17 +1037,33 @@ ck("the since-launch caveats on the headline stats ride the qualifier",
 
 ck("a GPU card draws one labelled wave per sensor, and no busy bar",
    _ck2.count('spark--gpu') >= 1 and 'class="bar"' not in _ck2
-   and '["busy", "VRAM", "sclk", "W", "°C"]' in _ck2
-   and "{ baseLo: 0, baseHi: ceils[j] }" in _ck2 and "/ 2 ** 30" in _ck2)
-ck("each wave gets its own ceiling, not an autoscaled one",
-   "ceils = [100, vramCeil, sclkPeak, powerCeil, 110]" in _ck2
+   and all(f'["{lab}"' in _ck2 for lab in ("busy", "VRAM", "sclk", "W", "mem"))
+   and "rows.push([tlab," in _ck2 and "{ baseLo: 0, baseHi: ceils[j] }" in _ck2 and "/ 2 ** 30" in _ck2)
+ck("edge is text only, and each sensor row says what file it comes from",
+   "const rows = [[\"busy\", \"gpu_busy_percent\"]" in _ck2 and "GDDR7" in _ck2
+   and "temp*_crit" in _ck2)
+ck("each wave gets its own ceiling, not an autoscaled one, and the temperature axis comes from the card's own "
+   "published limit",
+   "ceils = [100, vramCeil, sclkPeak, powerCeil]" in _ck2 and "ceils.push(tempCeil)" in _ck2
+   and "const tempCeil = g.temp_crit_c || 110;" in _ck2
    and "Math.max(g.power_cap_w || 0, powerPeak)" in _ck2)
+ck("tone is per sensor and honest: the die sensor against its own crit, power and mem never coloured",
+   "g.temp_c > 0.98 * g.temp_crit_c" in _ck2 and "0.95 * g.temp_crit_c" in _ck2
+   and "const isDie = tempIdx.includes(j)" in _ck2)
+# A page newer than the serve it reads must not name a sensor that build never took: an in-serve Monitor started
+# before the three-sensor read reports temp1 only, so the headline row is labelled from the payload and the mem
+# row is drawn only when there is a mem number behind it.
+ck("the headline temperature row is labelled by what the payload carries, and the mem row appears only when the "
+   "build reports mem",
+   'isnum(g.temp_junction_c) ? "junction"' in _ck2 and 'isnum(g.temp_edge_c) ? "edge"' in _ck2
+   and "const hasMem = isnum(g.temp_mem_c) || ghist.some" in _ck2 and "if (hasMem)" in _ck2)
 ck("each card's waveform is matched by bus/card id, not by position",
    "c.bus === g.bus" in _ck2 and "c.card === g.card" in _ck2)
 ck("both pages feed the card history to it",
    "gpuCard(g, s.gpus_history || [])" in monjs and "gpuCard(g, s.gpus_history || [])" in (WEB / "about.js").read_text())
 ck("a card's caption carries the thermal trio and busy, each as peak and average, with the span named",
-   all(x in _ck2 for x in ('"temp"', '"power"', '"sclk"', "busy avg", "pts over")))
+   all(x in _ck2 for x in ('"temp_c"', '"temp_mem_c"', '"power_w"', '"sclk_mhz"', "busy avg", "pts over",
+                           "crit")))
 # The PCIe panel. Two things it can report, and neither is a curve: link state only moves when a link
 # renegotiates, and the AER counters are eventual (measured on the live box: 0 events in 90 idle samples, 0
 # through an eight-stream burst, ~12 clustered around two serve restarts) -- so four flat waveforms per chain
