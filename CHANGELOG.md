@@ -163,6 +163,18 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   no-root way to get cairo (unpack the distro's `.deb` beside the venv and set `LD_LIBRARY_PATH`; nothing is
   written to `/usr`), and the three `rsvg-convert` commands for looking at the README's figures at github.com's
   column width instead of measuring them.
+- **The release page in the README now says what its numbers are, and links to a picture you can read.** Drawn to
+  the rendered figure at github.com's ~980 px column, its smallest type lands at 9.8 px and the fine print does not
+  read -- said plainly by a vision-capable model looking at the render (a `qwen3.8-flash-next-iq3_s` behind a
+  LiteLLM proxy on the LAN: the same checkpoint family this repo runs natively, reached over its OpenAI-compatible
+  endpoint with an `image_url` block), which is also how the title lockup and the card figure were checked: the
+  lockup transcribes as `r9700-stack` with four bars and nothing cut off, and the card figure transcribes card for
+  card exactly as the committed poll has it, including `6 waiting · 6 for scheduling capacity · 0 deferred` and
+  `14,999 tokens per iteration record (prompt whole, decode per step)`. The caption now
+  states that the figure's numbers are the v0.3.8 snapshot at the 210 W gate -- which is why its Flash-Next row
+  reads 210 tok/s where the table above it reads 225, the newer measurement -- and the figure links to
+  `docs/r9700-stack-v0.3.8.png`, the same drawing at 2400 x 1220 (2.0x the figure's canvas, so the click buys
+  something). Three more checks in `tests/test_readme.py` (35 in all) hold the link, the resolution and the caption.
 - **A Speed table for the four cards uncapped at 32k.** The prefill and aggregate headline numbers had lived only
   in [notes/native-4xr9700.md](notes/native-4xr9700.md); they are in the README now with their sample lists: single
   stream 186.7 tok/s, `bench.py` at 4 / 8 / 16 streams 372 / 841 / 1,164, `probe32.sh` at 32 in flight 1,598 (300-token

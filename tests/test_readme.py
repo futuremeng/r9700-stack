@@ -24,6 +24,7 @@ What can actually go wrong here, and did:
 Run: python3 tests/test_readme.py        (no GPU, no serve, no network -- stdlib plus the repo's own scripts)
 """
 import re
+import struct
 import subprocess
 import sys
 import xml.dom.minidom
@@ -177,6 +178,20 @@ ck("the one-image release page sits under the heading that describes the release
 ck("and the README uses it in that one place", README.count("r9700-stack-v0.3.8.svg") == 1,
    f"{README.count('r9700-stack-v0.3.8.svg')} uses")
 ck("with a caption naming the script that draws it", bool(sec) and "summary-image.py" in sec.group(1))
+# its small print is 9.8 px at github.com's column width, so the figure has to link to the big PNG,
+# and that PNG has to actually be big enough for the click to buy anything
+link = re.search(r'<a href="(docs/[^"]+\.png)"><img src="docs/r9700-stack-v0\.3\.8\.svg"', README)
+ck("the release figure links to a PNG rather than leaving the small print unreadable", bool(link),
+   link.group(1) if link else "no link")
+if link and bool(sec):
+    def png_size(p):
+        return struct.unpack(">II", p.read_bytes()[16:24])
+    svg_w = float(re.search(r'<svg[^>]*width="([\d.]+)"',
+                            (ROOT / "docs" / "r9700-stack-v0.3.8.svg").read_text()).group(1))
+    pw, ph = png_size(ROOT / link.group(1))
+    ck("and that PNG is big enough for the click to be worth taking",
+       pw >= 2 * svg_w, f"PNG {pw} x {ph}, figure {svg_w:g} wide: {pw / svg_w:.1f}x")
+    ck("and the caption says what the link is for", "2400" in sec.group(1))
 
 # --- the figure blocks close ------------------------------------------------------------------------------
 nblocks = README.count('<p align="center">')
