@@ -150,6 +150,15 @@ never installed into `~/venv-r9700`, and `compat/gate.py`'s TESTED lists were de
 line means "serving gate passed on it", and BetterBench is still outstanding. Two patches (`mtp_allowlist`,
 `glm5next_rdna4`) warn on both 0.32.0 and 0.33.0 exactly as they did before.
 
+**One more probe, quoted so it is not mistaken for a delta later.** `bench/bench.py`'s concurrency sweep on the 0.33
+launch: aggregate 176 / 459 / 826 / 1,231 / 1,775 / 1,583 / 1,796 tok/s and per-stream median 176 / 119 / 106 / 81 /
+58 / 55 / 41 at 1 / 4 / 8 / 16 / 32 / 48 / 64 in flight (300-token outputs). Against the same sweep recorded in
+[native-4xr9700.md](native-4xr9700.md) -- 193 / 544 / 900 / 1,203 / 1,537 / 1,454 / 1,532 -- it reads *both* below
+at low concurrency and 15% above at 32 and up. That is not a version effect: that table is the **32k recipe on
+2026-10-31**, and the paired measurements for today are the `probe32` rows and the ladder, which sit within 1%. The
+NSEQ=32 knee the old note describes still shows up the same way: aggregate peaks, and the per-stream spread blows up
+past 32 (55.5-63.4 at 32, 33.0-62.5 at 48).
+
 ## Hardware note, because it decides the schedule
 
 [incident-2026-11-02/README.md](incident-2026-11-02/README.md) records seven self-resets in one night on this box,
