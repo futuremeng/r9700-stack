@@ -17,7 +17,9 @@ What can actually go wrong here, and did:
   (5) The title. The README opens the way Strata's does -- a centred lockup in a <picture> with dark and light
       variants and the name in the alt, no markdown heading -- and the one-image release page belongs to the section
       that describes the release. So the alt has to be the project's name, both files have to exist, the drawing has
-      to stay inside its canvas, and the image has to be under the heading that carries it.
+      to stay inside its canvas, and the image has to be under the heading that carries it. Its pixels -- the same
+      lockup rendered, its letters and bars counted -- are tests/test_lockup.py, which needs an SVG renderer and
+      skips, saying so, where there is none.
 
 Run: python3 tests/test_readme.py        (no GPU, no serve, no network -- stdlib plus the repo's own scripts)
 """
