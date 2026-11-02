@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>r9700 · About</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/web/tokens.css">
+<link rel="stylesheet" href="/web/web.css">
+<link rel="stylesheet" href="/web/monitor.css">
+<link rel="stylesheet" href="/web/about.css">
+<script defer src="/web/common.js"></script>
+<script defer src="/web/about.js"></script>
+</head>
+<body>
+
+<header class="st-header">
+  <div class="st-header__brand">r9700 <span>4× Radeon AI PRO R9700 · vLLM</span></div>
+  <div class="st-header__spacer"></div>
+  <nav class="st-tabs" aria-label="Pages">
+    <a class="st-tab" href="/monitor">Monitor</a>
+    <a class="st-tab" href="/about" aria-current="page">About</a>
+  </nav>
+  <button class="st-btn" id="key-btn">API key</button>
+  <button class="st-toggle" data-theme-toggle role="switch" aria-checked="true" aria-label="Dark theme"></button>
+</header>
+
+<main>
+  <div class="top">
+    <div>
+      <h1>About</h1>
+      <p class="sub">What is running, on what, and how to point a client at it.</p>
+    </div>
+    <div class="controls"><span class="small" id="mode">…</span></div>
+  </div>
+
+  <div id="error" class="notice" role="status" hidden></div>
+  <div class="about">
+    <section class="card">
+      <span class="card-title">Model and engine</span>
+      <dl class="facts" id="facts-engine"></dl>
+      <p class="small note">Read from the serve itself: <code>GET /v1/models</code> and the labels on its own
+        <code>/metrics</code> series. A field is a dash where this vLLM build does not publish it.</p>
+    </section>
+
+    <section class="card" id="launch-card" hidden>
+      <div class="panel-bar"><span class="card-title">How this box was launched</span>
+        <span class="small" id="launch-src"></span></div>
+      <dl class="facts" id="facts-launch"></dl>
+      <p class="small note">The recipe the serve script recorded when it started (<code>--meta</code>): the knobs,
+        not what the engine inferred from them.</p>
+    </section>
+
+    <section class="card">
+      <span class="card-title">This machine</span>
+      <dl class="facts" id="facts-host"></dl>
+      <div class="grid gpus" id="gpus"></div>
+    </section>
+
+    <section class="card">
+      <span class="card-title">Connect your tools</span>
+      <p class="muted">Any OpenAI-compatible client works with these. The base URL is the serve itself —
+        this page is a sidecar, not a proxy, unless it was started with <code>--proxy</code>.</p>
+      <dl class="facts" id="facts-api"></dl>
+      <div class="code-block">
+        <pre class="code" id="curl"></pre>
+        <button class="st-btn" data-copy-target="curl">Copy</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <span class="card-title">This page</span>
+      <div class="st-field">
+        <label class="st-label" for="api-key">API key <output>only if the serve was started with one</output></label>
+        <div class="auth-row"><input class="st-input" id="api-key" type="password" autocomplete="off" placeholder="Not needed">
+          <button class="st-btn st-btn--primary" id="key-save">Save</button></div>
+      </div>
+      <div class="rowline"><span>Dark theme</span>
+        <button class="st-toggle" data-theme-toggle role="switch" aria-checked="true" aria-label="Dark theme"></button></div>
+      <dl class="facts" id="facts-self"></dl>
+      <p class="small note">The key lives in this browser tab only, and is sent only to this port. Nothing this page
+        reads is written anywhere: the request list is memory, and it is gone when the sidecar stops.</p>
+    </section>
+  </div>
+
+  <footer>
+    <span>r9700-stack — gfx1201 kernels and plugin hooks for stock vLLM on ROCm 10.
+      <a href="/monitor">Monitor</a></span>
+    <span id="updated">Connecting…</span>
+  </footer>
+</main>
+</body>
+</html>

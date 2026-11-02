@@ -5,6 +5,8 @@
 # Knobs: MODEL (path inside the container, /models/...), OFFLOAD_GB (per rank, 0 = none), MAXLEN, EAGER=1, KVDTYPE=fp8, MTP=n, DRAFT=/models/x SPEC=n, ATTN=, DRAFT_ATTN=, KVMEM=GiB, CHAT_TEMPLATE=, SPEC_EXTRA=, UTIL, NBT, NSEQ, P2P=1, HWQ=, MWAITX=, CGMODE=, OVERLAYS=..., EXTRA="...",
 #   GPUS=0,1 (HIP ordinals), TP=2 (4 = our N-rank P2P all-reduce <= 512 KB, RCCL above; R9K_ARN=0 for RCCL only), PORT=8080, NAME=vllmstock (two servers
 #   side by side need distinct GPUS/PORT/NAME), SERVED_NAME=Qwen3.8 (the model name the API serves), DOCKER_ARGS="-e NCCL_DEBUG=INFO ..." (extra docker run args),
+#   WEBUI=1 (the Monitor/About sidecar on PORT+1, with this launch's recipe: serve/webui.sh; nothing in the
+#   serve itself changes),
 # plus every R9K_* plugin knob (forwarded). WRAP=rocprof / PROF=1 for profiling.
 IMG=${IMG:-r9700/vllm:dev}
 REPO=${REPO:-$HOME/r9700-build/repo}
@@ -139,3 +141,19 @@ sudo docker run -d --name ${NAME:-vllmstock} --ipc=host --network=host ${PIDNS--
   --reasoning-parser qwen3 --tool-call-parser qwen3_coder --enable-auto-tool-choice ${LMONLY---language-model-only} \
   "${ARGS[@]}" $EXTRA
 echo "started stock vLLM + r9700 plugin (offload ${OFFLOAD_GB:-34} GB/rank, maxlen ${MAXLEN:-32768})"
+# WEBUI=1: the Monitor/About pages (serve/webui.py, host process, port PORT+1). It only GETs /health,
+# /v1/models and /metrics unless clients are pointed at it, so the launch is untouched; what it adds is
+# this launch's recipe as a meta file, which is what the About page shows.
+if [ "${WEBUI:-0}" = 1 ]; then
+  WPORT=${WEBUI_PORT:-$(( ${PORT:-8080} + 1 ))}
+  META=${WEBUI_META:-$HOME/r9700-web-meta-$WPORT.json}
+  python3 -c 'import json,sys; open(sys.argv[1],"w").write(json.dumps(dict(a.split("=",1) for a in sys.argv[2:]),indent=1)+"\n")' "$META" \
+    image="$IMG" container="${NAME:-vllmstock}" port="${PORT:-8080}" gpus="${GPUS:-0,1}" model="${MODEL:-/models/Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ}" \
+    served_name="${SERVED_NAME:-Qwen3.8}" tp="${TP:-2}" maxlen="${MAXLEN:-32768}" nseq="${NSEQ:-4}" nbt="${NBT:-4096}" \
+    util="$UTIL" offload_gb="${OFFLOAD_GB:-34}" kvdtype="${KVDTYPE:-}" mtp="${MTP:-}" draft="${DRAFT:-}" spec="${SPEC:-}" \
+    attn="${ATTN:-}" cgmode="${CGMODE:-}" ccmode="${CCMODE:-}" prefix_cache="${PREFIX_CACHE:-1}" chat_template="${CHAT_TEMPLATE:-}" \
+    expert_cache_slots="${R9K_EXPERT_CACHE_SLOTS:-}" target_lmhead="${R9K_TARGET_LMHEAD:-}" draft_lmhead="${R9K_DRAFT_LMHEAD:-}" \
+    overlays="${OVERLAYS:-}" extra="${EXTRA:-}"
+  WEBUI_PORT=$WPORT UPSTREAM=http://127.0.0.1:${PORT:-8080} META=$META VERSION="$(printf '%s' "${IMG:-}")" \
+    bash "$(dirname "$(realpath "$0")")/webui.sh"
+fi

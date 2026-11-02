@@ -124,8 +124,12 @@ Requirements: 2x, 4x or 8x Radeon AI PRO R9700, ROCm 10 on the host, docker, the
    ```
    OpenAI-compatible API on port 8080 (`PORT=`), model name `Qwen3.8`. Every serve script carries the measured
    defaults with the reason next to each knob; `R9K_*=stock` or `=0` switches any kernel back to vLLM's.
+   Add `WEBUI=1` to any of them (or run `bash serve/webui.sh` against a launch that is already up) for the
+   Monitor and About pages on port 8081 -- engine state, KV pool, per-card busy%/VRAM, and with
+   `WEBUI_MODE=proxy` every request; read-only by default ([notes/webui.md](notes/webui.md)).
 3. **Check it**: `python3 bench/warmup.py`, then `bench/sanity_stress.py` (strict 8-way sanity under load),
-   `bench/soak.py` (mixed-length soak), `bench/eval.py` (paired GSM8K), `bench/humaneval.py`. Kernel unit tests
+   `bench/soak.py` (mixed-length soak), `bench/eval.py` (paired GSM8K), `bench/humaneval.py`,
+   `bench/webui_ab.py` (what the Monitor's relay costs a request). Kernel unit tests
    are in `tests/`; `bench/bringup-tests.sh` runs the single-GPU set in the image.
 
 Notes for the host: cards on the same PCIe switch for tensor parallelism, one card per switch for offloaded

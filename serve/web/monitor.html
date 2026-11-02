@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>r9700 · Monitor</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/web/tokens.css">
+<link rel="stylesheet" href="/web/web.css">
+<link rel="stylesheet" href="/web/monitor.css">
+<script defer src="/web/common.js"></script>
+<script defer src="/web/monitor.js"></script>
+</head>
+<body>
+
+<header class="st-header">
+  <div class="st-header__brand">r9700 <span>4× Radeon AI PRO R9700 · vLLM</span></div>
+  <div class="st-header__spacer"></div>
+  <nav class="st-tabs" aria-label="Pages">
+    <a class="st-tab" href="/monitor" aria-current="page">Monitor</a>
+    <a class="st-tab" href="/about">About</a>
+  </nav>
+  <button class="st-btn" id="key-btn">API key</button>
+  <button class="st-toggle" data-theme-toggle role="switch" aria-checked="true" aria-label="Dark theme"></button>
+</header>
+
+<main>
+  <div class="top">
+    <div>
+      <h1>Monitor</h1>
+      <p class="sub">Engine state, every card, and every request that came through here.</p>
+    </div>
+    <div class="controls">
+      <span class="small" id="mode">…</span>
+      <button class="st-btn" id="pause" aria-pressed="false">Pause</button>
+    </div>
+  </div>
+
+  <div id="error" class="notice" role="status" hidden></div>
+  <form id="auth" class="card auth" hidden>
+    <label class="st-label" for="api-key">API key <output>only if the serve was started with one</output></label>
+    <div class="auth-row"><input class="st-input" id="api-key" type="password" autocomplete="off" placeholder="Not needed">
+      <button class="st-btn st-btn--primary">Connect</button></div>
+  </form>
+
+  <!-- row 1: what the serve is, and the last request through this page -->
+  <section class="grid grid--4">
+    <div class="card">
+      <div class="label">Model</div>
+      <div class="value value--sm" id="model-state"><span class="dot"></span><span id="loaded">Connecting…</span></div>
+      <div class="model" id="model">—</div>
+      <div class="small" id="upstream">—</div>
+    </div>
+    <div class="card">
+      <div class="label">Requests retained</div>
+      <div class="value" id="count">—</div>
+      <div class="small" id="active">—</div>
+    </div>
+    <div class="card">
+      <div class="label">Last wall-clock</div>
+      <div class="value" id="wall">—</div>
+      <div class="small">Through this page · queue, prefill and decode together</div>
+    </div>
+    <div class="card">
+      <div class="label">Last decode speed</div>
+      <div class="value" id="speed">—<span class="unit">tok/s</span></div>
+      <div class="small">One stream · the engine-wide figure is below</div>
+    </div>
+  </section>
+
+  <!-- row 2: the engine's own counters, from GET /metrics, differenced over the poll window -->
+  <section class="grid grid--4 engine">
+    <div class="card">
+      <div class="label">KV pool</div>
+      <div class="value value--sm" id="kv-pct">—</div>
+      <div class="bar" id="kv-bar"><div style="width:0%"></div></div>
+      <div class="small" id="kv-tokens">—</div>
+    </div>
+    <div class="card">
+      <div class="label">Requests</div>
+      <div class="value value--sm"><span id="running">0</span><span class="unit">running</span></div>
+      <div class="small" id="waiting">0 waiting · 0 preempted</div>
+      <div class="sparkline" id="kv-spark"></div>
+    </div>
+    <div class="card">
+      <div class="label">Generation</div>
+      <div class="value value--sm"><span id="gen-toks">—</span><span class="unit">tok/s</span></div>
+      <div class="small" id="prompt-toks">—</div>
+      <div class="sparkline" id="gen-spark"></div>
+    </div>
+    <div class="card">
+      <div class="label">Speculation</div>
+      <div class="value value--sm"><span id="accept">—</span><span class="unit">accepted</span></div>
+      <div class="small" id="drafts">—</div>
+      <div class="small" id="iters">—</div>
+    </div>
+  </section>
+
+  <!-- row 3: per-card state from the amdgpu sysfs: no ROCm runtime, nothing started on the card -->
+  <section class="card gpus-card">
+    <div class="panel-bar"><h2>Cards</h2><span class="small" id="gpus-note">amdgpu sysfs · busy %, VRAM, temperature</span></div>
+    <div class="grid gpus" id="gpus"></div>
+  </section>
+
+  <!-- timings the engine only reports as averages: the honest version of "queue wait per request" -->
+  <section class="card">
+    <div class="panel-bar"><h2>Engine timings</h2>
+      <span class="small">mean per request over the last <span id="window">—</span> · from /metrics histograms</span></div>
+    <div class="grid grid--4">
+      <div><span class="label">First token</span><div class="value value--sm" id="t-ttft">—</div></div>
+      <div><span class="label">Queue wait</span><div class="value value--sm" id="t-queue">—</div></div>
+      <div><span class="label">Prefill</span><div class="value value--sm" id="t-prefill">—</div></div>
+      <div><span class="label">Decode</span><div class="value value--sm" id="t-decode">—</div></div>
+    </div>
+    <p class="small note">Stock vLLM answers these per request only as counters, so the queue/prefill/decode split
+      above is the mean over the window, not a per-request number — and the per-request rows below cannot carry it.
+      For the per-request breakdown: <code>bench/ttft_breakdown.py</code>.</p>
+  </section>
+
+  <!-- the request list: only filled while the client is pointed at this page (--proxy) -->
+  <section class="card panel">
+    <div class="panel-bar"><h2>Requests</h2>
+      <div class="filters">
+        <input class="st-input" id="search" aria-label="Filter requests" placeholder="Search ID or endpoint">
+        <select class="st-input" id="filter" aria-label="Request status">
+          <option value="all">All statuses</option><option value="active">Active</option>
+          <option value="completed">Completed</option><option value="error">Errors</option>
+        </select>
+      </div>
+    </div>
+    <div class="workspace">
+      <div id="requests" class="requests" aria-label="Request list"></div>
+      <div class="detail">
+        <div id="no-selection" class="empty"><strong>Inspect a request</strong>
+          <p>Select a request to see its input, output and timings.</p>
+          <p class="small" id="observe-note"></p></div>
+        <div id="selection" hidden>
+          <div class="row"><div id="detail-title" class="detail-title"></div><span id="detail-status" class="tag"></span></div>
+          <div class="small" id="detail-time"></div>
+          <div class="facts">
+            <div class="fact"><span>Wall-clock</span><b id="detail-wall">—</b></div>
+            <div class="fact"><span>First token</span><b id="detail-first">—</b></div>
+            <div class="fact"><span>Prompt tokens</span><b id="detail-prompt">—</b></div>
+            <div class="fact"><span>Output tokens</span><b id="detail-tokens">—</b></div>
+            <div class="fact"><span>Decode speed</span><b id="detail-speed">—</b></div>
+            <div class="fact"><span>Response format</span><b id="detail-format">—</b></div>
+          </div>
+          <div id="detail-error" class="detail-error" hidden></div>
+          <div class="tabs" role="tablist" aria-label="Request content">
+            <button role="tab" data-pane="input" aria-selected="true">Input</button>
+            <button role="tab" data-pane="output" aria-selected="false">Output</button>
+            <button role="tab" data-pane="reasoning" aria-selected="false">Reasoning</button>
+            <button role="tab" data-pane="response" aria-selected="false">API response</button>
+            <button id="copy" class="st-btn">Copy</button>
+          </div>
+          <div id="content-note" class="small"></div>
+          <pre class="code" id="content" role="tabpanel" aria-label="Request content"></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>Requests are kept in this process's memory only, last <span id="kept">100</span> of them. Nothing here
+      is written to disk; nothing here leaves the box.</span>
+    <span id="updated">Connecting…</span>
+  </footer>
+</main>
+</body>
+</html>

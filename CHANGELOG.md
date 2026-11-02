@@ -7,7 +7,27 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- **Monitor and About pages for a running launch** (`serve/webui.py`, `serve/web/`, `serve/webui.sh`;
+  [notes/webui.md](notes/webui.md)). A stdlib-only host sidecar next to the container: `observe` mode
+  (default) reads `/health`, `/v1/models`, `/metrics` and the amdgpu sysfs and changes nothing in the
+  inference path; `--proxy` additionally relays the API, which is the only way to get per-request
+  records out of stock vLLM at all -- it has no per-request API, only cumulative counters. The Monitor
+  carries the KV pool (from `cache_config_info` labels), per-window tok/s, TTFT/queue/prefill/decode
+  means, speculation acceptance, prefix-cache hits and per-card busy%/VRAM/sclk; the About page carries
+  the configuration, the machine, the base URL and the recipe `serve/serve.sh` wrote for it (`WEBUI=1`).
+  Cards whose sysfs attributes answer EBUSY name what they refused instead of reporting 0%, and `SMI=1`
+  fills the gaps from rocm-smi joined by PCI bus id (opt-in: it opens `/dev/kfd`). 89 checks in
+  `tests/test_webui.py`: metrics collapsing (buckets skipped, gauges max-ed not summed, no data before
+  the first window), the request ring, the sysfs and rocm-smi readers, an end-to-end relay against a
+  fake vLLM (SSE passed through, a 500 recorded as an error, `observe` relaying while recording nothing,
+  path traversal refused), and a stream that must reach the client **while the upstream is still
+  generating** -- which caught a real bug: the pump used `res.read(8192)`, and on a body with no
+  Content-Length that blocks until n bytes or EOF, so a slow stream would have arrived all at once and
+  every first-token number on the page would have been a lie (+70 ms on a 272 ms request). It reads
+  `read1()` now. `bench/webui_ab.py` A/Bs direct / relay / record: about **1 ms per request** for the
+  hop against a loopback stand-in, and recording costs nothing beyond that (the live A/B on a real
+  launch is still owed -- run `bench/webui_ab.py http://127.0.0.1:8080` when one is up).
 
 ## [0.3.8] - 2026-10-31
 

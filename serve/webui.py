@@ -1,0 +1,795 @@
+#!/usr/bin/env python3
+"""serve/webui.py - the Monitor and About pages for a running serve/ launch; the pages live in serve/web.
+
+Stdlib only, and it runs on the HOST next to the container (the launch is --network=host, so the
+upstream is just 127.0.0.1:PORT). Two modes, and the difference matters on a box where every
+millisecond is a measurement:
+
+  observe (default)  poll the upstream's /health, /v1/models and /metrics every POLL_S and read the
+                     amdgpu sysfs for per-card busy% / VRAM. Nothing of ours sits in the inference
+                     path; the request list stays empty, because stock vLLM has no per-request API.
+  --proxy            additionally forward API traffic through this process. That is where the
+                     per-request records come from - input, output, wall-clock, first token, token
+                     counts - the part of Strata's monitor that needs the server's cooperation
+                     (Strata's own server keeps those records; here they can only be taken by a
+                     hop). Costs: one extra TCP hop and one thread per concurrent request; the SSE
+                     bytes are forwarded as they arrive, never buffered. Opt-in for that reason.
+
+What stock vLLM cannot answer per request (queue wait, prefill/decode split) is reported as the
+engine-wide mean from /metrics instead, and the page says so. For the per-request breakdown of
+those use bench/ttft_breakdown.py.
+
+usage: python3 serve/webui.py [--port 8081] [--upstream http://127.0.0.1:8080] [--proxy] [--key K]
+                              [--poll 2.0] [--keep 100] [--meta launch.json] [--gpus /sys/class/drm]
+env:   R9K_WEB_PORT R9K_WEB_UPSTREAM R9K_WEB_PROXY R9K_WEB_KEY R9K_WEB_POLL R9K_WEB_KEEP
+       R9K_WEB_META R9K_WEB_GPUS  (flags win; serve/webui.sh is the usual entry point)
+"""
+import argparse
+import http.client
+import json
+import os
+import re
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from collections import deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+WEB = Path(__file__).resolve().parent / "web"
+KIND = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
+        ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml", ".json": "application/json",
+        ".woff2": "font/woff2", ".txt": "text/plain; charset=utf-8", ".png": "image/png"}
+# 256 KiB of retained input/output per request, like Strata's monitor: the API response is never
+# shortened, only our copy of it, and the page says so when it happened.
+CAP = 256 * 1024
+HIST = 90                                   # sparkline points kept (poll_s * HIST of history)
+HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer",
+       "transfer-encoding", "upgrade", "content-length", "date", "server", "host"}
+NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_:]*")
+KVLBL = re.compile(r'num_gpu_blocks="(\d+)"')
+BSLBL = re.compile(r'block_size="(\d+)"')
+# vLLM has no "what am I configured as" endpoint; the geometry it does publish sits in the labels of
+# its own counters, and which labels exist moves between releases. Harvest whatever is there.
+LBL = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)="([^"]*)"')
+WANT = ("model_name", "model_compiler", "tensor_parallel_size", "pipeline_parallel_size", "data_parallel_size",
+        "max_model_len", "block_size", "num_gpu_blocks", "num_cpu_blocks", "kv_cache_dtype", "cache_format",
+        "speculative_config", "enable_prefix_caching", "enable_chunked_prefill", "scheduler_policy",
+        "num_lookahead_tokens", "num_speculative_tokens", "method", "version")
+
+
+# -------------------------------------------------------------------------------- upstream metrics
+def parse_metrics(text):
+    """Every vllm:* series, collapsed by name: name -> (sum, max, series_count).
+
+    Counters want the sum (the ranks each count their part); gauges want the mean, and the max too
+    because "one rank's KV pool is full" is the sentence that matters. Buckets are skipped: _sum and
+    _count are the two numbers any mean we want comes out of. Also returned: the KV pool geometry,
+    which in vLLM is only readable as metric labels, and the model name from those same labels."""
+    out, cap, info = {}, None, {}
+    for line in text.splitlines():
+        if not line.startswith("vllm:"):
+            continue
+        m = NAME.match(line)
+        if not m:
+            continue
+        name = m.group(0)[5:]
+        if name.endswith("_bucket"):
+            continue
+        rest = line[m.end():].strip()
+        labels = ""
+        if rest.startswith("{"):
+            end = rest.index("}")
+            labels, rest = rest[:end], rest[end + 1:].strip()
+        try:
+            value = float(rest.split()[0])
+        except (IndexError, ValueError):
+            continue
+        s = out.get(name)
+        if s is None:
+            out[name] = [value, value, 1]
+        else:
+            s[0] += value
+            s[1] = max(s[1], value)
+            s[2] += 1
+        if cap is None and "num_gpu_blocks" in labels:
+            b, bs = KVLBL.search(labels), BSLBL.search(labels)
+            if b and bs:
+                cap = int(b.group(1)) * int(bs.group(1))
+        for k, v in LBL.findall(labels):
+            if k in WANT and info.get(k) in (None, ""):
+                info[k] = v
+    return out, cap, info
+
+
+def derive(cur, prev, dt, cap, info, mode, kept, hist):
+    """One /api/status payload out of two metric snapshots dt seconds apart.
+
+    dt is None on the very first read, before any window exists: the gauges and the configuration are
+    reportable then, a rate is not. Reporting 600 tok/s because we divided the whole run's counter by
+    0.001 s is the kind of number this box generates enough of already."""
+    have = bool(prev) and dt is not None and dt > 0
+    g = lambda n, i=0: (cur.get(n) or [0.0, 0.0, 0])[i]                    # summed value of a series
+    d = lambda n: (g(n) - ((prev.get(n) or [0.0, 0.0, 0])[0])) if have else 0.0
+    per = lambda v: v / dt if have else None
+    nrec = max(d("e2e_request_latency_seconds_count"), 0.0)
+    mean = lambda h: (d(h + "_sum") / d(h + "_count") * 1e3) if d(h + "_count") > 0 else None
+    itl = mean("time_per_output_token_seconds")
+    if itl is None:                                                       # 0.30+ renamed it
+        itl = mean("inter_token_latency_seconds")
+    drafts, accepted = d("spec_decode_num_drafts_total"), d("spec_decode_num_accepted_tokens_total")
+    dgrams = d("spec_decode_num_draft_tokens_total")          # tokens drafted (0.31+ name)
+    hitq, hits = (d("prefix_cache_queries_total"), d("prefix_cache_hits_total")) if have \
+        else (g("prefix_cache_queries_total"), g("prefix_cache_hits_total"))
+    live = {"running": g("num_requests_running", 1), "waiting": g("num_requests_waiting", 1),
+            "swapped": g("num_requests_swapped", 1), "preempting": g("num_preemptions_total") > 0,
+            "kv_used_pct": 100.0 * g("gpu_cache_usage_perc", 1),
+            "kv_used_pct_mean": 100.0 * g("gpu_cache_usage_perc"),
+            "kv_tokens": cap,
+            "prefix_hit_pct": (100.0 * hits / hitq) if hitq > 0 else None}
+    rate = {"window_s": dt, "requests": nrec if have else None, "requests_per_min": per(nrec),
+            "generation_tokens": d("generation_tokens_total") if have else None,
+            "generation_tok_s": per(d("generation_tokens_total")), "prompt_tok_s": per(d("prompt_tokens_total")),
+            "ttft_ms": mean("time_to_first_token_seconds"), "itl_ms": itl,
+            "stream_tok_s": (1e3 / itl) if itl else None,
+            "e2e_ms": mean("e2e_request_latency_seconds"), "queue_ms": mean("request_queue_time_seconds"),
+            "prefill_ms": mean("request_prefill_time_seconds"), "decode_ms": mean("request_decode_time_seconds"),
+            "prompt_tokens_mean": mean("request_prompt_tokens"), "generation_tokens_mean": mean("request_generation_tokens"),
+            "iters_per_req": (d("iteration_tokens_total_count") / nrec) if nrec else None,
+            "tokens_per_iter": (d("iteration_tokens_total_sum") / d("iteration_tokens_total_count"))
+                               if d("iteration_tokens_total_count") > 0 else None,
+            "drafts_per_req": (drafts / nrec) if nrec else None,
+            "accept_pct": (100.0 * accepted / dgrams) if dgrams > 0 else None,
+            "preemptions": d("num_preemptions_total") if have else None}
+    return {"mode": mode, "at": time.time(), "model_name": info.get("model_name"), "config": info,
+            "live": live, "rate": rate,
+            "history": hist, "requests_kept": kept, "metrics_seen": len(cur)}
+
+
+# -------------------------------------------------------------------------------------- gpu sysfs
+def _f(s):
+    try:
+        return float(str(s).split()[0])
+    except (IndexError, ValueError):
+        return None
+
+
+SMI_DEFAULT = ["rocm-smi", "--showbus", "--showuse", "--showmeminfo", "vram", "--showtemp",
+               "--showpower", "--showclocks", "--showproductname", "--json"]
+
+
+def read_smi(command, timeout=8.0):
+    """busy% / VRAM / temperature / power / clocks from `rocm-smi --json`, keyed by PCI bus id so the
+    numbers land on the card the sysfs describes instead of next to it.
+
+    Opt-in (--smi), and deliberately not the default: rocm-smi opens /dev/kfd on every call, which on a
+    box you are measuring is a perturbation, not a read. It is worth having where the sysfs answers
+    EBUSY, which on this box is most of it. Key names move between ROCm versions, so this matches on
+    substrings and drops "N/A" instead of expecting a schema. Units: degrees C, watts, MHz -- as
+    rocm-smi prints them, unlike the sysfs' millidegrees.
+    """
+    try:
+        out = subprocess.run(command, capture_output=True, text=True, timeout=timeout).stdout
+        data = json.loads(out[out.index("{"): out.rindex("}") + 1])
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        return None, f"{type(e).__name__}: {str(e)[:200]}"
+    keys = (("gpu use", "busy_pct"), ("vram total used", "vram_used"), ("vram total memory", "vram_total"),
+            ("total visible vram", "vis_vram_used"), ("edge", "temp_c"), ("junction", "temp_c"),
+            ("graphics temperature", "temp_c"), ("package power", "power_w"), ("device name", "name"),
+            ("product name", "name"), ("pci bus", "bus"))
+    by_bus = {}
+    for card, vals in (data or {}).items():
+        row = {}
+        for k, v in (vals or {}).items():
+            v = str(v).strip()
+            if not v or v.upper() in ("N/A", "NULL", "0X0"):
+                continue
+            kl = k.lower()
+            for pat, key in keys:
+                if pat in kl:
+                    if row.get(key) is None:
+                        row[key] = v if key in ("name", "bus") else _f(v)
+                    break
+            else:
+                if "frequency" in kl and ("mhz" in kl or "clock" in kl):
+                    if "sclk" in kl and row.get("sclk_mhz") is None:
+                        row["sclk_mhz"] = _f(v)
+                    elif "mclk" in kl and row.get("mclk_mhz") is None:
+                        row["mclk_mhz"] = _f(v)
+        if not row:
+            continue
+        row["smi_card"] = card
+        row["bus"] = (row.get("bus") or "").lower().replace("0000:", "")
+        by_bus[row["bus"] or card] = row
+    return by_bus, None
+
+
+def merge_smi(gpus, by_bus):
+    """Fill only what the sysfs refused to answer, and say which number came from where."""
+    seen = set()
+    for g in gpus:
+        row = by_bus.get(g.get("bus") or "")
+        if not row:
+            continue
+        seen.add(g.get("bus"))
+        g.setdefault("from_smi", [])
+        for k, v in row.items():
+            if k in ("bus", "smi_card") or v is None:
+                continue
+            if g.get(k) is None:
+                g[k] = v
+                g["from_smi"].append(k)
+    for bus, row in by_bus.items():                     # a card the sysfs root does not describe at all
+        if bus in seen:
+            continue
+        g = {"card": row.get("smi_card", bus), "name": row.get("name") or "amdgpu", "bus": bus,
+             "unread": [], "from_smi": [], "vram_used": None, "vram_total": None}
+        for k in ("busy_pct", "mem_busy_pct", "vram_used", "vram_total", "temp_c", "power_w",
+                  "sclk_mhz", "mclk_mhz", "name"):
+            if row.get(k) is not None:
+                g[k] = row[k]
+                g["from_smi"].append(k)
+        gpus.append(g)
+    return gpus
+
+
+def read_host():
+    """The box the launch runs on: CPU model, thread count, RAM, kernel, uptime - all from procfs."""
+    def cat(p):
+        try:
+            return Path(p).read_text()
+        except OSError:
+            return ""
+
+    cpu = ""
+    for line in cat("/proc/cpuinfo").splitlines():
+        if line.lower().startswith("model name"):
+            cpu = line.split(":", 1)[1].strip()
+            break
+    mem = 0
+    for line in cat("/proc/meminfo").splitlines():
+        if line.startswith("MemTotal:"):
+            mem = int(line.split()[1]) * 1024
+            break
+    try:
+        up = float(Path("/proc/uptime").read_text().split()[0])
+    except (OSError, ValueError):
+        up = None
+    u = os.uname()
+    return {"cpu": cpu, "threads": os.cpu_count(), "ram": mem, "kernel": f"{u.sysname} {u.release}",
+            "hostname": u.nodename, "uptime_s": up}
+
+
+def read_gpus(root):
+    """Per-card state from the amdgpu sysfs: no ROCm runtime, no container, nothing started on the card.
+
+    Read tolerantly and say what could not be read: on this box, with a live compute context, several
+    of these attributes answer EBUSY (gpu_busy_percent, the hwmon temperature and clock files). A card
+    that answers nothing is reported as unreadable rather than as busy 0% -- the difference is the
+    whole point of the page."""
+    gpus = []
+    for card in sorted(Path(root).glob("card[0-9]*")):
+        dev = card / "device"
+        if not dev.is_dir():
+            continue
+
+        def num(p):
+            try:
+                return float(p.read_text().strip())
+            except (OSError, ValueError):
+                return None
+
+        vals, unread = {}, []
+        for key, name in (("busy_pct", "gpu_busy_percent"), ("mem_busy_pct", "mem_busy_percent"),
+                          ("vram_used", "mem_info_vram_used"), ("vram_total", "mem_info_vram_total"),
+                          ("gtt_used", "mem_info_gtt_used")):
+            p = dev / name
+            if p.exists():                              # exists but unreadable is the interesting case
+                v = num(p)
+                if v is None:
+                    unread.append(name)
+                else:
+                    vals[key] = v
+        if not vals:                                      # not a GPU (or no readable counters at all)
+            continue
+        # hwmon: names move between kernels -- power1_input / power1_average, and the clock files are
+        # labelled sclk and mclk, which is the SM clock the load-time mysteries are always about.
+        temp = power = sclk = mclk = None
+        for hm in sorted(dev.glob("hwmon*")):
+            temp = temp if temp is not None else num(hm / "temp1_input")
+            power = power if power is not None else (num(hm / "power1_input") or num(hm / "power1_average"))
+            for f in hm.glob("freq*_label"):
+                try:
+                    lab = f.read_text().strip()
+                except OSError:
+                    continue
+                got = num(hm / (f.name[: -len("_label")] + "_input"))
+                if got is None:
+                    continue
+                if lab == "sclk" and sclk is None:
+                    sclk = got
+                elif lab == "mclk" and mclk is None:
+                    mclk = got
+        try:
+            name = (dev / "product_name").read_text().strip()
+        except OSError:
+            name = "amdgpu"
+        bus = None                                        # the join key for rocm-smi, whose card indices
+        try:                                              # are its own
+            m = re.search(r"PCI_SLOT_NAME=(\S+)", (dev / "uevent").read_text())
+            bus = m.group(1).lower().replace("0000:", "") if m else None
+        except OSError:
+            pass
+        vals.update({"card": card.name, "name": name, "bus": bus,
+                     "temp_c": (temp / 1e3) if temp else None,
+                     "power_w": (power / 1e6) if power else None,
+                     "sclk_mhz": (sclk / 1e6) if sclk else None, "mclk_mhz": (mclk / 1e6) if mclk else None,
+                     "unread": unread})
+        gpus.append(vals)
+    return gpus
+
+
+# --------------------------------------------------------------------------------- request record
+class Records:
+    """The last --keep requests, newest first, kept in a lock so the poll thread and the page can
+    read them while a request is still filling its own entry in."""
+
+    def __init__(self, keep=100):
+        self.keep, self.items, self.n, self.lock = keep, deque(), 0, threading.Lock()
+
+    def start(self, path, model, body, stream):
+        with self.lock:
+            self.n += 1
+            r = {"id": None, "seq": self.n, "path": path, "model": model, "state": "queued",
+                 "started_at": time.time(), "wallclock_s": None, "first_token_s": None, "load_s": None,
+                 "queue_s": None, "stream": stream, "response_format": "stream" if stream else "json",
+                 "http_status": None, "usage": None, "timings": None, "error": None,
+                 "_in": body[:CAP], "_in_truncated": len(body) > CAP, "_out": [], "_out_len": 0,
+                 "_resp": [], "_reason": [], "tokens_est": 0}
+            self.items.appendleft(r)
+            while len(self.items) > self.keep:
+                self.items.pop()
+            return r
+
+    def finish(self, r, state, status=None, error=None):
+        if status is not None:
+            r["http_status"] = status
+        if error and not r["error"]:
+            r["error"] = {"message": str(error)[:2000]}
+        if r.get("_closed"):                            # the pump closed it; the relay has nothing to add
+            return
+        r["state"] = state
+        if state in ("completed", "error", "disconnected"):
+            r["_closed"] = True
+            r["wallclock_s"] = time.time() - r["started_at"]
+            gen = (r["usage"] or {}).get("completion_tokens") or r["tokens_est"] or None
+            span = max(r["wallclock_s"] - (r["first_token_s"] or 0.0), 0.0) or r["wallclock_s"]
+            r["timings"] = {"predicted_per_second": (gen / span) if gen and span > 0 else None,
+                            "tokens_are_estimate": not bool((r["usage"] or {}).get("completion_tokens"))}
+
+    def note(self, r, text):
+        if r["_out_len"] < CAP:
+            r["_out"].append(text[:CAP - r["_out_len"]])
+            r["_out_len"] += len(text)
+
+    def note_reason(self, r, text):
+        if len(r["_reason"]) < CAP:
+            r["_reason"].append(text[:CAP - len(r["_reason"])])
+
+    def note_resp(self, r, chunk):
+        if sum(map(len, r["_resp"])) < CAP:
+            r["_resp"].append(chunk[:CAP - sum(map(len, r["_resp"]))])
+
+    def listing(self):
+        with self.lock:
+            return [{k: r.get(k) for k in ("id", "seq", "path", "model", "state", "started_at",
+                                           "wallclock_s", "first_token_s", "stream", "http_status",
+                                           "response_format")}
+                    | {"id": r["id"] or f"req-{r['seq']}"} for r in self.items]
+
+    def get(self, rid):
+        with self.lock:
+            for r in self.items:
+                if rid in (r["id"], f"req-{r['seq']}"):
+                    out = {k: r.get(k) for k in ("id", "seq", "path", "model", "state", "started_at",
+                                                 "wallclock_s", "first_token_s", "load_s", "queue_s",
+                                                 "stream", "http_status", "response_format", "usage",
+                                                 "timings", "error")}
+                    out["id"] = r["id"] or f"req-{r['seq']}"
+                    out["input"] = r["_in"] + ("…[truncated]" if r["_in_truncated"] else "")
+                    out["output"] = "".join(r["_out"])
+                    out["reasoning"] = "".join(r["_reason"]) or None
+                    out["response"] = b"".join(r["_resp"]).decode("utf-8", "replace")
+                    out["output_truncated"] = r["_out_len"] >= CAP
+                    return out
+        return None
+
+
+# ---------------------------------------------------------------------------------------- the sidecar
+class Hub:
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.rec = Records(cfg["keep"])
+        self.status = {"mode": cfg["mode"], "at": 0.0, "reachable": False, "upstream": cfg["upstream"],
+                       "live": {}, "rate": {}, "history": [], "requests_kept": 0, "models": []}
+        self.gpus, self.models, self.meta = [], [], {}
+        self.prev, self.prev_t, self.hist = {}, 0.0, deque(maxlen=HIST)
+        self.health, self.engine, self.host = None, {}, read_host()
+        self.key_needed, self.smi_error = False, None
+        self.lock = threading.Lock()
+        if cfg["meta"]:
+            try:
+                self.meta = json.loads(Path(cfg["meta"]).read_text())
+            except (OSError, ValueError) as e:
+                print(f"webui: --meta {cfg['meta']} not read: {e}", file=sys.stderr)
+
+    # ---- upstream reads (observe mode's whole footprint) -----------------------------------------
+    def get(self, path, timeout=4.0):
+        hdrs = {"Authorization": f"Bearer {self.cfg['key']}"} if self.cfg["key"] else {}
+        req = urllib.request.Request(self.cfg["upstream"] + path, headers=hdrs)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read()
+
+    def poll(self):
+        while True:
+            t0 = time.time()
+            try:
+                code, body = self.get("/metrics")
+                cur, cap, info = parse_metrics(body.decode("utf-8", "replace"))
+                dt = (t0 - self.prev_t) if self.prev_t else None
+                with self.lock:
+                    payload = derive(cur, self.prev, dt, cap, info, self.cfg["mode"],
+                                     len(self.rec.items), list(self.hist))
+                    payload["upstream"] = self.cfg["upstream"]
+                    payload["reachable"] = True
+                    payload["health"] = self.health
+                    payload["models"] = self.models
+                    payload["engine"] = self.engine
+                    payload["gpus"] = self.gpus
+                    payload["smi"] = bool(self.cfg["smi"])
+                    payload["smi_error"] = self.smi_error
+                    payload["meta"] = self.meta
+                    payload["meta_src"] = self.cfg["meta"] or None
+                    payload["poll_s"] = self.cfg["poll"]
+                    payload["key_needed"] = self.key_needed or bool(self.cfg["key"])
+                    self.prev, self.prev_t, self.status = cur, t0, payload
+                self.hist.append({"at": t0, "gen_tok_s": payload["rate"].get("generation_tok_s"),
+                                  "kv_used_pct": payload["live"].get("kv_used_pct"),
+                                  "running": payload["live"].get("running")})
+            except Exception as e:                                # a stopped launch is normal state
+                if isinstance(e, urllib.error.HTTPError):
+                    self.key_needed = e.code == 401                 # a keyed serve answers 401 to our GETs
+                with self.lock:
+                    self.status = dict(self.status, reachable=False, at=time.time(),
+                                       upstream=self.cfg["upstream"], error=str(e)[:300],
+                                       key_needed=self.key_needed or bool(self.cfg["key"]),
+                                       gpus=self.gpus, models=self.models, engine=self.engine,
+                                       meta=self.meta, requests_kept=len(self.rec.items))
+            time.sleep(self.cfg["poll"])
+
+    def slow_poll(self):
+        """/health and /v1/models do not need 2 s freshness; /metrics is the one that carries rates."""
+        while True:
+            try:
+                code, _ = self.get("/health")
+                self.health = code
+                _, body = self.get("/v1/models")
+                self.models = json.loads(body).get("data", [])
+                self.engine = {"vllm_version": self.cfg["version"]} if self.cfg["version"] else {}
+            except Exception:
+                self.health = None
+            time.sleep(min(15.0, max(2.0, self.cfg["poll"] * 5)))
+
+    def gpu_poll(self):
+        while True:
+            self.gpus = read_gpus(self.cfg["gpus"])
+            if self.cfg["smi"]:
+                by_bus, err = read_smi(self.cfg["smi"])
+                self.smi_error = err
+                if by_bus:
+                    self.gpus = merge_smi(self.gpus, by_bus)
+            self.host = read_host()
+            time.sleep(max(1.0, self.cfg["poll"]))
+
+    # ---- the API the pages read -------------------------------------------------------------------
+    def api(self, path):
+        if path == "/api/status":
+            with self.lock:
+                return dict(self.status, requests_kept=len(self.rec.items))
+        if path == "/api/requests":
+            return {"requests": self.rec.listing(), "kept": self.cfg["keep"], "mode": self.cfg["mode"]}
+        if path == "/api/host":
+            return self.host
+        return None
+
+
+# -------------------------------------------------------------------------------------- proxy mode
+class H(BaseHTTPRequestHandler):
+    hub = None
+    protocol_version = "HTTP/1.1"
+    server_version = "r9700-webui/1"
+
+    def log_message(self, fmt, *args):
+        if self.hub.cfg["verbose"]:
+            sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
+
+    # -- helpers
+    def json(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def page(self, name):
+        p = WEB / name
+        ctype = KIND.get(p.suffix)
+        if ctype is None or not p.is_file():
+            return self.json(404, {"error": {"message": f"{name} not found"}})
+        body = p.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def want_key(self):
+        """Our own key (--key) guards the API and the relay, not the pages: the HTML has no secrets
+        in it, and an open relay to a keyed upstream is the thing worth stopping."""
+        if not self.hub.cfg["key"]:
+            return True
+        got = (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
+        if got and got == self.hub.cfg["key"]:
+            return True
+        self.json(401, {"error": {"message": "this monitor needs its API key", "type": "auth"}})
+        return False
+
+    def read_body(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(n) if n else b""
+        if self.headers.get("Transfer-Encoding", "").lower() == "chunked":
+            while True:
+                size = int(self.rfile.readline().split(b";")[0] or b"0", 16)
+                if size == 0:
+                    self.rfile.readline()
+                    break
+                raw += self.rfile.read(size)
+                self.rfile.readline()
+        return raw
+
+    # -- routing
+    def do_GET(self):
+        path = urllib.parse.urlsplit(self.path).path
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        if path in ("/", "/monitor", "/about"):
+            return self.page("about.html" if path == "/about" else "monitor.html")
+        if path.startswith("/web/"):
+            rel = urllib.parse.unquote(path[5:])
+            p = (WEB / rel).resolve()
+            # a path component check, not a prefix one: serve/webui.py starts with "serve/web", so a
+            # plain startswith() would happily serve the sidecar's own source to anyone who asks.
+            under = p == WEB.resolve() or str(p).startswith(str(WEB.resolve()) + os.sep)
+            if not under or not p.is_file():
+                return self.json(404, {"error": {"message": f"{rel} not found"}})
+            return self.page(rel)
+        if path == "/favicon.svg":
+            return self.page("favicon.svg")
+        if path.startswith("/api/"):
+            if not self.want_key():
+                return
+            r = q.get("id", [None])[0]
+            if path == "/api/requests" and r:
+                d = self.hub.rec.get(r)
+                return self.json(404 if not d else 200, d or {"error": {"message": r + " not kept"}})
+            out = self.hub.api(path)
+            return self.json(404 if out is None else 200, out if out is not None
+                             else {"error": {"message": path + " not an endpoint"}})
+        if path == "/healthz":
+            with self.hub.lock:
+                st = self.hub.status
+            return self.json(200, {"ok": True, "upstream_reachable": st.get("reachable"),
+                                   "mode": self.hub.cfg["mode"], "records": len(self.hub.rec.items)})
+        return self.forward("GET")
+
+    def do_POST(self):
+        return self.forward("POST")
+
+    def do_DELETE(self):
+        return self.forward("DELETE")
+
+    def do_PUT(self):
+        return self.forward("PUT")
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Allow", "GET, POST, PUT, DELETE, OPTIONS")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    # -- the relay. Non-event-stream responses are read whole (so Content-Length is honest); SSE is
+    # pumped chunk-for-chunk with our own framing, and the counters are lifted off the deltas as
+    # they pass without holding the bytes back.
+    def forward(self, method):
+        if not self.want_key():
+            return
+        u = urllib.parse.urlsplit(self.path)
+        target = u.path + ("?" + u.query if u.query else "")
+        raw = self.read_body() if method in ("POST", "PUT") else b""
+        api = target.startswith("/v1/") or target.startswith("/v1beta")
+        want = api and self.hub.cfg["mode"] == "proxy" and method == "POST"
+        rec = None
+        if want:
+            try:
+                parsed = json.loads(raw or b"{}")
+            except ValueError:
+                parsed = {}
+            rec = self.hub.rec.start(target, str(parsed.get("model") or ""), raw.decode("utf-8", "replace"),
+                                     bool(parsed.get("stream")))
+        up = urllib.parse.urlsplit(self.hub.cfg["upstream"])
+        conn = (http.client.HTTPSConnection if up.scheme == "https" else http.client.HTTPConnection)(
+            up.hostname, up.port or (443 if up.scheme == "https" else 80), timeout=self.hub.cfg["timeout"])
+        hdrs = {k: v for k, v in self.headers.items() if k.lower() not in HOP}
+        if self.hub.cfg["key"] and not hdrs.get("Authorization"):
+            hdrs["Authorization"] = f"Bearer {self.hub.cfg['key']}"
+        try:
+            conn.request(method, target, body=raw or None, headers=hdrs)
+            res = conn.getresponse()
+        except Exception as e:
+            if rec:
+                self.hub.rec.finish(rec, "error", error=f"upstream unreachable: {e}")
+            return self.json(502, {"error": {"message": f"upstream {self.hub.cfg['upstream']} unreachable: {e}"}})
+        ctype = res.getheader("Content-Type", "")
+        streaming = "text/event-stream" in ctype
+        self.send_response(res.status)
+        for k, v in res.getheaders():
+            if k.lower() not in HOP:
+                self.send_header(k, v)
+        if streaming:
+            self.send_header("Connection", "close")
+            self.close_connection = True
+            self.end_headers()
+            self._pump(res, rec, streaming=True)
+        else:
+            body = res.read()
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            if rec:
+                self._absorb(rec, body)
+        if rec:
+            self.hub.rec.finish(rec, "completed" if res.status < 400 else "error", status=res.status,
+                                error=None if res.status < 400 else (rec.get("error") or {}).get("message"))
+
+    def _pump(self, res, rec, streaming):
+        buf = b""
+        try:
+            while True:
+                # read1, not read: read(n) on a body with no Content-Length blocks until n bytes or EOF,
+                # which for a slow SSE stream would deliver the first delta when the generation ends --
+                # the one thing a monitor in the path must not do (bench/webui_ab.py caught it).
+                chunk = res.read1(65536) if hasattr(res, "read1") else res.read(8192)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                self.wfile.flush()
+                if rec:
+                    self.hub.rec.note_resp(rec, chunk)
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        self._sse(rec, line.decode("utf-8", "replace").strip())
+        except (BrokenPipeError, ConnectionResetError):
+            if rec:
+                return self.hub.rec.finish(rec, "disconnected", status=rec["http_status"],
+                                           error="the client hung up")
+        except Exception as e:
+            if rec:
+                return self.hub.rec.finish(rec, "error", error=str(e))
+        if rec:
+            self.hub.rec.finish(rec, rec["state"] if rec["state"] in ("queued",) else "completed",
+                                status=rec["http_status"])
+
+    def _sse(self, rec, line):
+        """One SSE line of a vLLM stream: keep the first-token stamp, the text, the reasoning text
+        and (when the client asked for it) the final usage block."""
+        if not line.startswith("data:"):
+            return
+        payload = line[5:].strip()
+        if payload in ("", "[DONE]"):
+            return
+        try:
+            obj = json.loads(payload)
+        except ValueError:
+            return
+        if obj.get("id") and not rec["id"]:
+            rec["id"] = obj["id"]
+        if obj.get("usage"):
+            u = obj["usage"]
+            rec["usage"] = {"prompt_tokens": u.get("prompt_tokens"), "completion_tokens": u.get("completion_tokens")}
+        for ch in obj.get("choices", []):
+            if rec["first_token_s"] is None and (ch.get("text") or (ch.get("delta") or {})):
+                rec["first_token_s"] = time.time() - rec["started_at"]
+                rec["state"] = "generating"
+            txt = ch.get("text")
+            d = ch.get("delta") or {}
+            rc = d.get("reasoning_content") or d.get("reasoning")
+            if rc:
+                self.hub.rec.note_reason(rec, rc)
+            txt = txt or d.get("content")
+            if txt:
+                rec["tokens_est"] += 1
+                self.hub.rec.note(rec, txt)
+            if ch.get("finish_reason"):
+                rec["finish_reason"] = ch["finish_reason"]
+
+    def _absorb(self, rec, body):
+        try:
+            obj = json.loads(body.decode("utf-8", "replace"))
+        except ValueError:
+            self.hub.rec.note(rec, body.decode("utf-8", "replace")[:CAP])
+            return
+        rec["id"] = obj.get("id") or rec["id"]
+        rec["usage"] = obj.get("usage") or rec["usage"]
+        if rec["first_token_s"] is None:
+            rec["first_token_s"] = time.time() - rec["started_at"]
+        if isinstance(obj.get("error"), dict):
+            rec["error"] = {"message": obj["error"].get("message", "")}
+        for ch in obj.get("choices", []):
+            m = ch.get("message") or {}
+            self.hub.rec.note(rec, m.get("content") or ch.get("text") or "")
+            self.hub.rec.note_reason(rec, m.get("reasoning_content") or "")
+
+
+def build(cfg):
+    """(hub, server) -- split out of main() so a test can run the whole thing against a fake upstream."""
+    hub = Hub(cfg)
+    for t in (threading.Thread(target=hub.poll, daemon=True),
+              threading.Thread(target=hub.slow_poll, daemon=True),
+              threading.Thread(target=hub.gpu_poll, daemon=True)):
+        t.start()
+    H.hub = hub
+    ThreadingHTTPServer.allow_reuse_address = True
+    ThreadingHTTPServer.daemon_threads = True
+    return hub, ThreadingHTTPServer(("", cfg["port"]), H)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="the r9700 serve monitor and about pages")
+    ap.add_argument("--port", type=int, default=int(os.environ.get("R9K_WEB_PORT", 8081)))
+    ap.add_argument("--upstream", default=os.environ.get("R9K_WEB_UPSTREAM", "http://127.0.0.1:8080"))
+    ap.add_argument("--proxy", action="store_true",
+                    default=os.environ.get("R9K_WEB_PROXY", "0") == "1",
+                    help="relay API traffic through here, which is what fills the request list")
+    ap.add_argument("--key", default=os.environ.get("R9K_WEB_KEY", ""))
+    ap.add_argument("--poll", type=float, default=float(os.environ.get("R9K_WEB_POLL", 2.0)))
+    ap.add_argument("--keep", type=int, default=int(os.environ.get("R9K_WEB_KEEP", 100)))
+    ap.add_argument("--meta", default=os.environ.get("R9K_WEB_META", ""))
+    ap.add_argument("--gpus", default=os.environ.get("R9K_WEB_GPUS", "/sys/class/drm"))
+    ap.add_argument("--smi", default=os.environ.get("R9K_WEB_SMI", ""),
+                    help="fill what the sysfs refuses from rocm-smi (empty = off; pass a command to override "
+                         "the default -- opens /dev/kfd on every poll, so keep it off while measuring)")
+    ap.add_argument("--version", default=os.environ.get("R9K_WEB_VERSION", ""), help="engine version to show")
+    ap.add_argument("--verbose", action="store_true")
+    a = ap.parse_args(argv)
+    cfg = {"port": a.port, "upstream": a.upstream.rstrip("/"), "mode": "proxy" if a.proxy else "observe",
+           "key": a.key, "poll": a.poll, "keep": a.keep, "meta": a.meta,
+           "gpus": a.gpus, "smi": (SMI_DEFAULT if a.smi == "1" else a.smi.split()) if a.smi else None,
+           "timeout": 600.0, "verbose": a.verbose, "version": a.version}
+    _, srv = build(cfg)
+    print(f"webui: http://127.0.0.1:{cfg['port']}/monitor  upstream {cfg['upstream']}  "
+          f"mode {cfg['mode']}  keep {cfg['keep']}  poll {cfg['poll']}s", flush=True)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()

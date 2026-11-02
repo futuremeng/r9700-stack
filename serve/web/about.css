@@ -1,0 +1,10 @@
+/* serve/web/about.css -- the About page. Requires tokens.css + web.css (and monitor.css for the
+   card / panel-bar / gpu pieces it shares with the Monitor). */
+.about{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:18px}
+.about section{margin:0}
+dl.facts{margin-top:16px}
+.code-block{position:relative;margin-top:14px}
+.code-block .st-btn{position:absolute;top:10px;right:10px;background:var(--st-surface-2);opacity:.85}
+.code-block .st-btn:hover{opacity:1}
+.code-block pre.code{max-height:260px;min-height:0}
+@media(max-width:980px){.about{grid-template-columns:1fr}}
