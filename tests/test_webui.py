@@ -567,6 +567,13 @@ monjs = (WEB / "monitor.js").read_text()
 ck("a cumulative mean is labelled as one on the page",
    monjs.count("(since launch)") >= 2 and "const pick = (k) =>" in monjs,
    f"{monjs.count('(since launch)')} labels")
+# the pane used to open empty on a serve doing 100 tok/s: an empty panel next to a busy engine is the one
+# UI lie nobody notices. It follows the newest visible row -- active first, since that is the one moving --
+# until you click a row, and the button that gets it back is in the bar, not hidden in a keyboard shortcut.
+ck("the request list follows the newest row until you click one",
+   'follow = true' in monjs and 'id="follow"' in (WEB / "monitor.html").read_text()
+   and "rows.find(active) || rows[0]" in monjs and 'aria-pressed="true"' in (WEB / "monitor.css").read_text(),
+   monjs[monjs.find("follow = true") - 40:monjs.find("follow = true") + 20])
 
 # VLLM_PLUGINS is a STRICT allowlist, not an "also load these" list. Writing VLLM_PLUGINS=r9700_webui by
 # hand (the first version) turned "load everything discoverable" into "load exactly this", which silently

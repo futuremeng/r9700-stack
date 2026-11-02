@@ -2,6 +2,7 @@
 // off vLLM's /metrics) and /api/requests (what came through this page, when it is in the path).
 "use strict";
 let records = [], status = null, selected = null, detail = null, pane = "input", stampOf = "";
+let detailSig = "", follow = true;                    // follow: show the newest row nobody clicked on yet
 let paused = false, actionError = "";
 
 const active = (r) => !["completed", "error", "disconnected"].includes(r.state);
@@ -16,10 +17,14 @@ function notice(message, info) {
 }
 
 // -- the request list -----------------------------------------------------------------------------
-function list() {
+function visibleRows() {
   const q = $("search").value.toLowerCase(), filter = $("filter").value;
-  const visible = records.filter((r) => `${rid(r)} ${r.path} ${r.model}`.toLowerCase().includes(q)
+  return records.filter((r) => `${rid(r)} ${r.path} ${r.model}`.toLowerCase().includes(q)
     && (filter === "all" || (filter === "active" ? active(r) : r.state === filter)));
+}
+
+function list() {
+  const visible = visibleRows();
   const next = JSON.stringify([visible.map((r) => [rid(r), r.state, r.wallclock_s]), selected]);
   if (next === stampOf) return;                      // a repaint costs selection and scroll position
   stampOf = next;
@@ -53,7 +58,8 @@ function list() {
       + `${r.response_format === "engine" ? "engine record" : r.stream ? "stream" : "JSON"}`
       + `${r.http_status ? ` · HTTP ${r.http_status}` : ""}`;
     b.append(row, ep, meta);
-    b.onclick = () => { selected = rid(r); detail = null; list(); showDetail().catch((e) => notice(e.message)); };
+    b.onclick = () => { follow = false; $("follow").setAttribute("aria-pressed", "false");
+      selected = rid(r); detail = null; list(); showDetail().catch((e) => notice(e.message)); };
     $("requests").append(b);
     if (focusId === rid(r)) b.focus({preventScroll: true});
   }
@@ -191,6 +197,14 @@ async function refresh() {
       selected = detail = null;
       $("selection").hidden = true; $("no-selection").hidden = false;
     }
+    // Nobody has clicked anything: follow the newest row there is, preferring one still in flight. That is
+    // the request worth looking at, and it is what the panel was empty for -- in merged mode a row only
+    // appears once its request has finished, so the newest row IS the last thing the serve did.
+    if (follow) {
+      const rows = visibleRows();
+      const c = rows.find(active) || rows[0];
+      if (c && rid(c) !== selected) { selected = rid(c); detail = null; }
+    }
     text("kept", String(h.kept));
     $("observe-note").textContent = h.mode === "observe"
       ? "Start this sidecar with --proxy (or point a client at it) to record requests here."
@@ -199,7 +213,13 @@ async function refresh() {
         + "with WEBUI_MODE=proxy." : "";
     renderStatus(s);
     list();
-    if (selected) await showDetail();
+    if (selected) {
+      const row = records.find((r) => rid(r) === selected);
+      const sig = row ? `${row.state}|${row.wallclock_s ?? ""}` : "gone";
+      // fetch it when it changed, and every tick while it is in flight (its timings are still moving);
+      // a finished request that nobody touched does not get refetched every 2 s
+      if (detailSig !== sig || (row && active(row)) || !detail) { detailSig = sig; await showDetail(); }
+    }
     text("updated", `Live · ${clock(s.at)}` + (s.mode === "observe" ? " · observing"
       : s.mode === "merged" ? " · inside the serve" : " · recording"));
     if (!actionError && s.error) notice(`upstream not answering: ${s.error}`);
@@ -227,6 +247,11 @@ $("auth").onsubmit = async (ev) => {
 document.addEventListener("need-key", () => { if ($("auth").hidden) $("auth").hidden = false; });
 $("search").oninput = list;
 $("filter").onchange = list;
+$("follow").onclick = () => {                      // clicking a row pins it; this unpins
+  follow = !follow;
+  $("follow").setAttribute("aria-pressed", String(follow));
+  if (follow) { selected = detail = null; detailSig = ""; refresh().catch(() => {}); }
+};
 document.querySelectorAll("[data-pane]").forEach((b) => {
   b.onclick = () => {
     pane = b.dataset.pane;

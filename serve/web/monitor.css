@@ -22,6 +22,8 @@ section{margin:18px 0}
 
 .panel-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .filters{display:flex;gap:8px}
+/* a toggle button has to show its state: aria-pressed is where the JS keeps it (Follow newest, Pause) */
+.st-btn[aria-pressed="true"]{border-color:var(--st-accent);color:var(--st-accent);font-weight:600}
 #search{width:210px}
 .note{margin:14px 0 0;line-height:1.6}
 
