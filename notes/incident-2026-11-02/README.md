@@ -1,0 +1,114 @@
+# notes/incident-2026-11-02 — seven resets in one night; three of them idle, one of those with no job on the box at all
+
+Same box as [incident-2026-11-01b](../incident-2026-11-01b/README.md) (`jiulu-9700`, kernel `7.0.0-42-generic`,
+4× Radeon AI PRO R9700 `1002:7551`, bare metal), caught 2026-11-02 00:2x–00:5x UTC. **Observation only: nothing
+on the box was changed for this incident** — no sysctl, no modprobe, no BIOS. The in-band IPMI readouts
+(`sudo ipmitool -I open …`) were run on the host by the operator; the BMC web-UI material in
+`bmc-power-events.txt` is quoted verbatim, and its record ids are corrected against the raw SEL in
+`sel-decode.txt`.
+
+The night of 11-01b ended with "two hard resets 32 minutes apart". It was not the end: the same firmware
+signature appears **seven times between 20:30 and 00:25**, three of the seven boots were idle in the sample
+window before they died, and one of those (death 7) had no job on the box at all.
+
+## The seven deaths, and how the two bundles' boot numbers line up
+
+Boot indices are relative to the boot each file was read from, and the two bundles read from different boots —
+`boots.txt` numbers are its own, `incident-2026-11-01b` used another. The stable key is the boot **id**.
+
+| death | boot id | first entry → last entry | life | what was on it | `-11-02` idx | `-11-01b` idx | firmware latch at the next boot |
+|---|---|---|---|---|---|---|---|
+| 1 | `aa661de3` | 11-01 03:27:55 → 20:30:41 | 17 h 03 m | serve up; `sa01` at 20:30:04 reads **97.86% idle** | -6 | -2 | yes (APIC `0x83`) |
+| 2 | `9c62bb9e` | 11-01 20:36:38 → 21:02:15 | 25 m 37 s | serve up; a load had started at 21:01:2x, ~50 s before the death, so the 21:00 sample is idle too | -5 | -1 | yes |
+| 3 | `6ae7b308` | 11-01 21:03:56 → 23:45:01 | 2 h 41 m | serving; **the boot 11-01b was captured from** | -4 | 0 | yes |
+| 4 | `3b531c63` | 11-01 23:52:35 → 23:53:07 | **32 s** | nothing running, 32 s into a boot that was itself the recovery from death 3 | -3 | — | **none at all** |
+| 5 | `b6aae6d2` | 11-01 23:59:36 → 00:01:37 | 2 m 01 s | recovery boot; no job recorded in this bundle | -2 | — | yes |
+| 6 | `2989bceb` | 11-02 00:04:54 → 00:15:01 | 10 m 07 s | recovery boot; no job recorded in this bundle | -1 | — | yes |
+| 7 | `75a86b4c` | 11-02 00:17:12 → 00:25:01 | 7 m 49 s | **idle**: `sshd` accept, one `crontab -l`, `update-notifier-download`, then a root `debian-sa1` cron; no vLLM rank, no HIP process | 0 | — | yes |
+
+Earlier boots, for mapping only: `42f83cb5` `-15`/`-11` · `46015a3c` `-14`/`-10` · `b57181a2` `-13`/`-9` ·
+`e7dd6b86` `-12`/`-8` · `01697656` `-11`/`-7` · `8a22f104` `-10`/`-6` · `d4275a7d` `-9`/`-5` ·
+`52deb9f3` `-8`/`-4` · `ab5f1a30` `-7`/`-3`.
+
+Two provenance notes that only show up when the tables are put side by side:
+
+- `boots.txt` was run **by death 7** (its "this boot" block reads `up 8 min` at `00:25:10`, nine seconds after
+  that boot's last journal line). Its own last row is the boot that ran the command. `idle-deaths.txt` says so
+  in its header: the file was created empty at 00:25 in the boot that died at 00:25:01.
+- The boot the later BMC readouts came from — `7e5bfe69`, 00:27:28 → past 00:50, up 22 min, load 0.1–0.3, no
+  vLLM, four GPUs enumerating — is in neither table.
+- Death 3 is the row `incident-2026-11-01b` calls boot `0` and whose last entry it recorded as `23:40:03`:
+  that capture was taken 5 minutes before that boot itself died. The bundle was written while the incident was
+  still running.
+
+## Files
+
+| file | what it answers |
+|---|---|
+| `boots.txt` | the boot list and `wtmp` under this bundle's numbering — note that no `shutdown` record closes deaths 3, 5 and 6 |
+| `idle-deaths.txt` | the deaths with nothing running: death 7 in detail, and `sa01` as an independent witness that the box was idle in the sample windows before deaths 1 and 2 |
+| `reset-reasons.txt` | what each following boot's firmware reported: reset reason, BERT, MCE |
+| `bmc-power-events.txt` | the BMC web-UI paste, its OS-side counterpart, and the correction to 11-01b's dating (below) |
+| `bmc-sensors-watchdog-psu.txt` | in-band `mc info` / `sel info` / `sdr elist` / watchdog / power: what it rules out and what it newly implicates |
+| `sel-decode.txt` | the raw SEL mapped one-for-one onto the seven deaths, and the diagnosis it leaves |
+
+## What this bundle establishes
+
+- **The platform is resetting itself while powered, and the gaps say so.** Deaths 2, 6 and 7 are back on the
+  BMC's own record **9 s, 41 s and 56 s** after their last journal line (death 7: power-on at 00:25:57, first
+  journal of the recovery boot at 00:27:28 — 2 m 27 s including ~90 s of POST), with no power-off record and
+  nobody logged in. A person cannot be that fast and that consistent. Death 3 is two power-on transitions 91 s
+  apart with one OS boot after them: the platform re-tried POST on its own.
+- **Death 4 is the odd one out and the only genuine power-off**: `0x12b4` `Asserted` at 23:54:57, 1 m 50 after
+  boot `3b531c63` stopped logging, the only true power-off in the whole window and the only death whose
+  recovery boot carries no reset-reason latch. Whether a chassis command with a username started it is the one
+  human question left ("Still open" below); the other six stay platform-initiated either way.
+- Not the power, not the watchdog, not a human: no mains/PSU event is logged once in 3639 SEL records, and the
+  BMC watchdog is `Stopped` with action `No action` and expiration flags `None`. That puts the seven deaths
+  inside the firmware's own verdict, `Previous system reset reason [0x88000800]: an uncorrected error caused a
+  data fabric sync flood event`, and inside the BERT: `ProcessorError`, `cache error`, `Uncorrected`, socket 0,
+  APIC `0x82` (6×) and `0x83` (1×) — six of seven with the identical MCE signature
+  `Bank 5 aea0000000000108 / SYND 4d000000 / IPID 500b024029a00 / PPIN 2b61290dcb2002b`.
+- **Load is not required to trigger it.** Death 7 died at idle — no vLLM rank, no HIP process, load average
+  0.12, and its last kernel lines are an `igb` link-up plus one `hrtimer: interrupt took 27271 ns`: no AER, no
+  MCE, no blocked task, no amdgpu line after enumeration — while the firmware still called it the same death.
+  Death 4 died 32 s into a boot that was itself the recovery from death 3. That puts the fault domain outside
+  anything the `notes/native-4xr9700.md` C22/C23 thread measures: the same signature appears at idle and at
+  full model load, so host-side work in the load path cannot be it. What is still common to all seven is the
+  box being up and running Linux on this platform.
+- **The firmware cannot date a death, and 11-01b's numbers were read as if it could.** Every
+  `PROCESSOR 2:a10f11 TIME <epoch>` in the latched deaths is 17 s before the *first journal line of the boot
+  that recovered it*, 5/5: the record is written during the next boot's POST. Any "it hung N minutes before the
+  reset" reading of `incident-2026-11-01b/mce-firmware-records.txt` is void; the BMC's power-on records are the
+  only external clock that can date a death.
+- **`PSU2` is installed, detected, and carrying nothing**: `Power In 16 W / Power Out 0 W`, `AC Lost: Presence
+  detected`, `PWR Detect: Presence detected` — one supply (PSU1, ~208 W, of which `CPU_Power 96 W`) behind four
+  cards. A real redundancy hole, and **not** the cause of these deaths: no power-off, AC-lost or `Pre-Init`
+  record at any of them.
+- **The SEL is 3639 entries at 100% used, `Overflow: false`, last delete 02/2025**, and at least one power-on
+  record inside the incident window is already missing. The web UI's `ID: 4778..4794` are SEL record ids
+  printed in **decimal** (`0x12aa` = 4778, `0x12ba` = 4794), which is why `sel get 0x4794` reports no such
+  record. Read the SEL in hex ids, or save it.
+
+## Still open
+
+1. Decode the `Unknown | Asserted` OEM record: `sel get 0x12ba` and `sel get 0x12b4` (record type, generator
+   id, event data bytes) — that says whether the BMC logs a restart cause at all.
+2. The one human question: `0x12b4` at 23:54:57 (death 4). The UI's 操作日志 page will show whether a chassis
+   power command with a username/source IP precedes it. The other six stay platform-initiated either way.
+3. `sel save … && sel clear` before the next repro — with the operator's OK — or the next death loses records
+   too. Not done here: it destroys evidence, and it is the operator's call.
+4. Thermal visibility: `TR2`/`TR4` report `No Reading` and `TR3` reports `0 degrees C`, so the four `TR*`
+   sensors that produced the 2025 flap era now see nothing — while the SEL is full of `TR2`/`TR3` 88–95 °C
+   threshold crossings from when they did. `sdr get 'TR2 Temperature'` for the entity/labels.
+5. The *configured* power-restore policy: `chassis policy list` prints the supported set only. `raw 0 7`
+   (Get Chassis Power Configuration, low bits of byte 2) says which is in force — which decides whether
+   death 7's 2 m 27 s self-recovery was policy or coincidence.
+
+## Why this is in the repo
+
+It is the box state the Monitor and About pages are written against ([notes/webui.md](../webui.md)): a launch
+that dies loudly is a software bug, and the pages inside the serve (`serve/plugin`) die with it. A box that
+resets without ever writing a `shutdown` record, at idle, is not — and that is the case for keeping the
+out-of-process sidecar on 8081, whose own log and whose card readings survive the engine, and for keeping a
+watch on the BMC side rather than only on the OS side: the only clock that can date these deaths is the BMC's.
