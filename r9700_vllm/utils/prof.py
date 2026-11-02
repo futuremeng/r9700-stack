@@ -144,36 +144,6 @@ def _gpu_busy() -> int:
     return hi
 
 
-def _gpu_clocks() -> tuple[int, int]:
-    """(min, max) current SM clock over the cards, in MHz, from ``pp_dpm_sclk``.
-
-    The line carrying the ``*`` is the level the card is actually at: ``S: 41Mhz *`` while idle, and the boost levels
-    on this part are 500 and 2350 MHz. This is the instrument that tells whether a slow pass is slow because the
-    device was running its kernels at a fraction of boost -- which is what an 8-14x growth in user CPU spent inside
-    the requant path, with the device answering tiny submissions in 0.1 ms in the gaps, would point to.
-    """
-    vals = []
-    for p in _glob.glob("/sys/class/drm/card*/device/pp_dpm_sclk"):
-        try:
-            cur = 0
-            for line in open(p):
-                # lines read like "S: 41Mhz *" / "1: 500Mhz" / "2: 2350Mhz": the one ending in * is active
-                if not line.rstrip().endswith("*"):
-                    continue
-                for tok in line.split():
-                    low = tok.lower()
-                    if "mhz" in low:
-                        try:
-                            cur = int(low.replace("mhz", ""))
-                        except ValueError:
-                            cur = 0
-            if cur:
-                vals.append(cur)
-        except OSError:
-            pass
-    return (min(vals), max(vals)) if vals else (0, 0)
-
-
 def slow_note(seconds: float, fmt: str, *args) -> None:
     """Log a measured split inside a load-path call -- how many seconds were spent *issuing* work and how many
     *waiting for the device to have done it*. Only the second kind can be a stalled queue rather than a slow
@@ -733,7 +703,6 @@ def stop_pwsamp(tag: str = "window") -> None:
         spark = "".join("." if b < 5 else ("-" if b < 25 else ("+" if b < 60 else "#")) for b in busy)
         logger.info("r9700 %s   gpu busy mean %4.0f%% max %4.0f%% over %d samples: %s",
                     tag, sum(busy) / len(busy), max(busy), len(busy), spark)
-    lo, hi = [], []
     f0, f1 = _PWS.pop("freq0", {}), _freq_time()
     if f0:
         spent = {k: (f1.get(k, 0) - f0.get(k, 0)) / 1000.0 for k in sorted(set(f0) | set(f1))}
