@@ -35,7 +35,9 @@ main{max-width:1560px;padding:28px var(--st-s-8) 56px;margin:auto}
 /* The Monitor's headline row: the four rates, at a size you can read across the room. */
 .value--xl{font-size:var(--st-fs-display)}
 .grid--rates .card{padding:var(--st-s-4) var(--st-s-5)}
-.grid--rates .sparkline{margin-top:10px}
+/* The trends row: one row for every series with a waveform, so the shapes line up under each other. */
+.sparkline--lg .spark{height:64px}
+.grid--trends .label{margin-bottom:var(--st-s-2)}
 .unit{font-weight:500;font-size:var(--st-fs-md);color:var(--st-ink-muted);margin-left:4px}
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--st-ink-muted);margin-right:9px;vertical-align:2px}
 .dot--live{background:var(--st-accent);box-shadow:0 0 0 4px var(--st-accent-tint)}

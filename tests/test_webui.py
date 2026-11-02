@@ -713,6 +713,24 @@ ck("the prefill rate names which of its two numbers is showing",
    "estimated from KV growth" in monjs and "exact, from prompt_tokens_total" in monjs)
 ck("the page says how old its numbers are", 'id="fresh"' in monhtml and "snapshot " in monjs)
 ck("the page refetches on the engine's beat", "setTimeout(poll, 1000)" in monjs)
+# The waveforms belong in one row, not sprinkled through the value cards: four series over the same span,
+# each with last/peak/avg attached. (The aggregate series used to be drawn twice -- once big, once small.)
+_trend = monhtml.split('grid--trends')[1].split("</section>")[0]
+_rates = monhtml.split('grid--rates')[1].split("</section>")[0]
+ck("every waveform is in the one trends row",
+   all(f'id="{i}"' in _trend for i in ("stream-spark", "gen-spark", "prefill-spark", "kv-spark")))
+ck("no waveform is left behind in the value cards",
+   'class="sparkline' not in _rates
+   and monhtml.split('class="grid grid--4 engine"')[1].split("</section>")[0].count('class="sparkline') == 0)
+ck("each waveform carries last, peak and average",
+   'avg ${fmt' in monjs and 'peak ${fmt' in monjs
+   and all(f'id="{i}"' in monhtml for i in ("stream-spark-note", "gen-spark-note",
+                                            "prefill-spark-note", "kv-spark-note")))
+ck("the span is named in points and seconds, since the ring counts points",
+   "pts over" in monjs and "s.history" in monjs)
+ck("a rate waveform averages only the windows that carried a rate; the pool's does not",
+   'keep = (v) => v !== 0' in monjs and 'keep: (v) => v > 0' in monjs and "keep: () => true" in monjs
+   and 'label: " while the pool grew"' in monjs)
 ck("the sidecar polls the engine at 1 s by default, both modes",
    'os.environ.get("R9K_WEB_POLL", 1.0)' in (Path(ROOT) / "serve" / "webui.py").read_text()
    and 'os.environ.get("R9700_WEBUI_POLL", "1")'

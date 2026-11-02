@@ -46,25 +46,23 @@
        engine step. Measured on 0.32.0+rocm723 (notes/webui.md): generation_tokens_total and the KV gauge
        move per step, so decode is live while you watch it; prompt_tokens_total, iteration_tokens_total and
        every latency histogram are credited when a request FINISHES, so the prefill card shows its live
-       estimate as the number and names the exact figure beside it. -->
+       estimate as the number and names the exact figure beside it. No waveforms here -- they are all in the
+       row below, where the four series can be compared against one another. -->
   <section class="grid grid--4 grid--rates">
     <div class="card">
       <div class="label">Decode · one stream</div>
       <div class="value value--xl" id="rate-stream">—<span class="unit">tok/s</span></div>
       <div class="small" id="rate-stream-note">aggregate ÷ running, over the poll window</div>
-      <div class="sparkline" id="stream-spark"></div>
     </div>
     <div class="card">
       <div class="label">Decode · all streams</div>
       <div class="value value--xl" id="rate-gen">—<span class="unit">tok/s</span></div>
       <div class="small" id="rate-gen-note">generation_tokens_total, credited per step</div>
-      <div class="sparkline" id="gen-spark-lg"></div>
     </div>
     <div class="card">
       <div class="label">Prefill · prompt processing</div>
       <div class="value value--xl" id="rate-prefill">—<span class="unit">tok/s</span></div>
       <div class="small" id="rate-prefill-note">no window yet</div>
-      <div class="sparkline" id="prefill-spark"></div>
     </div>
     <div class="card">
       <div class="label">Engine step · first token</div>
@@ -76,18 +74,38 @@ engine polls, so a rate is at most that old -- plus this snapshot's age.">—</d
     </div>
   </section>
 
-  <!-- row 1: what the serve is, and the last request through this page -->
-  <section class="grid grid--4">
+  <!-- the trends: every series the sidecar keeps a history for, in one row, over the same span. Each caption
+       carries last / peak / average so the shape has numbers attached, and the span is named because the ring
+       is fixed in POINTS, not seconds: what a point costs is the poll interval. -->
+  <section class="grid grid--4 grid--trends">
     <div class="card">
-      <div class="label">Model</div>
-      <div class="value value--sm" id="model-state"><span class="dot"></span><span id="loaded">Connecting…</span></div>
-      <div class="model" id="model">—</div>
-      <div class="small" id="upstream">—</div>
+      <div class="label">Decode · one stream</div>
+      <div class="sparkline sparkline--lg" id="stream-spark"></div>
+      <div class="small" id="stream-spark-note">—</div>
     </div>
     <div class="card">
-      <div class="label">Requests retained</div>
-      <div class="value" id="count">—</div>
-      <div class="small" id="active">—</div>
+      <div class="label">Decode · all streams</div>
+      <div class="sparkline sparkline--lg" id="gen-spark"></div>
+      <div class="small" id="gen-spark-note">—</div>
+    </div>
+    <div class="card">
+      <div class="label">Prefill · from KV growth</div>
+      <div class="sparkline sparkline--lg" id="prefill-spark"></div>
+      <div class="small" id="prefill-spark-note">—</div>
+    </div>
+    <div class="card">
+      <div class="label">KV pool used</div>
+      <div class="sparkline sparkline--lg" id="kv-spark"></div>
+      <div class="small" id="kv-spark-note">—</div>
+    </div>
+  </section>
+
+  <!-- row 1: the last request through this page first (what people read), then what the serve is -->
+  <section class="grid grid--4">
+    <div class="card">
+      <div class="label">Last decode speed</div>
+      <div class="value" id="speed">—<span class="unit">tok/s</span></div>
+      <div class="small" id="speed-note">That request's own output tokens over its own decode span</div>
     </div>
     <div class="card">
       <div class="label">Last wall-clock</div>
@@ -96,9 +114,15 @@ engine polls, so a rate is at most that old -- plus this snapshot's age.">—</d
       <div class="small" id="wall-split">—</div>
     </div>
     <div class="card">
-      <div class="label">Last decode speed</div>
-      <div class="value" id="speed">—<span class="unit">tok/s</span></div>
-      <div class="small" id="speed-note">That request's own output tokens over its own decode span</div>
+      <div class="label">Requests retained</div>
+      <div class="value" id="count">—</div>
+      <div class="small" id="active">—</div>
+    </div>
+    <div class="card">
+      <div class="label">Model</div>
+      <div class="value value--sm" id="model-state"><span class="dot"></span><span id="loaded">Connecting…</span></div>
+      <div class="model" id="model">—</div>
+      <div class="small" id="upstream">—</div>
     </div>
   </section>
 
@@ -117,7 +141,6 @@ engine polls, so a rate is at most that old -- plus this snapshot's age.">—</d
 'scheduling capacity' = it wants a slot in the schedule (blocks, or the token budget of the step); 'deferred' = a
 transient constraint (LoRA budget, KV transfer, blocked status). The two sum to the total.">0 waiting · 0
 preempted</div>
-      <div class="sparkline" id="kv-spark"></div>
     </div>
     <div class="card">
       <div class="label">Generation</div>
@@ -130,7 +153,6 @@ tokens, and measured here one 4,893-token prompt produced 2 observations (one of
 observation (v1/metrics/loggers.py:1273 observes prompt_token_stats.computed + num_generation_tokens) while a
 decode step gets its own -- the ratio can sit above max-num-batched-tokens, which is why this line does not claim
 a chunk size.">—</div>
-      <div class="sparkline" id="gen-spark"></div>
     </div>
     <div class="card">
       <div class="label">Speculation</div>

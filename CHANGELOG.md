@@ -238,6 +238,17 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   so the two families reconcile by eye. 153 checks in `tests/test_webui.py` (106 at the Monitor's release),
   covering each family's liveness, the `running` guard against dividing by zero, the KV-growth estimate's
   arithmetic, and the rates row preceding the per-request cards.
+  Then reordered, because two kinds of number were interleaved: row 0 is values only (one stream, all streams,
+  prefill, engine step + first token), row 1 is **every waveform in one row** over the same span, each captioned
+  `last · peak · avg · n/90 pts over 90 s` -- the ring counts points, so the span is `90 x poll_s`, and a rate
+  caption averages only the windows that carried a rate (a flat window mid-prefill is a zero, not a measurement:
+  counting those made a 200 tok/s stream average 31.5) while the KV pool series opts out, an idle pool at 0%
+  being the value. Per-request cards follow, speed and wall-clock before the model name; the aggregate waveform
+  had been drawn twice (large, and small inside the Generation card) and is drawn once. Each series decides what
+  counts as a sample: rate series skip flat windows, the KV-growth series keeps only windows where the pool grew
+  (its average read `-1,004 tok/s` before that, and its peak `19,217 tok/s` right after a 62-token prompt -- a
+  pool reclaimed and re-allocated between two polls, which is why the exact counter figure stays beside the
+  estimate), and the KV pool series keeps every sample because an idle pool at 0% is the value.
 - **The native install recipe now says what is actually fetchable** (`README.md`, `notes/native-4xr9700.md`,
   `setup.py`), and the upstream sweep that found it is written up in [notes/vllm-0.33.md](notes/vllm-0.33.md).
   Checking "is there a new vLLM, should we follow" turned up a broken step in our own quickstart: the ROCm wheel

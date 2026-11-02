@@ -264,14 +264,35 @@ function renderStatus(s) {
     + (isnum(ipr) ? ` · ${fmt(ipr, 2)} records per request` : "")
     + (isnum(rate.tokens_per_iter) || !isnum(since.tokens_per_iter) ? "" : " (since launch)") : "");
 
+  // -- the trends row ------------------------------------------------------------------------------
+  // One helper for all four waveforms, so each gets the same caption: last, peak and average over the span
+  // the ring covers. The ring is fixed in POINTS (90), so the span is points x poll_s -- changing the poll
+  // changes what a waveform is looking back at. A series that was null for part of it (the prefill estimate
+  // before anything ran) draws through the gap rather than as a flat 0, which is why the point count is on
+  // the line: 12 of 90 pts means the shape is only as old as those 12 samples.
+  const trend = (sparkId, noteId, values, unit, d, { keep = (v) => v !== 0, label = " while running" } = {}) => {
+    spark($(sparkId), values);
+    const xs = values.filter(isnum);
+    // Which samples count toward peak and average, per series. A 0 in a rate series is not a measured rate:
+    // it is a window where the counter was flat because nothing was being generated (mid-prefill, say), and
+    // counting those made a 200 tok/s stream average 31.5. The KV-growth series keeps only the windows where
+    // the pool GREW -- the rest are finished requests freeing blocks, and averaging them gave "avg -1,004
+    // tok/s". The KV pool series keeps everything: an idle pool at 0% IS the value.
+    const used = xs.filter(keep);
+    text(noteId, used.length < 2 ? "no series yet"
+      : `last ${fmt(xs[xs.length - 1], d)} · peak ${fmt(Math.max(...used), d)} · `
+        + `avg ${fmt(used.reduce((x, y) => x + y, 0) / used.length, d)} ${unit}${label}`
+        + ` · ${used.length}/${values.length} pts over ${(values.length * (s.poll_s || 0)).toFixed(0)} s`);
+  };
   const hist = s.history || [];
-  spark($("gen-spark"), hist.map((h) => h.gen_tok_s));
-  spark($("kv-spark"), hist.map((h) => h.kv_used_pct));
-  spark($("gen-spark-lg"), hist.map((h) => h.gen_tok_s));
-  spark($("stream-spark"), hist.map((h) => h.stream_tok_s));
-  // The prefill spark plots the live estimate (KV growth), not the counter rate: over a long prefill the
+  trend("stream-spark", "stream-spark-note", hist.map((h) => h.stream_tok_s), "tok/s", 1);
+  trend("gen-spark", "gen-spark-note", hist.map((h) => h.gen_tok_s), "tok/s", 1);
+  // The prefill waveform is the live estimate (KV growth), not the counter rate: over a long prefill the
   // counter series is a flat line with one spike at the end, which is a fact about vLLM, not about the work.
-  spark($("prefill-spark"), hist.map((h) => h.kv_tok_s));
+  trend("prefill-spark", "prefill-spark-note", hist.map((h) => h.kv_tok_s), "tok/s", 0,
+        { keep: (v) => v > 0, label: " while the pool grew" });
+  trend("kv-spark", "kv-spark-note", hist.map((h) => h.kv_used_pct), "%", 1,
+        { keep: () => true, label: "" });
 
   for (const [id, k] of [["t-ttft", "ttft_ms"], ["t-queue", "queue_ms"], ["t-prefill", "prefill_ms"],
                          ["t-decode", "decode_ms"], ["t-step", "itl_ms"], ["t-tpot", "tpot_ms"]])

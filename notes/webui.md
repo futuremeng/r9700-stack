@@ -371,6 +371,22 @@ requests free blocks), with the exact counter rate appearing beside it when the 
 2 s to 1 s on both beats (engine poll and browser refetch), and the page prints its own age (`1.0 s poll ·
 snapshot 0.4 s ago`) instead of letting the reader guess.
 
+**The order on the page, now that there are two kinds of number.** Row 0 is values only — one stream, all
+streams, prefill, engine step + first token — at `--st-fs-display`. Row 1 is the four waveforms the sidecar
+keeps a ring for, in one row over the same span, each captioned `last · peak · avg · n/90 pts over 90 s`: the
+ring is fixed in **points** (HIST=90), so what it looks back at is `90 x poll_s`, and a rate caption averages
+only the windows that actually carried a rate (a flat window mid-prefill is a zero, not a measurement — counting
+those made a 200 tok/s stream average 31.5); the KV pool series opts out, because an idle pool at 0% *is* the
+value. Per-request cards come next, speed and wall-clock before the model name; the aggregate waveform used to be
+drawn twice (once large, once small in the Generation card) and is now drawn once.
+
+One caveat on the KV-growth estimate, because it is a difference of a gauge sampled at the poll rate: it is good
+on large prefills (5,787 against 5,459 measured) and can spike on small ones and at request boundaries — a peak
+of **19,217 tok/s** in the ring right after a 62-token prompt is the pool being reclaimed and re-allocated
+between two polls, not 19k tokens of work. That is why the caption reports peak/avg only over windows where the
+pool grew, why the series is labelled "from KV growth", and why the exact counter figure is printed beside the
+number whenever the request has landed.
+
 **A token family is not a seconds family.** Cumulative means are `_sum / _count`, and for time families that
 ratio is seconds, so it is multiplied by 1000 to print ms. Applying that scaling to `request_prompt_tokens`
 made the first real `/api/status` report a **mean prompt of 2,028,442 tokens** — the answer is 2,028, and the
