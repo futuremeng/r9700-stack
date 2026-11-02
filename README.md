@@ -18,7 +18,9 @@ Current release: **v0.3.8** (2026-10-31, the vLLM 0.32 line), [release notes](no
 - **Three models, unmodified checkpoints:**
   - **Qwen3.8-27B-NVFP4** (dense) with the **DFlash2-FP8** block drafter: two cards, TP2.
   - **Qwen3.8-Flash-Next** (MoE, 288 routed experts, MXFP4 experts + fp8 dense): four cards TP4, or two cards with the
-    experts streamed from pinned host RAM through a device LRU cache.
+    experts streamed from pinned host RAM through a device LRU cache. On four cards it runs at the checkpoint's own
+    **262,144-token** context, and what limits long context there is prefill scheduling, not the KV cache
+    ([notes/context-262k.md](notes/context-262k.md)).
   - **GLM-5.3-Flash** (sparse MLA with the DeepSeek-V3.2-style indexer, RedHat NVFP4 checkpoint with its MTP layer):
     eight cards TP8, 32k production recipe; 262k launches retrieve correctly to ~75k tokens on this nightly (216k on
     the previous pin, see the release notes).
@@ -68,7 +70,7 @@ multi-rank communication tests and the kernel unit gates. v0.3.2 kernels (unchan
 p = 1.00 against v0.3.1), HumanEval 162 / 164; v0.3.3 validation: 0 bad answers in 5,060 strict-sanity checks,
 0 errors in 1,224 soak requests.
 
-## Speed (210 W with a -42 mV offset, 32k context; the v0.3.8 gate numbers are in the release notes)
+## Speed (210 W with a -42 mV offset, 32k context; v0.3.8 gate numbers in the release notes; the last table is uncapped, at the full 262k)
 
 **Qwen3.8-Flash-Next (MXFP4 experts, fp8 dense), four cards, TP4, MTP-3**
 
@@ -101,6 +103,33 @@ p = 1.00 against v0.3.1), HumanEval 162 / 164; v0.3.3 validation: 0 bad answers 
 
 How each number was produced, and what was tried and rejected: [PROGRESS.md](PROGRESS.md) and `notes/`.
 
+**Qwen3.8-Flash-Next at the checkpoint's full 262,144-token context** (the native 4x R9700 box: vLLM
+0.32.0+rocm723 in a venv, `MAXLEN=262144 NSEQ=32 NBT=8192`, cards uncapped, so compare against the uncapped
+numbers in [notes/native-4xr9700.md](notes/native-4xr9700.md), not the 210 W table above)
+
+| | |
+|---|---:|
+| KV cache at MAXLEN=262,144 | **540,202 tokens**; vLLM: `Maximum concurrency for 262,144 tokens per request: 2.06x` |
+| KV cache at MAXLEN=32,768 (same launch shape) | 497,588 tokens: raising context 8x made the pool **bigger**, because the sizing run is bounded by `NBT`, not by MAXLEN |
+| prompt processing at 30k / 250k | 9,097 / 6,832-6,847 tok/s (uncapped 31k on the 32k recipe: 8,963-9,221) |
+| time to first token at 30k / 67k / 150k / 250k | 3.31 / 7.73 / 19.32 / **36.52 s** cold; 0.28-0.70 s for a context the prefix cache has seen |
+| needle at 30,070 / 67,063 / 150,057 / 250,078 tokens | found at every tier (30-70% depth, `bench/needle_long.py`) |
+| decode at depth (400 tokens inside a 250k context) | 141 tok/s single stream, on a repetitive haystack, so high draft acceptance |
+| 32 concurrent 300-token streams | **1,186-1,257 tok/s** aggregate: all 32 running, KV pool peak 20.7%, nothing waiting |
+| 8 concurrent 30k prompts | 26.2 s end to end: TTFTs 3.6 -> 26.2 s in 3.3 s steps (one prefill each) with the pool only **11.7%** full |
+| 3 concurrent 250k prompts | queue to 36.9 / 73.7 / 109.2 s; no OOM, all three retrieve |
+| VRAM per card | 30.5 of 31.86 GiB used, ~1.35 GiB spare |
+
+The limit is not the KV cache. Only 12 of 48 layers do full attention (24 KiB a token, 6.00 GiB per full-length
+sequence), so a 262k request needs 586 of 1,230 blocks and the pool holds **2.06** of them -- a residency
+ceiling, not the concurrency the box serves: long prefills serialize, so above roughly 30k tokens a prompt
+"more than 2 in flight" already means queueing while the pool sits a tenth full. `--long-prefill-token-threshold`
+(+ `_adaptive`) measured as a fairness knob, not a speed one: six 30k requests behind a 250k one go 40.3-55.8 s
+-> **7.8-27.7 s** at an unchanged wall clock (55.9 vs 56.8 s), while three 250k prefills in parallel push the pool
+to 99.1% and cost 22% (109.2 -> 133.6 s), so it stays off. The standing gate is unchanged at this context
+(GSM8K 10/10, `bench/quality.py` needle 3/3). Method, the queue measurements and the metric-reading traps:
+[notes/context-262k.md](notes/context-262k.md).
+
 ## Deploying it
 
 Requirements: 2x, 4x or 8x Radeon AI PRO R9700, ROCm 10 on the host, docker, the model weights under `~/models`
@@ -129,7 +158,15 @@ Requirements: 2x, 4x or 8x Radeon AI PRO R9700, ROCm 10 on the host, docker, the
      MAXLEN=32768 NSEQ=4 NBT=8192 PREFIX_CACHE=0 VLLM_ROCM_USE_AITER=1 R9K_AG_MAX_KB=2048 \
      'SPEC_EXTRA="use_local_argmax_reduction": true' 'R9K_FP8_LINEARS=self_attn\.(in_proj_qkvbfg_a|o_proj|f_b_proj|g_b_proj)$' \
      bash serve/serve.sh                                               # GLM-5.3-Flash, eight cards (notes/glm53.md)
+   MAXLEN=262144 NSEQ=32 NBT=8192 PREFIX_CACHE=0 WEBUI=same \
+     bash serve/native-flashnext.sh      # what runs on this box today: Flash-Next, four cards, the full 262k
+                                         # context, Monitor and About on the serve's own port
    ```
+   `serve/native-flashnext.sh` is the container-free launcher for a box with no docker (plugin and vLLM in a venv,
+   `libr9k` built with the host `hipcc`, [notes/native-4xr9700.md](notes/native-4xr9700.md)); it takes the same knobs
+   as `serve/serve.sh` and defaults to `MAXLEN=32768`. The line above is what the box is running: at the full
+   context the KV cache gets bigger rather than smaller (540,202 against 497,588 tokens) and the 32-stream
+   throughput wave stays in the band quoted above.
    OpenAI-compatible API on port 8080 (`PORT=`), model name `Qwen3.8`. Every serve script carries the measured
    defaults with the reason next to each knob; `R9K_*=stock` or `=0` switches any kernel back to vLLM's.
    Add `WEBUI=1` to any of them (or run `bash serve/webui.sh` against a launch that is already up) for the
@@ -140,7 +177,9 @@ Requirements: 2x, 4x or 8x Radeon AI PRO R9700, ROCm 10 on the host, docker, the
    the launch.
 3. **Check it**: `python3 bench/warmup.py`, then `bench/sanity_stress.py` (strict 8-way sanity under load),
    `bench/soak.py` (mixed-length soak), `bench/eval.py` (paired GSM8K), `bench/humaneval.py`,
-   `bench/webui_ab.py` (what the Monitor's relay costs a request). Kernel unit tests
+   `bench/webui_ab.py` (what the Monitor's relay costs a request), `bench/needle_long.py` (retrieval ladder to the
+   checkpoint's own 262k: token counts measured against the checkpoint's tokenizer, a nonce every ~40 sentences so
+   a prefix cache cannot carry the haystack, per-card VRAM high-water per tier). Kernel unit tests
    are in `tests/`; `bench/bringup-tests.sh` runs the single-GPU set in the image.
 
 Notes for the host: cards on the same PCIe switch for tensor parallelism, one card per switch for offloaded
