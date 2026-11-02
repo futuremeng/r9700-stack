@@ -68,8 +68,28 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   reports tokens and timings, never text), no in-flight rows (a stat logger sees a request when it finishes),
   and no page that outlives the launch — which is why the 8081 sidecar stays, and on a box with watchdog and
   PSU incidents is the one to leave running. 32 checks in `tests/test_webui_plugin.py`.
+- **About now hands out pasteable client config**: curl, a **LiteLLM proxy config** (`model_list` /
+  `litellm_params` with `model: openai/<served name>`, `api_base: <origin>/v1`, `api_key: none` or an env var
+  name — never the key itself), and a direct `litellm.completion` that reads both `message.content` and
+  `message.reasoning_content`. Each block has a Copy button, and the base URL in them is the address the
+  browser reached the serve on, so it pastes correctly on the machine you are sitting at. Verified end to end
+  with litellm 1.106.6 installed into `/tmp` (nothing added to either venv): the rendered snippet answered,
+  and the YAML block loaded through `litellm.Router` answered too (`model used -> Qwen3.8`). See
+  [notes/webui.md](notes/webui.md).
 
 ### Fixed
+- **The base URL the About page handed out was the wrong string in two ways.** It printed the sidecar's
+  internal `--upstream` — `http://127.0.0.1:8080`, which on the box that runs the serve is right and pasted
+  into a laptop is your own laptop (this box is reached over the network) — and it had no `/v1`, which is what
+  LiteLLM and the OpenAI SDK need while curl does not. Both bases are generated from `location.origin` now, the
+  address that actually answered the page, with the internal one kept under “Upstream this page dials” where it
+  belongs.
+- **A pasted LiteLLM snippet returned `content = None`.** Measured with litellm 1.106.6 against this serve at
+  `max_tokens=64`: `reasoning_tokens = 64` — the whole budget went into the chain of thought, because these
+  launches pass `--reasoning-parser qwen3` and reasoning counts against `max_tokens`. The snippet asks for 128
+  and reads `message.reasoning_content` as well; the parser name comes from the recipe file, and a test asserts
+  the launchers' `--reasoning-parser` line and their meta line name the same `${REASONING:-qwen3}`, so the page
+  cannot describe a serve that is not running.
 - **`VLLM_PLUGINS` is a strict allowlist, and setting it by hand killed the launch.** An endpoint plugin
   loads only when named, so the merged monitor has to set it — but for every other group vLLM loads
   *everything discoverable* when the variable is unset and only the named ones when it is set. Writing

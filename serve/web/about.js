@@ -73,22 +73,52 @@ function render() {
   const gpus = s.gpus || [];
   $("gpus").replaceChildren(...gpus.map(gpuCard));
 
-  const base = s.upstream || "";
+  // A pasted config has to be pasteable on the machine you are sitting at. `upstream` is what this sidecar
+  // dials -- 127.0.0.1 on the box that runs the serve -- which is dead wrong pasted into a client anywhere
+  // else (this box is reached over the network, and wtmp says so). location.origin is the address that
+  // actually answered this page, tunnel or reverse proxy included.
+  const origin = (location.origin || "").replace(/\/$/, "");
+  const apiBase = `${origin}/v1`;          // LiteLLM and the OpenAI SDK want the /v1; curl does not
+  const name = model || "model";
+  const rsn = meta.reasoning || null;      // the launcher records the parser it passed, in the recipe file
   facts($("facts-api"), [
-    ["OpenAI base URL", base, true],
     ["Model name", model, true],
-    ["Through this page", s.mode === "proxy" ? location.origin : "not routed here — use the base URL above"],
-    ["API key", s.key_needed ? "the serve has one (set it below)" : "none set here"],
+    ["OpenAI / LiteLLM base_url", apiBase, true],
+    ["Root (curl, /health, /metrics)", origin, true],
+    ["Reasoning", rsn ? `separate (${rsn}) — it arrives in message.reasoning_content, and content can come back empty if max_tokens is all spent on it`
+      : "not recorded by the launcher"],
+    ["API key", s.key_needed ? "the serve has one -- put yours in the environment; it is never printed here"
+      : "none: use api_key: none"],
+    ["Through this page", s.mode === "proxy" ? `${origin} (point clients here to record them)`
+      : s.mode === "merged" ? `${origin} (this IS the serve)` : "not routed here — use the base_url above"],
+    ["Weights live at", models[0]?.root ? `${models[0].root} — not a name a client can ask for` : null],
   ]);
-  const curl = `curl ${base}/v1/chat/completions \\\n`
+  const curl = `curl ${origin}/v1/chat/completions \\\n`
     + `  -H 'Content-Type: application/json'${s.key_needed ? ` \\\n  -H 'Authorization: Bearer $KEY'` : ""} \\\n`
-    + `  -d '{"model": "${model || "model"}", "messages": [{"role": "user", "content": "hello"}],\n`
+    + `  -d '{"model": "${name}", "messages": [{"role": "user", "content": "hello"}],\n`
     + `       "max_tokens": 64, "temperature": 0}'`;
   $("curl").textContent = curl;
   document.querySelector("[data-copy-target=curl]").dataset.copy = curl;
+  // LiteLLM in both shapes people actually use it: a proxy config, and a direct call. The `openai/` prefix is
+  // what makes it treat this as an OpenAI-compatible endpoint; the key is never inlined, only named.
+  const yaml = `# litellm --config litellm.yaml --port 4000\nmodel_list:\n`
+    + `  - model_name: ${name}\n    litellm_params:\n`
+    + `      model: openai/${name}\n      api_base: ${apiBase}\n`
+    + `      api_key: ${s.key_needed ? "os.environ/LITELLM_API_KEY" : "none"}\n`
+    + `      # max_tokens counts reasoning too: this serve reports reasoning_tokens separately.`;
+  const py = `import litellm\nr = litellm.completion(\n    model="openai/${name}",\n`
+    + `    api_base="${apiBase}",\n    api_key=${s.key_needed ? "os.environ[\"LITELLM_API_KEY\"]" : "\"none\""},\n`
+    + `    messages=[{\"role\": \"user\", \"content\": \"hello\"}], max_tokens=128)\n`
+    + `m = r.choices[0].message\n`
+    + `print(m.content)                              # None when max_tokens was all spent on reasoning\n`
+    + `print(getattr(m, "reasoning_content", None))  # where ${rsn ? `this serve's --reasoning-parser ${rsn}` : "a reasoning parser"} puts it`;
+  for (const [id, text_] of [["litellm-yaml", yaml], ["litellm-py", py]]) {
+    $(id).textContent = text_;
+    document.querySelector(`[data-copy-target=${id}]`).dataset.copy = text_;
+  }
 
   facts($("facts-self"), [
-    ["Upstream", base],
+    ["Upstream this page dials", s.upstream || null],
     ["Mode", s.mode === "proxy" ? "in the request path (recording)" : "watching /health, /v1/models, /metrics only"],
     ["Poll", isnum(s.poll_s) ? `${s.poll_s} s` : null],
     ["Records kept", String(s.requests_kept ?? 0)],

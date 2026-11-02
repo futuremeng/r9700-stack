@@ -574,6 +574,37 @@ ck("the request list follows the newest row until you click one",
    'follow = true' in monjs and 'id="follow"' in (WEB / "monitor.html").read_text()
    and "rows.find(active) || rows[0]" in monjs and 'aria-pressed="true"' in (WEB / "monitor.css").read_text(),
    monjs[monjs.find("follow = true") - 40:monjs.find("follow = true") + 20])
+# About exists so a client can be configured off it. Two things made that fail before: the base URL printed was
+# the sidecar's own upstream (127.0.0.1 on the serve's box -- dead wrong pasted anywhere else, and this box is
+# reached over the network), and it had no /v1, which is what LiteLLM and the OpenAI SDK need. Both blocks are
+# generated from location.origin, and the key is named, never inlined.
+abjs, abhtml = (WEB / "about.js").read_text(), (WEB / "about.html").read_text()
+ck("About carries a pasteable LiteLLM proxy config and a direct call",
+   'id="litellm-yaml"' in abhtml and 'id="litellm-py"' in abhtml
+   and "model: openai/" in abjs and 'api_base: ${apiBase}' in abjs and 'api_base="${apiBase}"' in abjs)
+ck("the base a client gets is the address that answered this page, with /v1; the internal one is labelled",
+   "const origin = (location.origin" in abjs and 'const apiBase = `${origin}/v1`' in abjs
+   and '["OpenAI / LiteLLM base_url", apiBase, true]' in abjs
+   and '["Upstream this page dials", s.upstream' in abjs)
+ck("no API key is ever written into a pasteable block",
+   all(k in abjs for k in ('api_key: ${s.key_needed ? "os.environ/LITELLM_API_KEY" : "none"}',))
+   and not re.search(r"api_key[=:]\s*\$?\{?\s*(s\.key\b|cfg\[.key.\])", abjs),
+   [m.group(0) for m in re.finditer(r"api_key.{0,40}", abjs)][:2])
+ck("the checkpoint path is on the page but says it is not a model name",
+   'Weights live at' in abjs and "not a name a client can ask for" in abjs)
+# Measured with litellm 1.106.6 against this serve: the pasted snippet as first written returned
+# content=None, because every one of max_tokens went into reasoning. The snippet reads both fields, and the
+# parser name only reaches the page through the recipe file -- so the ARGS line and the meta line have to
+# name the same variable, or About describes a serve that is not running.
+ck("the LiteLLM snippet reads reasoning where this serve puts it",
+   "reasoning_content" in abjs and "max_tokens=128" in abjs and "reasoning" in abhtml)
+for shl in ("serve/native-flashnext.sh", "serve/serve.sh"):
+    src = open(ROOT + "/" + shl).read()
+    ck(f"{shl} passes and reports the same reasoning parser",
+       '--reasoning-parser "${REASONING:-qwen3}"' in src or "--reasoning-parser ${REASONING:-qwen3}" in src,
+       [m.group(0) for m in re.finditer(r"reasoning-parser.{0,24}", src)][:1])
+    ck(f"{shl} records that parser in the recipe file About reads",
+       'reasoning="${REASONING:-qwen3}"' in src)
 
 # VLLM_PLUGINS is a STRICT allowlist, not an "also load these" list. Writing VLLM_PLUGINS=r9700_webui by
 # hand (the first version) turned "load everything discoverable" into "load exactly this", which silently

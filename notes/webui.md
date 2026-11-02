@@ -112,7 +112,8 @@ The model `qwen3.8` does not exist. Valid aliases: Qwen3.8.
 That line is the whole diagnosis of a "model does not exist": it names the aliases of the serve that
 answered, which also tells you whether you reached the serve you meant (the `serve/baseline-tcclaviger/*`
 recipes alias `Qwen3.8-Flash-Next` and `Qwen3.8`; a launch given `SERVED_NAME=` answers to neither of these
-names). The About page prints the alias and the base URL to use, and never the path.
+names). The About page prints the alias, the base URL to use, and the path with the words "not a name a client
+can ask for" next to it — see "Copy-paste client config" below.
 
 ## Cards: what sysfs refuses on this box
 
@@ -147,6 +148,27 @@ So "a compute context holds the card" is not the rule — it refused with nothin
 while the engine was up. What it does guarantee: any of these attributes can fail on any poll, and the
 page says which one failed instead of printing 0. Both directions have been exercised against the live
 sidecar without restarting it (four cards refusing, then four answering).
+
+## Copy-paste client config (About)
+
+About exists so a client can be configured off the page, so its blocks are generated, not typed: a curl call, a
+LiteLLM proxy config, and a direct `litellm.completion`. Three rules they encode, all measured:
+
+- **The base URL is the address the browser reached the serve on** (`location.origin`), never the sidecar's
+  internal `--upstream` (`127.0.0.1` on the serve's box — pasted into a laptop, that is your own laptop; this
+  box is reached over the network). LiteLLM and the OpenAI SDK get it **with** `/v1`, curl gets it without.
+- **The model string is `openai/<served name>`.** The checkpoint path (`/v1/models`' `root`) is on the page
+  with the words "not a name a client can ask for", because asking by it returns a 404 that lists the aliases.
+- **`max_tokens` counts reasoning.** These launches pass `--reasoning-parser qwen3`, and litellm 1.106.6 at
+  `max_tokens=64` against this serve returned `content = None` with `reasoning_tokens = 64`: the whole budget
+  went into the chain of thought. The snippet asks for 128 and prints both `message.content` and
+  `message.reasoning_content`. The parser name reaches the page through the recipe file — the launchers pass
+  `${REASONING:-qwen3}` to vLLM **and** record it in the meta, and a test asserts the two lines name the same
+  variable so the page cannot describe a serve that is not running.
+
+Verified end to end (litellm installed into `/tmp`, not into either venv): the direct snippet as rendered by
+the page printed content and reasoning; the YAML block, loaded and driven through `litellm.Router`, answered too
+— `model used -> Qwen3.8`.
 
 ## Endpoints
 

@@ -65,6 +65,26 @@
         <pre class="code" id="curl"></pre>
         <button class="st-btn" data-copy-target="curl">Copy</button>
       </div>
+      <div class="label code-cap">LiteLLM — proxy config</div>
+      <div class="code-block">
+        <pre class="code" id="litellm-yaml"></pre>
+        <button class="st-btn" data-copy-target="litellm-yaml">Copy</button>
+      </div>
+      <div class="label code-cap">LiteLLM — direct call</div>
+      <div class="code-block">
+        <pre class="code" id="litellm-py"></pre>
+        <button class="st-btn" data-copy-target="litellm-py">Copy</button>
+      </div>
+      <p class="small note">Three things that bite when pasting: LiteLLM and the OpenAI SDK want the base
+        <strong>with</strong> <code>/v1</code> (curl wants it without, as the block above shows), the model
+        string is <code>openai/&lt;served name&gt;</code>, and these launches run a reasoning parser —
+        <code>message.content</code> can come back <code>None</code> with everything spent on
+        <code>message.reasoning_content</code>, because reasoning counts against <code>max_tokens</code>. The
+        path under “Weights live at” is where the checkpoint is, not a name a client can ask for — asking by it
+        gets a 404 that lists the aliases this serve does accept. The base URL above is the address <em>this
+        browser reached the serve on</em>, not what a sidecar dials internally, so it pastes correctly on the
+        machine you are sitting at. The API key is never printed here: if the serve has one, name it in the
+        environment.</p>
     </section>
 
     <section class="card">

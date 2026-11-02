@@ -138,7 +138,7 @@ sudo docker run -d --name ${NAME:-vllmstock} --ipc=host --network=host ${PIDNS--
   --tensor-parallel-size ${TP:-2} --max-model-len ${MAXLEN:-32768} --max-num-seqs ${NSEQ:-4} \
   --max-num-batched-tokens ${NBT:-4096} --gpu-memory-utilization $UTIL \
   "${OFFL[@]}" \
-  --reasoning-parser qwen3 --tool-call-parser qwen3_coder --enable-auto-tool-choice ${LMONLY---language-model-only} \
+  --reasoning-parser ${REASONING:-qwen3} --tool-call-parser ${TOOLCALL:-qwen3_coder} --enable-auto-tool-choice ${LMONLY---language-model-only} \
   "${ARGS[@]}" $EXTRA
 echo "started stock vLLM + r9700 plugin (offload ${OFFLOAD_GB:-34} GB/rank, maxlen ${MAXLEN:-32768})"
 # WEBUI=1: the Monitor/About pages (serve/webui.py, host process, port PORT+1). It only GETs /health,
@@ -152,6 +152,7 @@ if [ "${WEBUI:-0}" = 1 ]; then
     image="$IMG" container="${NAME:-vllmstock}" port="${PORT:-8080}" gpus="${GPUS:-0,1}" model="${MODEL:-/models/Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ}" \
     served_name="${SERVED_NAME:-Qwen3.8}" tp="${TP:-2}" maxlen="${MAXLEN:-32768}" nseq="${NSEQ:-4}" nbt="${NBT:-4096}" \
     util="$UTIL" offload_gb="${OFFLOAD_GB:-34}" kvdtype="${KVDTYPE:-}" mtp="${MTP:-}" draft="${DRAFT:-}" spec="${SPEC:-}" \
+    reasoning="${REASONING:-qwen3}" toolcall="${TOOLCALL:-qwen3_coder}" \
     attn="${ATTN:-}" cgmode="${CGMODE:-}" ccmode="${CCMODE:-}" prefix_cache="${PREFIX_CACHE:-1}" chat_template="${CHAT_TEMPLATE:-}" \
     expert_cache_slots="${R9K_EXPERT_CACHE_SLOTS:-}" target_lmhead="${R9K_TARGET_LMHEAD:-}" draft_lmhead="${R9K_DRAFT_LMHEAD:-}" \
     overlays="${OVERLAYS:-}" extra="${EXTRA:-}"

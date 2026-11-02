@@ -60,7 +60,7 @@ ARGS=(--served-model-name "${SERVED_NAME:-Qwen3.8}" --host 0.0.0.0 --port "${POR
       --tensor-parallel-size "${TP:-4}" --max-model-len "${MAXLEN:-32768}"
       --max-num-seqs "$NSEQ" --max-num-batched-tokens "$NBT"
       --gpu-memory-utilization "${UTIL:-$([ "${TP:-4}" = 4 ] && echo 0.97 || echo 0.94)}"
-      --reasoning-parser qwen3 --tool-call-parser qwen3_coder --enable-auto-tool-choice
+      --reasoning-parser "${REASONING:-qwen3}" --tool-call-parser "${TOOLCALL:-qwen3_coder}" --enable-auto-tool-choice
       --language-model-only)
 [ "${OFFLOAD_GB:-0}" != 0 ] && ARGS+=(--cpu-offload-gb "$OFFLOAD_GB" --cpu-offload-params experts)
 [ -n "${KVDTYPE:-}" ] && ARGS+=(--kv-cache-dtype "$KVDTYPE")
@@ -110,6 +110,7 @@ if [ "${WEBUI:-0}" = 1 ] || [ "${WEBUI:-}" = same ]; then
         || echo "native")
   META=$META bash "$D/webmeta.sh" venv="$VENV" model="$MODEL" served_name="${SERVED_NAME:-Qwen3.8}" \
     gpus="${GPUS:-0,1,2,3}" tp="${TP:-4}" maxlen="${MAXLEN:-32768}" nseq="$NSEQ" nbt="$NBT" \
+    reasoning="${REASONING:-qwen3}" toolcall="${TOOLCALL:-qwen3_coder}" \
     util="${UTIL:-$([ "${TP:-4}" = 4 ] && echo 0.97 || echo 0.94)}" offload_gb="${OFFLOAD_GB:-0}" \
     kvdtype="${KVDTYPE:-}" mtp="$MTP" attn="${ATTN:-}" cg_sizes="${CGSIZES:-}" prefix_cache="${PREFIX_CACHE:-0}" \
     eager="${EAGER:-0}" log="$LOG" fold="${R9K_FOLD:-1}" ar_quant="${R9K_AR_QUANT:-1}" hc_fp8="${R9K_HC_FP8:-r9k}" \
