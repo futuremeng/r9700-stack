@@ -96,7 +96,7 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   (55.9 vs 56.8 s), but three 250k prefills in parallel drive the pool to **99.1%** and the load **22% slower**
   (109.2 → 133.6 s) -- so the recipe keeps it off, and 4096 (= NBT/2, matching the 2.06× memory can hold) is
   the value to use if mixed lengths arrive together. GLM-5.3-Flash's 262k indexer death
-  ([release-v0.3.7.md](release-v0.3.7.md)) does not repeat on this checkpoint because QSA scoring here is
+  ([notes/release-v0.3.7.md](notes/release-v0.3.7.md)) does not repeat on this checkpoint because QSA scoring here is
   `r9700_qsa_score`, which never materialises stock's fp32 `[rows, capacity]` logits -- 8.6 GiB a card at
   NBT=8192 against 1.35 GiB of headroom -- and `R9K_QSA_SCORE=stock` would put that allocation back.
 
@@ -230,9 +230,13 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   `test_ple_int6` and `test_cache_shapes` ALL OK -- while **`main` cannot be followed yet**: `#64110` renames
   `models/qwen4_exp/amd/indexer_qsa` and `models/qwen4_exp/common/qsa_cache`, which two of our imports read.
   Not adopted: 0.33.0 carries one change that touches our numbers (`#60084`, 32-bit buffer addressing on the
-  `TRITON_ATTN` fp8 KV views) and the serving gate needs the cards, which the 262k launch holds -- on a box that is
-  still self-resetting ([notes/incident-2026-11-02/README.md](notes/incident-2026-11-02/README.md)). `amd-aiter`
-  moves `0.1.24.post1` -> `0.1.26` and `orjson` becomes a hard dep when it is adopted.
+  `TRITON_ATTN` fp8 KV views). The gate ran that same day and came back **level**: probe32 at three protocols
+  (-0.4%), the 60k/120k/180k retrieval ladder (-1.3/-0.9/-0.6% prefill, needles found), GSM8K 98/100 + needle 3/3,
+  `sanity_stress` 0 bad of 9,390 at conc 33/48/64 and with 24k prefills first, a 1,505 s 16-client soak with 882
+  requests, 0 errors and VRAM flat to 0.01 GiB -- all against the same box and recipe measured hours earlier, and
+  with `set_triton_ptr_range` worth nothing measurable on our path. The launch that served it died in a platform
+  reset at 09:39:21 mid-request with zero tracebacks in 8,584 log lines. Still open before the pin moves for good:
+  BetterBench. `amd-aiter` moves `0.1.24.post1` -> `0.1.26` and `orjson` becomes a hard dep when it is adopted.
 - **The Requests card says why the queue is waiting** (`serve/webui.py`, `serve/web/monitor.js`,
   `serve/web/monitor.html`). vLLM 0.32 publishes `vllm:num_requests_waiting_by_reason`, and the line is now
   `N waiting · M for scheduling capacity · K deferred`. Its HELP text says "'capacity' = waiting for scheduling

@@ -1,7 +1,8 @@
 # notes/incident-2026-11-02 — seven resets in one night; three of them idle, one of those with no job on the box at all
 
 Same box as [incident-2026-11-01b](../incident-2026-11-01b/README.md) (`jiulu-9700`, kernel `7.0.0-42-generic`,
-4× Radeon AI PRO R9700 `1002:7551`, bare metal), caught 2026-11-02 00:2x–00:5x UTC. **Observation only: nothing
+4× Radeon AI PRO R9700 `1002:7551`, bare metal), caught 2026-11-02 00:2x–00:5x UTC. **It did not stop there: four more deaths follow the same signature later the
+same day (02:58, 06:30, 09:09, 09:39), one of them taking a healthy serve with it — see the last section.** **Observation only: nothing
 on the box was changed for this incident** — no sysctl, no modprobe, no BIOS. The in-band IPMI readouts
 (`sudo ipmitool -I open …`) were run on the host by the operator; the BMC web-UI material in
 `bmc-power-events.txt` is quoted verbatim, and its record ids are corrected against the raw SEL in
@@ -104,6 +105,34 @@ Two provenance notes that only show up when the tables are put side by side:
 5. The *configured* power-restore policy: `chassis policy list` prints the supported set only. `raw 0 7`
    (Get Chassis Power Configuration, low bits of byte 2) says which is in force — which decides whether
    death 7's 2 m 27 s self-recovery was policy or coincidence.
+
+## Later the same day: four more deaths (02:58:40, 06:30:18, 09:09:32, 09:39:21 UTC), the last one taking a serve with it
+
+Written 2026-11-02 ~09:50 UTC, reading the journal back from the boot that came up at 09:41:24. The bundle above
+stopped at death 7 (00:25). The box went on: boots `274defed` (01:30:27 → 02:58:40), `3f605810` (03:00:42 →
+06:30:18), `002dbde7` (06:35:06 → **09:09:32**) and `d9eca3ef` (09:11:32 → **09:39:21**), then `29ee487c` at
+09:41:24.
+
+Two of those deaths had a vLLM launch on them, and in both cases the launch was healthy up to the millisecond the
+platform went:
+
+- **09:09:32** — the standing 262k launch on vLLM 0.32.0. Its own log ends on `GET /health` / `/api/status` 200s;
+  the journal's last lines are `pcieport 0000:c4:00.0: [ 7] BadDLLP` (`aer_layer=Data Link Layer,
+  aer_agent=Receiver ID`) plus a `{250}[Hardware Error]` block with `aer_uncor_status: 0x00000000`.
+- **09:39:21** — the same recipe relaunched on **vLLM 0.33.0** for the pin gate ([../vllm-0.33.md](../vllm-0.33.md)),
+  22 minutes into its life: `probe32`, the 60k/120k/180k retrieval ladder and `bench/quality.py` had already come
+  back clean, and its log's last lines are six `POST /v1/chat/completions … 200 OK` with **zero tracebacks, zero
+  HIP errors, zero aborts** in all 8,584 lines. The journal ends on `pcieport 0000:c0:03.1: [12] Timeout`.
+
+Both dying boots carry the same link-layer storm, and it is concentrated on the same two ports every time —
+`pcieport 0000:c4:00.0` 1,417 lines and `0000:c0:03.1` 505 in the 09:09 boot; 1,042 and 370 in the 09:39 boot,
+with 10,855 and 8,421 `[Hardware Error]` journal lines respectively. That is the same pair the boot-by-port tally
+in [../incident-2026-11-01b/aer-by-boot-port.txt](../incident-2026-11-01b/aer-by-boot-port.txt) was cut against.
+Nothing on the box was changed for these four deaths either: observation only.
+
+What it means for the work: a vLLM pin bump cannot be *gated* on this box while it behaves like this. The
+remaining soak/sanity items for 0.33.0 are cheap and mechanical; it is the 25-minute soak and the 20-minute cold
+load that the platform keeps cutting short, and a gate interrupted by a hard reset proves nothing either way.
 
 ## Why this is in the repo
 
