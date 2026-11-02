@@ -1,4 +1,6 @@
-# Renders docs/r9700-stack-v0.3.3.png, the one-image summary at the top of README.md. Needs matplotlib:
+# Renders docs/r9700-stack-v0.3.3.png, the one-image summary in the README's "What v0.3.8 gives you" section (it
+# opened the README until the title became a drawn lockup; docs/lockup.py).
+# Needs matplotlib:
 #   docker run --rm -v $PWD:/w --entrypoint bash r9700/vllm:dev -c "pip install -q matplotlib && python3 /w/docs/summary-image.py"
 # Update the numbers below from notes/release-v<version>.md when a release changes them.
 # r9700-stack v0.3.2 summary image for the README. Dark surface, the reference dataviz palette's dark steps

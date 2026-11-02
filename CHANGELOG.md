@@ -143,6 +143,18 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   protocol it came from, because the numbers do not come from the same machine. A one-line `./setup.sh --yes
   --launch native-flashnext.sh --webui same` quickstart under the badges. The two-card and 27B tables collapse into
   a `<details>`, and the Monitor screenshot is a centred figure with a `<sub>` caption.
+- **The README's title is a drawn lockup now, and the release page moved to the section that describes it**
+  (`docs/lockup.py` → `docs/r9700-stack-lockup-{dark,light}.svg`). `# r9700-stack` was a markdown heading sitting
+  above a 16:9 summary image whose own header says the same words; the heading is gone and the title is the picture,
+  the way Strata opens: four bars for the stack and the four cards, the word **outlined** from the Outfit subset the
+  Monitor already ships (weight 650 -- the README title is the same face as the pages, and paths rather than a font
+  the reader has to download), dark and light variants switched on `prefers-color-scheme`, `alt="r9700-stack"` so the
+  page still has a name for readers who do not get the picture. The summary image went down to
+  `## What v0.3.8 gives you`, where its numbers belong, captioned with the script that draws it. `docs/lockup.py`
+  asserts the wordmark and the mark stay inside the canvas before it writes, and `tests/test_readme.py` holds the
+  arrangement: the README opens on the lockup, both files parse and stay inside their canvas, dark and light are one
+  drawing in two inks, the wordmark is outlined rather than `<text>` (which inside an `<img>` renders in whatever
+  font that viewer happens to have), and the release image is used exactly once, under the heading that carries it.
 - **A Speed table for the four cards uncapped at 32k.** The prefill and aggregate headline numbers had lived only
   in [notes/native-4xr9700.md](notes/native-4xr9700.md); they are in the README now with their sample lists: single
   stream 186.7 tok/s, `bench.py` at 4 / 8 / 16 streams 372 / 841 / 1,164, `probe32.sh` at 32 in flight 1,598 (300-token

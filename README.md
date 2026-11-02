@@ -1,7 +1,8 @@
-# r9700-stack
-
 <p align="center">
-  <img src="docs/r9700-stack-v0.3.8.svg" alt="r9700-stack v0.3.8: what runs on it, the weight formats, the speed">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/r9700-stack-lockup-dark.svg">
+    <img src="docs/r9700-stack-lockup-light.svg" alt="r9700-stack" width="320">
+  </picture>
 </p>
 
 <h3 align="center">Qwen3.8 and GLM-5.3-Flash, fast on Radeon AI PRO R9700 cards.</h3>
@@ -54,6 +55,13 @@ sample lists and the measurements that were tried and rejected: <a href="#speed"
 <a href="notes/context-262k.md">notes/context-262k.md</a>.</sub>
 
 ## What v0.3.8 gives you
+
+<p align="center">
+  <img src="docs/r9700-stack-v0.3.8.svg" alt="r9700-stack v0.3.8: what runs on it, the weight formats, the speed">
+</p>
+
+<sub>The release on one page: the configurations it runs, the formats it loads, the four-card numbers. Drawn by
+`docs/summary-image.py` from the release notes; `docs/r9700-stack-v0.3.8.png` is the same drawing as a PNG.</sub>
 
 - **Stock vLLM 0.32 on stock ROCm 10.** Pinned to the 2026-10-25 ROCm 10 nightly (vLLM 0.32.1rc1, torch 2.13); the
   plugin registers through vLLM's platform, quantization, model and attention-backend entry points and carries its

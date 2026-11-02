@@ -14,6 +14,10 @@ What can actually go wrong here, and did:
       warning rather than shipping the clipped picture.
   (4) HTML that is not closed. The figure blocks are <p align="center"> ... </sub></p> pairs; an edit that drops one
       </sub> silently swallows the section that follows.
+  (5) The title. The README opens the way Strata's does -- a centred lockup in a <picture> with dark and light
+      variants and the name in the alt, no markdown heading -- and the one-image release page belongs to the section
+      that describes the release. So the alt has to be the project's name, both files have to exist, the drawing has
+      to stay inside its canvas, and the image has to be under the heading that carries it.
 
 Run: python3 tests/test_readme.py        (no GPU, no serve, no network -- stdlib plus the repo's own scripts)
 """
@@ -38,6 +42,39 @@ def ck(name, cond, detail=""):
     print(f"  {'ok  ' if cond else 'FAIL'} {name} {detail}")
     if not cond:
         fail += 1
+
+
+def pathbox(d):
+    """A box around a path's points and control points. Absolute commands only -- the test checks that
+    first -- so the numbers can be read straight off in order. H and V carry one number, not a pair,
+    which is exactly the mistake a `take every second number` check makes."""
+    x = y = 0.0
+    pts = []
+    for cmd, args in re.findall(r"([A-Za-z])([^A-Za-z]*)", d):
+        ns = [float(v) for v in re.findall(r"-?\d+(?:\.\d+)?", args)]
+        if cmd == "M":
+            x, y = ns[0], ns[1]
+            pts.append((x, y))
+        elif cmd == "L":
+            x, y = ns[0], ns[1]
+            pts.append((x, y))
+        elif cmd == "H":
+            x = ns[0]
+            pts.append((x, y))
+        elif cmd == "V":
+            y = ns[0]
+            pts.append((x, y))
+        elif cmd == "Q":
+            pts += [(ns[0], ns[1]), (ns[2], ns[3])]
+            x, y = ns[2], ns[3]
+        elif cmd == "C":
+            pts += [(ns[0], ns[1]), (ns[2], ns[3]), (ns[4], ns[5])]
+            x, y = ns[4], ns[5]
+        elif cmd == "Z":
+            pass
+        else:
+            return None                       # a relative command: the walk above does not apply
+    return pts
 
 
 def texts(svg):
@@ -97,6 +134,47 @@ if fig:
        "api/status" in caption and "monitor-cards.json" in caption)
     ck("the caption says the rates are window means, not steady-state rates",
        "last 2 s" in caption and "averaged" in caption)
+
+# --- the title lockup and the release page ----------------------------------------------------------------
+ck("the README opens on the centred lockup, not on a markdown heading", README.lstrip().startswith('<p align="center">\n  <picture>'))
+lock = re.search(r'<picture>\s*<source media="\(prefers-color-scheme: dark\)" srcset="([^"]+)">\s*'
+                 r'<img src="([^"]+)" alt="([^"]*)" width="(\d+)">\s*</picture>', README)
+ck("dark and light sources, sized, with the project name as the alt",
+   lock is not None and (lock.group(3) if lock else "") == "r9700-stack",
+   f"alt={lock.group(3) if lock else '-'} width={lock.group(4) if lock else '-'}")
+if lock:
+    dark, light = ROOT / lock.group(1), ROOT / lock.group(2)
+    for tag, p in (("dark", dark), ("light", light)):
+        try:
+            doc = xml.dom.minidom.parseString(p.read_text())
+            vw = float(doc.documentElement.getAttribute("viewBox").split()[2])
+            vh = float(doc.documentElement.getAttribute("viewBox").split()[3])
+            inside = True
+            for r in doc.getElementsByTagName("rect"):
+                inside &= (float(r.getAttribute("x")) >= 0 and float(r.getAttribute("y")) >= 0
+                           and float(r.getAttribute("x")) + float(r.getAttribute("width")) <= vw
+                           and float(r.getAttribute("y")) + float(r.getAttribute("height")) <= vh)
+            # path control points may stand a little outside the ink they draw; the generator asserts the
+            # glyphs' real bounds, so this only has to catch a wordmark that ran off the canvas entirely
+            for pa in doc.getElementsByTagName("path"):
+                d = pa.getAttribute("d")
+                absolute = not re.search(r"[movlhqcsz]", d)
+                pts = pathbox(d) if absolute else None
+                inside &= absolute and pts is not None and all(
+                    -8 <= px <= vw + 8 and -8 <= py <= vh + 8 for px, py in pts)
+            ck(f"the {tag} lockup parses and stays inside its {vw:g} x {vh:g} canvas", inside)
+        except Exception as e:
+            ck(f"the {tag} lockup parses and stays inside its canvas", False, str(e)[:120])
+    same = (re.sub(r'fill="[^"]+"', "", dark.read_text()) == re.sub(r'fill="[^"]+"', "", light.read_text()))
+    ck("dark and light are one drawing in two inks, not two drawings", same)
+    ck("the wordmark is outlined, not left to the reader's fonts", "<text" not in light.read_text())
+
+sec = re.search(r"^## What v0\.3\.8 gives you\n(.*?)(?=^## )", README, re.S | re.M)
+ck("the one-image release page sits under the heading that describes the release",
+   bool(sec) and "r9700-stack-v0.3.8.svg" in sec.group(1))
+ck("and the README uses it in that one place", README.count("r9700-stack-v0.3.8.svg") == 1,
+   f"{README.count('r9700-stack-v0.3.8.svg')} uses")
+ck("with a caption naming the script that draws it", bool(sec) and "summary-image.py" in sec.group(1))
 
 # --- the figure blocks close ------------------------------------------------------------------------------
 nblocks = README.count('<p align="center">')

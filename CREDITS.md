@@ -10,8 +10,8 @@ and does not cover.
 |---|---|---|---|
 | Device-side expert LRU cache kernels (vendored unmodified) | davetha -- https://github.com/davetha/r9700-lru-expert-cache (3743f13) | `kernels/third_party/davetha/` | **Apache-2.0** -- its own LICENSE and NOTICE are preserved in that directory |
 | Chat template `qwen-fixed-v22.3.jinja` (copied verbatim) | GGZ14/vllm-mxfp4 -- https://github.com/GGZ14/vllm-mxfp4 (92eed82) | `serve/templates/` | used with the author's permission, with credit; no upstream LICENSE file |
-| Outfit variable font (two woff2 subsets, copied verbatim) | The Outfit Project Authors -- https://github.com/Outfitio/Outfit-Fonts | `serve/web/fonts/` | **SIL Open Font License 1.1** -- `serve/web/fonts/OFL.txt` |
-| Monitor / About page design (tokens, components, layout) | Strata -- https://github.com/Niko1221/Strata | `serve/web/tokens.css`, `serve/web/web.css`, `serve/web/monitor.*`, `serve/web/about.*` | **MIT** -- ported and rewritten for vLLM's counters; the parts a vLLM launch cannot answer are left out rather than guessed |
+| Outfit variable font (two woff2 subsets, copied verbatim) | The Outfit Project Authors -- https://github.com/Outfitio/Outfit-Fonts | `serve/web/fonts/`, and the README title `docs/r9700-stack-lockup-{dark,light}.svg` as path outlines written by `docs/lockup.py` | **SIL Open Font License 1.1** -- `serve/web/fonts/OFL.txt`; the lockup ships outlines only, no font file, which is what the OFL asks for |
+| Monitor / About page design (tokens, components, layout) | Strata -- https://github.com/Niko1221/Strata | `serve/web/tokens.css`, `serve/web/web.css`, `serve/web/monitor.*`, `serve/web/about.*`, and the README's centred title lockup (the shape of its hero: mark, outlined word, dark/light pair; drawn here from our own face and tokens) | **MIT** -- ported and rewritten for vLLM's counters; the parts a vLLM launch cannot answer are left out rather than guessed |
 
 The chat template is worth about +14% speculative-decoding acceptance over the checkpoint's own template. It is
 the one file in this repository not covered by our Apache-2.0 grant: permission was given for **this** project,
