@@ -1051,7 +1051,11 @@ class Hub:
                  "power_cap_w": g.get("power_cap_w"), "temp_c": g.get("temp_c")}
                 for g in self.gpus]})
             self.host = read_host()
-            if self.cfg["pci"]:
+            # .get, not []: a cfg built by the other entry point (serve/plugin) is not guaranteed to carry the
+            # newest keys, and a KeyError here kills the poll thread silently -- the Cards panel keeps its last
+            # frame and looks alive. That is exactly what happened when the PCIe key shipped without the plugin
+            # cfg knowing it: the merged page had one card sample and no PCIe, and the serve log held a dead thread.
+            if self.cfg.get("pci"):
                 chains = read_pcie(self.cfg["pci"])
                 by_bus = {g.get("bus"): g.get("card") for g in self.gpus}      # name the chain by its card
                 for ch in chains:

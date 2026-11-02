@@ -197,10 +197,17 @@ function renderStatus(s) {
   const big = (id, v, unit) =>
     { $(id).innerHTML = `${isnum(v) ? fmt(v, 1) : "—"}<span class="unit">${unit}</span>`; };
   big("rate-stream", rate.stream_tok_s_live, "tok/s");
+  // Tokens per step reconciles the two clocks: the step clock and the per-accepted-token clock. The window
+  // usually holds no histogram observation at all (vLLM observes one when a request FINISHES), so the
+  // since-launch ratio fills in and gets labelled, rather than the clause vanishing whenever nothing ended.
+  const sn = s.since || {};
+  const tpsW = rate.tokens_per_step;
+  const tpsS = isnum(sn.itl_ms) && isnum(sn.tpot_ms) ? sn.itl_ms / sn.tpot_ms : null;
   text("rate-stream-note", isnum(rate.stream_tok_s_live)
     ? `aggregate ÷ ${Math.round(live.running || 0)} running · this window`
       + (isnum(rate.itl_ms) ? ` · step ${fmt(rate.itl_ms, 1)} ms` : "")
-      + (isnum(rate.tokens_per_step) ? ` × ${fmt(rate.tokens_per_step, 2)} tokens a step` : "")
+      + (isnum(tpsW) ? ` × ${fmt(tpsW, 2)} tokens a step`
+        : isnum(tpsS) ? ` × ${fmt(tpsS, 2)} tokens a step (since launch)` : "")
     : inflight ? "nothing generated in this window yet" : "nothing running");
   big("rate-gen", rate.generation_tok_s, "tok/s");
   text("rate-gen-note", isnum(rate.generation_tok_s)

@@ -188,6 +188,11 @@ class WebMonitor:
                # the SAME knobs and defaults serve/webui.py uses, so one env works for both. Defaulting
                # gpus to None was a live bug: the merged page came up with no cards at all.
                "gpus": os.environ.get("R9K_WEB_GPUS", "/sys/class/drm"),
+               # Same rule for every reader the Hub can start: a key the sidecar passes and this cfg omits is a
+               # panel that silently stops updating inside the serve, which is the panel nobody looks at until
+               # the box has already reset twice.
+               "pci": os.environ.get("R9K_WEB_PCI", "/sys/bus/pci/devices"),
+               "journal": os.environ.get("R9K_WEB_JOURNAL", ""),
                "smi": (W.SMI_DEFAULT if os.environ.get("R9K_WEB_SMI", "") == "1"
                        else os.environ.get("R9K_WEB_SMI", "").split()) or None,
                "meta": os.environ.get("WEBUI_META"),

@@ -139,8 +139,8 @@ ck("and the detail agrees", hub.record_detail("x4")["timings"]["finish_reason"] 
 #      first seconds of a launch reported the merged monitor as if it were an observing sidecar.
 import threading                                          # noqa: E402
 live = W.Hub({"mode": "merged", "upstream": "http://127.0.0.1:1", "key": None, "poll": 0.2, "keep": 3,
-              "gpus": FAKE_SYSFS, "smi": None, "meta": None, "version": "v", "timeout": 1.0,
-              "engine_records": W.EngineRecords(3), "metrics_fn": lambda: MET})
+              "gpus": FAKE_SYSFS, "pci": None, "journal": "", "smi": None, "meta": None, "version": "v",
+              "timeout": 1.0, "engine_records": W.EngineRecords(3), "metrics_fn": lambda: MET})
 threading.Thread(target=live.poll, daemon=True).start()
 threading.Thread(target=live.gpu_poll, daemon=True).start()   # the cards are a separate loop on purpose:
 threading.Thread(target=live.slow_poll, daemon=True).start()  # a sysfs read may block, a metrics read may not
@@ -149,6 +149,16 @@ ck("a merged hub knows it is merged before any request has finished",
    live.status.get("merged") is True and live.status.get("reachable") is True, str(live.status)[:160])
 ck("and it reads the cards from the same default path the sidecar uses",
    len(live.status["gpus"]) == 2 and live.status["gpus"][0]["card"] == "card1", str(live.status["gpus"])[:120])
+# The ring has to KEEP filling. A reader added to gpu_poll without a key in this cfg raised KeyError inside the
+# loop, one frame was stored, and the thread died: the panel kept showing its first frame forever and looked
+# healthy. Found live on 2026-11-02 with the PCIe card, which is why the Hub reads cfg with .get.
+time.sleep(1.0)
+ck("the card ring keeps filling rather than freezing on one frame",
+   len(live.status.get("gpus_history") or []) >= 3,
+   f"{len(live.status.get('gpus_history') or [])} samples in ~2.6 s at a 0.2 s poll")
+ck("the plugin's own cfg names every reader the Hub can start",
+   all(f'"{k}"' in (Path(__file__).resolve().parent.parent / "serve/plugin/r9700_webui/__init__.py").read_text()
+       for k in ("gpus", "pci", "journal", "smi")))
 
 # --------------------------------------------------------------------- 3. the routes (needs FastAPI)
 try:

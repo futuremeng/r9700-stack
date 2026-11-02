@@ -980,6 +980,8 @@ ck("a caveat on a headline number is note-sized, not headline-sized",
    'function qual(t) {' in _ck2 and '.qual{font-size:var(--st-fs-xs)' in (WEB / "web.css").read_text())
 # "(since launch)" sat inside value--sm elements, set in the headline's own size -- three words louder than
 # the measurement they qualify, which is backwards. The qualifier helper carries them instead.
+ck("the tokens-per-step clause falls back to the since-launch ratio, labelled, when the window has none",
+   "tokens a step (since launch)" in monjs and "sn.itl_ms / sn.tpot_ms" in monjs)
 ck("the since-launch caveats on the headline stats ride the qualifier",
    monjs.count("qualText(") >= 2 and '"since launch"' in monjs
    and 'text(id, ms(pick(k)) + (isnum(rate[k])' not in monjs)

@@ -336,6 +336,20 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   and says so rather than taking the serve with it. 209 checks; `test_webui_plugin.py` still passes; the plugin
   picks the journal up only at import, so the in-serve pages get it on the next serve start.
 
+- **A live bug in the merged Monitor, found by going live to ship it**: `serve/plugin` built the Hub cfg without the
+  new `pci` key, `gpu_poll` read `cfg["pci"]`, and the `KeyError` killed the poll thread inside the loop. The
+  in-serve page kept its very first card frame (`gpus_history` stuck at one sample) and had no PCIe panel at all
+  while looking perfectly healthy; the dead thread sat in the serve log. Fixed with `cfg.get`; the plugin now names
+  every reader key the Hub can start (`gpus`, `pci`, `journal`, `smi`); and the plugin suite asserts the **card ring
+  keeps filling** rather than freezing on one frame (37 checks) — a stale panel raises nothing, so only a liveness
+  assertion catches the class. Also: `× N tokens a step` disappeared whenever no request had finished in the window
+  (it needs the per-accepted-token histogram, which vLLM observes only at request end) — it now falls back to the
+  since-launch ratio and labels it, live mid-request reading `step 13.0 ms × 2.39 tokens a step (since launch)` at
+  157 tok/s on one stream. Restart evidence for the incident note: AER counters are boot-scoped and survive a serve
+  restart, so the two restarts gave a clean observation — `c4:00.0` BadTLP 27 → 30 with a first `BadDLLP`,
+  `04:00.0` 3 → 6, `c0:03.1` Timeout 2 → 3, card2's chain 31 → 36 and card4's 5 → 8, with `TOTAL_ERR_NONFATAL` and
+  `FATAL` still 0 and every link still at 32.0 GT/s x16.
+
   browser on demand is the part that never worked.
 
   configuration here; 95 °C is a fault anywhere). The `read_gpus` docstring also carried a claim this day

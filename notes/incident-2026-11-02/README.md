@@ -182,3 +182,24 @@ came back claiming nothing had run, and "what was it doing when it died" was ans
 requests are now appended to a JSONL journal (`~/logs/requests-<port>.jsonl` by default; one fsync per finished
 request, measured 1.98 ms, rows hold timings and token counts but never the text) and replayed when the pages come
 back, each row labelled with the launch it came from. Details in [notes/webui.md](../webui.md).
+
+## Two serve restarts, and what the counters did across them
+
+Restarting the launch (12:50 and 12:55 UTC, to put the request journal and the new Monitor panels into the running
+serve) turned out to be a clean observation, because the AER counters are boot-scoped and survive a serve restart:
+
+| counter | 12:14 | 12:57 (after two restarts) |
+|---|---|---|
+| `c4:00.0` upstream port, card2's chain | BadTLP 27 | BadTLP **30**, BadDLLP **1** (first sighting), correctable total 30 |
+| `04:00.0` upstream port, card4's chain | BadTLP 3 | BadTLP **6** |
+| `c0:03.1` root port | Timeout 2 | Timeout **3** |
+| card2 chain correctable | 31 | **36** |
+| card4 chain correctable | 5 | **8** |
+| every link | 32.0 GT/s x16 | 32.0 GT/s x16 — still at maximum, no width or speed fallback |
+| `TOTAL_ERR_NONFATAL` / `FATAL` | 0 / 0 | 0 / 0 |
+
+So: launching a serve is followed by correctable traffic on the switch upstream ports — five more on card2's
+within ~40 minutes spanning two starts — without a single uncorrectable error and without the link renegotiating.
+That is the shape of a link that is working but not clean. It is not yet evidence about the hard resets (no fatal
+errors have ever been counted here), but it is now a continuous trace with timestamps rather than a hand-run
+snapshot, which is what a correlation with a reset needs.
