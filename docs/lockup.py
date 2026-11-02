@@ -12,9 +12,8 @@ rather than a font. An SVG `<text>` inside an `<img>` can do neither: no font is
 renders is a guess. Outfit is OFL 1.1 and already credited in CREDITS.md; the licence covers exactly
 this, embedding the outlines.
 
-Four bars for the mark: the stack, and the four R9700s the repo is built around. The blue step the
-figures and badges use for the cards in the configuration the README leads with, the muted step for
-the fourth.
+Four bars for the mark: the stack, and the four R9700s the repo is built around -- the same mark the
+release page carries, drawn here in the blue step the badges use.
 
 Needs fontTools and brotli (brotli only to read the woff2), and nothing else -- in a throwaway venv,
 not the one that runs the serve:
@@ -42,7 +41,6 @@ H, BASE = 48.0, 37.0                  # canvas height and the wordmark's baselin
 MARK_W, GAP = 46.0, 15.0              # the bars and the space between mark and word
 INK = {"dark": "#f0efec", "light": "#1a1a19"}
 ACCENT = {"dark": "#3987e5", "light": "#2f81f7"}       # the blue steps used in the figures and badges
-MUTED = {"dark": "#8f8e86", "light": "#6c757d"}
 
 
 def outlines(font, word, size, x, baseline, tracking):
@@ -73,14 +71,13 @@ def outlines(font, word, size, x, baseline, tracking):
 
 
 def bars(scheme):
-    """Four right-aligned bars: the stack. The top one is the fourth card, in the muted step. Their
-    centre sits on the wordmark's cap-box centre, and the widest leaves 2 units of left inset.
-    Returns the elements and the box they cover."""
+    """Four right-aligned bars: the stack, all four in the accent -- the same mark the release page carries, so
+    the README's title and its one-image summary are the same lockup. Their centre sits on the wordmark's
+    cap-box centre, and the widest leaves 2 units of left inset. Returns the elements and the box they cover."""
     out, y = [], 5.5
-    for i, w in enumerate((22.0, 30.0, 38.0, 44.0)):
-        col = MUTED[scheme] if i == 0 else ACCENT[scheme]
+    for w in (22.0, 30.0, 38.0, 44.0):
         out.append('<rect x="%.2f" y="%.2f" width="%.2f" height="7" rx="3.5" fill="%s"/>'
-                   % (MARK_W - w, y, w, col))
+                   % (MARK_W - w, y, w, ACCENT[scheme]))
         y += 10.0
     return out, 5.5, y - 10.0 + 7.0
 

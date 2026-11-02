@@ -174,7 +174,18 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   states that the figure's numbers are the v0.3.8 snapshot at the 210 W gate -- which is why its Flash-Next row
   reads 210 tok/s where the table above it reads 225, the newer measurement -- and the figure links to
   `docs/r9700-stack-v0.3.8.png`, the same drawing at 2400 x 1220 (2.0x the figure's canvas, so the click buys
-  something). Three more checks in `tests/test_readme.py` (35 in all) hold the link, the resolution and the caption.
+  something). Three more checks in `tests/test_readme.py` hold the link, the resolution and the caption.
+- **The title's mark is four bars in one colour, and a wrapped card line no longer ends on a connector**
+  (`docs/lockup.py`, `docs/monitor-cards.py`). These are the two things looking at the renders caught and measuring
+  had not: the top bar of the title's stack was in the muted step, which reads as a stray element rather than the
+  fourth card -- and the release page's own mark has always been four bars in one colour, so the repo's two lockups
+  were not the same drawing. And the Generation card wrapped as "(prompt whole, decode per step) ·" over
+  "last 2 s": a line ending on a connector reads as a broken sentence, so `wrap()` moves the connector down with
+  the clause it joins. Two more checks come with it (36 in `tests/test_readme.py`): no line a card draws runs past
+  that card's own bottom edge -- a panel sized from its content can still be a line too short -- and no drawn line
+  ends on a connector. What the renders also showed, and what was left alone: the Monitor's dark cards are bordered
+  in `--st-line: #2a3036`, which is faint at the column's width, but the figure matches `serve/web/tokens.css` and
+  strengthening it there would make the figure the odd one out on the page it pictures.
 - **A Speed table for the four cards uncapped at 32k.** The prefill and aggregate headline numbers had lived only
   in [notes/native-4xr9700.md](notes/native-4xr9700.md); they are in the README now with their sample lists: single
   stream 186.7 tok/s, `bench.py` at 4 / 8 / 16 streams 372 / 841 / 1,164, `probe32.sh` at 32 in flight 1,598 (300-token

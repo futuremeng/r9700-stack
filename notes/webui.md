@@ -236,11 +236,14 @@ serves (`/v1/*`, `/metrics`) is untouched apart from `GET /`, which the plugin r
 `tests/test_webui.py` (135 checks, no GPU and no network needed) and `tests/test_webui_plugin.py`
 (32 checks; the record store and the stat logger run anywhere, the routes need FastAPI, and vLLM's own
 route-replacement tier runs only where vLLM imports — `LD_LIBRARY_PATH=~/opt/openmpi/usr/lib/x86_64-linux-gnu
-~/venv-r9700/bin/python tests/test_webui_plugin.py`). Two more cover the parts that are not the sidecar:
-`tests/test_readme.py` (21 checks: the README's card figure re-draws from the committed `/api/status` poll string
-for string, no line runs off the canvas, and the caption cannot state a number the figure does not show), and
-`tests/render-monitor.mjs`, which runs the page's own JavaScript unmodified in a stub DOM against a live serve and
-prints what its cards and rows actually render — the JS and its payloads, not CSS or layout.
+~/venv-r9700/bin/python tests/test_webui_plugin.py`). Three more cover the parts that are not the sidecar:
+`tests/test_readme.py` (36 checks, stdlib alone: the README's card figure re-draws from the committed `/api/status`
+poll string for string, no line runs off the canvas and none runs past the bottom of the card that drew it, no
+wrapped line ends on a connector, the caption cannot state a number the figure does not show, the title lockup and
+the release page sit where they belong and link to a picture big enough to read), `tests/test_lockup.py` (14 checks
+on the same lockup rendered, which needs an SVG renderer — `rsvg-convert` or cairosvg — and skips saying so without
+one), and `tests/render-monitor.mjs`, which runs the page's own JavaScript unmodified in a stub DOM against a live
+serve and prints what its cards and rows actually render — the JS and its payloads, not CSS or layout.
 
 - `/metrics` collapsing: buckets skipped, counters summed over ranks, gauges taken as max, KV capacity
   and configuration read out of labels, and a counter that did not move reporting *no data* rather

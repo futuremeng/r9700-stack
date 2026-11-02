@@ -27,15 +27,15 @@
 <text x="188.0" y="345" font-size="14.5" fill="#c7cdd3">14,915 prompt tok/s (credited at</text>
 <text x="188.0" y="366" font-size="14.5" fill="#c7cdd3">request end) · 0.0 req/min</text>
 <text x="188.0" y="387" font-size="13.0" fill="#8e979f">14,999 tokens per iteration record</text>
-<text x="188.0" y="406" font-size="13.0" fill="#8e979f">(prompt whole, decode per step) ·</text>
-<text x="188.0" y="425" font-size="13.0" fill="#8e979f">last 2 s</text>
+<text x="188.0" y="406" font-size="13.0" fill="#8e979f">(prompt whole, decode per step)</text>
+<text x="188.0" y="425" font-size="13.0" fill="#8e979f">· last 2 s</text>
 <rect x="510.0" y="245" width="320" height="211" rx="10" fill="#161a1d" stroke="#2a3036"/>
 <text x="528.0" y="275" font-size="12" letter-spacing="1.2" fill="#8e979f">SPECULATION</text>
 <text x="528.0" y="317" font-size="24" font-weight="900" fill="#eef1f3">100.0% accepted</text>
 <text x="528.0" y="345" font-size="14.5" fill="#c7cdd3">20 requests finished since the</text>
 <text x="528.0" y="366" font-size="14.5" fill="#c7cdd3">engine started</text>
-<text x="528.0" y="387" font-size="13.0" fill="#8e979f">2.00 accepted tokens per draft ·</text>
-<text x="528.0" y="406" font-size="13.0" fill="#8e979f">last 2 s</text>
+<text x="528.0" y="387" font-size="13.0" fill="#8e979f">2.00 accepted tokens per draft</text>
+<text x="528.0" y="406" font-size="13.0" fill="#8e979f">· last 2 s</text>
 <text x="0" y="488" font-size="13" fill="#8e979f">the poll it was drawn from: docs/r9700-stack-monitor-cards.json</text>
 <text x="0" y="468" font-size="13" fill="#8e979f">GET http://127.0.0.1:8080/api/status at 2026-11-02 06:47:35 UTC &#183; Qwen3.8 from Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ</text>
 </svg>

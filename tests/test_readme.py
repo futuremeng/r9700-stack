@@ -11,7 +11,10 @@ What can actually go wrong here, and did:
       a figure is regenerated and the prose is quietly left behind.
   (3) A figure that runs off its own canvas: svg text does not wrap, so a line wider than the figure is a line that
       leaves the picture. docs/monitor-cards.py measures its lines and warns; this test re-runs it and fails on the
-      warning rather than shipping the clipped picture.
+      warning rather than shipping the clipped picture. The same in the other direction: a card sized from its own
+      content can still be too short for it, and a wrapped line can end on a connector -- "(prompt whole, decode
+      per step) \u00b7" over "last 2 s" reads as a broken sentence. Both are checked here, and both were found by
+      looking at the render at github.com's column width, which is the only way they get found.
   (4) HTML that is not closed. The figure blocks are <p align="center"> ... </sub></p> pairs; an edit that drops one
       </sub> silently swallows the section that follows.
   (5) The title. The README opens the way Strata's does -- a centred lockup in a <picture> with dark and light
@@ -105,6 +108,21 @@ over = [m.group(3) for m in re.finditer(r'<text x="([\d.]+)" y="[\d.]+" font-siz
 ck(f"no text line runs past the {w} px canvas", not over, str(over[:2]))
 nrect = svg.count('fill="#161a1d" stroke')
 ck("five cards are drawn, as the README says", nrect == 5, f"{nrect} card panels")
+
+# --- what a card draws stays inside that card, and a wrapped line does not end on a connector -------
+# (0.25 em below the baseline is the descender allowance: enough for 'g' and 'p', not for the panel edge)
+PANEL = re.findall(r'<rect x="([\d.]+)" y="([\d.]+)" width="[\d.]+" height="([\d.]+)" rx="10" fill="#161a1d"', svg)
+owned = lambda cx: [(float(y), float(fs), t) for x, y, fs, t in
+                    re.findall(r'<text x="([\d.]+)" y="([\d.]+)" font-size="([\d.]+)"[^>]*>([^<]*)</text>', svg)
+                    if abs(float(x) - (cx + 18)) < 0.01]
+out_ = []
+for cx, cy, ch in [(float(a), float(b), float(c)) for a, b, c in PANEL]:
+    out_ += [(t[:34], round(y + 0.25 * fs, 1), round(cy + ch, 1))
+             for y, fs, t in owned(cx) if y + 0.25 * fs > cy + ch]
+ck("no line a card draws runs past the card's own bottom edge", not out_, str(out_[:2]))
+dangling = [t for t in texts(svg) if t.rstrip().endswith("\u00b7")]
+ck("and no wrapped line ends on a connector", not dangling,
+   f"{[d[:34] for d in dangling][:2]}")
 
 # --- the committed poll re-draws the committed figure ------------------------------------------------------
 ck("the poll the figure was drawn from is in the repo", POLL.exists() and POLL.stat().st_size > 1000,

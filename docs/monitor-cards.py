@@ -146,6 +146,7 @@ FS = {"soft": 14.5, "faint": 13.0}
 W, TOP, CW, GAP, PAD, BAR, ROWGAP = 1000, 52, 320, 20, 18, 7, 20
 COLS = 3                                     # 3 * 320 + 2 * 20 = 1000, full column, no margin to waste
 CHAR = 0.60                                  # em per glyph, conservative for Outfit / DejaVu Sans
+SEP = "\u00b7"                                 # the &#183; the sub-lines are joined with, as it sits in the text
 warn = []
 
 
@@ -167,6 +168,14 @@ def wrap(s, fs, width):
     for ln in lines:                          # a single word longer than the card: say so, do not overflow
         if len(ln) > per:
             warn.append(f"{ln!r} at {fs}px needs {len(ln) * fs * CHAR:.0f}px, card holds {width}px")
+    # a wrapped line must not end on a connector: "(prompt whole, decode per step) ·" over "last 2 s" reads as a
+    # broken sentence, so the separator goes down with the clause it belongs to
+    for i in range(len(lines) - 1):
+        if lines[i].rstrip().endswith(SEP):
+            lines[i] = lines[i].rstrip()[:-len(SEP)].rstrip()
+            lines[i + 1] = SEP.strip() + " " + lines[i + 1]
+    if lines and lines[-1].rstrip().endswith(SEP):       # a connector to nothing at the end of the text
+        lines[-1] = lines[-1].rstrip()[:-len(SEP)].rstrip()
     return lines
 
 
