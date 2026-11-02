@@ -99,7 +99,11 @@ CC=()
 # Needs the plugin installed in $VENV: pip install -e serve/plugin. Needs one API server: with
 # --api-server-count N>1 each server has its own registry, its own poller and its own request ring.
 if [ "${WEBUI:-0}" = 1 ] || [ "${WEBUI:-}" = same ]; then
-  WPORT=${WEBUI_PORT:-$(( ${PORT:-8080} + 1 ))}
+  # The recipe file is named after the port the PAGES are served on, which is PORT+1 for the sidecar and
+  # PORT itself for WEBUI=same: the plugin reads the file the launch wrote, and there is no second port in
+  # merged mode for WEBUI_PORT to mean. Naming it after PORT+1 in both modes is how the merged About page
+  # lost its "how this box was launched" card: written to -8081.json, read from -8080.json.
+  WPORT=${WEBUI_PORT:-$([ "${WEBUI:-}" = same ] && echo "${PORT:-8080}" || echo "$(( ${PORT:-8080} + 1 ))")}
   META=${WEBUI_META:-$HOME/r9700-web-meta-$WPORT.json}
   D="$(dirname "$(realpath "$0")")"
   VER=$($VENV/bin/python -c "import importlib.metadata as m; print('native vllm '+m.version('vllm'))" 2>/dev/null \
@@ -114,7 +118,6 @@ if [ "${WEBUI:-0}" = 1 ] || [ "${WEBUI:-}" = same ]; then
     mtp_quant_rows="${R9K_MTP_QUANT_ROWS:-}" extra="${EXTRA:-}"
   if [ "${WEBUI:-}" = same ]; then
     D="$(dirname "$(realpath "$0")")"
-    META=${WEBUI_META:-$HOME/r9700-web-meta-${PORT:-8080}.json}
     if ! "$VENV/bin/python" -c 'import sys; from importlib.metadata import entry_points
 sys.exit(0 if any(e.name == "r9700_webui" for e in entry_points(group="vllm.endpoint_plugins")) else 1)'; then
       echo "WARN WEBUI=same: the monitor plugin is not installed in $VENV; starting WITHOUT the pages."
@@ -129,6 +132,7 @@ sys.exit(0 if any(e.name == "r9700_webui" for e in entry_points(group="vllm.endp
       export WEBUI_META=$META                                  # the About page's recipe file
       echo "Monitor and About pages on http://127.0.0.1:${PORT:-8080}/monitor (inside the serve itself)"
       echo "  VLLM_PLUGINS=$VLLM_PLUGINS"
+      echo "  recipe file the About page reads: $META"
     fi
   else
     WEBUI_PORT=$WPORT UPSTREAM=http://127.0.0.1:${PORT:-8080} META=$META VERSION="$VER" bash "$D/webui.sh"

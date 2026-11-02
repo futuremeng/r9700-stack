@@ -597,6 +597,15 @@ if native.exists():
 else:
     ck("native venv absent here: discovery not checked", True)
 
+# The recipe file is the About page's only source for "how this box was launched", and it is named after the
+# port the PAGES are on. WEBUI=same has no second port; naming the file after PORT+1 anyway wrote it to
+# -8081.json while the plugin read -8080.json, so the card vanished and nothing anywhere reported an error.
+lf = (ROOT + "/serve/native-flashnext.sh")
+nf = open(lf).read()
+ck("the launcher names the recipe file in exactly one place, and merged mode names it after its own port",
+   nf.count("r9700-web-meta-") == 1 and 'same ] && echo "${PORT' in nf,
+   f"{nf.count('r9700-web-meta-')} default meta paths in {lf}")
+
 for srvx in (srv, srv2, srv3):
     srvx.shutdown()
 up.shutdown()

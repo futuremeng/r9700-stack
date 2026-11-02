@@ -92,12 +92,27 @@ and a test asserts the repo's own plugin survives it.
 | tokens per engine step, steps per request | `iteration_tokens_total_{sum,count}` |
 | prefix cache hits % | `prefix_cache_hits_total` ÷ `prefix_cache_queries_total` |
 | card busy % / VRAM / temperature / sclk / mclk | `/sys/class/drm/card*/device` (`gpu_busy_percent`, `mem_info_*`, `hwmon*/{temp1_input,power1_average}`, `hwmon*/freq*_label` matched by `sclk`/`mclk`, not by index) |
-| the launch recipe on About | the meta file `serve/serve.sh` writes when `WEBUI=1` (`--meta`), not something inferred |
+| the launch recipe on About | the meta file `serve/serve.sh` and `serve/native-flashnext.sh` write when `WEBUI` is set (`--meta`), not something inferred. It is named after the port the **pages** are served on — `PORT+1` for the sidecar, `PORT` for `WEBUI=same`, since merged mode has no second port. Write it to one name and read it from the other and the card silently disappears: that is how the merged About page lost it |
 
-**What cannot be answered per request:** queue wait and the prefill/decode split. vLLM counts those in
-aggregate, so the Monitor shows them as window means under "Engine timings" and the per-request rows
-carry a dash. For the real per-request breakdown use `bench/ttft_breakdown.py`, which differences
-`/metrics` around a controlled set of requests.
+**What cannot be answered per request from outside:** queue wait and the prefill/decode split. vLLM counts
+those in aggregate, so in `observe`/`proxy` the Monitor shows them as window means under "Engine timings"
+and the per-request rows carry a dash. Inside the serve (`serve/plugin`) the engine hands over each request's
+own split and the rows carry it; for the breakdown from outside use `bench/ttft_breakdown.py`, which
+differences `/metrics` around a controlled set of requests.
+
+**The model name is the alias, not the checkpoint.** `GET /v1/models` is the authority: this launch serves
+`Qwen3.8` (`--served-model-name ${SERVED_NAME:-Qwen3.8}`), whose `root` is
+`~/models/Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ`. Asking by the root, by the directory name, or with different
+case gets vLLM's own 404, which quotes what it was asked and lists what it accepts:
+
+```
+The model `qwen3.8` does not exist. Valid aliases: Qwen3.8.
+```
+
+That line is the whole diagnosis of a "model does not exist": it names the aliases of the serve that
+answered, which also tells you whether you reached the serve you meant (the `serve/baseline-tcclaviger/*`
+recipes alias `Qwen3.8-Flash-Next` and `Qwen3.8`; a launch given `SERVED_NAME=` answers to neither of these
+names). The About page prints the alias and the base URL to use, and never the path.
 
 ## Cards: what sysfs refuses on this box
 
