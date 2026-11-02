@@ -306,7 +306,8 @@ ck("a row carries the token counts and the timings the cards read",
    all(k in ring.listing()[0] for k in ("usage", "timings", "queue_s", "load_s")), str(sorted(ring.listing()[0])))
 src = (Path(ROOT) / "serve" / "webui.py").read_text()
 ck("both row builders list from one key list, so the page cannot lose a field on one backend",
-   src.count("for k in ROW_KEYS") == 2 and "usage" in W.ROW_KEYS and "timings" in W.ROW_KEYS, str(W.ROW_KEYS))
+   src.count("for k in ROW_KEYS") >= 2 and "usage" in W.ROW_KEYS and "timings" in W.ROW_KEYS
+   and "boot" in W.ROW_KEYS, str(W.ROW_KEYS))
 use = ring.start("/v1/chat/completions", "Qwen3.8", "{}", True)
 use["usage"] = {"prompt_tokens": 11, "completion_tokens": 20}
 use["first_token_s"] = 0.0
@@ -325,6 +326,76 @@ ck("a relay record computes its prefill speed and names what it timed",
    abs((pt["prefill_tok_s"] or 0) - 2500) < 1 and "through this page" in pt["prefill_basis"], str(pt))
 ck("no prefill speed is claimed when the first token was never seen",
    ring.get(f"req-{use['seq']}")["timings"]["prefill_tok_s"] is None, str(d["timings"]))
+
+
+# ---------------------------------------------------------------- (2b) the request journal -------
+# The point is the box, not the feature: this machine hard resets without ever writing a shutdown record, and
+# the engine's request list dies with the launch. The rows describing what it was doing at the moment of death
+# are worth more than the disk they sit on.
+class Fin:                                                    # a FinishedRequestStats stand-in
+    def __init__(s, i, prompt=50000, gen=8):
+        s.request_id, s.num_prompt_tokens, s.num_generation_tokens = f"chatcmpl-{i}", prompt, gen
+        s.num_cached_tokens, s.num_preemptions, s.max_tokens_param = 0, 0, 1024
+        s.queued_time, s.prefill_time, s.inference_time, s.decode_time = 0.02, 5.0, 5.2, 0.2
+        s.finish_reason = "stop"
+
+
+jpath = Path("/tmp/r9700-webui-journal.jsonl")
+jpath.unlink(missing_ok=True)
+j1 = W.Journal(jpath, keep=5)
+e1 = W.EngineRecords(keep=5, journal=j1)
+for i in range(7):
+    e1.add(Fin(i))
+ck("finished requests are journalled, one line each",
+   len(jpath.read_text().splitlines()) == 7, str(len(jpath.read_text().splitlines())))
+ck("the journal holds rows, not bodies", "input" not in jpath.read_text() and "_in" not in jpath.read_text())
+j2 = W.Journal(jpath, keep=5)
+e2 = W.EngineRecords(keep=5, journal=j2)
+ck("a new process replays the last rows, newest first",
+   [r["id"] for r in e2.listing()] == [f"chatcmpl-{i}" for i in (6, 5, 4, 3, 2)],
+   str([r["id"] for r in e2.listing()]))
+ck("replay is capped at --keep, so the file can outgrow the page without the page growing", len(e2) == 5, str(len(e2)))
+ck("seq continues past the restored rows instead of colliding with them",
+   e2.add(Fin(99)).get("seq") == 8, str(e2.listing()[0]["seq"]))
+ck("a restored row carries the launch it came from, so two boots do not read as one odd afternoon",
+   jpath.read_text().splitlines()[-1].find('"boot"') > 0
+   and e2.listing()[0]["boot"] == j1.boot, str(e2.listing()[0])[:160])
+jpath.write_text(jpath.read_text() + '{"seq": 4242, "state": "compl')      # the write a reset cut in half
+ck("a torn trailing line is dropped, not rendered as a request",
+   len(W.Journal(jpath, keep=5).replay()) == 5 and all(r["seq"] != 4242 for r in W.Journal(jpath, keep=5).replay()),
+   str([r["seq"] for r in W.Journal(jpath, keep=5).replay()]))
+# A relay row restored from the journal has no captured bodies -- the detail pane must say so instead of
+# raising on the missing keys, which is what the first version of this did.
+j3 = W.Journal("/tmp/r9700-webui-journal-relay.jsonl", keep=5)
+r1 = W.Records(keep=5, journal=j3)
+c1 = r1.start("/v1/chat/completions", "Qwen3.8", '{"hello": 1}', True)
+c1["usage"] = {"prompt_tokens": 11, "completion_tokens": 20}
+r1.finish(c1, "completed", status=200)
+r2 = W.Records(keep=5, journal=W.Journal("/tmp/r9700-webui-journal-relay.jsonl", keep=5))
+det = r2.get(f"req-{c1['seq']}")
+ck("a relay row restored from the journal still opens, and says its text did not survive",
+   det is not None and det["input"] is None and "journal" in (det.get("input_note") or ""), str(det)[:160])
+t0 = time.perf_counter()
+for i in range(20):
+    r1.finish(r1.start("/v1/chat/completions", "Qwen3.8", "{}", True), "completed", status=200)
+app_ms = (time.perf_counter() - t0) / 20 * 1e3
+# 2.0 ms measured on this box per journalled request. The bound is loose on purpose -- it is here to catch the
+# journal becoming a per-token cost or a stall, not to police disk jitter. Requests finish seconds apart; the
+# fsync is what makes the row survive a hard reset, which is the whole reason the file exists.
+ck("journal cost stays one fsync per finished request, not per token", app_ms < 25.0, f"{app_ms:.2f} ms each")
+bad = W.Journal("/proc/definitely-not-writable/journal.jsonl", keep=5)
+ck("a journal that cannot be opened degrades to memory and says why, rather than breaking the serve",
+   bad.f is None and bad.error and bad.append({"seq": 1}) is False and bad.replay() == [], str(bad.error))
+_web = Path(__file__).resolve().parent.parent / "serve" / "web"
+ck("the page is told about the journal, so a restored list is not mistaken for this launch's work",
+   all(x in (_web / "monitor.js").read_text()
+       for x in ("request journal", "carried over", "journal FAILED", "this launch only"))
+   and 'id="journal-line"' in (_web / "monitor.html").read_text())
+# The launch and the plugin meet only through this variable's name, so a rename on one side is a silent
+# memory-only Monitor -- the kind of break that shows up weeks later when someone asks what died.
+ck("the launch and the plugin agree on the journal's env var name",
+   "R9700_WEBUI_JOURNAL" in (Path(ROOT) / "serve/native-flashnext.sh").read_text()
+   and "R9700_WEBUI_JOURNAL" in (Path(ROOT) / "serve/plugin/r9700_webui/__init__.py").read_text())
 
 
 # ------------------------------------------------------------------ (3) the sysfs read -----------
@@ -555,9 +626,17 @@ up_port = up.server_address[1]
 threading.Thread(target=up.serve_forever, daemon=True).start()
 
 
-def sidecar(mode="proxy", key="", keep=50):
+_jsid = iter(range(1000))
+
+
+def sidecar(mode="proxy", key="", keep=50, journal=None):
+    # Each instance gets its own journal file: two sidecars sharing one path would replay each other's rows,
+    # which is the confusion the launch avoids by naming the file after the port it serves.
+    jp = journal or f"/tmp/r9700-webui-journal-{mode}-{next(_jsid)}.jsonl"
+    if journal is None:
+        Path(jp).unlink(missing_ok=True)                    # a named journal is reused on purpose
     cfg = {"port": 0, "upstream": f"http://127.0.0.1:{up_port}", "mode": mode, "key": key, "poll": 0.2,
-           "keep": keep, "meta": "", "gpus": str(fake), "pci": str(pnodevs), "smi": None,
+           "keep": keep, "meta": "", "gpus": str(fake), "pci": str(pnodevs), "journal": jp, "smi": None,
            "timeout": 10.0, "verbose": False, "version": "test"}
     hub, srv = W.build(cfg)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -574,7 +653,11 @@ def call(port, path, body=None, key=None, raw_stream=False):
         return r.status, (data if raw_stream else json.loads(data or b"null"))
 
 
-hub, srv, port = sidecar("proxy")
+# A fresh journal for the running sidecar, or every run of this file would replay the last run's rows and the
+# counts below would be about a launch that happened an hour ago.
+MAIN_JOURNAL = "/tmp/r9700-webui-journal-main.jsonl"
+Path(MAIN_JOURNAL).unlink(missing_ok=True)
+hub, srv, port = sidecar("proxy", journal=MAIN_JOURNAL)
 time.sleep(0.6)                                            # let the poll threads land a window
 
 status, body = call(port, "/healthz")
@@ -639,6 +722,9 @@ ck("PCIe chain state and its ring ride the payload, capped at the same HIST",
    s.get("pcie") and s.get("pcie_history") and len(s["pcie_history"]) <= W.HIST
    and all(len(h["chains"]) == len(s["pcie"]) for h in s["pcie_history"]),
    f"{len(s.get('pcie_history') or [])} samples x {len(s.get('pcie') or [])} chains")
+ck("the payload names the journal so the page can say where a restored row came from",
+   bool(s.get("journal")) and s["journal"]["ok"] and s["journal"]["path"].endswith("journal-main.jsonl"),
+   str(s.get("journal")))
 ck("status carries models", s["models"][0]["id"] == "Qwen3.8")
 ck("status engine version", s["engine"]["vllm_version"] == "test")
 ck("the sparkline ring carries the live rates too",
@@ -682,6 +768,19 @@ with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=5) as r:
     ck("a non-API GET is relayed", r.status == 200 and r.read().startswith(b"# HELP vllm:"))
 ck("and not recorded", len([x for x in call(port, "/api/requests")[1]["requests"]
                             if x["path"] == "/metrics"]) == 0)
+
+# The end the journal exists for: restart the process and the rows come back. This box does it on its own -- a
+# hard reset, no shutdown record, and a Monitor that used to come back claiming nothing had ever run.
+_, _srv_j, _port_j = sidecar("proxy", journal=MAIN_JOURNAL)
+time.sleep(0.6)
+_j = call(_port_j, "/api/status")[1]["journal"]
+_restored = call(_port_j, "/api/requests")[1]["requests"]
+ck("a restarted process comes back with the previous launch's rows",
+   len(_restored) >= 3 and all(r.get("boot") for r in _restored) and _j["restored"] == len(_restored),
+   f"{len(_restored)} rows restored, journal says {_j['restored']}")
+ck("restored rows name the launch they came from, which is not this one",
+   _restored[0]["boot"] != _j["boot"], str([_restored[0]["boot"], _j["boot"]]))
+_srv_j.shutdown()
 
 # the stream must be pumped as it arrives, not buffered to the end: if the first bytes reach the client
 # only when the upstream finishes, every first-token number on the page -- and the page's whole reason

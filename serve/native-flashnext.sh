@@ -131,12 +131,19 @@ sys.exit(0 if any(e.name == "r9700_webui" for e in entry_points(group="vllm.endp
       PLG=$("$VENV/bin/python" "$D/webui-plugins.py" --require r9700 --quiet)
       VLLM_PLUGINS=$PLG; export VLLM_PLUGINS
       export WEBUI_META=$META                                  # the About page's recipe file
+      # The request journal, on by default with the pages: this box hard resets without a shutdown record, and
+      # the engine's request list dies with the launch, so the rows describing what it was doing at the moment
+      # of death are worth more than the memory it costs. ~0.5 kB per finished request, fsynced once each.
+      JOURNAL=${R9700_WEBUI_JOURNAL:-$HOME/logs/requests-$WPORT.jsonl}
+      mkdir -p "$(dirname "$JOURNAL")"; export R9700_WEBUI_JOURNAL=$JOURNAL
+      echo "  request journal: $JOURNAL (the list survives a restart or a reset)"
       echo "Monitor and About pages on http://127.0.0.1:${PORT:-8080}/monitor (inside the serve itself)"
       echo "  VLLM_PLUGINS=$VLLM_PLUGINS"
       echo "  recipe file the About page reads: $META"
     fi
   else
-    WEBUI_PORT=$WPORT UPSTREAM=http://127.0.0.1:${PORT:-8080} META=$META VERSION="$VER" bash "$D/webui.sh"
+    WEBUI_PORT=$WPORT UPSTREAM=http://127.0.0.1:${PORT:-8080} META=$META VERSION="$VER" \
+    JOURNAL=${JOURNAL:-$HOME/logs/requests-$WPORT.jsonl} bash "$D/webui.sh"
   fi
 fi
 [ "${DRY:-0}" = 1 ] && { echo "launch: $VENV/bin/vllm serve $MODEL ${ARGS[*]} $EXTRA"; exit 0; }

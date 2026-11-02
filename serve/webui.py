@@ -615,7 +615,104 @@ def aer_deltas(chains, last):
 # inter-token interval -- where that request's own 87.8 tok/s belonged. Same for prefill: the row and the
 # cards had no per-request prefill to show, only the window mean.
 ROW_KEYS = ("id", "seq", "path", "model", "state", "started_at", "wallclock_s", "first_token_s",
-            "load_s", "queue_s", "stream", "http_status", "response_format", "usage", "timings")
+            "load_s", "queue_s", "stream", "http_status", "response_format", "usage", "timings", "boot")
+
+
+class Journal:
+    """Append-only JSONL of finished request rows, so the list survives what this box does.
+
+    The request list lives in the serve's memory, and this box dies without writing a shutdown record -- 15
+    boots on 2026-11-02, several of them mid-request -- so after a hard reset the Monitor came back showing
+    nothing, and "what was it doing when it died" had to be answered from side logs written by hand. One line
+    per finished request closes that: the page can carry a dead launch's last rows across the reset.
+
+    Three choices worth their reasons:
+
+    - **fsync per row.** A write to the page cache survives a crash but not a hard reset, and surviving hard
+      resets is the entire purpose. The cost is one fsync per finished request -- requests end on the scale of
+      seconds apart, and it is measured in tests/webui rather than assumed.
+    - **No bodies.** The engine records never had text, the relay's are capped and large, and the incident
+      question is about timing and tokens, not content. Only ROW_KEYS go to disk.
+    - **A boot id per process.** A list that spans a reset is two launches, and it should read that way rather
+      than as one afternoon with strange gaps in it.
+    """
+
+    MAX_BYTES = 8 << 20                                     # rotate well before a page read gets slow
+
+    def __init__(self, path, keep=100):
+        self.path, self.keep = Path(path), keep
+        self.lock = threading.Lock()
+        self.boot = f"{int(time.time())}-{os.getpid()}"
+        self.f, self.error, self.rows_in = None, None, 0
+        self.start()
+
+    def start(self):
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.f = self.path.open("a", encoding="utf-8")
+        except OSError as e:
+            # A journal that cannot be written is a degraded Monitor, never a broken serve.
+            self.f, self.error = None, f"{type(e).__name__}: {e}"
+        return self
+
+    def append(self, row):
+        if self.f is None:
+            return False
+        try:
+            with self.lock:
+                row["boot"] = self.boot                     # the row in memory knows its launch too, so a list
+                self.f.write(json.dumps({k: row.get(k) for k in ROW_KEYS},
+                                        ensure_ascii=False, default=str) + "\n")
+                self.f.flush()
+                os.fsync(self.f.fileno())
+                if self.f.tell() > self.MAX_BYTES:
+                    self._compact()
+            return True
+        except OSError as e:
+            self.error = f"{type(e).__name__}: {e}"
+            return False
+
+    def _compact(self):
+        """Rewrite the file keeping only the last `keep` rows (caller holds the lock)."""
+        rows, path = self.replay(), self.path
+        self.f.close()
+        try:
+            with path.open("w", encoding="utf-8") as f:
+                for r in reversed(rows):                    # oldest first on disk, newest at the tail
+                    f.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+        except OSError as e:
+            self.error = f"compact {type(e).__name__}: {e}"
+        self.f = path.open("a", encoding="utf-8")
+
+    def replay(self):
+        """Rows from earlier launches, newest first, at most `keep` of them.
+
+        Read from the tail backwards: a hard reset can cut the last write in half, and a line that does not
+        parse is dropped rather than trusted -- a half-row that renders as a request is worse than no row."""
+        try:
+            raw = self.path.read_text(errors="replace").splitlines()
+        except OSError:
+            return []
+        rows = []
+        for ln in reversed(raw[-(self.keep + 8) * 4:]):
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                r = json.loads(ln)
+            except ValueError:
+                continue                                    # the torn line
+            if isinstance(r, dict) and r.get("seq") is not None:
+                rows.append(r)
+                if len(rows) >= self.keep:
+                    break
+        return rows
+
+    def info(self):
+        return {"path": str(self.path), "ok": self.f is not None, "error": self.error,
+                "restored": self.rows_in, "boot": self.boot}
 
 
 class EngineRecords:
@@ -632,8 +729,16 @@ class EngineRecords:
     Keys are the ones the page already reads from `Records`, so one renderer serves both.
     """
 
-    def __init__(self, keep=100):
+    def __init__(self, keep=100, journal=None):
         self.keep, self.items, self.n, self.lock = keep, deque(), 0, threading.Lock()
+        # Carried over from the launches before this one, if a journal is configured: on a box that hard resets
+        # without a shutdown record, the rows that died are the ones worth still being able to read.
+        self.journal = journal
+        if journal is not None:
+            rows = journal.replay()
+            journal.rows_in = len(rows)
+            self.items.extend(rows)                       # newest first, which is how replay returns them
+            self.n = max([r.get("seq") or 0 for r in rows], default=0)
 
     def add(self, f, now=None):
         """One FinishedRequestStats (duck-typed: this file must import without vllm installed)."""
@@ -675,6 +780,8 @@ class EngineRecords:
             self.items.appendleft(r)
             while len(self.items) > self.keep:
                 self.items.pop()
+            if self.journal is not None:
+                self.journal.append(r)
             return r
 
     def listing(self):
@@ -712,8 +819,14 @@ class Records:
     """The last --keep requests, newest first, kept in a lock so the poll thread and the page can
     read them while a request is still filling its own entry in."""
 
-    def __init__(self, keep=100):
+    def __init__(self, keep=100, journal=None):
         self.keep, self.items, self.n, self.lock = keep, deque(), 0, threading.Lock()
+        self.journal = journal
+        if journal is not None:
+            rows = journal.replay()
+            journal.rows_in = len(rows)
+            self.items.extend(rows)
+            self.n = max([r.get("seq") or 0 for r in rows], default=0)
 
     def start(self, path, model, body, stream):
         with self.lock:
@@ -739,6 +852,8 @@ class Records:
         r["state"] = state
         if state in ("completed", "error", "disconnected"):
             r["_closed"] = True
+            if self.journal is not None:
+                self.journal.append(r)
             r["wallclock_s"] = time.time() - r["started_at"]
             gen = (r["usage"] or {}).get("completion_tokens") or r["tokens_est"] or None
             span = max(r["wallclock_s"] - (r["first_token_s"] or 0.0), 0.0) or r["wallclock_s"]
@@ -776,6 +891,17 @@ class Records:
         with self.lock:
             for r in self.items:
                 if rid in (r["id"], f"req-{r['seq']}"):
+                    if "_in" not in r:                    # a row carried over from an earlier launch: the
+                        out = {k: r.get(k) for k in ("id", "seq", "path", "model", "state", "started_at",
+                                                     "wallclock_s", "first_token_s", "load_s", "queue_s",
+                                                     "stream", "http_status", "response_format", "usage",
+                                                     "timings", "error")}
+                        out["id"] = r["id"] or f"req-{r['seq']}"
+                        out["input"] = out["output"] = out["response"] = out["reasoning"] = None
+                        out["input_note"] = ("This row was restored from the request journal "
+                                             f"(launch {r.get('boot')}), which keeps timings and token counts "
+                                             "but never the text.")
+                        return out
                     out = {k: r.get(k) for k in ("id", "seq", "path", "model", "state", "started_at",
                                                  "wallclock_s", "first_token_s", "load_s", "queue_s",
                                                  "stream", "http_status", "response_format", "usage",
@@ -794,7 +920,10 @@ class Records:
 class Hub:
     def __init__(self, cfg):
         self.cfg = cfg
-        self.rec = Records(cfg["keep"])
+        # The request journal: a JSONL file of finished rows, replayed at startup, so the list survives what
+        # this box does to a process (see Journal). Off unless a path is configured.
+        self.journal = Journal(cfg["journal"], cfg["keep"]) if cfg.get("journal") else None
+        self.rec = Records(cfg["keep"], journal=self.journal)
         # When the monitor runs INSIDE the serve (serve/plugin), the per-request records come from the
         # engine's own stat logger instead of a relay, and /metrics is read from the process's Prometheus
         # registry instead of over a socket it happens to be serving itself.
@@ -868,6 +997,10 @@ class Hub:
                     payload["key_needed"] = self.key_needed or bool(self.cfg["key"])
                     payload["merged"] = self.eng is not None     # `is not None`, not bool(): an empty
                                                                   # EngineRecords is falsy by __len__
+                    # Whether the list in front of the reader extends back past this process, and where that
+                    # came from -- after a hard reset, the rows on screen are evidence from the dead launch.
+                    j = getattr(self.eng, "journal", None) or self.journal
+                    payload["journal"] = j.info() if j else None
                     self.prev, self.prev_t, self.status = cur, t0, payload
                 self.hist.append({"at": t0, "gen_tok_s": payload["rate"].get("generation_tok_s"),
                                   "stream_tok_s": payload["rate"].get("stream_tok_s_live"),
@@ -1207,6 +1340,9 @@ def main(argv=None):
     ap.add_argument("--pci", default=os.environ.get("R9K_WEB_PCI", "/sys/bus/pci/devices"),
                     help="PCIe sysfs root for the link/AER card (empty = off). Read-only and needs no root "
                          "and no /dev/kfd, unlike the byte counters, which answer N/A on these cards.")
+    ap.add_argument("--journal", default=os.environ.get("R9K_WEB_JOURNAL", ""),
+                    help="append finished requests to this JSONL file and replay it at startup, so the request "
+                         "list survives a restart or a hard reset of the serve (empty = memory only)")
     ap.add_argument("--smi", default=os.environ.get("R9K_WEB_SMI", ""),
                     help="fill what the sysfs refuses from rocm-smi (empty = off; pass a command to override "
                          "the default -- opens /dev/kfd on every poll, so keep it off while measuring)")
@@ -1215,7 +1351,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     cfg = {"port": a.port, "upstream": a.upstream.rstrip("/"), "mode": "proxy" if a.proxy else "observe",
            "key": a.key, "poll": a.poll, "keep": a.keep, "meta": a.meta,
-           "gpus": a.gpus, "pci": a.pci, "smi": (SMI_DEFAULT if a.smi == "1" else a.smi.split()) if a.smi else None,
+           "gpus": a.gpus, "pci": a.pci, "journal": a.journal, "smi": (SMI_DEFAULT if a.smi == "1" else a.smi.split()) if a.smi else None,
            "timeout": 600.0, "verbose": a.verbose, "version": a.version}
     _, srv = build(cfg)
     print(f"webui: http://127.0.0.1:{cfg['port']}/monitor  upstream {cfg['upstream']}  "

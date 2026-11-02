@@ -216,6 +216,9 @@ number above it means the two counters are not the pair this line thinks they ar
         </select>
       </div>
     </div>
+    <!-- where the list came from: a serve that dies without a shutdown record would otherwise come back with
+         a blank table and no way to tell "nothing ran" from "the record of it died with the process" -->
+    <div class="small" id="journal-line" hidden></div>
     <div class="workspace">
       <div id="requests" class="requests" aria-label="Request list"></div>
       <div class="detail">

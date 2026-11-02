@@ -470,6 +470,31 @@ numbers: `NonFatalErr` appears *inside* `aer_dev_correctable` (a bit in the corr
 error — `TOTAL_ERR_NONFATAL` is the one that means that, and it reads 0 here), and the totals can be zeroed by the
 kernel, which is why the deltas treat a decrease as unknown rather than negative.
 
+### The request journal: the list outlives the process that held it
+
+The request list lived only in the serve's memory, and this box dies without writing a shutdown record — 15 boots
+on 2026-11-02, several of them mid-request. After every reset the Monitor came back with an empty table, and "what
+was it doing when it died" had to be reconstructed from side logs written by hand. So finished rows are now appended
+to a JSONL journal and replayed at startup:
+
+- **one line per finished request**, holding exactly `ROW_KEYS` — **no bodies**. The engine records never carried
+  text, the relay's are capped and large, and the incident question is about timing and tokens.
+- **a `boot` id per process** (start epoch + pid), so a list spanning a reset reads as two launches rather than one
+  afternoon with strange gaps. The page says which: `request journal ~/logs/requests-8080.jsonl · 3 rows carried
+  over from earlier launches · this launch 1793622173-12882`, and "Requests retained" is qualified
+  `N carried over` or `this launch only`.
+- **fsync per row, measured at 1.98 ms** per journalled request here (0.018 ms without it — the version a hard
+  reset eats). Requests finish seconds apart, this is nowhere near the decode path, rows are ~380 bytes, replay
+  over a 2000-line file costs 3.4 ms, and the file rotates at 8 MiB down to the last `--keep` rows.
+- **a torn tail line is dropped, not rendered.** A reset can cut a write in half, and a half-row that draws as a
+  request is worse than no row. A journal that cannot be opened degrades to memory and the page says why, in danger
+  tone — a broken journal must never take the serve with it.
+
+Configuration: `--journal PATH` for the sidecar, `R9700_WEBUI_JOURNAL` for the plugin, and the launch sets
+`~/logs/requests-<port>.jsonl` by default when the pages are on. **One file per port**, because two monitors sharing
+a journal replay each other's rows — the test suite hit exactly that confusion, showing a request count about a
+launch that had happened an hour earlier.
+
 **Per-card waveforms: busy and VRAM replace the busy bar.** `gpu_poll` keeps its own ring
 (`gpus_history`, same 90 points, one slot per card, aligned by PCI bus id / card name so a card vanishing from
 sysfs cannot plot its neighbour's numbers), and each card draws busy on 0..100 and VRAM on 0..that card's own

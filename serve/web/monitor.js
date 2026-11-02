@@ -238,7 +238,21 @@ function renderStatus(s) {
   text("model", s.model_name || (s.models || [])[0]?.id || "no model reported");
   text("upstream", s.upstream || "—");
   const last = records.find((r) => !active(r));
-  text("count", String(records.length));
+  // "Requests retained: 97" on a box that hard resets is ambiguous between "this launch did 97" and "the last
+  // launch's rows, restored". The journal says which, and where the file is.
+  const j = s.journal || null;
+  qualText("count", records.length, j ? (j.restored ? `${j.restored} carried over` : "this launch only") : "");
+  const jl = $("journal-line");
+  if (jl) {
+    jl.hidden = !j;
+    jl.textContent = j
+      ? (j.ok
+        ? `request journal ${j.path} · ${j.restored} row${j.restored === 1 ? "" : "s"} carried over from `
+          + `earlier launches · this launch ${j.boot}`
+        : `request journal FAILED (${j.error}) — the list is memory only and dies with the serve`)
+      : "";
+    jl.dataset.tone = j && !j.ok ? "danger" : "";
+  }
   text("active", inflight ? `${Math.round(inflight)} running / waiting at the engine`
     : s.mode === "proxy" ? "Nothing in flight"
       : s.mode === "merged" ? "Finished requests only: the engine reports a request when it ends"

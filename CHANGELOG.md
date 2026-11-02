@@ -319,6 +319,23 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   is a correctable-status bit and not a non-fatal error. 194 checks, and `tools/restart-sidecar.sh` so restarting
   the sidecar stops killing the shell that asks for it (`pkill -f` matches the calling command's own line).
 
+- **The request list now outlives the process that held it.** The list lived in the serve's memory, and this box
+  dies without writing a shutdown record — 15 boots on 2026-11-02, several mid-request — so after every reset the
+  Monitor came back claiming nothing had ever run, and "what was it doing when it died" had to be rebuilt from side
+  logs. Finished requests are appended to a JSONL journal and replayed at startup: one line per request holding
+  `ROW_KEYS` only (no bodies — the engine never had text and the question is about timing and tokens), a `boot` id
+  per process so a list spanning a reset reads as two launches rather than one odd afternoon, and a torn tail line
+  dropped rather than rendered, because a half-row that draws as a request is worse than no row. Cost measured, not
+  assumed: **1.98 ms per journalled request** with `fsync` (0.018 ms without it — the version a hard reset eats),
+  ~380 B a row, replay 3.4 ms over a 2000-line file, file rotated at 8 MiB to the last `--keep` rows. `--journal`
+  for the sidecar, `R9700_WEBUI_JOURNAL` for the plugin, and the launch sets `~/logs/requests-<port>.jsonl` by
+  default with the pages on — one file per port, because two monitors sharing a journal replay each other's rows
+  (the test suite hit precisely that, showing counts about a launch from an hour earlier). The page names it:
+  `request journal … · 3 rows carried over from earlier launches · this launch 1793622173-12882`, "Requests
+  retained" qualified `N carried over` / `this launch only`, and a journal that cannot be opened degrades to memory
+  and says so rather than taking the serve with it. 209 checks; `test_webui_plugin.py` still passes; the plugin
+  picks the journal up only at import, so the in-serve pages get it on the next serve start.
+
   browser on demand is the part that never worked.
 
   configuration here; 95 °C is a fault anywhere). The `read_gpus` docstring also carried a claim this day

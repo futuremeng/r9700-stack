@@ -174,3 +174,11 @@ Two reading cautions recorded so the numbers are not over-read: `NonFatalErr` in
 bit of the correctable status set, not a non-fatal error (`TOTAL_ERR_NONFATAL` is the one that means that, and it
 is 0 here); and the kernel zeroes these counters on link recovery, so the panel's waves are per-poll deltas that
 treat a decrease as unknown, never as a negative count.
+
+## And the request list now survives the death
+
+Same gap on the request side: the Monitor's list lived in the serve's memory, so after each of the day's resets it
+came back claiming nothing had run, and "what was it doing when it died" was answered from side logs. Finished
+requests are now appended to a JSONL journal (`~/logs/requests-<port>.jsonl` by default; one fsync per finished
+request, measured 1.98 ms, rows hold timings and token counts but never the text) and replayed when the pages come
+back, each row labelled with the launch it came from. Details in [notes/webui.md](../webui.md).

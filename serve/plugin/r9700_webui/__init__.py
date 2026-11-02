@@ -48,7 +48,12 @@ if str(_SERVE) not in sys.path:
 
 import webui as W                                             # noqa: E402
 
-STORE = W.EngineRecords(int(os.environ.get("R9700_WEBUI_KEEP", "100")))
+# The journal is why the request list outlives this process. A box that hard resets without writing a shutdown
+# record loses the engine's in-memory list along with the launch, and "what was it doing when it died" has to be
+# answered from side logs written by hand. R9700_WEBUI_JOURNAL names the file; empty means memory only, as before.
+_KEEP = int(os.environ.get("R9700_WEBUI_KEEP", "100"))
+_JOURNAL = os.environ.get("R9700_WEBUI_JOURNAL") or ""
+STORE = W.EngineRecords(_KEEP, journal=W.Journal(_JOURNAL, _KEEP) if _JOURNAL else None)
 HUB = None
 KEY = [None]                                                  # the serve's own --api-key, if it has one
 
