@@ -9,7 +9,9 @@ is unreachable from this network; huggingface.co too — weights came from `hf-m
 
 So this is the same product (stock vLLM + `r9700_vllm` + libr9k) installed **into a venv** instead of
 the image: `~/venv-r9700`, `vllm==0.32.0+rocm723` / `torch==2.13.0+git733fca1` / `triton 3.8.0` from
-`https://wheels.vllm.ai/rocm/5df63a72.../rocm723/`, plugin `pip install -e .`, `libr9k.so` built by
+`https://wheels.vllm.ai/rocm/5df63a72.../rocm723/` — **that per-commit index 404s as of 2026-11-02**: old pins
+expire upstream and the flavor is renamed `rocm723` -> `rocm72` in 0.33+ (a live pin, and the vLLM 0.33.0 gate
+result, are in [vllm-0.33.md](vllm-0.33.md)). Plugin `pip install -e .`, `libr9k.so` built by
 `kernels/build.sh` with the host hipcc for gfx1201. `serve/native-flashnext.sh` is the container-free
 launcher (same knobs as `serve/serve.sh`).
 

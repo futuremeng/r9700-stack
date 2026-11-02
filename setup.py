@@ -287,9 +287,10 @@ def native(cfg):
     py = venv / "bin" / "python3"
     if not py.exists():
         warn(f"native path needs a venv with stock ROCm vLLM at {venv} (missing)",
-             "python3 -m venv ~/venv-r9700 && ~/venv-r9700/bin/pip install vllm --extra-index-url "
-             "https://download.pytorch.org/whl/rocm6.4 && pip install -e . (the ROCm wheel build matters: the "
-             "box's own is what notes/native-4xr9700.md measures)")
+             "python3 -m venv ~/venv-r9700 && ~/venv-r9700/bin/pip install vllm==0.32.0+rocm723 --extra-index-url "
+             "https://wheels.vllm.ai/rocm/<pin>/rocm72/ && pip install -e . (that index is per-commit and expires "
+             "upstream, and 0.33+ names the flavor rocm72, not rocm723: notes/vllm-0.33.md has a live pin. The wheel "
+             "build matters -- the box's own is what notes/native-4xr9700.md measures)")
         return
     # the ROCm vLLM wheels link OpenMPI, which this box has unpacked locally, not system-wide: exactly what
     # serve/native-flashnext.sh's OPENMPI= line puts on LD_LIBRARY_PATH, so check the import the same way

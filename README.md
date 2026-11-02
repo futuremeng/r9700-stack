@@ -323,6 +323,8 @@ these numbers runs.
    python3 -m venv ~/venv-r9700
    ~/venv-r9700/bin/pip install vllm==0.32.0+rocm723 --extra-index-url \
      https://wheels.vllm.ai/rocm/<pin>/rocm723/          # torch 2.13.0+git733fca1 and triton 3.8.0 come with it
+   # that index is per-commit and old pins expire: the one this release fetched 404s as of 2026-11-02, and vLLM
+   # 0.33 renamed the flavor to `rocm72`. A live pin, and the 0.33.0 gate result, are in notes/vllm-0.33.md.
    pip install -e .                                      # the r9700 plugin
    ~/venv-r9700/bin/pip install -e serve/plugin          # Monitor and About inside the serve (WEBUI=same)
    cd kernels && HIPCFLAGS=-I$HOME/opt/rocm-dev/opt/rocm/core-10.1/include ./build.sh \

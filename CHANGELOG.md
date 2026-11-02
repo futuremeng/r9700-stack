@@ -216,6 +216,23 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   reconciled -- the 210 W figure has never been re-measured on this box.
 
 ### Changed
+- **The native install recipe now says what is actually fetchable** (`README.md`, `notes/native-4xr9700.md`,
+  `setup.py`), and the upstream sweep that found it is written up in [notes/vllm-0.33.md](notes/vllm-0.33.md).
+  Checking "is there a new vLLM, should we follow" turned up a broken step in our own quickstart: the ROCm wheel
+  index is per-commit and old pins expire upstream, so `wheels.vllm.ai/rocm/5df63a72…/rocm723/` -- the build this
+  box fetched -- 404s as of 2026-11-02, and vLLM 0.33 renames the flavor `rocm723` -> `rocm72`. `setup.py
+  --check`'s hint was worse: it pointed at `download.pytorch.org/whl/rocm6.4`, a torch line that would not load
+  libr9k at all.
+  On upstream itself: **vLLM 0.33.0** (tag `4ba787ec9`, 2026-11-01) is 107 commits past the image pin `e4a5b5537`
+  and needs **no plugin change** -- the audit covers all 63 `from vllm…` modules and 91 symbols in `r9700_vllm`,
+  `tests/test_integration.py` is ALL OK (34 checks) in a parallel `~/venv-r9700-033` running `vllm==0.33.0+rocm72`
+  over the same torch `2.13.0+git733fca1`, triton `3.8.0+git669b31ac` and the same `libr9k.so`, plus
+  `test_ple_int6` and `test_cache_shapes` ALL OK -- while **`main` cannot be followed yet**: `#64110` renames
+  `models/qwen4_exp/amd/indexer_qsa` and `models/qwen4_exp/common/qsa_cache`, which two of our imports read.
+  Not adopted: 0.33.0 carries one change that touches our numbers (`#60084`, 32-bit buffer addressing on the
+  `TRITON_ATTN` fp8 KV views) and the serving gate needs the cards, which the 262k launch holds -- on a box that is
+  still self-resetting ([notes/incident-2026-11-02/README.md](notes/incident-2026-11-02/README.md)). `amd-aiter`
+  moves `0.1.24.post1` -> `0.1.26` and `orjson` becomes a hard dep when it is adopted.
 - **The Requests card says why the queue is waiting** (`serve/webui.py`, `serve/web/monitor.js`,
   `serve/web/monitor.html`). vLLM 0.32 publishes `vllm:num_requests_waiting_by_reason`, and the line is now
   `N waiting · M for scheduling capacity · K deferred`. Its HELP text says "'capacity' = waiting for scheduling
