@@ -61,5 +61,27 @@ section{margin:18px 0}
 .tabs #copy{margin-left:auto}
 #content-note{margin-top:10px}
 
+/* PCIe: one row per chain, columns aligned so the eye scans the link column and stops when it is uniform.
+   Rows rather than cards of waveforms: link state only changes when a link renegotiates and the AER counters
+   are quiet unless something happens, so curves would be flat lines claiming space. A row that is entirely
+   correct says "clean" and costs one line. */
+.pcie-rows{display:grid;gap:5px;margin-top:10px}
+.pcie-row{display:grid;grid-template-columns:5.4em minmax(11em,1.4fr) 9.6em 11em minmax(8em,1.1fr) 8.4em;
+  gap:10px;align-items:baseline;padding:3px 0;border-top:1px solid var(--st-line-soft)}
+.pcie-row:first-child{border-top:0}
+.pcie-row b{font-weight:700}
+.pcie-row .chain,.pcie-row .who{font:11px var(--st-font-mono);color:var(--st-ink-muted);overflow-wrap:anywhere}
+.pcie-row .who .unc{color:var(--st-danger-text);font-weight:700}
+.pcie-row .link,.pcie-row .cnt,.pcie-row .win{font-family:var(--st-font-mono);font-size:var(--st-fs-sm)}
+.pcie-row .cnt,.pcie-row .win{text-align:right}
+.pcie-row[data-tone=warn] b{color:var(--st-warn-text)}
+.pcie-row[data-tone=danger] b{color:var(--st-danger-text)}
+.pcie-row[data-tone=danger] .link{color:var(--st-danger-text)}
+.spark--pcie{margin-left:auto;width:min(180px,34%);height:26px;color:var(--st-ink-soft)}
+.spark--pcie[data-tone=warn]{color:var(--st-warn)}
+
+@media(max-width:900px){.pcie-row{grid-template-columns:5.4em 1fr auto;row-gap:3px}
+  .pcie-row .who,.pcie-row .win{grid-column:2 / -1;text-align:left}}
+
 @media(max-width:980px){.workspace{grid-template-columns:1fr}.requests{border-right:0;border-bottom:1px solid var(--st-line-soft);max-height:280px}
   .facts{grid-template-columns:repeat(2,minmax(0,1fr))}#search{width:160px}}

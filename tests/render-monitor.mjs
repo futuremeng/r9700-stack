@@ -122,6 +122,9 @@ for (const [label, id] of [["cards", "gpus"], ["pcie", "pcie"]]) {
   }
 }
 
+console.log("\nPCIe note:", t("pcie-note"));
+for (const k of (byId.get("pcie") || new El()).children.slice(0, 4))
+  console.log("  " + k.textContent.replace(/\s+/g, " ").trim());
 console.log(`\nrequest rows rendered: ${rows.length}`);
 for (const r of rows.slice(0, 6)) console.log("  " + r.textContent.replace(/\s+/g, " ").trim());
 console.log(`\ncards the page wrote a value into: ${shown.sort().join(" ")}`);

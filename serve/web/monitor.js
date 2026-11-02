@@ -17,45 +17,52 @@ const rid = (r) => r.id || `req-${r.seq}`;
 // that can be lined up against a stall, where the slope of a cumulative line hides it. A counter that went down is
 // the kernel zeroing it (link recovery, driver reload) -- that draws a gap and says so, because a bar of -24
 // would be a fabrication.
-function pcieCard(c, phist = []) {
-  const d = document.createElement("div");
-  d.className = "gpu pcie";
-  const devs = c.devices || [];
+// AER counter names are not self-explanatory: `NonFatalErr` lives in the CORRECTABLE file (the spec calls it
+// Advisory Non-Fatal Error -- an error the device reported but recovered from), and serve/webui.py tags the
+// genuinely uncorrectable ones with `#nf` / `#ft`. Reading `NonFatalErr 3` next to `0 uncorr` would look like a
+// contradiction, so the name gets its kind stated.
+function aerKind(k) {
+  const nf = k.endsWith("#nf"), ft = k.endsWith("#ft");
+  return { name: k.replace(/#(nf|ft)$/, ""), kind: ft ? "fatal" : nf ? "non-fatal" : "correctable" };
+}
+
+// A PCIe chain, as a ROW rather than a card of waveforms. Both things it can report are static-or-eventual:
+// the link sits at its maximum unless it renegotiates (one number, changing once), and the AER counters moved 0
+// times in 90 idle samples and 0 times through an eight-stream burst, but ~12 times around two serve restarts.
+// Curves of either are flat and read as a broken panel; totals plus an event with a timestamp say all a curve
+// would. Byte traffic is not collectable here (the counters answer N/A, and the PMU needs root or /dev/kfd).
+function pcieRow(c, phist = []) {
   const short = (b) => String(b || "").replace(/^0000:/, "");
+  const devs = c.devices || [];
   const sum = (k) => devs.reduce((a, x) => a + (x[k] || 0), 0);
   const named = {};
   devs.forEach((x) => Object.entries(x.notable || {}).forEach(([k, v]) => { named[k] = (named[k] || 0) + v; }));
-  const maxSpeed = Math.max(...devs.map((x) => x.max_speed || 0), 0);
-  const maxWidth = Math.max(...devs.map((x) => x.max_width || 0), 0);
-  const link = devs.map((x) => `${short(x.bdf)} ${isnum(x.speed) ? x.speed.toFixed(1) : "?"} x${x.width ?? "?"}`).join(", ");
-  d.innerHTML = `<b>${c.card || short(c.bus)}</b><span class="small">${devs.map((x) => short(x.bdf)).join(" → ")}</span>`
-    + `<div class="pct">${isnum(c.speed) ? `${fmt(c.speed, 1)}<span class="unit">GT/s x${c.width}</span>`
-        : `<span class="q">—</span>`}</div>`
-    + ["GT/s", "lanes", "corr", "uncorr"].map((lab) => `<div class="sparkrow"><span>${lab}</span>`
-        + `<div class="sparkline spark--gpu"></div></div>`).join("")
-    + `<div class="muted small" data-wave></div>`
-    + `<div class="muted small">${devs.length} links · ${link}</div>`
-    + `<div class="muted small">${Object.keys(named).length
-        ? `counters: ${Object.entries(named).map(([k, v]) => `${k} ${v}`).join(", ")}` : ""}</div>`;
+  // Named counters are grouped by kind and the group is labelled once, because the kernel's own name is
+  // misleading on its own (`NonFatalErr` is a correctable counter) and per-name suffixes would be noise.
+  const cn = Object.entries(named).filter(([k]) => !/#(nf|ft)$/.test(k)).map(([k, v]) => `${k} ${v}`);
+  const un = Object.entries(named).filter(([k]) => /#(nf|ft)$/.test(k))
+    .map(([k, v]) => `${aerKind(k).name} ${v} ${aerKind(k).kind}`);
   const at = (s2) => (s2.chains || []).find((x) => x.bus === c.bus) || null;
-  const series = (k) => phist.map((s2) => { const x = at(s2); return x ? x[k] : null; });
-  const vals = [series("speed"), series("width"), series("cor_d"),
-                phist.map((s2) => { const x = at(s2);
-                  return x && isnum(x.nonfatal_d) && isnum(x.fatal_d) ? x.nonfatal_d + x.fatal_d : null; })];
-  const peak = (xs) => Math.max(...xs.filter(isnum), 0);
-  const ceils = [maxSpeed, maxWidth, Math.max(peak(vals[2]), 1), Math.max(peak(vals[3]), 1)];
-  d.querySelectorAll(".spark--gpu").forEach((el, j) => {
-    spark(el, vals[j], { baseLo: 0, baseHi: ceils[j] });
-    // Colour means "look here": a link below its maximum, an uncorrectable error inside a window, or the
-    // counters having been zeroed under us -- in which case the wave has a hole where the event was.
-    el.dataset.tone = (j < 2 && c.degraded) || (j === 3 && peak(vals[3]) > 0) ? "danger"
-      : (j === 2 && peak(vals[2]) > 0) ? "warn" : "";
-  });
-  const resets = phist.filter((s2) => { const x = at(s2); return x && x.reset; }).length;
-  const cap = d.querySelector("[data-wave]");
-  if (cap) cap.textContent = `since boot ${sum("cor")} correctable · ${sum("nonfatal")} non-fatal · `
-    + `${sum("fatal")} fatal` + (resets ? ` · ${resets} window${resets > 1 ? "s" : ""} reset` : "")
-    + (c.degraded ? " · LINK BELOW MAXIMUM" : "");
+  const last = phist.length ? at(phist[phist.length - 1]) : null;
+  const win = last && isnum(last.cor_d) ? last.cor_d + (last.nonfatal_d || 0) + (last.fatal_d || 0) : null;
+  const cor = sum("cor"), unc = sum("nonfatal") + sum("fatal");
+  const maxw = Math.max(...devs.map((x) => x.max_width || 0), 0);
+  const d = document.createElement("div");
+  d.className = "pcie-row";
+  // Colour means "look here": a link below its maximum or an uncorrectable error is the danger; correctable
+  // errors are noted but not alarming on their own (they are correctable, and this box has them by the dozen).
+  d.dataset.tone = c.degraded || unc ? "danger" : cor ? "warn" : "";
+  d.innerHTML = `<b>${c.card || short(c.bus)}</b>`
+    + `<span class="chain">${devs.map((x) => short(x.bdf)).join(" → ")}</span>`
+    + `<span class="link" title="negotiated speed and width; a link below its maximum is the thing to notice">`
+      + (isnum(c.speed) ? `${fmt(c.speed, 1)} GT/s ×${c.width}`
+                        + (c.degraded && maxw ? ` <span class="q">(max ×${maxw})</span>` : "") : "—") + `</span>`
+    + `<span class="cnt">${cor || unc ? `${cor} corr · ${unc} uncorr` : "no errors"} <span class="q">since boot</span></span>`
+    + `<span class="who" title="the non-zero AER counters on this chain: correctable ones are recovered by the
+      hardware, the others are not">${cn.length ? `<span class="q">corr</span> ${cn.join(" · ")}` : ""}`
+      + (un.length ? ` <span class="unc">${un.join(" · ")}</span>` : "") + `</span>`
+    + `<span class="win" title="this poll's deltas; these counters are quiet unless something happens">`
+      + (win === null ? "<span class=\"q\">window —</span>" : `+${win} this window`) + `</span>`;
   return d;
 }
 
@@ -419,17 +426,39 @@ function renderStatus(s) {
   // what the GPU did, this says whether the wire under it was clean. The wording has to stay honest about scope:
   // this is not bandwidth, it is negotiated link state and the kernel's error counters.
   const chains = s.pcie || [];
-  const chainSum = (c2) => (c2.devices || []).reduce((a, x) => a + (x.cor || 0), 0);
-  const worst = chains.reduce((a, c2) => Math.max(a, chainSum(c2)), 0);
+  const phist = s.pcie_history || [];
+  const ev = s.pcie_events || [];
+  const shortb = (b) => String(b || "").replace(/^0000:/, "");
+  const tot = chains.reduce((a, c2) => a + (c2.devices || []).reduce((b, x) =>
+    b + (x.cor || 0) + (x.nonfatal || 0) + (x.fatal || 0), 0), 0);
+  // One spark for the whole box, because the only interesting shape here is "an event happened". It counts AER
+  // events per poll, so a spike is an event with a time that can be lined up against a stall; a flat line at
+  // its zero axis is the honest picture of a healthy link, and it sits on a known axis so "flat" reads as
+  // "zero", not as "no data".
+  const perPoll = phist.map((h) => (h.chains || []).reduce((a, x) => a + (isnum(x.cor_d) ? x.cor_d : 0)
+    + (isnum(x.nonfatal_d) ? x.nonfatal_d : 0) + (isnum(x.fatal_d) ? x.fatal_d : 0), 0));
+  const pse = $("pcie-spark");
+  pse.replaceChildren();
+  pse.setAttribute("aria-label", "AER events per second, whole box");
+  spark(pse, perPoll, { baseLo: 0, baseHi: Math.max(...perPoll, 1) });
+  pse.dataset.tone = perPoll.some((v) => v > 0) ? "warn" : "";
+  const when = (t) => new Date((t || 0) * 1000).toLocaleTimeString([], { hour12: false });
   text("pcie-note", chains.length
     ? `${chains.length} link chain${chains.length > 1 ? "s" : ""} · sysfs, no root and no /dev/kfd · `
       + `byte counters answer N/A on these cards, so this is link state and AER errors`
-      + (worst ? ` · ${worst} correctable since boot on the worst chain` : " · no correctable errors since boot")
+      + ` · ${tot} error${tot === 1 ? "" : "s"} since boot`
+      + (s.pcie_events === undefined
+        ? " \u00b7 this serve's build does not report events \u2014 restart it for the timestamps"
+        : ev.length
+          ? ` \u00b7 last: ${ev.slice(0, 3).map((e) => { const { name, kind } = aerKind(e.kind);
+              return `${when(e.at)} ${shortb(e.bdf)} ${name}${kind === "correctable" ? "" : ` ${kind}`} +${e.n}`;
+            }).join(" \u00b7 ")}`
+          : " \u00b7 nothing moved while this page has been watching")
       + (chains.some((c2) => c2.degraded) ? " · a link is below its maximum" : "")
-      + (s.pcie_history && s.pcie_history.some((h) => (h.chains || []).some((x) => x.reset))
-        ? " · counters were reset during the window" : "")
+      + (phist.some((h) => (h.chains || []).some((x) => x.reset))
+        ? " · counters were zeroed during the window" : "")
     : "no PCIe sysfs readable here");
-  $("pcie").replaceChildren(...chains.map((c2) => pcieCard(c2, s.pcie_history || [])));
+  $("pcie").replaceChildren(...chains.map((c2) => pcieRow(c2, phist)));
 }
 
 // -- one tick -------------------------------------------------------------------------------------

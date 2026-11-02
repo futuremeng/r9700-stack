@@ -350,6 +350,22 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   `04:00.0` 3 → 6, `c0:03.1` Timeout 2 → 3, card2's chain 31 → 36 and card4's 5 → 8, with `TOTAL_ERR_NONFATAL` and
   `FATAL` still 0 and every link still at 32.0 GT/s x16.
 
+- **The PCIe panel stopped being waveforms — measured, not tasted** (217 checks). Four waves per chain (GT/s, lanes,
+  correctable delta, uncorrectable delta) turned out to encode two signals that are **static-or-eventual**, the worst
+  thing a curve can be: over 90 one-second samples the link had exactly one state (`32.0 GT/s ×16`, never degraded),
+  **0 of 90** idle samples had a nonzero AER delta, and an eight-stream × 400-token burst produced **0** events —
+  yet the same counters had moved ~12 times that morning, all around serve restarts. A chain is now **one row**:
+  card, device chain, negotiated link (`(max ×16)` stated only when it fell short), totals since boot, the non-zero
+  counter names, and `+0 this window`; one box-wide **events-per-second** spark stays, zero-anchored so flat reads
+  as *zero* and not as *no data*; and the note lists the **last events with wall-clock times**, which is the whole
+  reason to watch (`12:55:12 c4:00.0 BadTLP +3` lines up with a stall). `aer_deltas` now keeps the named-counter
+  baseline, so counters that were already non-zero when the page started are history rather than events we
+  witnessed; a page talking to an older serve build says so instead of claiming nothing happened. Also fixed a
+  naming trap in the row itself: the kernel's `NonFatalErr` lives in `aer_dev_correctable` (spec: Advisory
+  Non-Fatal Error — recovered), so counters are grouped and labelled `corr` rather than trusting a name that reads
+  like an uncorrectable fault. Serving traffic does not move these counters; launches do — recorded in the incident
+  note, where the takeaway is that a mid-decode event is now the out-of-pattern thing to look for.
+
   browser on demand is the part that never worked.
 
   configuration here; 95 °C is a fault anywhere). The `read_gpus` docstring also carried a claim this day

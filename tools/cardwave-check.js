@@ -1,7 +1,8 @@
-// tools/cardwave-check.js -- run the Monitor's GPU-card renderer against a live sidecar payload, under
-// node, with a DOM stub just rich enough to see what it produced: two waveforms (busy, VRAM), no busy bar,
-// and a caption. A browser is the real test, but this catches the failure mode that matters -- the card
-// rendering nothing at all because of a typo, which is silent on the page.
+// tools/cardwave-check.js -- run the Monitor's GPU-card and PCIe-chain renderers against a live payload, under
+// node, with a DOM stub just rich enough to see what they produced: five waveforms per card, a caption, and one
+// text row per PCIe chain (chains are rows on purpose -- see notes/webui.md). A browser is the real test, but this
+// catches the failure mode that matters -- a panel rendering nothing at all because of a typo, which is silent on
+// the page.
 //   node tools/cardwave-check.js serve/web http://localhost:8099/api/status
 const fs = require("fs");
 const dir = process.argv[2];
@@ -14,7 +15,8 @@ const grab = (s, re) => {
 };
 const code = [grab(common, /^const isnum = .*$/m), grab(common, /^const fmt = .*$/m), grab(common, /^const gb = .*$/m),
               grab(common, /function spark[\s\S]*?\n}\n/), grab(common, /function gpuCard[\s\S]*?\n}\n/),
-              grab(monjs, /function pcieCard[\s\S]*?\n}\n/)].join("\n");
+              grab(monjs, /function aerKind[\s\S]*?\n}\n/),
+              grab(monjs, /function pcieRow[\s\S]*?\n}\n/)].join("\n");
 
 const caps = [];                                    // what the caption slot was told to show
 const mkEl = (tag) => ({
@@ -53,12 +55,12 @@ fetch(process.argv[3]).then((r) => r.json()).then((s) => {
   console.log("vram text:", (d.innerHTML.match(/[\d.]+ \/ [\d.]+ GiB VRAM/) || ["(none)"])[0]);
   console.log("captions:", caps.slice(0, 2).map((c) => `"${c}"`).join("\n           ") || "(none)");
   const chains = s.pcie || [], phist = s.pcie_history || [];
+  const txt = (h) => String(h).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
   for (const c of chains) {
-    const pd = pcieCard(c, phist);
-    console.log(`pcie ${String(c.bus).padEnd(9)} card ${String(c.card).padEnd(6)} `
-      + `waves ${(pd.innerHTML.match(/spark--gpu/g) || []).length} `
-      + `links ${(c.devices || []).length} since-boot-cor ${(c.devices || []).reduce((a, x) => a + (x.cor || 0), 0)}`);
+    const pd = pcieRow(c, phist);
+    // Rows, not waves: link state is static and AER is eventual, so a chain's whole story fits on one line and
+    // the wave would be flat. Assert no wave was drawn here, and print the line a reader would see.
+    console.log(`pcie ${String(c.card || c.bus).padEnd(7)} waves ${(pd.innerHTML.match(/spark/g) || []).length} `
+      + `| ${txt(pd.innerHTML)}`);
   }
-  if (chains.length) console.log("pcie caption:", (() => { const e = pcieCard(chains[0], phist);
-    const m = e.innerHTML.match(/since boot[^<]*/g); return m ? m[m.length - 1] : "(in a span, not inline)"; })());
 }).catch((e) => console.log("ERR", e.message));

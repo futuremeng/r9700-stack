@@ -174,10 +174,17 @@ number above it means the two counters are not the pair this line thinks they ar
   </section>
 
   <!-- the link the cards hang off. Not throughput: the byte counters answer N/A on these cards, so this is
-       link state plus the kernel's AER error counters -- the evidence the reset storm wanted. -->
+       link state plus the kernel's AER error counters -- the evidence the reset storm wanted. Rows, not
+       waveforms, because both halves are static-or-eventual: the link sits at its maximum unless it
+       renegotiates (one value changing once), and the counters moved 0 times in 90 idle samples and 0 times
+       through an eight-stream burst, but ~12 times around two serve restarts. A curve of that is flat; an
+       event with a timestamp is the whole point. -->
   <section class="card pcie-card">
-    <div class="panel-bar"><h2>PCIe</h2><span class="small" id="pcie-note">sysfs link state and AER counters</span></div>
-    <div class="grid gpus" id="pcie"></div>
+    <div class="panel-bar"><h2>PCIe</h2>
+      <span class="small" id="pcie-note">sysfs link state and AER counters</span>
+      <svg class="spark spark--pcie" id="pcie-spark" aria-label="AER events per second"></svg>
+    </div>
+    <div class="pcie-rows" id="pcie"></div>
   </section>
 
   <!-- timings the engine only reports as averages: the honest version of "queue wait per request" -->

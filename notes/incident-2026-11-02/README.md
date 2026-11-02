@@ -203,3 +203,26 @@ within ~40 minutes spanning two starts — without a single uncorrectable error 
 That is the shape of a link that is working but not clean. It is not yet evidence about the hard resets (no fatal
 errors have ever been counted here), but it is now a continuous trace with timestamps rather than a hand-run
 snapshot, which is what a correlation with a reset needs.
+
+## Serving traffic does not move them (read 13:26 UTC)
+
+The other half of that correlation, taken deliberately: eight concurrent 400-token streams through the running
+serve, sampling every chain's correctable total every second for the whole burst.
+
+| | before | after | delta |
+|---|---|---|---|
+| card2 chain (`c6:00.0 → c5:00.0 → c4:00.0 → c0:03.1`) | 36 | 36 | **0** |
+| card4 chain (`06:00.0 → 05:00.0 → 04:00.0 → 00:03.1`) | 8 | 8 | **0** |
+| card1, card3 | 0 | 0 | 0 |
+
+And over 90 consecutive one-second samples of an idle serve: **0** had a nonzero AER delta. So the counters move
+around a **start** — the renegotiation/allocation storm of bringing four GPUs up — and not during the traffic that
+follows. Two consequences:
+
+- The panel is no longer drawn as waveforms. A signal that is silent for an hour and then jumps twelve times in a
+  minute is an event log, not a curve; the panel now shows one row per chain (link, totals since boot, which
+  counters are non-zero, this window's delta) plus a single box-wide events-per-second spark and a timestamped
+  list of the last events. Rationale and the naming trap (`NonFatalErr` is a *correctable* counter) in
+  [notes/webui.md](../webui.md).
+- For the reset question, watch the counters **at launch** and treat a mid-decode event as the interesting case:
+  steady-state traffic is clean, so an event that appears while a request is in flight is out of pattern.

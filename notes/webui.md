@@ -448,12 +448,35 @@ Asked whether PCIe traffic could be waved, the answer came out **partly**, and t
 
 `read_pcie` walks the **sysfs topology** rather than parsing `lspci`: a PCI device's resolved path sits under its
 upstream bridge, so following parents turns an endpoint into a chain — endpoint → switch downstream port →
-upstream port → root port — and every level carries its own counters. The Monitor's PCIe panel draws one card per
-chain with four waves each: negotiated **GT/s** (axis 0..that link's max), **lanes** (0..max), and the
-**correctable** and **non-fatal+fatal** counters as **per-poll deltas**. Deltas, not the cumulative value: the
-kernel's counters are since-boot and the slope of a rising line hides when the event happened, while a spike has a
-time that can be lined up against a stall. A counter that went *down* is the kernel zeroing it (link recovery,
-driver reload), so that window draws a gap and flags itself rather than a bar of −24.
+upstream port → root port — and every level carries its own counters.
+
+**It is drawn as rows, not waveforms — and the reason is a measurement, not taste.** The first version drew four
+waves per chain (GT/s, lanes, correctable delta, uncorrectable delta). A day of watching says those two signals
+are *static-or-eventual*, which is the worst thing for a curve:
+
+- **Link state is static.** Over 90 consecutive samples: one distinct value, `32.0 GT/s ×16`, never degraded. It
+  changes when a link retrains — once, discretely — so a 90-point wave of it is a flat line and the interesting
+  case (a link that came up `×8` on `×16` lanes) is a number plus a flag.
+- **AER counters are eventual.** 0 of 90 idle samples had a nonzero delta; an eight-stream × 400-token burst
+  produced **0** events; yet the counters had moved ~12 times that morning, all clustered around serve restarts.
+  A signal that is silent for hours and then jumps twelve times is an *event log*, and a waveform of it is flat
+  99.9% of the time while claiming the space.
+
+So a chain is now **one row**: card, the device chain (`c6:00.0 → c5:00.0 → c4:00.0 → c0:03.1`), the negotiated
+link (`32.0 GT/s ×16`, and `(max ×16)` stated when it fell short), totals since boot (`36 corr · 0 uncorr`), the
+non-zero counter names, and this window's delta (`+0`). One box-wide spark stays — AER events per second across
+all chains, zero-anchored so a flat line reads as *zero*, not as *no data* — because the shape worth keeping is
+"an event happened at this instant". Alongside it the note lists the last three events **with wall-clock times**
+(`12:55:12 c4:00.0 BadTLP +3`), which is the whole point of watching: an event you can line up against a stall.
+`aer_deltas` also keeps a baseline-on-first-sighting rule, so counters that were already non-zero when the page
+started are history, not events we witnessed.
+
+One naming trap to keep in mind when reading those counter names: **`NonFatalErr` lives inside
+`aer_dev_correctable`** (the spec's Advisory Non-Fatal Error bit — the device reported an error and the hardware
+recovered). `TOTAL_ERR_NONFATAL` is the one that means trouble, and it reads 0 on this box. The row therefore
+labels the group (`corr BadTLP 30 · BadDLLP 1 · NonFatalErr 3`) instead of trusting a bare name that reads like
+an uncorrectable fault. Counters can also be **zeroed by the kernel** (link recovery, driver reload), which is why
+a decrease is treated as unknown rather than negative.
 
 What it showed in its first running hour (this box, the 11:07 boot, read 12:07–12:14 UTC):
 
@@ -465,10 +488,7 @@ What it showed in its first running hour (this box, the 11:07 boot, read 12:07�
 | card3 `03:00.0 → 02:00.0 → 01:00.0 → 00:01.1` | 0 | — | 0 / 0 |
 
 Three correctable errors landed on card2's upstream port during the seven minutes of watching, while every link
-stayed at its maximum **32.0 GT/s x16** — nothing is falling back. Two quirks worth knowing before reading those
-numbers: `NonFatalErr` appears *inside* `aer_dev_correctable` (a bit in the correctable status set, not a non-fatal
-error — `TOTAL_ERR_NONFATAL` is the one that means that, and it reads 0 here), and the totals can be zeroed by the
-kernel, which is why the deltas treat a decrease as unknown rather than negative.
+stayed at its maximum **32.0 GT/s x16** — nothing is falling back.
 
 ### The request journal: the list outlives the process that held it
 

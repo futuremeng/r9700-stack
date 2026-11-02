@@ -574,12 +574,19 @@ def _pci_node(path, bdf, depth):
                         **{f"{k}#ft": v for k, v in ft_named.items()}}}
 
 
-def aer_deltas(chains, last):
+def aer_deltas(chains, last, named=None, events=None, at=None):
     """Per-poll AER deltas per chain, from counters that are cumulative since boot.
 
     A counter that went DOWN is not negative traffic: the kernel zeroes these on a link recovery or a driver
     reload, so the window's delta is unknown (None) and the chain is flagged as reset -- drawing -24 as a bar
-    would be worse than drawing a gap. Returns (per-chain deltas, the new last-totals map)."""
+    would be worse than drawing a gap.
+
+    When `named` and `events` are given, each individual counter that moved is also recorded as an event
+    (`c4:00.0 BadTLP +3`, with the time). These counters are eventual, not continuous -- measured: 0 events in
+    90 idle samples and 0 through an eight-stream burst, ~12 clustered around two serve restarts -- so a
+    waveform of them is flat 99.9% of the time and an event with a timestamp is the whole point of watching.
+    Diffing the non-zero counter names is enough: these counts only grow (apart from the zeroing above), so a
+    change always lands in the non-zero set."""
     out, nxt = [], {}
     for ch in chains:
         d = {"bus": ch["bus"], "speed": ch["speed"], "width": ch["width"], "degraded": ch["degraded"]}
@@ -589,6 +596,16 @@ def aer_deltas(chains, last):
             for dev in ch["devices"]:
                 v, prev = dev.get(k), last.get((dev["bdf"], k))
                 nxt[(dev["bdf"], k)] = v
+                if named is not None and events is not None:
+                    cur = dev.get("notable") or {}
+                    if dev["bdf"] in named:            # first sighting only sets a baseline: those events happened
+                        was = named[dev["bdf"]]       # before we were watching, so they are not ours to report
+                        for nm, nv in cur.items():
+                            if nv > was.get(nm, 0):
+                                events.append({"at": at, "bus": ch["bus"], "card": ch.get("card"),
+                                               "bdf": dev["bdf"], "role": dev["role"],
+                                               "kind": nm, "n": nv - was.get(nm, 0)})
+                    named[dev["bdf"]] = dict(cur)
                 if v is None:
                     continue
                 if prev is None:
@@ -940,6 +957,10 @@ class Hub:
         # PCIe chain state and its ring, same beat as the cards. The waves are per-poll deltas of counters that
         # are cumulative since boot, which is why the sidecar keeps the last totals to difference against.
         self.pcie, self.pciehist, self.aer_last = [], deque(maxlen=HIST), {}
+        # AER events with timestamps: the counters are eventual, so the interesting object is the event, not
+        # the curve. Kept newest-first for the page, and bounded -- a day of a misbehaving link must not grow
+        # the payload.
+        self.aer_named, self.pcie_events = {}, deque(maxlen=60)
         self.health, self.engine, self.host = None, {}, read_host()
         self.key_needed, self.smi_error = False, None
         self.lock = threading.Lock()
@@ -989,6 +1010,7 @@ class Hub:
                     payload["gpus_history"] = list(self.gpuhist)
                     payload["pcie"] = self.pcie
                     payload["pcie_history"] = list(self.pciehist)
+                    payload["pcie_events"] = list(self.pcie_events)
                     payload["smi"] = bool(self.cfg["smi"])
                     payload["smi_error"] = self.smi_error
                     payload["meta"] = self.meta
@@ -1016,6 +1038,7 @@ class Hub:
                                        key_needed=self.key_needed or bool(self.cfg["key"]),
                                        gpus=self.gpus, gpus_history=list(self.gpuhist),
                                        pcie=self.pcie, pcie_history=list(self.pciehist),
+                                       pcie_events=list(self.pcie_events),
                                        models=self.models, engine=self.engine,
                                        meta=self.meta, requests_kept=self.kept())
             time.sleep(self.cfg["poll"])
@@ -1060,7 +1083,11 @@ class Hub:
                 by_bus = {g.get("bus"): g.get("card") for g in self.gpus}      # name the chain by its card
                 for ch in chains:
                     ch["card"] = by_bus.get(ch["bus"])
-                deltas, self.aer_last = aer_deltas(chains, self.aer_last)
+                new_events = []
+                deltas, self.aer_last = aer_deltas(chains, self.aer_last, self.aer_named, new_events,
+                                                   time.time())
+                for e in reversed(new_events):
+                    self.pcie_events.appendleft(e)
                 self.pcie = chains
                 self.pciehist.append({"at": time.time(), "chains": deltas})
             time.sleep(max(1.0, self.cfg["poll"]))

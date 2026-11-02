@@ -718,8 +718,19 @@ ck("a counter that went down is a reset: a gap and a flag, never a bar of -11",
    [d for d in _d3 if d["bus"] == "c6:00.0"][0]["cor_d"] is None
    and [d for d in _d3 if d["bus"] == "c6:00.0"][0]["reset"],
    str([(d["bus"], d["cor_d"], d["reset"]) for d in _d3]))
-ck("PCIe chain state and its ring ride the payload, capped at the same HIST",
-   s.get("pcie") and s.get("pcie_history") and len(s["pcie_history"]) <= W.HIST
+_named, _ev = {}, []
+W.aer_deltas(W.read_pcie(pnodevs), {}, _named, _ev, 100.0)
+ck("a counter already non-zero when we start watching sets a baseline, it is not an event we witnessed",
+   not _ev, str(_ev[:3]))
+(down_a / "aer_dev_correctable").write_text("BadTLP 4\nBadDLLP 1\nTOTAL_ERR_COR 5\n")
+W.aer_deltas(W.read_pcie(pnodevs), {}, _named, _ev, 137.0)
+ck("an AER event carries its time, its device and which counter moved",
+   len(_ev) == 2 and {e["kind"] for e in _ev} == {"BadTLP", "BadDLLP"}
+   and all(e["bdf"] == "0000:c5:00.0" and e["at"] == 137.0 and e["bus"] == "c6:00.0" for e in _ev),
+   str(_ev))
+ck("PCIe chain state, its ring and its event list ride the payload, the ring capped at the same HIST",
+   "pcie_events" in s and s.get("pcie") and s.get("pcie_history")
+   and len(s["pcie_history"]) <= W.HIST
    and all(len(h["chains"]) == len(s["pcie"]) for h in s["pcie_history"]),
    f"{len(s.get('pcie_history') or [])} samples x {len(s.get('pcie') or [])} chains")
 ck("the payload names the journal so the page can say where a restored row came from",
@@ -999,16 +1010,37 @@ ck("both pages feed the card history to it",
    "gpuCard(g, s.gpus_history || [])" in monjs and "gpuCard(g, s.gpus_history || [])" in (WEB / "about.js").read_text())
 ck("a card's caption carries the thermal trio and busy, each as peak and average, with the span named",
    all(x in _ck2 for x in ('"temp"', '"power"', '"sclk"', "busy avg", "pts over")))
-# The PCIe panel. The wording is part of the test because the honest scope is the whole point: this is not
-# bandwidth (the byte counters answer N/A on these cards), it is negotiated link state and AER errors.
-ck("the PCIe panel exists and says what it is not",
-   'id="pcie"' in monhtml and 'id="pcie-note"' in monhtml and "pcieCard(" in monjs
+# The PCIe panel. Two things it can report, and neither is a curve: link state only moves when a link
+# renegotiates, and the AER counters are eventual (measured on the live box: 0 events in 90 idle samples, 0
+# through an eight-stream burst, ~12 clustered around two serve restarts) -- so four flat waveforms per chain
+# took a third of the page to say nothing. Rows state the numbers; the event, with its time, is what gets listed.
+ck("the PCIe panel exists and says what it is not (no byte counters on these cards)",
+   'id="pcie"' in monhtml and 'id="pcie-note"' in monhtml and "pcieRow(" in monjs
    and "N/A" in monjs and "no root and no /dev/kfd" in monjs)
-ck("PCIe waves run on anchored axes -- each link's own max -- and a degraded link is coloured",
-   "Math.max(...devs.map((x) => x.max_speed || 0), 0)" in monjs
-   and "(j < 2 && c.degraded)" in monjs and "baseHi: ceils[j]" in monjs)
-ck("a PCIe chain is named by its card and drawn as endpoint -> bridge -> bridge",
-   "c.card || short(c.bus)" in monjs and '.join(" \u2192 ")' in monjs)
+ck("a chain is one row: card, device chain, negotiated link, totals since boot, which counters, this window",
+   'class="pcie-rows"' in monhtml and all(x in monjs for x in
+                                          ('"pcie-row"', 'class="chain"', 'class="link"',
+                                           'class="cnt"', 'class="who"', 'class="win"')))
+ck("no per-chain waveforms are drawn any more -- a flat line for a static or eventual number reads as a fault",
+   "spark" not in monjs.split("function pcieRow")[1].split("\nfunction")[0],
+   str([l.strip() for l in monjs.split("function pcieRow")[1].split("\nfunction")[0].splitlines()
+        if "spark" in l][:3]))
+ck("one box-wide spark of AER events per second stays, on a zero-anchored axis, and it is warned when it moves",
+   'id="pcie-spark"' in monhtml and "baseLo: 0, baseHi: Math.max(...perPoll, 1)" in monjs
+   and 'perPoll.some((v) => v > 0) ? "warn"' in monjs)
+ck("an event is listed with its wall-clock time, device and counter, and only events we witnessed",
+   "s.pcie_events" in monjs and "${when(e.at)} ${shortb(e.bdf)} ${name}" in monjs
+   and "nothing moved while this page has been watching" in monjs)
+ck("a page talking to a serve build too old to report events says so, instead of claiming nothing happened",
+   "s.pcie_events === undefined" in monjs and "does not report events" in monjs)
+# The kernel names a CORRECTABLE counter "NonFatalErr" (Advisory Non-Fatal Error), and the webui tags the real
+# uncorrectable ones #nf/#ft. Printed bare, "NonFatalErr 3" next to "0 uncorr" looks like the panel disagrees
+# with itself, so the counter's kind is stated wherever a name is.
+ck("an AER counter name is shown with its kind, so a correctable NonFatalErr is not read as uncorrectable",
+   "function aerKind(" in monjs and '/#(nf|ft)$/.test(k)' in monjs and '<span class=\"q\">corr</span>' in monjs
+   and 'class="unc"' in monjs)
+ck("a link below its maximum names the width it fell short of and turns to danger",
+   "(max \u00d7${maxw})" in monjs and 'c.degraded || unc ? "danger"' in monjs)
 # gpu_busy_percent on this box is coarse, not finely readable: refused with nothing running, 0 stopped, 24-29
 # idle, 46-100 under load, 95-99 through long decode. The page says so, because otherwise a flat 99 reads as
 # "fully loaded" and a 0 as "healthy idle" when either could also mean "the launch let go".
