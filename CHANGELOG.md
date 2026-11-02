@@ -110,6 +110,15 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   180,066-token prefill read 0 tok/s for its whole duration and then 89,580 in a single 2 s poll. The card reads
   "prompt tok/s (credited at request end)"; the live signal during a prefill is the KV pool bar, which climbed
   5.1 to 32.1% in 3.0% steps (16,206 tokens a sample) while that request ran.
+- **README's Deploying section leads with `./setup.sh` and says there are two paths.** Step 0 is the setup/update
+  pair (`--check`, `--yes --launch native-flashnext.sh --webui same`, `./update.sh`), 1a is the native path with the
+  commands the checks themselves name (venv, the pinned ROCm wheels, `pip install -e .`, `pip install -e
+  serve/plugin`, `kernels/build.sh` with the host hipcc and the copied `libr9k.so`, the locally unpacked OpenMPI),
+  1b is the image. Host memory, honestly: measured on the native box with the 262k launch up, four
+  `VLLM::Worker_TP*` at 12.5 GiB RSS and `Mlocked` 0, because four cards keep the experts in VRAM, so the ~120 GB of
+  host RAM and the 38.7 GiB PLE pinning the two-card offload configuration wants are simply not asked for;
+  `MemAvailable` 37.2 of 93.8 GiB. What the container layer itself costs stays unmeasured, since this box has no
+  docker binary. `setup.sh`'s header no longer claims docker is required.
 
 ### Fixed
 - **`bench/needle_long.py` called a repeat run a prefix-cache hit.** The warm line ended in "(prefix cache)"

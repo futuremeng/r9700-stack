@@ -1,7 +1,9 @@
 #!/bin/sh
 # r9700-stack on Linux: the first run brings the box up (image, build repo, checks) and can start a launch;
 # later runs just check it and start one. Needs an amdgpu host with the R9700s passed through with their full
-# 32 GB BAR0 (host/README.md) and docker. Nothing big is installed by this file.
+# 32 GB BAR0 (host/README.md), and either docker or the native path (a venv with the ROCm vLLM wheels plus a
+# libr9k.so built on the host: serve/native-flashnext.sh). Nothing big is installed by this file, and no script
+# here fetches a wheel or a checkpoint: they are reported, with the command that gets them.
 #
 # A Python (3.10+, with a venv that has pip) is made in .venv and holds NO torch: the serving stack lives in the
 # image (docker/Dockerfile pip-installs the plugin inside it). The host Python is for the tests that need no

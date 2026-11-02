@@ -132,24 +132,63 @@ to 99.1% and cost 22% (109.2 -> 133.6 s), so it stays off. The standing gate is 
 
 ## Deploying it
 
-Requirements: 2x, 4x or 8x Radeon AI PRO R9700, ROCm 10 on the host, docker, the model weights under `~/models`
+Requirements: 2x, 4x or 8x Radeon AI PRO R9700, ROCm 10 on the host, the model weights under `~/models`
 (`Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ`, `Qwen3.8-27B-NVFP4` with `Qwen3.8-27B-DFlash2-FP8`,
-`GLM-5.3-Flash-NVFP4-RedHat` for eight cards).
+`GLM-5.3-Flash-NVFP4-RedHat` for eight cards). Two ways to run it: in the image (docker), or with **no docker at
+all** (a venv plus a `libr9k.so` built on the host, `serve/native-flashnext.sh`), which is what the box behind
+these numbers runs.
 
-0. **Or let it be checked for you**: `./setup.sh` walks the box (cards seen with their 32 GB BAR0 placed,
-   `/dev/kfd`, kernel cmdline, memlock, docker or the native path, the pinned image and whether its nightly pin
-   moved, the second checkout `serve.sh` mounts, every checkpoint the serve scripts name, the no-GPU tests) and
-   names the file each requirement came from; `--check` reports without touching anything, `--launch flashnext`
-   starts one. `./update.sh` pulls this checkout and re-checks -- it refuses while tracked files are edited, and
-   never touches `~/models`, the launch caches or a running launch. The host-side BAR0/ACS/switch-chain setup is
-   not in either script: that is [host/README.md](host/README.md).
+0. **Set the box up, or check one that already runs this repo**: `./setup.sh` (bootstrap: it finds a Python 3.10+
+   that can make a venv with pip, then runs `setup.py`, which holds the checks). It walks the box and prints the
+   file each requirement came from: cards seen with their 32 GB BAR0 actually placed (`/sys/bus/pci/devices/*/resource`,
+   not a ReBAR claim), `/dev/kfd`, kernel cmdline, memlock, **docker or the native path**, the pinned image and
+   whether its nightly pin moved, the second checkout `serve.sh` mounts, every checkpoint the serve scripts name,
+   and the tests that need no GPU.
+   ```
+   ./setup.sh --check                                    # report only, changes nothing
+   ./setup.sh --yes --launch native-flashnext.sh --webui same   # check, then start the native launch
+   ./update.sh                                           # git pull here (refuses on tracked edits), re-check
+   ```
+   On a box with no docker it says so and checks the native path instead: the venv importing vLLM/torch/hip with
+   the same `LD_LIBRARY_PATH` `serve/native-flashnext.sh` sets (the ROCm wheels need a locally unpacked OpenMPI
+   runtime, no root), the host-built `libr9k.so`, and `pip install -e serve/plugin` for `WEBUI=same`. It names the
+   venv/pip/`hipcc` commands rather than running them: the ROCm wheels are ~20 GB and are never fetched by a
+   script, and nothing here touches `~/models`, the launch caches, or a launch that is already up. The host-side
+   BAR0/ACS/PCIe-switch setup is in neither script: that is [host/README.md](host/README.md).
 
-1. **Build the image** (stock vLLM ROCm 10 nightly plus the plugin; the kernels compile inside):
+1a. **Native (no docker)**. One-time on the host; `./setup.sh --check` reports each missing piece with the command
+   to run (the exact versions and URLs live in [notes/native-4xr9700.md](notes/native-4xr9700.md)):
+   ```
+   python3 -m venv ~/venv-r9700
+   ~/venv-r9700/bin/pip install vllm==0.32.0+rocm723 --extra-index-url \
+     https://wheels.vllm.ai/rocm/<pin>/rocm723/          # torch 2.13.0+git733fca1 and triton 3.8.0 come with it
+   pip install -e .                                      # the r9700 plugin
+   ~/venv-r9700/bin/pip install -e serve/plugin          # Monitor and About inside the serve (WEBUI=same)
+   cd kernels && HIPCFLAGS=-I$HOME/opt/rocm-dev/opt/rocm/core-10.1/include ./build.sh \
+     && cp libr9k.so ../r9700_vllm/kernels/              # host hipcc, gfx1201, all 68 export checks
+   ```
+   Those ROCm wheels link OpenMPI 4 and the host does not have it: unpack the runtime with `dpkg-deb -x` under
+   `~/opt/openmpi` (no root; the deb list is in the note), and the launcher's `OPENMPI=` line puts it on
+   `LD_LIBRARY_PATH`. Every serve knob then works exactly as in the container: step 2's block with
+   `serve/native-flashnext.sh` in place of `serve/serve.sh`. What this path does not need: dockerd/containerd, an
+   image, or the second build checkout `serve.sh` mounts at `/opt/r9700`. Measured on this box with the 262k
+   launch up: four `VLLM::Worker_TP*` at 12.5 GiB RSS each, `VLLM::EngineCore` 1.22, API server 1.51, and
+   `Mlocked` **0**, because on four cards the experts live in VRAM and nothing is pinned; `MemAvailable` 37.2 of
+   93.8 GiB, 39.5 GiB of it reclaimable page cache from reading the checkpoint. The pinned host RAM the two-card
+   offload configuration wants (about 120 GB, 38.7 GiB of it the PLE table) is what this path leaves out; it was
+   never a docker allowance, and what the container layer itself costs is unmeasured here, since this box has no
+   docker binary on it.
+
+1b. **In the image**. Build it once (stock vLLM ROCm 10 nightly plus the plugin; the kernels compile inside):
    ```
    docker build -t r9700/vllm:dev docker/
    ```
    The pinned nightly (2026-10-25, vLLM 0.32.1rc1, torch 2.13) is in `docker/Dockerfile` (`--build-arg BASE=` for another).
-2. **Serve**:
+   `serve.sh` runs the image against the second checkout of this repo (default `~/r9700-build/repo`, mounted at
+   `/opt/r9700`) so the running plugin is code you can change without rebuilding; `./setup.sh` names it and offers
+   to clone it. Container-only recipes are labelled in `setup.py`'s launch list.
+
+2. **Serve** (the same knobs either way):
    ```
    bash serve/27b.sh                                                  # 27B-NVFP4, two cards
    GPUS=0,1,2,3 TP=4 OFFLOAD_GB=0 NSEQ=16 bash serve/flashnext.sh     # Flash-Next, four cards
@@ -185,8 +224,9 @@ Requirements: 2x, 4x or 8x Radeon AI PRO R9700, ROCm 10 on the host, docker, the
 Notes for the host: cards on the same PCIe switch for tensor parallelism, one card per switch for offloaded
 experts; a KVM guest with an emulated PCIe switch needs the overlay in `overlay/emulated-switch`
 (`OVERLAYS=emulated-switch`, the serve scripts' default) and the guest kernel flags in
-[notes/mes-timeouts.md](notes/mes-timeouts.md); the two-card Flash-Next configuration needs about 120 GB of host RAM.
-The release checklist and the upgrade recipe for a newer vLLM nightly are in [notes/picking-up.md](notes/picking-up.md).
+[notes/mes-timeouts.md](notes/mes-timeouts.md); the two-card Flash-Next configuration needs about 120 GB of host RAM,
+the four-card one needs no pinned host RAM at all. The release checklist and the upgrade recipe for a newer vLLM
+nightly are in [notes/picking-up.md](notes/picking-up.md).
 
 ## Licence and credits
 
