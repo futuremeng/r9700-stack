@@ -111,10 +111,14 @@ def dockerfile_base():
 
 
 def recipes():
-    """serve/*.sh with the first line of their own header: the measured claim is in the file, not here."""
+    """serve/*.sh with the first line of their own header: the measured claim is in the file, not here.
+
+    The skip list is helpers, not launches: serve.sh is the container runner, webui.sh and webmeta.sh are the
+    monitor and its recipe file, deploy.sh fetches weights. Listing webmeta.sh as a recipe (it was) offers the
+    user a script that starts nothing."""
     out_ = []
     for p in sorted((ROOT / "serve").glob("*.sh")):
-        if p.name in ("serve.sh", "webui.sh", "deploy.sh"):
+        if p.name in ("serve.sh", "webui.sh", "webmeta.sh", "deploy.sh"):
             continue
         head = ""
         for line in p.read_text(errors="replace").splitlines()[1:6]:
@@ -450,15 +454,20 @@ def sidecar(cfg):
     ok("stdlib only, nothing to install")
     note("watch a launch that is already up:  bash serve/webui.sh          (http://127.0.0.1:8081/monitor)")
     note("start it with the launch, with this launch's recipe:  WEBUI=1 bash serve/serve.sh")
-    note("it records per-request detail only in --proxy mode, which costs ~1 ms per request "
-         "(bench/webui_ab.py); observe mode changes nothing in the inference path")
+    note("it records per-request detail only in --proxy mode, which costs 2-3 ms per request, flat in prompt "
+         "length (bench/webui_ab.py: +5.3% of a 76-token request, +0.5% of a 4.4k-token one); observe mode, the "
+         "default, changes nothing in the inference path")
 
 
 def launch(cfg, have="docker"):
     step(8, "a launch")
     rs = recipes()
     for name, head in rs:
-        needs = "" if name.startswith("native") or have == "docker" else "   [needs docker: this box is a native-path box]"
+        # Container-only is a property of the script. Grepping for the word "docker" got this backwards: the
+        # NATIVE launcher explains in a comment that it exists because "sudo docker run is not available", so it
+        # matched, and the container recipes -- which end by exec'ing serve.sh -- did not. Match the delegation.
+        container = bool(re.search(r'/serve\.sh"', (ROOT / "serve" / name).read_text(errors="replace")))
+        needs = "" if not container or have == "docker" else "   [needs docker: this box is a native-path box]"
         say(f"    serve/{name}   {head[:90]}{needs}")
     if cfg.check:
         return
