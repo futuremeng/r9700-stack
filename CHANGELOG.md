@@ -119,6 +119,14 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   host RAM and the 38.7 GiB PLE pinning the two-card offload configuration wants are simply not asked for;
   `MemAvailable` 37.2 of 93.8 GiB. What the container layer itself costs stays unmeasured, since this box has no
   docker binary. `setup.sh`'s header no longer claims docker is required.
+- **README layout: a contents line, split Speed headings, and the Monitor page in it.** `## Speed` no longer carries
+  a parenthetical the width of a line: it says once that the first three tables are the release configuration
+  (210 W cap, -42 mV, 32k) and the last is a different, uncapped box at 262,144 tokens, under two `###` headings.
+  A new `## Watching it: the Monitor and About pages` section carries the screenshot
+  (`docs/r9700-stack-monitor.png`, shown at 520 px linking to the full frame), the two shapes of the pages and what
+  each can honestly say, the relay's measured 2-3 ms, and the refusal to draw a prefill progress bar. The Serve
+  block now marks which recipes run in the image and which line is the native one, and the check step is a list of
+  what each bench proves rather than a paragraph of names.
 
 ### Fixed
 - **`bench/needle_long.py` called a repeat run a prefix-cache hit.** The warm line ended in "(prefix cache)"
