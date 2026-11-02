@@ -10,10 +10,30 @@ is unreachable from this network; huggingface.co too — weights came from `hf-m
 So this is the same product (stock vLLM + `r9700_vllm` + libr9k) installed **into a venv** instead of
 the image: `~/venv-r9700`, `vllm==0.32.0+rocm723` / `torch==2.13.0+git733fca1` / `triton 3.8.0` from
 `https://wheels.vllm.ai/rocm/5df63a72.../rocm723/` — **that per-commit index 404s as of 2026-11-02**: old pins
-expire upstream and the flavor is renamed `rocm723` -> `rocm72` in 0.33+ (a live pin, and the vLLM 0.33.0 gate
-result, are in [vllm-0.33.md](vllm-0.33.md)). Plugin `pip install -e .`, `libr9k.so` built by
+expire upstream and the flavor is renamed `rocm723` -> `rocm72` in 0.33+ (none of the six 0.32-era pins checked
+that day is live, so **this venv is the artifact of record** — keep it, don't plan to rebuild it; and
+[vllm-0.33.md](vllm-0.33.md) has the vLLM 0.33.0 gate result plus the decision not to move). Plugin
+`pip install -e .`, `libr9k.so` built by
 `kernels/build.sh` with the host hipcc for gfx1201. `serve/native-flashnext.sh` is the container-free
 launcher (same knobs as `serve/serve.sh`).
+
+## Which ROCm lives in which layer (measured 2026-11-02 — the wheel name misleads)
+
+| layer | what is actually in play on this box |
+|---|---|
+| kernel driver | `amdgpu-dkms 1:7.1.9.31600000-2407772.24.04` + firmware `31.60.0.0` — the one piece that is **not** 10.1 |
+| host user-space, which is what the serve **links and runs** | `/opt/rocm -> core-10.1`, `.info/version = 10.1.0`, `hipcc` = HIP 7.16.26385 / clang 24.0.0. `ldd ~/venv-r9700/…/torch/lib/libtorch_hip.so` resolves `libamdhip64.so.7 -> libamdhip64.so.7.16.26385`, `librocblas.so.5`, `libhipblaslt.so.1.4` (pkg `amdrocm-blas-host10.1`), `librccl.so.1` — every one from `/opt/rocm/lib`, i.e. 10.1 |
+| the wheels' **build stamp** | `vllm==0.32.0+rocm723` and `torch 2.13.0+git733fca1`, which report `rocm 7.2.3 / hip 7.2.53211`: the wheel was *compiled against* the 7.2.3 SDK. `rocm723` is a vLLM wheel-index directory name (0.33+ renames it to `rocm72`, and a `rocm100` flavor sits beside it — the flavor the docker base `…-rocm100` matches) |
+| our kernels | `libr9k.so` is compiled by the host's 10.1 hipcc (clang 24.0.0git in its own strings) — 10.1-native, not 7.2 |
+
+So the serve runs a **7.2.3-built vLLM/torch on top of the host's 10.1 runtime libraries**; it works because HIP
+kept soname `libamdhip64.so.7` from 7.2 through 7.16. That is why the README/notes say `+rocm723` while
+[rocm-10.1.md](rocm-10.1.md) talks about 10.1: that note is research into the 10.1 stack's contents (and the
+source of the `-dev` deb and the headers `build.sh` needs), not a claim about which wheel we install.
+
+Never tested here, worth knowing if a pin move ever happens: the `rocm100` flavor is the one whose *build* SDK
+matches what we actually load at runtime. Everything measured so far — the standing venv and `~/venv-r9700-033` —
+is the `rocm72x` flavor.
 
 ## What the host needed (three unpacked .debs, no root)
 

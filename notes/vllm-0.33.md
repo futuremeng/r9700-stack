@@ -1,9 +1,11 @@
 # vLLM 0.33.0 on this stack: what moved since the pin, and what following it costs (2026-11-02)
 
 "vllm 有更新吗？我们要不要跟一下？" — checked 2026-11-02 against three things at once: the release line
-(v0.33.0), the ROCm 10 nightly line our image pins, and `main`. Short answer: **yes, follow v0.33.0 — it is
-107 commits past our pin, it needs no plugin change, and the wheel is a drop-in for the native venv. Do not
-follow `main` yet**: one upstream rename breaks two of our imports there.
+(v0.33.0), the ROCm 10 nightly line our image pins, and `main`. What the sweep found: **v0.33.0 is 107 commits past
+our pin, needs no plugin change, and its wheel is a drop-in for the native venv; `main` is not followable** (one
+upstream rename breaks two of our imports). Measured against the standing 0.32 numbers, though, 0.33.0 came back
+**level** on everything this box can gate — so the call was **not to move**. Decision and the re-measurement
+command are under "Verdict and plan"; the rest of the note is the sweep itself, which is the part worth keeping.
 
 ## What 0.33.0 is
 
@@ -227,12 +229,35 @@ Two smaller findings worth keeping, both from the same probe:
 
 ## Verdict and plan
 
-**Follow v0.33.0; do not follow `main`.** As of 2026-11-02 10:19 UTC the box is serving the standing 262k recipe on
-`~/venv-r9700-033` (`vllm 0.33.0+rocm72`), and everything on the standing gate list that this platform lets us run
-has come back level: integration, four kernel gates, `probe32` at three protocols, the retrieval ladder with its
+**Not adopted: production stays on 0.32.** As of 2026-11-02 10:19 UTC the box was serving the standing 262k recipe
+on `~/venv-r9700-033` (`vllm 0.33.0+rocm72`), and everything on the standing gate list that this platform lets us
+run had come back level: integration, four kernel gates, `probe32` at three protocols, the retrieval ladder with its
 needles, GSM8K + needle, `sanity_stress` at NSEQ+1 / 1.5x / 2x and with 24k prefills first, and a 25-minute
-16-client soak with VRAM flat. **What is still open before the pin moves for good**: BetterBench (the one quality
-number this gate has not produced), and a soak that survives to the end on a box that is not resetting.
+16-client soak with VRAM flat. Level, not better — and the one quality number it never produced is BetterBench,
+because the box reset four more times that morning (see `notes/incident-2026-11-02/README.md`). Following a release
+line that changes nothing measurable, on hardware that is the actual constraint, is not worth the second serving
+line: the serve is back on `~/venv-r9700` (`vllm==0.32.0+rocm723`, pin `e4a5b553...`) with the same
+262k/32/8192 recipe, and `compat/gate.py`'s TESTED lists are unchanged.
+
+The 0.33 venv and caches stay in place as a ready-made re-measurement — no rebuild needed to re-check:
+
+```bash
+MAXLEN=262144 NSEQ=32 NBT=8192 PREFIX_CACHE=0 WEBUI=same \
+  VENV=$HOME/venv-r9700-033 VLLM_CACHE_ROOT=$HOME/vllm-native-cache-033 \
+  TRITON_CACHE_DIR=$HOME/vllm-native-triton-033 bash serve/native-flashnext.sh
+```
+
+What would change the decision, in order of likely value: `#62799` merged (the one item with a two-digit R9700
+number in it — though our own decode band is latency-bound, section above, so expect less than the PR's +28-29%
+here), `#57861` merged (RDNA4 FP8 kernel selection), and `#64874` (the DFlash `visual` patch) before any GLM launch
+moves pin. If a 0.34 wheel is ever taken it inherits this note: the import audit is a `git diff` away, and the gate
+order is `test_integration.py` -> the four kernel gates -> `probe32` -> ladder -> sanity -> BetterBench.
+
+One operational consequence to keep in mind: **the 0.32 pin is no longer reinstallable from vLLM's wheel index.**
+Per-commit indexes expire, and none of the six 0.32-era pins checked on 2026-11-02 (`26958d9e5`, `fe341a53d`,
+`400461cad`, `79a8da9c4`, `0c3645128`, `5df63a72a`) is live. `~/venv-r9700` is therefore the artifact of record --
+the thing to keep, not to rebuild. If it is ever lost, the closest live wheels are 0.33-era (measured level here,
+but `compat/gate.py` would refuse to serve them until they are in the TESTED lists).
 
 Steps, in order:
 

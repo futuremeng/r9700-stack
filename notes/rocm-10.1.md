@@ -5,6 +5,12 @@ increases are in it". A web-research pass over the release notes, component chan
 (not a measurement). Short answer: nothing in 10.1 should move decode or prefill on gfx1201; it is a compatibility
 check at most.
 
+A naming caveat, because this file and the install docs appear to disagree: **10.1 is what the box runs, `+rocm723`
+is only what the wheels were built against.** The host's `/opt/rocm -> core-10.1` (HIP 7.16.26385) supplies the
+`libamdhip64/librocblas/libhipblaslt/librccl` the serving venv actually loads, and `build.sh` compiles `libr9k.so`
+with that hipcc; the vLLM/torch wheels were *compiled* against the 7.2.3 SDK and say so in their version string.
+The layering, with `ldd` evidence, is in [native-4xr9700.md](native-4xr9700.md).
+
 ## What 10.1 is
 
 Released 2026-10-05 (TheRock `therock-10.1`), stated focus "AI inference, developer tooling and profiling across

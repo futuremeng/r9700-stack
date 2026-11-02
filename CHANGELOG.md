@@ -235,8 +235,19 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   `sanity_stress` 0 bad of 9,390 at conc 33/48/64 and with 24k prefills first, a 1,505 s 16-client soak with 882
   requests, 0 errors and VRAM flat to 0.01 GiB -- all against the same box and recipe measured hours earlier, and
   with `set_triton_ptr_range` worth nothing measurable on our path. The launch that served it died in a platform
-  reset at 09:39:21 mid-request with zero tracebacks in 8,584 log lines. Still open before the pin moves for good:
-  BetterBench. `amd-aiter` moves `0.1.24.post1` -> `0.1.26` and `orjson` becomes a hard dep when it is adopted.
+  reset at 09:39:21 mid-request with zero tracebacks in 8,584 log lines.
+  The call, same day: **not following.** No measurable gain, nothing in the release touches what we run, and the
+  RDNA4 items that do carry numbers (`#62799`, `#57861`) are still open PRs while the rest are main-only fixes we
+  do not need; BetterBench never ran because the box reset four more times that morning. `~/venv-r9700-033` and its
+  caches stay in place as a ready-made re-measurement (command in the note), where `amd-aiter` would move
+  `0.1.24.post1` -> `0.1.26` and `orjson` is a new hard dep. Staying has one consequence worth naming: no 0.32-era
+  wheel index is live any more, so **`~/venv-r9700` is the artifact of record** -- keep it, don't plan to rebuild
+  it. The one item with a two-digit R9700 win in it, `#62799`, was measured rather than argued about
+  (`tuning/skinny_probe.py`): on our per-rank decode shapes the graph-replay floor is 4.88 us and a 128x128 matmul
+  12.12 us, hipBLASLt does the 2.62 MB router GEMM in 15.0 us, and the HC GEMMs are already off hipBLASLt in decode
+  -- the whole recoverable envelope is ~2.2% of a step at best. Declined; see the note's "Measured, so we do not
+  chase it" section, which also records that `R9K_ROUTER_MAX_M` above 8 is a loss and that the served router's bf16
+  cast costs ~1.0% a step.
 - **The Requests card says why the queue is waiting** (`serve/webui.py`, `serve/web/monitor.js`,
   `serve/web/monitor.html`). vLLM 0.32 publishes `vllm:num_requests_waiting_by_reason`, and the line is now
   `N waiting · M for scheduling capacity · K deferred`. Its HELP text says "'capacity' = waiting for scheduling

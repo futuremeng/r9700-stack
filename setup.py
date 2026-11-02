@@ -288,8 +288,10 @@ def native(cfg):
     if not py.exists():
         warn(f"native path needs a venv with stock ROCm vLLM at {venv} (missing)",
              "python3 -m venv ~/venv-r9700 && ~/venv-r9700/bin/pip install vllm==0.32.0+rocm723 --extra-index-url "
-             "https://wheels.vllm.ai/rocm/<pin>/rocm72/ && pip install -e . (that index is per-commit and expires "
-             "upstream, and 0.33+ names the flavor rocm72, not rocm723: notes/vllm-0.33.md has a live pin. The wheel "
+             "https://wheels.vllm.ai/rocm/<pin>/rocm723/ && pip install -e . (that index is per-commit and expires "
+             "upstream: none of the six 0.32-era pins checked on 2026-11-02 is live, so the venv you have IS the "
+             "artifact of record -- keep it. 0.33+ renames the flavor to rocm72; notes/vllm-0.33.md has the 0.33.0 "
+             "gate result and why we did not move. The wheel "
              "build matters -- the box's own is what notes/native-4xr9700.md measures)")
         return
     # the ROCm vLLM wheels link OpenMPI, which this box has unpacked locally, not system-wide: exactly what
