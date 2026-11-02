@@ -387,6 +387,17 @@ def read_gpus(root):
 
 
 # --------------------------------------------------------------------------------- request record
+# What a row in the request list carries, in one place because two different backends build rows: the
+# relay (`Records`, which sees bytes) and the engine's own stat logger (`EngineRecords`, which sees the
+# queue/prefill/decode split). If a field the cards read lives only in the detail, the card silently falls
+# back to something else while its label still describes the field it lost: measured on the live merged
+# page, "Last decode speed ... One stream" showed 27.4 tok/s -- the engine-wide 1/step from an 36.4 ms
+# inter-token interval -- where that request's own 87.8 tok/s belonged. Same for prefill: the row and the
+# cards had no per-request prefill to show, only the window mean.
+ROW_KEYS = ("id", "seq", "path", "model", "state", "started_at", "wallclock_s", "first_token_s",
+            "load_s", "queue_s", "stream", "http_status", "response_format", "usage", "timings")
+
+
 class EngineRecords:
     """Per-request records taken from the engine itself, not from a relay.
 
@@ -436,9 +447,7 @@ class EngineRecords:
 
     def listing(self):
         with self.lock:
-            return [{k: r.get(k) for k in ("id", "seq", "path", "model", "state", "started_at",
-                                           "wallclock_s", "first_token_s", "stream", "http_status",
-                                           "response_format")} for r in self.items]
+            return [{k: r.get(k) for k in ROW_KEYS} for r in self.items]
 
     def get(self, rid):
         with self.lock:
@@ -519,9 +528,7 @@ class Records:
 
     def listing(self):
         with self.lock:
-            return [{k: r.get(k) for k in ("id", "seq", "path", "model", "state", "started_at",
-                                           "wallclock_s", "first_token_s", "stream", "http_status",
-                                           "response_format")}
+            return [{k: r.get(k) for k in ROW_KEYS}
                     | {"id": r["id"] or f"req-{r['seq']}"} for r in self.items]
 
     def get(self, rid):

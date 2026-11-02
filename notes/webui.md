@@ -100,6 +100,18 @@ and the per-request rows carry a dash. Inside the serve (`serve/plugin`) the eng
 own split and the rows carry it; for the breakdown from outside use `bench/ttft_breakdown.py`, which
 differences `/metrics` around a controlled set of requests.
 
+**A row has to carry what its label claims.** Both row builders list from one key list (`ROW_KEYS` in
+`serve/webui.py`) because the cards read the *list*, not the detail. While `usage` and `timings` lived only in
+the detail, the "Last decode speed ... One stream" card fell back to the engine-wide `1/inter_token_latency`
+and still called itself one stream: measured on the live merged page, **27.4 tok/s** next to a request whose
+own figure was **87.8 tok/s** (27.4 is `1000 / 36.4 ms`, the engine step), and a request's own prefill appeared
+nowhere, only a 2 s mean, so a 250,029-token prompt and a 22-token one looked identical. Rows now print
+`22 -> 296 tok`, `prefill 0.12 s`, `queue ...`, `preempted ...`, the wall-clock card splits that one request,
+and the speed card prints a dash plus the reason rather than borrowing a number. The three speed bases are
+different measurements and are labelled apart: that request's own tokens over its own decode span (in merged
+mode, per accepted token, the engine's mean), `1/inter_token_latency` (one engine step, shared by every stream
+running), and `generation_tokens_total` over the window (all streams summed: 871.7 tok/s with 32 concurrent).
+
 **The model name is the alias, not the checkpoint.** `GET /v1/models` is the authority: this launch serves
 `Qwen3.8` (`--served-model-name ${SERVED_NAME:-Qwen3.8}`), whose `root` is
 `~/models/Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ`. Asking by the root, by the directory name, or with different

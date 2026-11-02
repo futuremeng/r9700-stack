@@ -242,6 +242,13 @@ ck("detail found by generated id", d is not None)
 ck("input marked truncated", d["input"].endswith("[truncated]") and len(d["input"]) < W.CAP + 64)
 ck("output capped at 256 KiB", d["output_truncated"] and len(d["output"]) == W.CAP)
 ck("listing carries no bodies", "input" not in ring.listing()[0])
+# ... but it does carry what the cards and rows read. A field that lives only in the detail makes a card
+# fall back to something else while its label still describes the field it lost (see ROW_KEYS).
+ck("a row carries the token counts and the timings the cards read",
+   all(k in ring.listing()[0] for k in ("usage", "timings", "queue_s", "load_s")), str(sorted(ring.listing()[0])))
+src = (Path(ROOT) / "serve" / "webui.py").read_text()
+ck("both row builders list from one key list, so the page cannot lose a field on one backend",
+   src.count("for k in ROW_KEYS") == 2 and "usage" in W.ROW_KEYS and "timings" in W.ROW_KEYS, str(W.ROW_KEYS))
 use = ring.start("/v1/chat/completions", "Qwen3.8", "{}", True)
 use["usage"] = {"prompt_tokens": 11, "completion_tokens": 20}
 use["first_token_s"] = 0.0
@@ -574,6 +581,17 @@ ck("the request list follows the newest row until you click one",
    'follow = true' in monjs and 'id="follow"' in (WEB / "monitor.html").read_text()
    and "rows.find(active) || rows[0]" in monjs and 'aria-pressed="true"' in (WEB / "monitor.css").read_text(),
    monjs[monjs.find("follow = true") - 40:monjs.find("follow = true") + 20])
+# Two ways the per-request numbers misled on the live merged page. (a) The "Last decode speed ... One stream"
+# card substituted the engine-wide 1/step when the record's own speed was missing: 27.4 tok/s next to a
+# request that decoded at 87.8. (b) A request's prefill was not shown per request at all, so a 250k-token
+# prompt looked indistinguishable from a 22-token one, and the only prefill on the page was a 2 s mean.
+ck("the Last decode speed card shows that request's own speed, or says it has none",
+   "lt.predicted_per_second" in monjs and "1e3 / rate.itl_ms : null" not in monjs
+   and "no speed for that record" in monjs, monjs[monjs.find('text("speed-note"') - 200:monjs.find('text("speed-note"')])
+ck("a row names its token counts and its own prefill",
+   "prefill ${seconds(t.prefill_s)}" in monjs and "fmt(u.prompt_tokens ?? 0, 0)} -> " in monjs)
+ck("the wall-clock card splits that one request into queue, prefill and decode",
+   'id="wall-split"' in (WEB / "monitor.html").read_text() and "queue ${seconds(lt.queue_s)}" in monjs)
 # About exists so a client can be configured off it. Two things made that fail before: the base URL printed was
 # the sidecar's own upstream (127.0.0.1 on the serve's box -- dead wrong pasted anywhere else, and this box is
 # reached over the network), and it had no /v1, which is what LiteLLM and the OpenAI SDK need. Both blocks are

@@ -54,9 +54,17 @@ function list() {
     const ep = document.createElement("div"); ep.className = "endpoint";
     ep.textContent = r.path ? `POST ${r.path}` : "reported by the engine (no endpoint in its stats)";
     const meta = document.createElement("div"); meta.className = "small";
+    const u = r.usage || {}, t = r.timings || {};
     meta.textContent = `${rid(r)} · ${seconds(r.wallclock_s)} `
       + `${r.response_format === "engine" ? "engine record" : r.stream ? "stream" : "JSON"}`
-      + `${r.http_status ? ` · HTTP ${r.http_status}` : ""}`;
+      + `${r.http_status ? ` · HTTP ${r.http_status}` : ""}`
+      // What the row is worth without opening it: how big the request was and where its time went. In merged
+      // mode both come straight from the engine's per-request stats; in observe mode there are no rows at all.
+      + (isnum(u.prompt_tokens) || isnum(u.completion_tokens)
+        ? ` · ${fmt(u.prompt_tokens ?? 0, 0)} -> ${fmt(u.completion_tokens ?? 0, 0)} tok` : "")
+      + (isnum(t.prefill_s) ? ` · prefill ${seconds(t.prefill_s)}` : "")
+      + (isnum(t.queue_s) && t.queue_s >= 0.001 ? ` · queue ${seconds(t.queue_s)}` : "")
+      + (t.preemptions ? ` · preempted ${t.preemptions}x` : "");
     b.append(row, ep, meta);
     b.onclick = () => { follow = false; $("follow").setAttribute("aria-pressed", "false");
       selected = rid(r); detail = null; list(); showDetail().catch((e) => notice(e.message)); };
@@ -142,8 +150,23 @@ function renderStatus(s) {
   text("wall", last ? seconds(last.wallclock_s) : "—");
   text("wall-note", s.mode === "merged" ? "From the engine: queue, prefill and decode together"
     : "Through this page · queue, prefill and decode together");
-  const speed = last?.timings?.predicted_per_second ?? (isnum(rate.itl_ms) ? 1e3 / rate.itl_ms : null);
-  $("speed").innerHTML = `${isnum(speed) ? fmt(speed, 1) : "—"}<span class="unit">tok/s</span>`;
+  const lt = (last && last.timings) || {}, lu = (last && last.usage) || {};
+  // The split of that one request, not the window mean: this is the number the long-prompt questions are
+  // actually about (a 250k needle is prefill, and prefill was previously only visible as a mean over 2 s).
+  text("wall-split", isnum(lt.queue_s) || isnum(lt.prefill_s) || isnum(lt.decode_s)
+    ? `queue ${seconds(lt.queue_s)} · prefill ${seconds(lt.prefill_s)} · decode ${seconds(lt.decode_s)}`
+    : isnum(lu.prompt_tokens) || isnum(lu.completion_tokens)
+      ? `${fmt(lu.prompt_tokens ?? 0, 0)} -> ${fmt(lu.completion_tokens ?? 0, 0)} tokens in that request`
+      : "that record carries no queue / prefill / decode split");
+  // No fallback here. The engine-wide 1/step and the token total over all streams are already two cards
+  // away; a per-request card that quietly shows one of them when the request's own speed is missing reads
+  // as the request's speed. So: the request's own number, or a dash that says why.
+  const own = lt.predicted_per_second;
+  $("speed").innerHTML = `${isnum(own) ? fmt(own, 1) : "—"}<span class="unit">tok/s</span>`;
+  text("speed-note", isnum(own) ? `that request only · ${lt.speed_basis || "output tokens over its decode span"}`
+    : isnum(rate.itl_ms) ? `no speed for that record · engine step ${fmt(rate.itl_ms, 1)} ms, all streams together `
+      + `${fmt(rate.generation_tok_s ?? 0, 1)} tok/s`
+      : "no speed for that record");
 
   text("kv-pct", pct(live.kv_used_pct, 1));
   const kv = Math.max(0, Math.min(100, live.kv_used_pct || 0));

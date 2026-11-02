@@ -101,6 +101,16 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   NBT=8192 against 1.35 GiB of headroom -- and `R9K_QSA_SCORE=stock` would put that allocation back.
 
 ### Fixed
+- **The Monitor's per-request numbers were not per request.** The request list and the top cards read the row
+  payload, and `usage`/`timings` were left out of it, so the "Last decode speed ... One stream" card fell back
+  to the engine-wide `1/inter_token_latency` and still described itself as one stream: on the live merged page
+  it read 27.4 tok/s (`1000 / 36.4 ms` of engine step) beside a request whose own decode was 87.8 tok/s, while
+  a third figure, 871.7 tok/s, was `generation_tokens_total` summed over every stream in the window. A
+  request's own prefill was not on the page at all except as a 2 s mean, so the 250,029-token needle rows and
+  the 22-token rows were indistinguishable until opened. Both row builders now list from one `ROW_KEYS`
+  (`serve/webui.py`), rows print `22 -> 296 tok · prefill 0.12 s · queue ... · preempted ...`, the wall-clock
+  card splits that one request into queue/prefill/decode, and the speed card prints a dash plus the reason
+  instead of borrowing a number from a different measurement.
 - **The base URL the About page handed out was the wrong string in two ways.** It printed the sidecar's
   internal `--upstream` — `http://127.0.0.1:8080`, which on the box that runs the serve is right and pasted
   into a laptop is your own laptop (this box is reached over the network) — and it had no `/v1`, which is what

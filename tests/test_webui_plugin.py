@@ -67,6 +67,13 @@ ck("state and timing keys the page already reads",
    r["state"] == "completed" and r["wallclock_s"] == 3.0 and r["first_token_s"] == 1.7
    and r["response_format"] == "engine", json.dumps(r))
 ck("no endpoint claim: the engine's stats do not carry one", r["path"] is None)
+# The ROW, not just the detail: the cards read the list. While usage/timings stayed out of it, the
+# "Last decode speed ... One stream" card fell back to the engine-wide 1/step -- 27.4 tok/s for a 36.4 ms
+# inter-token interval -- on a page whose selected request decoded at 87.8, and a 250k prompt's prefill
+# appeared nowhere except as a mean over the last 2 s.
+ck("a row carries the engine's own split and its token counts",
+   r["timings"]["prefill_s"] == 1.2 and r["timings"]["queue_s"] == 0.5 and r["timings"]["decode_s"] == 1.6
+   and r["usage"]["prompt_tokens"] == 4399 and r["usage"]["completion_tokens"] == 128, json.dumps(r)[:200])
 er.add(Fin(request_id="q0", queued_time=0.0, prefill_time=0.04, decode_time=0.2, num_generation_tokens=8))
 q0 = er.get("q0")["timings"]
 ck("a request that never queued reads 0.000 s, not a dash (found live: 0 -> None made 'no queue wait' "
