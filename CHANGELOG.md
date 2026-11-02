@@ -134,6 +134,22 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   `bench/probe32.sh` bands -- 32 x 300: 1,568.3 / 1,573.7 / 1,587.5, 32 x 1,200: 1,799.5 / 1,832.7, 16 x 300:
   1,133.1 / 1,135.8 / 1,142.7 -- card power at busy==100 (median 299 W, 132 samples), and the gate (GSM8K 99/100
   with 33,909 prompt tokens in 40 s, needle 3/3). Each row names which launch it came from.
+- **README laid out the way Strata's is, with the four-card best numbers where they cannot be missed.** A centred
+  lockup, one-line value proposition, centred nav with the two links that matter bolded, and five badges (release
+  tag, release notes, Apache-2.0, stock vLLM 0.32, stock ROCm 10, two-to-eight R9700s). Then a `## Four cards, the
+  numbers worth knowing` table: **225 tok/s decoding one stream** (best sample 228, 14.3-14.4 ms a step),
+  **1,823 tok/s aggregate at 32 streams** (best sample 1,836.3, 1,200-token waves), **9,633 tok/s reading a prompt**
+  (7,789 tokens), **262,144 tokens of context** with the needle found at 250,078 -- each row naming the machine and
+  protocol it came from, because the numbers do not come from the same machine. A one-line `./setup.sh --yes
+  --launch native-flashnext.sh --webui same` quickstart under the badges. The two-card and 27B tables collapse into
+  a `<details>`, and the Monitor screenshot is a centred figure with a `<sub>` caption.
+- **A Speed table for the four cards uncapped at 32k.** The prefill and aggregate headline numbers had lived only
+  in [notes/native-4xr9700.md](notes/native-4xr9700.md); they are in the README now with their sample lists: single
+  stream 186.7 tok/s, `bench.py` at 4 / 8 / 16 streams 372 / 841 / 1,164, `probe32.sh` at 32 in flight 1,598 (300-token
+  waves) and 1,823 (1,200-token waves), 1,198 at 16 with 200-token waves, prompt processing 7,702 / 9,633 / 8,963
+  tok/s at 1,951 / 7,789 / 31,166 tokens, KV 554,982. The table also says out loud what the two boxes disagree on:
+  uncapped single-stream decode reads 186.7 here against 225 at the 210 W release gate, and that is recorded, not
+  reconciled -- the 210 W figure has never been re-measured on this box.
 
 ### Fixed
 - **The README's 262k throughput row compared two different protocols.** It said "32 concurrent 300-token streams:

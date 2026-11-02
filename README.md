@@ -1,18 +1,57 @@
 # r9700-stack
 
-Tuned GPU kernels and a vLLM plugin that make **Qwen3.8** and **GLM-5.3-Flash** run fast on **AMD Radeon AI PRO R9700**
-cards (gfx1201 / RDNA4) on **stock vLLM and stock ROCm**. No fork, no patched source, no vendored binaries, no
-re-quantised weights: everything loads at runtime through vLLM's own extension points, so vLLM and ROCm update
-underneath it.
+<p align="center">
+  <img src="docs/r9700-stack-v0.3.8.svg" alt="r9700-stack v0.3.8: what runs on it, the weight formats, the speed">
+</p>
 
-Current release: **v0.3.8** (2026-10-31, the vLLM 0.32 line), [release notes](notes/release-v0.3.8.md),
-[CHANGELOG.md](CHANGELOG.md).
+<h3 align="center">Qwen3.8 and GLM-5.3-Flash, fast on Radeon AI PRO R9700 cards.</h3>
+<p align="center">
+  Tuned HIP and Triton kernels plus a vLLM plugin, on <b>stock vLLM and stock ROCm</b>: no fork, no patched source,
+  no vendored binaries, no re-quantised weights. Everything loads at runtime through vLLM's own extension points, so
+  vLLM and ROCm update underneath it.
+</p>
 
-![r9700-stack v0.3.8: what runs on it, the weight formats, the speed](docs/r9700-stack-v0.3.8.svg)
+<p align="center">
+  <a href="#what-v038-gives-you">What it gives you</a> · <a href="#what-the-kernels-do">Kernels</a> ·
+  <a href="#speed"><b>Speed</b></a> ·
+  <a href="#watching-it-the-monitor-and-about-pages">Watching it</a> ·
+  <a href="#deploying-it"><b>Deploying it</b></a> · <a href="#licence-and-credits">Licence</a>
+</p>
 
-[What it gives you](#what-v038-gives-you) · [What the kernels do](#what-the-kernels-do) · [Speed](#speed) ·
-[Watching it](#watching-it-the-monitor-and-about-pages) · [Deploying it](#deploying-it) ·
-[Licence and credits](#licence-and-credits)
+<p align="center">
+  <a href="https://github.com/futuremeng/r9700-stack/releases/tag/v0.3.8"><img src="https://img.shields.io/github/v/tag/futuremeng/r9700-stack?label=release&color=2f81f7" alt="release v0.3.8"></a>
+  <a href="notes/release-v0.3.8.md"><img src="https://img.shields.io/badge/release%20notes-v0.3.8-2f81f7" alt="release notes v0.3.8"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/futuremeng/r9700-stack?label=license&color=2f81f7" alt="Apache-2.0"></a>
+  <img src="https://img.shields.io/badge/vLLM-0.32%20(stock)-2f81f7" alt="stock vLLM 0.32">
+  <img src="https://img.shields.io/badge/ROCm-10%20(stock)-2f81f7" alt="stock ROCm 10">
+  <img src="https://img.shields.io/badge/Radeon%20AI%20PRO%20R9700-2%20to%208%20cards-6c757d" alt="two to eight Radeon AI PRO R9700 cards">
+</p>
+
+<p align="center"><sub>Current release <b>v0.3.8</b> (2026-10-31, the vLLM 0.32 line) ·
+<a href="notes/release-v0.3.8.md">release notes</a> · <a href="CHANGELOG.md">CHANGELOG.md</a></sub></p>
+
+<p align="center"><b>Bring a box up, or check one that already runs this repo:</b><br>
+<code>./setup.sh --yes --launch native-flashnext.sh --webui same</code><br>
+<sub>It reports the cards with their 32 GB BAR0 actually placed, <code>/dev/kfd</code>, the kernel cmdline,
+memlock, docker or the native path, every checkpoint, then builds and starts. Nothing here fetches a wheel or a
+checkpoint, and a launch that is already running is left alone. Both paths, image included:
+<a href="#deploying-it"><b>Deploying it</b></a>.</sub></p>
+
+## Four cards, the numbers worth knowing
+
+Qwen3.8-Flash-Next (MoE, MXFP4 experts plus fp8 dense) on four Radeon AI PRO R9700, TP4, MTP-3, 31.9 GiB a card:
+
+| | best measured | where that came from |
+|---|---:|---|
+| **decoding, one stream** | **225 tok/s** (best sample 228) | 14.3-14.4 ms a step; release configuration, 210 W cap, 32k |
+| **decoding, 32 streams** | **1,823 tok/s** aggregate (best sample 1,836.3) | 1,200-token waves, `bench/probe32.sh`; the native box, uncapped |
+| **reading a prompt** | **9,633 tok/s** | 7,789-token prompt, the native box uncapped (7,141 at the 210 W gate) |
+| **context** | **262,144 tokens**, needle found at 250,078 | the checkpoint's own ceiling, running on this box today; KV pool 540,202 tokens |
+
+<sub>Two different machines, so the rows are not comparable with each other; each one names its own. Full protocols,
+sample lists and the measurements that were tried and rejected: <a href="#speed">Speed</a>,
+<a href="notes/native-4xr9700.md">notes/native-4xr9700.md</a>,
+<a href="notes/context-262k.md">notes/context-262k.md</a>.</sub>
 
 ## What v0.3.8 gives you
 
@@ -78,7 +117,8 @@ p = 1.00 against v0.3.1), HumanEval 162 / 164; v0.3.3 validation: 0 bad answers 
 
 Two different machines below, and they are not comparable across: the first three tables are the release
 configuration, a 210 W cap per card with a -42 mV offset and 32k context (v0.3.8's gate numbers are in the release
-notes); the last table is a native box with the cards uncapped, running the checkpoint's full 262,144-token context.
+notes); the last two are one native box with the cards uncapped, the same recipe at 32k and then at the checkpoint's
+full 262,144-token context.
 
 ### The release configuration: four and two cards, 210 W cap, 32k context
 
@@ -86,12 +126,15 @@ notes); the last table is a native box with the cards uncapped, running the chec
 
 | | |
 |---|---:|
-| single-stream decode | 225 tok/s, 14.3 ms a step |
+| single-stream decode | **225 tok/s**, 14.3 ms a step (best sample 228) |
 | aggregate decode at 1 / 2 / 4 / 8 streams (BetterBench) | 175 / 277 / 410 / 530 tok/s |
 | aggregate decode at 8 / 16 streams (probe) | 620 / 944 tok/s |
 | time to first token | 70-80 ms |
 | prompt processing at 2k / 8k / 16k / 32k | 5,175 / 7,141 / 7,489 / 7,233 tok/s |
 | KV cache | 518,481 tokens |
+
+<details>
+<summary><b>The same model on two cards, and the 27B on two cards</b></summary>
 
 **Qwen3.8-Flash-Next, two cards, TP2, experts in host RAM**
 
@@ -111,9 +154,30 @@ notes); the last table is a native box with the cards uncapped, running the chec
 | prompt processing at 8k | 3,901-4,143 tok/s |
 | KV cache | 367,494 tokens |
 
-How each number was produced, and what was tried and rejected: [PROGRESS.md](PROGRESS.md) and `notes/`.
+</details>
 
-### Uncapped cards, the checkpoint's full 262,144-token context
+### The same four cards uncapped, at 32k
+
+The native box below, on the recipe it ran before the context was raised (`MAXLEN=32768 NSEQ=16`, cards uncapped):
+19.16 GiB of weights a card, draft acceptance 56.1% (2.68 tokens a step). This is where the prefill and aggregate
+numbers in the block at the top of this README come from; [notes/native-4xr9700.md](notes/native-4xr9700.md) has
+every sample list and the bands they repeat to.
+
+| | |
+|---|---:|
+| single-stream decode | 186.7 tok/s, 14.3 ms a step (18.1 / 22.6 ms at 4 / 8 streams) |
+| aggregate at 4 / 8 / 16 streams (`bench/bench.py`, 400-token streams) | 372 / 841 / 1,164 tok/s |
+| aggregate, 32 in flight, 300-token waves (`bench/probe32.sh`) | 1,600.1 / 1,586.5 / 1,598.0 -> 1,598 tok/s |
+| aggregate, 32 in flight, 1,200-token waves | **1,836.3 / 1,808.8 -> 1,823 tok/s** |
+| aggregate, 16 in flight, 200-token waves (`bench.py run`, the recorded protocol) | 1,210.9 / 1,231.2 / 1,168.4 / 1,185.9 -> 1,198 tok/s |
+| prompt processing at 1,951 / 7,789 / 31,166 tokens | **7,702 / 9,633 / 8,963 tok/s** |
+| KV cache | 554,982 tokens |
+
+Note the decode column and the release table above disagree: uncapped, a single stream runs at 186.7 tok/s, while the
+210 W cap with a -42 mV offset reads 225 there. That is recorded, not reconciled -- the two boxes differ in host,
+pin and clocks, and the 210 W figure has never been re-measured on this one.
+
+### The same four cards uncapped, at the checkpoint's full 262,144 tokens
 
 The native 4x R9700 box: vLLM 0.32.0+rocm723 in a venv, cards uncapped, so compare it against the uncapped numbers
 in [notes/native-4xr9700.md](notes/native-4xr9700.md), not against the 210 W tables above. Same model, four cards,
@@ -149,16 +213,17 @@ ceiling, not the concurrency the box serves: long prefills serialize, so above r
 to 99.1% and cost 22% (109.2 -> 133.6 s), so it stays off. Method, the queue measurements and the metric-reading
 traps: [notes/context-262k.md](notes/context-262k.md).
 
+How each number above was produced, and what was tried and rejected: [PROGRESS.md](PROGRESS.md) and `notes/`.
+
 ## Watching it: the Monitor and About pages
 
-<a href="docs/r9700-stack-monitor.png"><img src="docs/r9700-stack-monitor.png" alt="The Monitor page:
-model and KV pool, request counts at the engine, generation and speculation, every card's busy% and VRAM, the
-engine's timings over the poll window, and the request list with each request's own wall clock, token counts and
-prefill"/></a>
-
-The Monitor page: engine state and the KV pool, generation and speculation, every card's busy% and VRAM, the
-engine's timings over the poll window, and the request list carrying each request's own wall clock, token counts
-and prefill. The frame is 1688 x 1953: it is shown as wide as the page column, so click it for the pixels.
+<p align="center">
+  <a href="docs/r9700-stack-monitor.png"><img src="docs/r9700-stack-monitor.png" alt="The Monitor page: engine state and the KV pool, request counts at the engine, generation and speculation, every card's busy% and VRAM, the engine's timings over the poll window, and the request list with each request's own wall clock, token counts and prefill"></a>
+  <br><sub>The Monitor page on the launch that runs today: engine state and the KV pool, generation and speculation,
+  every card's busy% and VRAM, the engine's timings over the poll window, and the request list carrying each
+  request's own wall clock, token counts and prefill. The frame is 1688 x 1953, shown as wide as the page column;
+  click it for the pixels.</sub>
+</p>
 
 A stdlib sidecar (`serve/webui.py`: no framework, nothing extra to install) that reads what a running launch already
 publishes, `/health`, `/v1/models`, `/metrics`, plus the amdgpu sysfs of every card. Two shapes, and each page says
