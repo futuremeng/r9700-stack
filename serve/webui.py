@@ -702,7 +702,7 @@ def _pci_node(path, bdf, depth):
                         **{f"{k}#ft": v for k, v in ft_named.items()}}}
 
 
-def aer_deltas(chains, last, named=None, events=None, at=None):
+def aer_deltas(chains, last, named=None, events=None, at=None, last_err=None):
     """Per-poll AER deltas per chain, from counters that are cumulative since boot.
 
     A counter that went DOWN is not negative traffic: the kernel zeroes these on a link recovery or a driver
@@ -714,7 +714,16 @@ def aer_deltas(chains, last, named=None, events=None, at=None):
     90 idle samples and 0 through an eight-stream burst, ~12 clustered around two serve restarts -- so a
     waveform of them is flat 99.9% of the time and an event with a timestamp is the whole point of watching.
     Diffing the non-zero counter names is enough: these counts only grow (apart from the zeroing above), so a
-    change always lands in the non-zero set."""
+    change always lands in the non-zero set.
+
+    `last_err` gives each chain a `quiet_s`: seconds since this watcher last saw a counter move. It is a watch
+    clock, not the fault's clock -- a chain that already had counters when we started watching is seeded at the
+    first sighting (the same reason the first sighting does not emit events: those errors happened before we
+    were watching, so they are not ours to date). Measured on this box the distinction is the whole point: the
+    c6 chain carried 42 correctables from a load window that ended at 09:00:03, and then sat at exactly 42 for
+    the next 42 minutes with the link holding 32 GT/s -- a number that never moves should stop being painted as
+    if it were happening now.
+    """
     out, nxt = [], {}
     for ch in chains:
         d = {"bus": ch["bus"], "speed": ch["speed"], "width": ch["width"], "degraded": ch["degraded"],
@@ -748,6 +757,12 @@ def aer_deltas(chains, last, named=None, events=None, at=None):
                     acc += v - prev
             d[f"{k}_d"] = acc
         d["reset"] = reset
+        if last_err is not None:
+            moved = reset or any(isinstance(d.get(f"{k}_d"), int) and d[f"{k}_d"] > 0
+                                 for k in ("cor", "nonfatal", "fatal"))
+            if moved or ch["bus"] not in last_err:
+                last_err[ch["bus"]] = at or time.time()
+            d["quiet_s"] = round((at or time.time()) - last_err[ch["bus"]], 1)
         out.append(d)
     return out, nxt
 
@@ -1402,6 +1417,7 @@ class Hub:
         # the curve. Kept newest-first for the page, and bounded -- a day of a misbehaving link must not grow
         # the payload.
         self.aer_named, self.pcie_events = {}, deque(maxlen=60)
+        self.aer_quiet = {}            # chain bus -> when a counter last moved (drives quiet_s)
         self.health, self.engine, self.host = None, {}, read_host()
         # What ended the PREVIOUS boot (ACPI BERT, replayed by the kernel at startup) and how many such
         # records the journal still holds. Read once: neither can change while this process is alive.
@@ -1581,7 +1597,7 @@ class Hub:
                                 for ch in chains]
                 new_events = []
                 deltas, self.aer_last = aer_deltas(chains, self.aer_last, self.aer_named, new_events,
-                                                   time.time())
+                                                   time.time(), self.aer_quiet)
                 for e in reversed(new_events):
                     self.pcie_events.appendleft(e)
                 self.pcie = chains

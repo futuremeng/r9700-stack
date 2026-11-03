@@ -490,6 +490,34 @@ are *static-or-eventual*, which is the worst thing for a curve:
   incident note has the table, with each event matched to the requests in flight at its timestamp). "Eventual"
   survived — an event every few minutes is still an event log, not a curve — but "only at launch" did not.
 
+**A count that stopped moving must stop wearing the colour of a count that is moving** (2026-11-03, asked as
+"the PCIe errors are not growing and the link is not degrading — can it be shown quieter?"). The row tone used
+to be `degraded-while-busy || uncorrectable ? danger : any-correctable-since-boot ? warn : neutral`, so one
+load window painted a chain amber for the rest of the boot. Measured on this box right then: the c6 chain sat at
+**exactly 42 correctables for 42 minutes**, link at 32.0 GT/s ×16, after a load window whose last event was
+09:00:03 — the colour had stopped carrying information.
+
+- The sidecar now carries `quiet_s` per chain: seconds since *this watcher* last saw a counter move. It is a
+  watch clock, not the fault's clock — a chain found with counters already raised is seeded at the first
+  sighting, the same rule that keeps the first sighting from emitting events ("those errors happened before we
+  were watching, so they are not ours to date"). A kernel zeroing of a counter counts as activity, not as a long
+  calm spell, because it makes the window's delta unknowable.
+- Tone follows activity: a nonzero delta this window, a reset, or `quiet_s < 300` keeps `warn`; past that the row
+  goes neutral and the count is printed in muted type. **300 s is derived, not chosen**: during a weight-load
+  DMA window this chain errors **11.5–45.7 times a minute** (incident note), so five minutes of nothing is not a
+  slow trickle, it is the absence of one.
+- The window cell then reads `+0 · quiet 42 min` (or `4.2 h`). The number stays on screen — this is de-emphasis,
+  not concealment, and "no errors" would be a lie about a chain that has 42.
+- `danger` is untouched: uncorrectable counters, or a link below its maximum while the card is working, stay red
+  however quiet they have been.
+- An **unknown** quiet clock (a page talking to an older sidecar, or the first sample) counts as **loud**. The
+  dimming is allowed to turn itself off; it is not allowed to invent calm.
+
+`tests/test_webui.py` drives `aer_deltas` directly for the clock semantics (first sighting, a move, 42 minutes of
+nothing, a kernel zeroing) and asserts the row tone keys off `liveErrs` and reads `quiet_s` off the history
+entry — `payload["pcie"]` is `read_pcie`'s chains, which carry no deltas and no `quiet_s`, and getting that
+wrong makes the feature silently never fire.
+
 So a chain is now **one row**: card, the device chain (`c6:00.0 → c5:00.0 → c4:00.0 → c0:03.1`), the negotiated
 link (`32.0 GT/s ×16`, and `(max ×16)` stated when it fell short), totals since boot (`36 corr · 0 uncorr`), the
 non-zero counter names, and this window's delta (`+0`). One box-wide spark stays — AER events per second across

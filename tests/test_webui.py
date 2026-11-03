@@ -996,6 +996,29 @@ for js, html in (("monitor.js", "monitor.html"), ("about.js", "about.html")):
 # stalled was the last tick there ever was), and a background tab throttled to one tick a minute looked exactly
 # like a quiet machine. All three JS files are syntax-checked when node is present, and the loop shape is
 # asserted, because every one of those failures is silent on screen.
+# A correctable count that stopped moving must stop being painted as if it were moving. The clock for that is
+# aer_deltas' quiet_s: this box's c6 chain carried 42 correctables from a load window that ended at 09:00:03 and
+# then sat at exactly 42 for 42 minutes at 32 GT/s. Pure function, so no server and no GPU needed.
+def _ch(cor, notable):
+    return {"bus": "c6:00.0", "card": "card2", "speed": 32.0, "width": 16, "degraded": False, "parked": False,
+            "devices": [{"bdf": "0000:c4:00.0", "role": "upstream port", "cor": cor, "nonfatal": 0, "fatal": 0,
+                         "notable": dict(notable)}]}
+_l, _n, _e, _q = {}, {}, [], {}
+_d, _l = W.aer_deltas([_ch(42, {"BadTLP": 27})], _l, _n, _e, 1000.0, _q)
+ck("a chain found with counters already raised gets a watch clock starting now, and no invented events",
+   _d[0]["quiet_s"] == 0.0 and _e == [], str(_e))
+_d, _l = W.aer_deltas([_ch(43, {"BadTLP": 28})], _l, _n, _e, 1060.0, _q)
+ck("when a counter moves the clock resets and the event is dated",
+   _d[0]["quiet_s"] == 0.0 and _d[0]["cor_d"] == 1 and _e and _e[-1]["kind"] == "BadTLP"
+   and _e[-1]["n"] == 1, str(_e[-1:]))
+_d, _l = W.aer_deltas([_ch(43, {"BadTLP": 28})], _l, _n, _e, 3600.0, _q)
+ck("nothing moving for 42 minutes reads as 42 minutes, not as calm-by-default",
+   _d[0]["quiet_s"] == 2540.0 and _d[0]["cor_d"] == 0, str(_d[0]))
+_d, _l = W.aer_deltas([_ch(1, {"BadTLP": 1})], _l, _n, _e, 3660.0, _q)
+ck("the kernel zeroing a counter is an event, not a long quiet spell (the delta is unknowable)",
+   _d[0]["reset"] and _d[0]["quiet_s"] == 0.0 and _d[0]["cor_d"] is None, str(_d[0]))
+ck("quiet_s is asked for by the hub, not just defined (the running serve must actually fill it in)",
+   "self.aer_quiet" in open(os.path.join(ROOT, "serve", "webui.py")).read())
 _js = {p.name: p.read_text() for p in WEB.glob("*.js")}
 ck("every api() call carries a deadline (a stalled request must become one visible error and the next tick)",
    all(x in _js["common.js"] for x in ("AbortController", "signal: ctl.signal", "clearTimeout", "FETCH_MS",
@@ -1009,6 +1032,16 @@ ck("a page with no answer for 5 s says how old its numbers are, and stays quiet 
    bool(re.search(r"!paused.*snapshot is \$\{since", _m, re.S)))
 ck("returning to a throttled background tab refetches at once instead of waiting for the timer",
    all("visibilitychange" in _js[f] for f in ("monitor.js", "about.js")))
+# the de-emphasis itself: colour follows activity, not a counter that has stopped moving
+_m2 = _js["monitor.js"]
+ck("a static correctable count no longer holds the warn tone (the tone keys off liveErrs now)",
+   ': cor ? "warn"' not in _m2 and "(cor && liveErrs) ? \"warn\"" in _m2)
+ck("quiet is measured in seconds from the sidecar, and unknown counts as LOUD (an older sidecar cannot fake calm)",
+   "last?.quiet_s" in _m2 and "!last ||" in _m2 and "quiet === null" in _m2 and "quiet < 300" in _m2
+   and "c.quiet_s" not in _m2, "quiet_s must be read off the history entry: payload['pcie'] is read_pcie chains, "
+   "which have no deltas and no quiet_s")
+ck("the quiet row says how long it has been quiet instead of pretending there is nothing there",
+   re.search(r"quiet \$\{quiet >= 5400", _m2) and re.search(r'\+0 · quiet', _m2))
 ck("the About page loop cannot die on one bad tick either",
    bool(re.search(r"finally\s*\{.*setTimeout\(loop", _js["about.js"], re.S)))
 tokens = (WEB / "tokens.css").read_text() + "".join(p.read_text() for p in WEB.glob("*.css") if p.name != "tokens.css")

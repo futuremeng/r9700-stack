@@ -50,6 +50,15 @@ function pcieRow(c, phist = [], busyNow = false) {
   const maxw = Math.max(...devs.map((x) => x.max_width || 0), 0);
   const d = document.createElement("div");
   d.className = "pcie-row";
+  // "quiet" is a measured state, not a guess: seconds since this watcher last saw a counter move on this chain
+  // (`quiet_s`, carried on the sidecar's history entries). This box's c6 chain sat at exactly 42 correctables
+  // for 42 minutes with the link at 32 GT/s after a load window ended at 09:00:03 -- a number that is not
+  // moving must not keep the colour of a number that is, or the colour stops being read. 300 s because during a
+  // real DMA window this chain errors several times a MINUTE (measured 11.5-45.7 per minute at weight load):
+  // five minutes of nothing is not a slow trickle, it is the absence of one. An unknown quiet clock (an older
+  // sidecar) counts as loud -- the dimming is allowed to turn itself off, never to invent calm.
+  const quiet = isnum(last?.quiet_s) ? last.quiet_s : null;
+  const liveErrs = (win ?? 0) > 0 || !last || !!last.reset || quiet === null || quiet < 300;
   // Colour means "look here": a link below its maximum, or an uncorrectable error, is the danger; correctable
   // errors are noted but not alarming on their own (they are correctable, and this box has them by the dozen).
   // Two idle states are measured on this box, and neither should be painted as a fault: with the GPUs
@@ -60,7 +69,7 @@ function pcieRow(c, phist = [], busyNow = false) {
   // link with no card working is named in muted type and left for the note to put under load, because the
   // alarm that fires at an idle box is the alarm that stops being read.
   const sag = c.degraded && !c.parked && !busyNow;
-  d.dataset.tone = (c.degraded && !c.parked && busyNow) || unc ? "danger" : cor ? "warn" : "";
+  d.dataset.tone = (c.degraded && !c.parked && busyNow) || unc ? "danger" : (cor && liveErrs) ? "warn" : "";
   // Slot first, same as the card grid: the row is now findable by the number written on the chassis. `cardN`
   // (the driver's per-boot name) and the BDF path follow, because the BDF is what the kernel's own AER and
   // GHES records use, and the two have to be readable side by side to act on either.
@@ -81,12 +90,21 @@ function pcieRow(c, phist = [], busyNow = false) {
                            ? ` <span class="q">(${c.parked ? "parked, max ×"
                               : sag ? "idle, max ×" : "max ×"}${maxw})</span>`
                            : "") : "—") + `</span>`
-    + `<span class="cnt p-cnt">${cor || unc ? `${cor} corr · ${unc} uncorr` : "no errors"} <span class="q">since boot</span></span>`
+    + `<span class="cnt p-cnt">${cor || unc
+        ? (cor && !liveErrs
+           ? `<span class="q">${cor} corr${unc ? ` · ${unc} uncorr` : ""} since boot</span>`   // muted: not moving
+           : `${cor} corr · ${unc} uncorr <span class="q">since boot</span>`)
+        : `no errors <span class="q">since boot</span>`}</span>`
     + `<span class="who p-who" title="the non-zero AER counters on this chain: correctable ones are recovered by the
       hardware, the others are not">${cn.length ? `<span class="q">corr</span> ${cn.join(" · ")}` : ""}`
       + (un.length ? ` <span class="unc">${un.join(" · ")}</span>` : "") + `</span>`
-    + `<span class="win p-win" title="this poll's deltas; these counters are quiet unless something happens">`
-      + (win === null ? "<span class=\"q\">window —</span>" : `+${win} this window`) + `</span>`;
+    + `<span class="win p-win" title="this poll's deltas; these counters are quiet unless something happens.
+      'quiet' counts how long this page has watched this chain with no counter moving -- it says nothing about
+      before this page opened, because counters we found already raised are not ours to date">`
+      + (win === null ? "<span class=\"q\">window —</span>"
+         : (cor && !liveErrs && quiet !== null)
+           ? `<span class="q">+0 · quiet ${quiet >= 5400 ? `${(quiet / 3600).toFixed(1)} h` : `${Math.round(quiet / 60)} min`}</span>`
+           : `+${win} this window`) + `</span>`;
   return d;
 }
 

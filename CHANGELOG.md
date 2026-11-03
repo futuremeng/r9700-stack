@@ -1,4 +1,17 @@
 # Changelog
+## A PCIe chain that stopped erroring stops wearing the colour of one that is
+
+The row tone was "any correctable since boot -> warn", so a single load window painted a chain amber for the
+rest of the boot. On this box, at the moment it was asked: the c6 chain had sat at **exactly 42 correctables for
+42 minutes** at 32.0 GT/s x16 since a load window ended at 09:00:03. `aer_deltas` now emits `quiet_s` per chain
+(seconds since this watcher saw a counter move; seeded at the first sighting, and a kernel zeroing counts as
+activity), and the tone keys off activity -- delta this window, reset, or `quiet_s < 300`. Past that the row is
+neutral, the count is muted, and the window cell says `+0 . quiet 42 min`. The number stays: de-emphasis, not
+concealment. `danger` (uncorrectable, or a link below maximum while the card works) is unchanged. 300 s is
+derived from measurement: this chain runs 11.5-45.7 correctables per minute during a weight-load DMA window, so
+five minutes of silence is not a trickle. Unknown clock counts as loud -- the dimming can turn itself off but
+cannot invent calm. Needs a serve restart to take effect (`webui` runs inside the serve here).
+
 ## The Monitor page can no longer go silently stale
 
 Asked as "why have the Monitor's numbers stopped moving?" -- and the serve side answered first: `/api/status`
