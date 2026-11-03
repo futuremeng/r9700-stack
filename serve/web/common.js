@@ -132,10 +132,24 @@ function spark(el, values, {fill = true, baseLo = null, baseHi = null} = {}) {
 // -- one card's block, shared by both pages ---------------------------------------------------------
 // A card that answers nothing is said to answer nothing: on this box several amdgpu attributes return
 // EBUSY while a compute context holds the card, and "0% busy" is the wrong answer for that.
+// Escape what gets interpolated into innerHTML. Every one of these values comes from sysfs, the engine's
+// metrics or the kernel log rather than from a user, but a device label or an error string is a poor place to
+// assume that, and about.js has carried the same helper for the same reason.
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
 function gpuCard(g, ghist = [], i = 0) {
   const d = document.createElement("div");
   d.className = "gpu";
   const line = (a) => a.filter((x) => x).join(" · ");
+  // Where the card physically is. `card2` is a name the driver assigned this boot and says nothing about the
+  // chassis; the BDF is the card's identity and the slot number (from the firmware's own table, via sysfs, no
+  // root needed) is where the machine says it is plugged in. On this box: card3 slot 1, card1 slot 3,
+  // card2 slot 6, card4 slot 8. A board whose firmware describes no slots simply shows no slot.
+  const where = [g.bus && `PCI ${g.bus}`, g.slot && `slot ${g.slot}`].filter(Boolean).join(" \u00b7 ");
+
   const unread = (g.unread || []).length
     ? `<div class="muted small">not readable from sysfs: ${(g.unread || []).join(", ")}</div>` : "";
   const smi = (g.from_smi || []).length
@@ -168,7 +182,8 @@ function gpuCard(g, ghist = [], i = 0) {
       + "It is the sensor that separates these four cards, so read it both ways: against its limit and against "
       + "its neighbours"]);
   }
-  d.innerHTML = `<b>${g.name || g.card}</b><span class="small">${g.card}</span>`
+  d.innerHTML = `<b>${g.name || g.card}</b>`
+    + `<span class="small">${[g.card, where].filter(Boolean).join(" · ")}</span>`
     + `<div class="pct">${busy}</div>`
     + rows.map(([lab, title]) => `<div class="sparkrow"><span title="${title}">${lab}</span>`
         + `<div class="sparkline spark--gpu"></div></div>`).join("")

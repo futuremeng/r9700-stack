@@ -717,3 +717,60 @@ The three pieces worth naming, because each one is where a naive version goes wr
   one boot measures 0.4 s. The count runs in a thread so the page comes up immediately and gains the tally a second
   or two later.
 
+## Which card is which, and what the page does when the serve is not there (2026-11-03)
+
+### The slot map, from the machine rather than from a name
+
+`card1..card4` are `amdgpu`'s enumeration names for this boot. They are not chassis facts, and after a card is
+pulled out and put back they can name a different card. `/sys/bus/pci/slots/` (firmware's slot table, readable
+without root here) gives the chassis fact, and the join is subtle: **the slot is named at the card's switch
+upstream port, not at the GPU endpoint**, so looking up the endpoint's own BDF finds nothing.
+
+| Monitor name | GPU BDF | physical slot | chain (endpoint → root port) | this boot |
+|---|---|---|---|---|
+| card3 | `0000:03:00.0` | **1** | `03:00.0 ← 02:00.0 ← 01:00.0 ← 00:01.1` | 32.0 GT/s ×16, 0 corr |
+| card1 | `0000:c3:00.0` | **3** | `c3:00.0 ← c2:00.0 ← c1:00.0 ← c0:01.1` | 32.0 GT/s ×16, 0 corr |
+| card2 | `0000:c6:00.0` | **6** | `c6:00.0 ← c5:00.0 ← c4:00.0 ← c0:03.1` | **uplink 16.0 GT/s**, 144 corr |
+| card4 | `0000:06:00.0` | **8** | `06:00.0 ← 05:00.0 ← 04:00.0 ← 00:03.1` | 32.0 GT/s ×16, 56→59 corr |
+
+So the card worth reseating is **slot 6**. Both PCIe rows and card rows now print it: `card2 · PCI c6:00.0 ·
+slot 6`, and the chain row shows `slot 6` as a chip before the BDF path.
+
+`serve/webui.py` gained `read_slots()` (the table) and `slot_of()` (first node of a chain the firmware names),
+and `gpu_poll` copies the slot onto each card row by joining chain → card, since neither side alone has both
+the GPU's BDF and the slot.
+
+### `tools/reseat-check.py` — snapshot before pulling, diff after booting
+
+```bash
+~/venv-r9700/bin/python tools/reseat-check.py --save /tmp/reseat-before.json   # before
+# power down, reseat, boot
+~/venv-r9700/bin/python tools/reseat-check.py --diff /tmp/reseat-before.json   # after
+```
+
+It prints per card: GPU BDF, slot, every chain node with negotiated vs max speed/width and power state, and the
+AER totals. `--diff` reports a card that is gone, a card that appeared at a new BDF, a **slot change**, a chain
+change, and per-node speed/width changes. Two caveats printed with it: AER counters are per boot (so totals
+across a reseat-boot are not comparable — growth inside one boot is the signal), and negotiated speed is all
+sysfs gives an ordinary user; the BIOS's *target* speed needs root (`lspci -vvv` answers `access denied` here).
+It reads sysfs only — no request to the serve — because a reseat happens when the serve is down anyway.
+
+### The standalone Monitor is the page that survives, so it now carries what the serve would have said
+
+Observed 2026-11-03 04:36: the serve stopped answering on `:8080` for minutes while its pid lived on
+(requests were still completing a minute later), and the in-serve Monitor — the page people actually have
+bookmarked — went away with it. Three changes:
+
+- **Serve-down banner.** When `reachable` is false the page states the error, prints the command that would
+  bring *this* launch back (`launch_hint()` assembles it from the launch's own meta file:
+  `MAXLEN=… NSEQ=… NBT=… PREFIX_CACHE=… WEBUI=same bash serve/native-flashnext.sh`), and says why the rest of
+  the page still has content.
+- **`--journal-attach`** reads the merged monitor's journal **read-only**: replay for display, no append handle,
+  no fsync, no rotation, so two Monitors can never replay each other's rows. `tools/restart-sidecar.sh` now
+  passes it plus `--meta` by default, which is what let the sidecar show 100 of the dead launch's rows,
+  including the 242,882-token request, while `:8080` was dark.
+- Two traps found while doing it, both caught by the render harness rather than by a human:
+  `launch_hint` was being called **before** the meta file was read (page showed `launch: None`), and the new
+  `const where` sat **below** its use in `gpuCard` (TDZ `ReferenceError`, swallowed by the page's `try/catch`,
+  blanking the whole Cards panel). The harness prints `PAGE NOTICE` and fails the suite for exactly this class.
+

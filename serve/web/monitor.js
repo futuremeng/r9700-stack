@@ -61,6 +61,10 @@ function pcieRow(c, phist = [], busyNow = false) {
   const sag = c.degraded && !c.parked && !busyNow;
   d.dataset.tone = (c.degraded && !c.parked && busyNow) || unc ? "danger" : cor ? "warn" : "";
   d.innerHTML = `<b>${c.card || short(c.bus)}</b>`
+    // The slot number is what a person at an open chassis can act on. `card2` is a name the driver assigned
+    // this boot and says nothing about the machine; the BDF is the card's identity and the slot, from the
+    // firmware's own table (/sys/bus/pci/slots), is where it is plugged in. This box: slots 1, 3, 6, 8.
+    + (c.slot ? `<span class="chip" title="physical slot, from the firmware's slot table">slot ${esc(c.slot)}</span>` : "")
     + `<span class="chain">${devs.map((x) => short(x.bdf)).join(" → ")}</span>`
     + `<span class="link" title="negotiated speed and width. A link below its maximum while the card
       is running is the thing to notice; a parked card (D3hot) idles its links on purpose">`
@@ -337,6 +341,26 @@ function renderStatus(s) {
   const last = records.find((r) => !active(r));
   // "Requests retained: 97" on a box that hard resets is ambiguous between "this launch did 97" and "the last
   // launch's rows, restored". The journal says which, and where the file is.
+  // The serve is not answering, and this page is the thing still standing -- so this is where the operator
+  // reads what happened and what to type: the error, the launch's own command (assembled from the meta file the
+  // launch wrote, not a recipe from memory), and why everything below still has content. Observed 2026-11-03
+  // 04:36: the serve stopped answering on :8080 for minutes while its pid lived, and the in-serve Monitor went
+  // away with it -- a blank page at exactly the moment a person needs one.
+  const dn = $("down-line");
+  if (dn) {
+    dn.hidden = !!s.reachable;
+    if (!s.reachable) {
+      dn.dataset.tone = "danger";
+      dn.innerHTML = `<b>the serve behind this page is not answering</b>`
+        + `<span class="q">${esc(s.error || "unreachable")}</span>`
+        + (s.launch ? `<div class="rq-support">bring it back: <code>${esc(s.launch)}</code>`
+          + ` <span class="q">the script stops rather than starting on top of ranks that still hold the GPUs</span></div>`
+          : "")
+        + `<div class="rq-support">this page is the standalone Monitor${s.port ? ` on :${s.port}` : ""}. The cards,`
+        + ` the PCIe chains and slots, and the record of what ended the last boot come from sysfs and the kernel`
+        + ` log — none of them need the serve, so they keep reading while it is down.</div>`;
+    }
+  }
   const j = s.journal || null;
   qualText("count", records.length, j ? (j.restored ? `${j.restored} carried over` : "this launch only") : "");
   const jl = $("journal-line");
@@ -345,7 +369,9 @@ function renderStatus(s) {
     jl.textContent = j
       ? (j.ok
         ? `request journal ${j.path} · ${j.restored} row${j.restored === 1 ? "" : "s"} carried over from `
-          + `earlier launches · this launch ${j.boot}`
+          + `earlier launches${j.readonly
+            ? " · <b>attached read-only</b>: these rows belong to the launch that owns the file"
+            : ` · this launch ${j.boot}`}`
         : `request journal FAILED (${j.error}) — the list is memory only and dies with the serve`)
       : "";
     jl.dataset.tone = j && !j.ok ? "danger" : "";

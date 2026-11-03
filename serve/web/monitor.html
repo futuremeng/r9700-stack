@@ -226,6 +226,8 @@ number above it means the two counters are not the pair this line thinks they ar
     <!-- where the list came from: a serve that dies without a shutdown record would otherwise come back with
          a blank table and no way to tell "nothing ran" from "the record of it died with the process" -->
     <div class="small" id="journal-line" hidden></div>
+    <div class="small down-line" id="down-line" hidden></div>
+    <div class="small down-line" id="down-line" hidden></div>
     <!-- what killed the last launch. The kernel replays the firmware's record of the previous crash at boot
          (ACPI BERT), so this box does leave a trace: measured 2026-11-03, 18 deaths in the journal, every one
          an uncorrectable machine check naming the same physical core's execution unit. Without this line the

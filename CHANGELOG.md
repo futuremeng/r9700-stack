@@ -392,6 +392,24 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   the operator command list, including `sel elist | grep -iE "chassis|power|reset"`, which lines the forced
   operations up against the 18 death times without any interpretation from me.
 
+- **The Monitor now names where each card physically is, and what to do when the serve is gone**
+  ([notes/webui.md](notes/webui.md), [notes/incident-2026-11-03/README.md](notes/incident-2026-11-03/README.md)).
+  `card2` is a driver-assigned name for this boot; `/sys/bus/pci/slots/` gives the chassis fact, and the join has
+  to run against the chain because the firmware names the slot at the card's **switch upstream port**, not at the
+  GPU endpoint: card3 slot 1, card1 slot 3, **card2 = `0000:c6:00.0` = slot 6** (the chain with the 16.0 GT/s
+  uplink and 144 correctable events — the one worth reseating), card4 slot 8. Card rows print
+  `card2 · PCI c6:00.0 · slot 6`, chain rows carry a `slot 6` chip, and `tools/reseat-check.py` snapshots the
+  whole identity table (`--save` before pulling, `--diff` after booting) reporting missing/new cards, slot
+  changes and per-node link changes, with its two caveats attached: AER counters are per boot, and negotiated
+  speed is all sysfs gives an ordinary user — the BIOS's target speed needs root. Also new: when the serve stops
+  answering, the page prints the error **plus the command that brings this launch back** (assembled from the
+  launch's own meta file), and `--journal-attach` lets the standalone Monitor read the merged journal read-only —
+  which is how 100 rows of the dead launch, including the 242,882-token request, stayed on screen through the
+  04:36 window when `:8080` refused connections for minutes while its pid lived on. Two traps found on the way,
+  both caught by the render harness: `launch_hint` ran before the meta file was read, and the new `const where`
+  sat below its use in `gpuCard` — a TDZ `ReferenceError` swallowed by the page's `try/catch` that blanked the
+  Cards panel.
+
 - **The operator's IPMI run: PSU2 answered, the SEL lost its 3,639 records, and my microcode claim corrected**
   ([notes/incident-2026-11-03/README.md](notes/incident-2026-11-03/README.md)). `sel info` shows
   `Last Add Time 02:50:11` — 9 s before the last death's BERT `TIME 02:50:20`, so the BMC **was** writing at the

@@ -17,6 +17,7 @@ import http.client
 import os
 import re
 import shutil
+import tempfile
 import sys
 import threading
 import time
@@ -557,6 +558,15 @@ up_b = pci_dev(root_b, "0000:04:00.0", aer={"aer_dev_correctable": AER_COR,
                                             "aer_dev_nonfatal": AER_NF, "aer_dev_fatal": AER_FT})
 down_b = pci_dev(up_b, "0000:05:00.0", aer={"aer_dev_correctable": AER_COR,
                                             "aer_dev_nonfatal": AER_NF, "aer_dev_fatal": AER_FT})
+# The firmware's slot table, as this box lays it out: the slot is named at the card's SWITCH UPSTREAM port
+# (slot 6 -> 0000:c4:00, slot 8 -> 0000:04:00), never at the GPU endpoint -- so "which slot is this card in" is
+# a question about the chain, and answering it from the endpoint's own BDF would find nothing.
+slotsroot = fakepci / "bus" / "pci" / "slots"
+for slotname, addr in (("6", "0000:c4:00"), ("8", "0000:04:00")):
+    sd = slotsroot / slotname
+    sd.mkdir(parents=True)
+    (sd / "address").write_text(addr + "\n")
+
 endpoint_b = pci_dev(down_b, "0000:06:00.0", driver="amdgpu", width="8",      # came up x8 on an x16 link
                      aer={"aer_dev_correctable": AER_COR, "aer_dev_nonfatal": AER_NF,
                           "aer_dev_fatal": AER_FT})
@@ -1379,6 +1389,61 @@ ck("the launcher names the recipe file in exactly one place, and merged mode nam
 for srvx in (srv, srv2, srv3):
     srvx.shutdown()
 up.shutdown()
+
+
+# ------------------------------------------------- slots, attached journals, the serve-down page
+ck("slots come from the firmware's table and are named on the chain, not the endpoint",
+   (lambda ch: ch["c6:00.0"]["slot"] == "6" and ch["c6:00.0"]["slot_at"] == "0000:c4:00.0"
+    and ch["c6:00.0"]["slot_role"] == "upstream port" and ch["06:00.0"]["slot"] == "8")(
+       {c["bus"]: c for c in W.read_pcie(fakepci / "bus" / "pci" / "devices")}))
+ck("a board with no slot table is not an error, it just has no slot to show",
+   W.read_slots(fakepci / "bus" / "pci" / "nosuch") == {}
+   and W.slot_of([], {}) == (None, None, None))
+
+with tempfile.TemporaryDirectory() as td:
+    jpath = Path(td) / "requests-8080.jsonl"
+    owner = W.Journal(jpath, keep=10)
+    for i in range(4):
+        owner.append({"seq": i, "started_at": time.time(), "path": "/v1/chat/completions",
+                      "prompt_tokens": 10, "completion_tokens": 2, "ok": True,
+                      "wallclock_s": 0.5, "finished_at": time.time()})
+    before = jpath.read_bytes()
+    att = W.Journal(jpath, keep=10, readonly=True)
+    ck("an ATTACHED journal replays the owner's rows and writes not one byte back",
+       att.info()["readonly"] is True and att.info()["ok"] is True
+       and [r["seq"] for r in att.replay()] == [3, 2, 1, 0]
+       and att.append({"seq": 99, "started_at": time.time(), "path": "/x", "prompt_tokens": 1,
+                       "completion_tokens": 1, "ok": True, "wallclock_s": 1.0,
+                       "finished_at": time.time()}) is False
+       and jpath.read_bytes() == before)
+    missing = W.Journal(Path(td) / "nope.jsonl", keep=5, readonly=True)
+    ck("an attached journal that cannot be read says so instead of reading as empty",
+       missing.info()["ok"] is False and bool(missing.info()["error"]))
+
+mjs = open(os.path.join(ROOT, "serve/web/monitor.js")).read()
+ck("the page says what to do when the serve behind it stops answering",
+   all(k in mjs for k in ("down-line", "the serve behind this page is not answering",
+                          "attached read-only", "slot ${esc(c.slot)}")))
+wsrc = open(os.path.join(ROOT, "serve/webui.py")).read()
+ck("the launch hint is built after the meta file is read (before it, the page showed launch: None)",
+   wsrc.index("self.meta = json.loads(") < wsrc.index("self.launch = launch_hint(self.meta)"))
+ck("the hint reproduces the standing recipe from the launch's own parameters",
+   W.launch_hint({}) is None
+   and W.launch_hint({"maxlen": "262144", "nseq": "32", "nbt": "8192", "prefix_cache": "0"})
+   == "MAXLEN=262144 NSEQ=32 NBT=8192 PREFIX_CACHE=0 WEBUI=same bash serve/native-flashnext.sh")
+cjs = open(os.path.join(ROOT, "serve/web/common.js")).read()
+ck("card rows carry the identity a person at the machine needs (BDF and slot)",
+   "PCI ${g.bus}" in cjs and "slot ${g.slot}" in cjs and "[g.card, where]" in cjs
+   and "const at = (s) =>" in cjs)                    # history alignment still by bus/card id
+sh = open(os.path.join(ROOT, "tools/restart-sidecar.sh")).read()
+ck("the sidecar -- the page that survives the serve -- gets the meta file and the journal attached",
+   all(k in sh for k in ("--meta", "--journal-attach", "requests-${UP##*:}.jsonl")))
+rsrc = open(os.path.join(ROOT, "tools/reseat-check.py")).read()
+compile(rsrc, "tools/reseat-check.py", "exec")
+ck("the reseat check reads sysfs only (no requests to the serve) and carries its own caveats",
+   "urlopen(" not in rsrc
+   and all(k in rsrc for k in ("--save", "--diff", "read_pcie", "MISSING after", "per boot",
+                                 "different physical slot")))
 
 print("PASS" if fail == 0 else "FAIL", f"({fail} failing)")
 sys.exit(1 if fail else 0)

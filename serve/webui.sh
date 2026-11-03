@@ -37,6 +37,7 @@ ARGS=(--port "$WPORT" --upstream "$UP")
 [ -n "$GPUS" ]       && ARGS+=(--gpus "$GPUS")
 [ -n "$SMI" ]        && ARGS+=(--smi "$SMI")
 [ -n "$JOURNAL" ]    && ARGS+=(--journal "$JOURNAL")
+[ -n "$JOURNAL_ATTACH" ] && ARGS+=(--journal-attach "$JOURNAL_ATTACH")
 
 pkill -f "$PAT" 2>/dev/null
 if [ "${FORE:-0}" = 1 ]; then exec python3 "$DIR/webui.py" "${ARGS[@]}"; fi

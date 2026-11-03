@@ -106,3 +106,12 @@ section{margin:18px 0}
 #death-line[data-tone="warn"]{color:var(--st-warn-text)}
 #death-line[data-tone="danger"]{color:var(--st-danger-text);font-weight:600}
 
+
+/* The serve-down banner: this page outlives the serve, so it is where the command gets read. The `.chip` for a
+   physical slot is a small thing that turns "card2" into something a person can point at in an open chassis. */
+.down-line { margin-top: 8px; padding: 10px 12px; border-left: 3px solid #888;
+             background: rgba(255, 255, 255, .04); border-radius: 4px; }
+.down-line[data-tone="danger"] { border-left-color: #ff5c5c; background: rgba(255, 92, 92, .07); }
+.down-line code { font-size: 12px; word-break: break-all; }
+.pcie-row .chip { font-size: 11px; opacity: .85; border: 1px solid #444; border-radius: 3px;
+                  padding: 0 5px; margin: 0 6px; }

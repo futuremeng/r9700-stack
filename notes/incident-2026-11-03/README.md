@@ -460,3 +460,22 @@ sudo ras-mc-ctl --errors                       # decoded records; rasdaemon deco
 sudo sqlite3 /var/lib/rasdaemon/ras_mc_event.db 'select timestamp,error_type,mcistatus,mciaddr from extlog;'
 ```
 
+## 04:36 — the serve stopped answering, and that is when the Monitor's own design mattered
+
+```text
+04:36  curl http://127.0.0.1:8080/health -> 000 (connection refused); pgrep for `vllm serve` found nothing
+04:41  same URL -> HTTP 200, and `ps -o lstart -p 8252` says the process started 03:21:14 -- same launch
+       journal grew 1457 -> 1459 rows across the window, so requests were completing
+```
+
+Not resolved, and deliberately not explained: the launch survived, kept serving, and was unreachable on its
+port for minutes. What is recorded is the design consequence — the in-serve Monitor is on the serve's port, so
+it disappears exactly when a person needs it. The standalone sidecar (`:8099`) does not depend on the serve:
+its cards, PCIe chains, slots, death record and (attached read-only) request journal all come from sysfs and
+the kernel log. See `notes/webui.md` for the banner, the attach flag and the slot map.
+
+Reseat target, from the firmware's slot table: **card2 = `0000:c6:00.0` = physical slot 6** — the chain with the
+16.0 GT/s uplink (`c4:00.0 ↔ c0:03.1`) and 144 correctable events this boot. The other three sit in slots 1, 3
+and 8. This is the chronic PCIe side condition, *not* the machine-check deaths (those name CPU core 65), and it
+is worth fixing on its own merits: `tools/reseat-check.py --save` before power-down, `--diff` after boot.
+

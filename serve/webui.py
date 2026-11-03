@@ -573,8 +573,47 @@ def _aer(path):
     return vals, {n: v for n, v in vals.items() if v and not n.startswith("TOTAL")}
 
 
+def read_slots(root):
+    """`/sys/bus/pci/slots/`: the machine's own answer to "which physical slot is this card in".
+
+    Why this is worth a read of its own: `card2` is a name the driver assigned this boot, and it says nothing
+    about the chassis. The thing a person at the machine can act on is the BDF and, through the BIOS's slot
+    table, the slot number. Measured on this box (2026-11-03), the four GPUs sit in slots 1, 3, 6 and 8, and the
+    addresses are the CARDS' switch upstream ports, not the GPU endpoints -- so the join has to be against the
+    chain, not against the GPU's own bus id:
+
+        slot 1 -> 0000:01:00 (card3)   slot 3 -> 0000:c1:00 (card1)
+        slot 6 -> 0000:c4:00 (card2)   slot 8 -> 0000:04:00 (card4)
+
+    Readable without root here. Absent on boards whose firmware does not describe slots, in which case the page
+    simply has no slot to show.
+    """
+    out = {}
+    try:
+        entries = sorted(Path(root).iterdir())
+    except OSError:
+        return out
+    for d in entries:
+        addr = _read_str(d / "address")
+        if addr:
+            out[addr.lower().strip()] = d.name           # '0000:c4:00' -> '6'
+    return out
+
+
+def slot_of(devs, slots):
+    """The first node on a chain that the BIOS names a slot for, and which node it was."""
+    for d in devs:
+        bdf = (d.get("bdf") or "").lower()
+        base = bdf.rsplit(".", 1)[0]                     # 0000:c4:00.0 -> 0000:c4:00
+        if base in slots:
+            return slots[base], d.get("bdf"), d.get("role")
+    return None, None, None
+
+
 def read_pcie(root):
     """One chain per GPU endpoint: the card, then each bridge above it, with link state and AER counters."""
+    # /sys/bus/pci/slots and /sys/bus/pci/devices are siblings, so the cfg's devices root gives us both.
+    slots = read_slots(Path(root).parent / "slots")
     root = Path(root)
     chains = []
     for dev in sorted(root.glob("*")):
@@ -595,7 +634,11 @@ def read_pcie(root):
                 break
             real = real.parent
         lows = {k: [d[k] for d in chain if _num(d[k])] for k in ("speed", "width")}
-        chains.append({"bus": dev.name.replace("0000:", ""), "card": None,
+        # Which physical slot this card is in, per the firmware's slot table. The name a person reads at the
+        # machine, so it belongs on the row: "card2, slot 6" is something an operator can act on, "card2" is not.
+        slot, slot_at, slot_role = slot_of(chain, slots)
+        chains.append({"bus": dev.name.replace("0000:", ""), "card": None, "slot": slot,
+                       "slot_at": slot_at, "slot_role": slot_role,
                        "devices": chain,
                        "speed": min(lows["speed"]) if lows["speed"] else None,
                        "width": min(lows["width"]) if lows["width"] else None,
@@ -805,6 +848,24 @@ def parse_death(lines):
     return out
 
 
+def launch_hint(meta):
+    """The launch command for THIS launch, from the meta file the launch itself writes.
+
+    The Monitor is the thing still standing when the serve is not, so it is where the command should be. Built
+    from the recorded parameters rather than a hardcoded recipe, because the recipe is what the launch actually
+    used: maxlen / nseq / nbt / prefix_cache come from the meta, and the shell script is the entry point people
+    are meant to use (it is the one that checks for leftover ranks holding the GPUs).
+    """
+    if not meta:
+        return None
+    parts = []
+    for key, env in (("maxlen", "MAXLEN"), ("nseq", "NSEQ"), ("nbt", "NBT"),
+                     ("prefix_cache", "PREFIX_CACHE")):
+        if meta.get(key) not in (None, ""):
+            parts.append(f"{env}={meta[key]}")
+    return " ".join(parts + ["WEBUI=same", "bash", "serve/native-flashnext.sh"]) or None
+
+
 def boot_ids(limit=12):
     """The boots the journal still holds, newest last, capped: `-b all` is not an option here -- measured on
     this box it scans 517 MB of journal and takes 55 s, while one boot reads in 0.4 s."""
@@ -981,14 +1042,25 @@ class Journal:
 
     MAX_BYTES = 8 << 20                                     # rotate well before a page read gets slow
 
-    def __init__(self, path, keep=100):
-        self.path, self.keep = Path(path), keep
+    def __init__(self, path, keep=100, readonly=False):
+        self.path, self.keep, self.readonly = Path(path), keep, readonly
         self.lock = threading.Lock()
         self.boot = f"{int(time.time())}-{os.getpid()}"
         self.f, self.error, self.rows_in = None, None, 0
         self.start()
 
     def start(self):
+        if self.readonly:
+            # Attached, not owned: this Monitor reads a journal another process writes. No append handle, no
+            # fsync, no rotation -- two writers in one file is how two Monitors end up replaying each other's
+            # rows, which is the reason the journal is one-per-port in the first place. What attaching buys is
+            # the case that matters: the serve is dead, and its request history is still worth looking at.
+            self.f = None
+            try:
+                self.path.open(encoding="utf-8").close()
+            except OSError as e:
+                self.error = f"{type(e).__name__}: {e}"
+            return self
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.f = self.path.open("a", encoding="utf-8")
@@ -998,7 +1070,7 @@ class Journal:
         return self
 
     def append(self, row):
-        if self.f is None:
+        if self.f is None or self.readonly:
             return False
         try:
             with self.lock:
@@ -1053,8 +1125,11 @@ class Journal:
         return rows
 
     def info(self):
-        return {"path": str(self.path), "ok": self.f is not None, "error": self.error,
-                "restored": self.rows_in, "boot": self.boot}
+        return {"path": str(self.path), "ok": self.error is None if self.readonly else self.f is not None,
+                "error": self.error, "restored": self.rows_in, "boot": self.boot,
+                # Attached rows belong to another process's launch list: the page says so rather than letting
+                # them read as this Monitor's own record of a live launch.
+                "readonly": self.readonly}
 
 
 class EngineRecords:
@@ -1270,7 +1345,10 @@ class Hub:
         self.cfg = cfg
         # The request journal: a JSONL file of finished rows, replayed at startup, so the list survives what
         # this box does to a process (see Journal). Off unless a path is configured.
-        self.journal = Journal(cfg["journal"], cfg["keep"]) if cfg.get("journal") else None
+        # A sidecar may ATTACH the merged monitor's journal read-only instead of owning one: that is what keeps
+        # the dead launch's rows on screen while the serve itself is down (the incident case).
+        jpath = cfg.get("journal") or cfg.get("journal_attach")
+        self.journal = Journal(jpath, cfg["keep"], readonly=not cfg.get("journal")) if jpath else None
         self.rec = Records(cfg["keep"], journal=self.journal)
         # When the monitor runs INSIDE the serve (serve/plugin), the per-request records come from the
         # engine's own stat logger instead of a relay, and /metrics is read from the process's Prometheus
@@ -1296,6 +1374,7 @@ class Hub:
         # What ended the PREVIOUS boot (ACPI BERT, replayed by the kernel at startup) and how many such
         # records the journal still holds. Read once: neither can change while this process is alive.
         self.death, self.deaths = read_death(), None
+        self.launch = None                                  # set below, once the meta file has been read
         self.key_needed, self.smi_error = False, None
         self.lock = threading.Lock()
         if self.death is not None:
@@ -1307,6 +1386,12 @@ class Hub:
                 self.meta = json.loads(Path(cfg["meta"]).read_text())
             except (OSError, ValueError) as e:
                 print(f"webui: --meta {cfg['meta']} not read: {e}", file=sys.stderr)
+        if self.meta:
+            # The command that would bring THIS launch back, assembled from the parameters the launch recorded
+            # for itself rather than retyped by whoever is standing at the machine at 03:00. It has to be built
+            # after the meta read: built before it, the dict was empty and the page had no command to show
+            # (measured: `launch: None` on the sidecar's first run with --meta passed).
+            self.launch = launch_hint(self.meta)
 
     def _read_deaths(self):
         """The death count, off the startup path (see Hub.__init__)."""
@@ -1370,6 +1455,8 @@ class Hub:
                     # The last thing the firmware recorded about the death that precedes this launch.
                     payload["last_death"] = self.death
                     payload["deaths"] = self.deaths
+                    payload["port"] = self.cfg.get("port")
+                    payload["launch"] = self.launch
                     self.prev, self.prev_t, self.status = cur, t0, payload
                 self.hist.append({"at": t0, "gen_tok_s": payload["rate"].get("generation_tok_s"),
                                   "stream_tok_s": payload["rate"].get("stream_tok_s_live"),
@@ -1431,9 +1518,18 @@ class Hub:
             # cfg knowing it: the merged page had one card sample and no PCIe, and the serve log held a dead thread.
             if self.cfg.get("pci"):
                 chains = read_pcie(self.cfg["pci"])
-                by_bus = {g.get("bus"): g.get("card") for g in self.gpus}      # name the chain by its card
+                # Normalise the domain: read_gpus reports "0000:c3:00.0" and the chain summary strips it to
+                # "c3:00.0", and an unnormalised join left every chain row labelled by BDF with no card name
+                # (visible on the live page: "06:00.0 32.0 GT/s" instead of "card4").
+                by_bus = {(g.get("bus") or "").replace("0000:", ""): g.get("card") for g in self.gpus}
                 for ch in chains:
                     ch["card"] = by_bus.get(ch["bus"])
+                # And the other direction: the card rows carry the slot their chain sits in. The join is by
+                # chain, not by bus id, because the BIOS names the slot at the card's switch upstream port
+                # (0000:c4:00), which is not the GPU endpoint's own bus id (c6:00.0).
+                slot_by_ep = {ch["bus"]: ch.get("slot") for ch in chains if ch.get("slot")}
+                for g in self.gpus:
+                    g["slot"] = slot_by_ep.get((g.get("bus") or "").replace("0000:", "").lower())
                 new_events = []
                 deltas, self.aer_last = aer_deltas(chains, self.aer_last, self.aer_named, new_events,
                                                    time.time())
@@ -1725,6 +1821,9 @@ def main(argv=None):
     ap.add_argument("--journal", default=os.environ.get("R9K_WEB_JOURNAL", ""),
                     help="append finished requests to this JSONL file and replay it at startup, so the request "
                          "list survives a restart or a hard reset of the serve (empty = memory only)")
+    ap.add_argument("--journal-attach", default=os.environ.get("R9K_WEB_JOURNAL_ATTACH", ""),
+                    help="read another monitor's journal READ-ONLY (no writes, no rotation): a standalone "
+                         "Monitor keeps showing the dead launch's rows while its serve is down")
     ap.add_argument("--smi", default=os.environ.get("R9K_WEB_SMI", ""),
                     help="fill what the sysfs refuses from rocm-smi (empty = off; pass a command to override "
                          "the default -- opens /dev/kfd on every poll, so keep it off while measuring)")
@@ -1733,7 +1832,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     cfg = {"port": a.port, "upstream": a.upstream.rstrip("/"), "mode": "proxy" if a.proxy else "observe",
            "key": a.key, "poll": a.poll, "keep": a.keep, "meta": a.meta,
-           "gpus": a.gpus, "pci": a.pci, "journal": a.journal, "smi": (SMI_DEFAULT if a.smi == "1" else a.smi.split()) if a.smi else None,
+           "gpus": a.gpus, "pci": a.pci, "journal": a.journal, "journal_attach": a.journal_attach, "smi": (SMI_DEFAULT if a.smi == "1" else a.smi.split()) if a.smi else None,
            "timeout": 600.0, "verbose": a.verbose, "version": a.version}
     _, srv = build(cfg)
     print(f"webui: http://127.0.0.1:{cfg['port']}/monitor  upstream {cfg['upstream']}  "
