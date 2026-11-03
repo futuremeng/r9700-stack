@@ -253,6 +253,71 @@ The hardware side of the same window is in
 while a 72k–144k prompt was prefilling — long-context work moves the link counters where short-request bursts do
 not.
 
+## Per-stream decode, read off the whole journal rather than a window (2026-11-02, 16:2x UTC)
+
+The journal (`~/logs/requests-8080.jsonl`, one JSONL row per finished request — the thing added to survive hard
+resets) had **1,400 completed rows** by this afternoon, covering **13.8 h** of wall-clock of which **301 minutes
+had traffic in them**. That is 14× more real traffic than the 14:11–14:17 window above, and it is long enough to
+answer the question the window could not: **what does one stream actually decode at?**
+
+Definitions matter more than the number here. Own-request rate = `completion_tokens / timings.decode_s` — the
+engine's own decode span, which excludes queueing and prefill (`predicted_per_second` in the row is the same
+quantity). Concurrency is reconstructed from the rows' own `started_at … started_at + wallclock_s` at 1 Hz: for
+each request, the mean and the **maximum** number of requests in flight across its decode window.
+
+| in flight during its decode | share of active seconds | own decode, median |
+|---|---:|---:|
+| 1 (never shared) | 32.7% | **157.7 tok/s** (n=274) |
+| 2 | 18.6% | 119.1 tok/s (n=232) |
+| 3–4 | 31.8% | **22.8 tok/s** |
+| 5–6 | 12.4% | 15.6 tok/s |
+| 7–9 | 4.6% | 17.3 tok/s |
+| **all 1,400 requests** | — | **60.8 tok/s** (mean 75.7, p10 8.7, p90 163.0) |
+
+So the honest answer to "average single-stream decode" is two numbers, not one: **~157 tok/s when the stream has
+the box to itself, ~61 tok/s for the request as a user actually experiences it**, and the experienced number is
+*mostly* not a decode-speed problem — it is the price of sharing a prefill-bound engine.
+
+**Single stream is nearly context-independent, which is worth knowing about this model.** Never-shared requests with
+≥200 generated tokens (n=188), by prompt size: **161.9** tok/s under 20k (n=9), **158.2** at 20–80k (n=96),
+**149.7** at 80–160k (n=74), **140.3** above 160k (n=9). A 262k context costs a single stream ~13% of its decode
+speed — small next to what concurrency does to it. Decode on this stack streams MoE weights, so attention's KV
+read grows while the dominant cost does not.
+
+**Two "alone" definitions, 19 tok/s apart — the trap is worth recording.** Bucketing concurrency at the *midpoint*
+of the decode window puts a request in "alone" whenever nothing else happened to be in flight at that instant, even
+if it shared the engine for most of its decode. That definition said 137 tok/s (n=361). Requiring that the request
+**never** shared the engine across its whole decode window (`cmax == 1`) gives 157.7 (n=274), and every sane
+variant agrees (mean-concurrency <1.5: 156.1; <1.5 with ≥200 tokens: 155.7). Midpoint sampling is the shape of lie
+to avoid when reconstructing concurrency from a journal.
+
+**Aggregate, and why the denominator decides.** `Σgenerated / Σwallclock` = **16.6 tok/s**, but 63% of that
+wall-clock is an idle box; over active minutes only it is **45.4 tok/s**. Mean in-flight during traffic is **2.75**
+(p50 2, p90 6, max 9). `Σgenerated / Σdecode_s` — token-weighted own decode — is **24.8 tok/s**, well below the
+60.8 median, because long decodes are the ones that ran while the box was busy: weighting by tokens moves the
+answer toward the crowded case, and quoting an unweighted mean of per-request rates moves it toward the quiet one.
+For "what will my request feel like", the median of per-request rates is the right shape: **61 tok/s**.
+
+**The same journal reads prefill honestly too**, since rows carry `timings.prefill_s`: median **7,911 tok/s**
+overall, and by prompt size 8,593 (<20k) / 8,641 (20–80k) / 7,867 (80–160k) / **7,238** (>160k) — the same
+6.8–9.1k band the synthetic ladder measured, now with a size-dependent falloff that the bench's fixed prompt
+lengths could not show.
+
+**Where the cliff is, and what it is made of.** Nothing interesting happens between 1 and 2 streams (157.7 →
+119.1: decode sharing itself, roughly proportional). Then **2 → 3 collapses it by ~5×** (119.1 → 22.8), and 5–6
+streams sit at 15.6. With prompts of 50–170k and `NBT=8192`, a third long prompt means engine steps of ~1 s
+carrying one 8192-token prefill chunk (measured directly earlier in this note: step p50 951 ms), and each stream is
+credited its accepted tokens once per step. That is a scheduling/chunking cost, not a decode-kernel cost, which is
+why the lever named in this note's other section — `--long-prefill-token-threshold`, or a smaller chunk — is the one
+that addresses it, and why no kernel work on decode does.
+
+**Cross-check against the bench, so nobody reads 157 as a regression.** The standing numbers for this box are 186.7
+tok/s single stream at 32k with MTP-3, and 210–225 tok/s at the 210 W release gate with draft acceptance ~3.1
+tokens a step. This launch runs **MTP=2** — acceptance 2.0–2.4 measured on live traffic — and these real requests
+carry 50–170k of context. 156–158 tok/s is what acceptance-limited decode at MTP-2 with long context should look
+like; it is not evidence of anything broken. If single-stream decode ever wants to come back, the knob is the
+drafter depth, not the attention path.
+
 ## Why the GLM-5.3-Flash 262k failure did not repeat here
 
 [release-v0.3.7.md](release-v0.3.7.md) records GLM-5.3-Flash TP8 coming up at 262k and then dying inside
