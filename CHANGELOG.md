@@ -392,6 +392,12 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   temporal-dead-zone `ReferenceError` caught by the page's own `try/catch`, which showed up as the PCIe and request
   sections silently not rendering while string tests passed. Declaration order is now asserted, and
   `tests/render-monitor.mjs` prints the page's notice bar and exits non-zero on a page-reported error or zero rows.
+- **60 s of link sampling says card2's Gen4 uplink is not power management** ([notes/incident-2026-11-03/README.md](notes/incident-2026-11-03/README.md)).
+  With the serve up and nothing served, `c4:00.0 ↔ c0:03.1` held **16.0 GT/s ×16 for 30 samples with one distinct
+  value**, while its own endpoint, the switch downstream port, and card4's structurally identical upstream port all
+  held 32.0 — a power-management sag takes links down together, as the parked case demonstrably does (all four chains
+  at 2.5 GT/s). So the panel stopped explaining it: the muted `idle, max ×16` label stays, and the box note now states
+  the test instead of a verdict — still short while the cards work means a link fault.
 - **Relaunched, and the PCIe panel now distinguishes a sagging link from a broken one** (243 checks;
   [notes/incident-2026-11-03/README.md](notes/incident-2026-11-03/README.md)). The serve came back at ~03:09 and the
   journal did its job: the Monitor reopened holding **100 rows from the dead launch**, newest first — the 242,882-token

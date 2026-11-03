@@ -148,3 +148,25 @@ non-zero when the page reported an error or rendered no rows, so a swallowed ren
 an empty panel. The live page now renders 4 PCIe rows — `16.0 GT/s ×16 (idle, max ×16)` in muted type, with the note
 `links sag while nothing runs: that is power management, watch them under load` — and 100 request rows.
 
+## 60 s of link-state sampling says the Gen4 uplink is not power management
+
+Sampled `current_link_speed` / `current_link_width` every 2 s for 60 s with the serve up and nothing served
+(cards at 3% busy, sclk 41 MHz, mclk 96 MHz):
+
+| link | state over 60 s |
+|---|---|
+| `c6:00.0` endpoint (card2) | 32.0 GT/s ×16, one distinct value |
+| `c5:00.0` switch downstream | 32.0 GT/s ×16 |
+| **`c4:00.0` switch upstream** | **16.0 GT/s ×16** |
+| **`c0:03.1` root port** | **16.0 GT/s ×16** |
+| `04:00.0` switch upstream (card4, same topology) | 32.0 GT/s ×16 |
+
+That kills the easy reading. A power-management sag would take the links down **together** (and the parked-box
+case really does that: all four chains at 2.5 GT/s with no context open), and card4's chain has the same shape and
+holds Gen5 at the same instant. This is one hop — `c4:00.0 ↔ c0:03.1` — pinned at half speed since the 02:50 boot,
+which is also the hop whose upstream port carries 77 of the 144 `BadTLP` and the chain whose root port carries 65
+`Timeout`. The panel therefore no longer explains it away: the muted label stays (`idle, max ×16`) but the box note
+now reads *"a link is below its maximum with nothing running: parked chains always read that way · if it is still
+short while cards work, that is a link fault"* — a test, not a verdict. The remaining open test is the loaded one:
+whether that hop renegotiates to 32.0 GT/s when card2 actually works.
+

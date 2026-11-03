@@ -51,12 +51,13 @@ function pcieRow(c, phist = [], busyNow = false) {
   d.className = "pcie-row";
   // Colour means "look here": a link below its maximum, or an uncorrectable error, is the danger; correctable
   // errors are noted but not alarming on their own (they are correctable, and this box has them by the dozen).
-  // A link below its maximum is only a fault when the card is being asked to move something. Two idle states
-  // were measured on this box: with the GPUs runtime-suspended (D3hot, no context open) every chain drops to
-  // Gen1 (2026-11-03 03:00, all four at 2.5 GT/s x16), and with the serve up but nothing served the links sit
-  // at Gen4 -- 16 GT/s on the c6 chain at 3% busy, 32 GT/s through the same port under load. Alarming at an
-  // idle box is how a warning stops being read at all, so the alarm is tied to work: parked, or no card
-  // working, says so in muted type instead of turning red.
+  // Two idle states are measured on this box, and neither should be painted as a fault: with the GPUs
+  // runtime-suspended (D3hot, no context open) EVERY chain drops to Gen1 (2026-11-03 03:00, all four at
+  // 2.5 GT/s x16); with a serve up and nothing served, three chains stay at 32 GT/s while the c6 chain's
+  // switch uplink has been sitting at 16 GT/s since this boot (60 s at 2 s, one distinct state, while
+  // card4's identical topology held 32 GT/s at the same moment). So the red is tied to work -- a sagging
+  // link with no card working is named in muted type and left for the note to put under load, because the
+  // alarm that fires at an idle box is the alarm that stops being read.
   const sag = c.degraded && !c.parked && !busyNow;
   d.dataset.tone = (c.degraded && !c.parked && busyNow) || unc ? "danger" : cor ? "warn" : "";
   d.innerHTML = `<b>${c.card || short(c.bus)}</b>`
@@ -549,7 +550,9 @@ function renderStatus(s) {
           : " \u00b7 nothing moved while this page has been watching")
       + (chains.some((c2) => c2.degraded && !c2.parked && busyNow) ? " · a link is below its maximum while work is running" : "")
       + (chains.length && chains.every((c2) => c2.parked) ? " · cards parked: the links idle at Gen1 while nothing runs"
-        : chains.some((c2) => c2.degraded) ? " · links sag while nothing runs: that is power management, watch them under load" : "")
+        : chains.some((c2) => c2.degraded)
+          ? " \u00b7 a link is below its maximum with nothing running: parked chains always read that way"
+            + " \u00b7 if it is still short while cards work, that is a link fault" : "")
       + (phist.some((h) => (h.chains || []).some((x) => x.reset))
         ? " · counters were zeroed during the window" : "")
     : "no PCIe sysfs readable here");

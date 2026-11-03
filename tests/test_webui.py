@@ -1012,7 +1012,7 @@ ck("a const the PCIe note uses is declared before the note is built (no temporal
    mon_note.index("const busyNow =") < mon_note.index("const pse = $(\"pcie-spark\")")
    and mon_note.index("const busyNow =") < mon_note.index("busyNow)"))
 ck("idle link states are named instead of alarmed: parked (D3hot, Gen1) and sagging (D0, nothing served)",
-   "parked, max \u00d7" in monjs and "links sag while nothing runs: that is power management" in monjs
+   "parked, max \u00d7" in monjs and "below its maximum with nothing running" in monjs
    and "a link is below its maximum while work is running" in monjs
    and "2.5 GT/s x16" in monjs and "16 GT/s on the c6 chain at 3% busy" in monjs)
 ck("wall-clock is summed per path, and the note says which sum it is",
