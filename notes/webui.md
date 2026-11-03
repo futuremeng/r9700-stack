@@ -527,6 +527,7 @@ rarity means. The rate says what is actually true: this chain adds a twelfth of 
 |---|---|---|
 | `danger` | uncorrectable counters, or a link below maximum while the card works | unchanged, whatever the rate |
 | digits + colour | movement this poll, or `rate > 1/min` (weight load measured **11.3/min**), or rate unknown | `44 corr · 0 uncorr` |
+| `—` | no AER counter raised on this chain since boot (measured: slots 1 and 3, all day) | `—` |
 | **info glyph** | correctables exist, nothing this poll, `rate ≤ 1/min` (measured **0.081/min** under 47 requests at mean 104,160 tokens; **~0.2/min** was the 4–5-concurrent-stream measurement) | `ⓘ`; window cell `+0 · 0.33/min · quiet 4 min` |
 
 **One limit the merged page cannot escape:** it starts with the engine, i.e. *after* the weights are up, so the
@@ -535,20 +536,12 @@ the 11:05 restart: the page reported `events [], rate 0/min` while an external `
 same window counted +4 correctables on the slot-8 chain. So the page's glyph is honest about what it watched, and
 the launch window belongs to the external watchers (`tools/reseat-check.py --save/--diff`, `tools/brief.py`).
 
+A chain with **nothing raised at all** is a bare `—` (the sentence "no errors since boot" spent four words on a
+fact nobody needs reminded of; the tooltip still says what the dash means).
+
 Three guards: the glyph never applies while **uncorrectable** counters are nonzero; the numbers move into the
 `title` (totals, which counters, rate and its span, how long the calm has been, the last event's `bdf`/`kind`/
 time) so nothing is lost, only demoted; and an **unknown** rate (older sidecar, first sample) counts as loud.
-- The window cell then reads `+0 · quiet 42 min` (or `4.2 h`). The number stays on screen — this is de-emphasis,
-  not concealment, and "no errors" would be a lie about a chain that has 42.
-- `danger` is untouched: uncorrectable counters, or a link below its maximum while the card is working, stay red
-  however quiet they have been.
-- An **unknown** quiet clock (a page talking to an older sidecar, or the first sample) counts as **loud**. The
-  dimming is allowed to turn itself off; it is not allowed to invent calm.
-
-`tests/test_webui.py` drives `aer_deltas` directly for the clock semantics (first sighting, a move, 42 minutes of
-nothing, a kernel zeroing) and asserts the row tone keys off `liveErrs` and reads `quiet_s` off the history
-entry — `payload["pcie"]` is `read_pcie`'s chains, which carry no deltas and no `quiet_s`, and getting that
-wrong makes the feature silently never fire.
 
 So a chain is now **one row**: card, the device chain (`c6:00.0 → c5:00.0 → c4:00.0 → c0:03.1`), the negotiated
 link (`32.0 GT/s ×16`, and `(max ×16)` stated when it fell short), totals since boot (`36 corr · 0 uncorr`), the

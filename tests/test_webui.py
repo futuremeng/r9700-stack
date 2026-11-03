@@ -1069,6 +1069,10 @@ ck("the numbers survive in the glyph's title rather than being dropped",
    r"correctable \u00b7 ${unc} uncorrectable since boot" in _m2
    and "counters per minute over the ${span} min" in _m2
    and "const info = [" in _m2 and 'title="${esc(info)}"' in _m2)
+ck("a chain with nothing raised is a dash, not the sentence 'no errors since boot'",
+   "no errors" not in _js["monitor.js"]
+   and 'title="no AER counter on this chain has moved since boot">' in _js["monitor.js"]
+   and r">\u2014</span>" in _js["monitor.js"], "the dash must be there as a dash, with the meaning in the title")
 ck("the sparse glyph has its own style with a defined variable",
    ".p-info{" in open(os.path.join(ROOT, "serve", "web", "monitor.css")).read()
    and "var(--st-fs-sm)" in open(os.path.join(ROOT, "serve", "web", "monitor.css")).read())

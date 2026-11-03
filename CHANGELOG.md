@@ -1,4 +1,9 @@
 # Changelog
+## A clean PCIe chain is a dash, not the sentence "no errors since boot"
+
+Four words spent on a fact nobody needed reminded of, next to chains that do have numbers. It is now a bare
+`--`, with the meaning in the tooltip ("no AER counter on this chain has moved since boot"). Slots 1 and 3 have
+been that dash all day.
 ## The PCIe row's third level: at most one counter a minute collapses to an info glyph
 
 ... and the criterion changed on the way there. The first pass dimmed a chain after 300 s with no counter move, with 300 s anchored on the weight-load windows
