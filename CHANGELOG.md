@@ -378,6 +378,20 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   denominators, the MTP-2-versus-MTP-3 reconciliation that keeps 158 from reading as a regression, and the snapshot
   note that the count grows while the statistics do not (1,400 rows: prompt p50 74,381; 1,417 rows: 74,066).
 
+
+- **Serve restarted at 03:21 to pick up the panel fix; the restart turned into a clean AER experiment** (244 checks;
+  [notes/incident-2026-11-03/README.md](notes/incident-2026-11-03/README.md)). A serve restart neither re-trains PCIe
+  links nor zeroes the counters, so before/after is a pure launch delta: card4's chain **17 → 28**, card2's
+  **144 → 144**, card1/card3 **0 → 0**, and the c6 uplink still at 16.0 GT/s. Two corrections follow — **every event
+  ever counted here is on the two chains whose root port is `xxx:03.1`** (`00:03.1`, `c0:03.1`), while the
+  `00:01.1`/`c0:01.1` chains have never counted one, which localizes the suspect hardware rather than describing a
+  mood; and the 144 on card2's chain belongs to the **02:50 cold boot and its link training**, not to model loading,
+  since this launch added zero there. My own downtime: relaunching with `STOP=1` stopped and **exited** (that flag is
+  stop-only), so the box had no serve from 03:10 to 03:21 while I waited for health — the script now says the stop
+  was the whole command. And a real bug the restart exposed: `busyNow` was declared below the note that uses it, a
+  temporal-dead-zone `ReferenceError` caught by the page's own `try/catch`, which showed up as the PCIe and request
+  sections silently not rendering while string tests passed. Declaration order is now asserted, and
+  `tests/render-monitor.mjs` prints the page's notice bar and exits non-zero on a page-reported error or zero rows.
 - **Relaunched, and the PCIe panel now distinguishes a sagging link from a broken one** (243 checks;
   [notes/incident-2026-11-03/README.md](notes/incident-2026-11-03/README.md)). The serve came back at ~03:09 and the
   journal did its job: the Monitor reopened holding **100 rows from the dead launch**, newest first — the 242,882-token

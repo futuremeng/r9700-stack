@@ -37,7 +37,9 @@ export R9K_LIB=$SO VLLM_CACHE_ROOT=${VLLM_CACHE_ROOT:-$HOME/vllm-native-cache} T
 # (0.0/31.86 GiB)". Refuse rather than eat a 2-minute failure; STOP=1 clears them, FORCE=1 launches anyway.
 if [ "${STOP:-0}" = 1 ]; then
   pkill -9 -f 'VLLM[::]' 2>/dev/null; pkill -9 -f 'vll[m] serve' 2>/dev/null; sleep 5
-  echo "leftover vLLM processes after STOP: $(pgrep -cf 'VLLM[::]|vll[m] serve')"; exit 0
+  echo "leftover vLLM processes after STOP: $(pgrep -cf 'VLLM[::]|vll[m] serve')"
+  echo "STOP=1 stops and exits: nothing was launched. Rerun the same command without STOP=1 to bring it back."
+  exit 0
 fi
 LEFT=$(pgrep -cf 'VLLM[::]' || true)
 if [ "${FORCE:-0}" != 1 ] && [ "${LEFT:-0}" -gt 0 ]; then

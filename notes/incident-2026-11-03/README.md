@@ -103,3 +103,48 @@ Gen4 — 16 GT/s on the c6 chain at 3% busy. So the page now says which of the t
 running**, which is the only case that turns to danger. Tests cover all three. The in-serve Monitor on `:8080`
 predates this change and will keep colouring those chains red until the next restart; the `:8099` sidecar has it.
 
+## Serve restarted at 03:21 to pick up the panel fix — and the counters said something new
+
+Health 200 at **03:23:45** (~130 s, caches warm). New build confirmed live on `:8080`: `parked` on every chain, the
+`idle` / `parked` / while-working wording, journal restored (**100 rows** from the dead launch, newest still the
+242,882-token request), new boot id `1793676091-8252`, `preemptions_total` present, `shared_decode` on 100/100 rows.
+
+**My mistake first:** I ran the relaunch with `STOP=1`, and `STOP=1` in this script means *stop and exit* — so the
+box sat with no serve from **03:10 to 03:21** while I waited for a health that was never coming. The script now says
+so out loud (`STOP=1 stops and exits: nothing was launched. Rerun the same command without STOP=1`). Ten minutes of
+downtime, on me, and it is a serving box.
+
+### A serve restart is a clean AER experiment, and it localizes the fault to one switch group
+
+A serve restart does **not** re-train PCIe links and does **not** zero the counters (only boot enumeration does). So
+the before/after is a clean delta for one launch of the model:
+
+| chain | before (03:10) | after (03:23) | delta | link |
+|---|---:|---:|---:|---|
+| card4 `06:00.0 → 05:00.0 → 04:00.0 → **00:03.1**` | 17 | **28** | **+11** | 32.0 GT/s ×16 |
+| card2 `c6:00.0 → c5:00.0 → c4:00.0 → **c0:03.1**` | 144 | 144 | 0 | **16.0 GT/s** at the uplink |
+| card1 `c3:00.0 → … → **c0:01.1**` | 0 | 0 | 0 | 32.0 GT/s ×16 |
+| card3 `03:00.0 → … → **00:01.1**` | 0 | 0 | 0 | 32.0 GT/s ×16 |
+
+Two things fall out, and both are corrections to what I wrote above:
+
+- **Every AER event this box has ever counted sits on the two chains whose root port is `xxx:03.1`** — `00:03.1`
+  (card4) and `c0:03.1` (card2). The two chains under `00:01.1` and `c0:01.1` (card3, card1) have counted **zero**
+  across 11-02's serving day, the reset storm, and both of today's launches. That is a hardware-localizing pattern
+  worth handing to the operator, not a general "the PCIe is unhappy" statement.
+- **The 144 on card2's chain came with the cold boot, not with a launch.** I wrote above that the events "accrued
+  during the launch" — that reading is now split: this launch added **zero** there, while it added 11 on card4's
+  chain. So `c4:00.0`'s 77 `BadTLP` are tied to the 02:50 boot and its link training (which is also what left that
+  uplink at Gen4), not to model loading.
+
+### A bug the restart exposed in my own change, and why the tests missed it
+
+The `busyNow` the PCIe note uses was declared *below* the string that uses it. `const` in a temporal dead zone is a
+`ReferenceError`, and the page's poll loop wraps its render in `try/catch`, so the whole thing surfaced as **the PCIe
+rows and the request rows silently not rendering** — an empty section, not an error. String-presence tests passed
+while the page was broken. Fixed three ways: the declaration moved above its use; a test now asserts the *order*
+(not just the presence) of that declaration; and `tests/render-monitor.mjs` prints the page's notice bar and exits
+non-zero when the page reported an error or rendered no rows, so a swallowed render error can never again look like
+an empty panel. The live page now renders 4 PCIe rows — `16.0 GT/s ×16 (idle, max ×16)` in muted type, with the note
+`links sag while nothing runs: that is power management, watch them under load` — and 100 request rows.
+

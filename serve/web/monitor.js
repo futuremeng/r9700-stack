@@ -525,6 +525,11 @@ function renderStatus(s) {
   // "zero", not as "no data".
   const perPoll = phist.map((h) => (h.chains || []).reduce((a, x) => a + (isnum(x.cor_d) ? x.cor_d : 0)
     + (isnum(x.nonfatal_d) ? x.nonfatal_d : 0) + (isnum(x.fatal_d) ? x.fatal_d : 0), 0));
+  // Is the box actually moving anything? That is what makes a sagging link worth colouring: measured on this
+  // box, 16 GT/s on the c6 chain at 3% busy (power management) and the same port at 32 GT/s under load.
+  const busyNow = ((status.live || {}).running || 0) > 0
+    || (status.gpus || []).some((g) => isnum(g.busy_pct) && g.busy_pct >= 25);
+
   const pse = $("pcie-spark");
   pse.replaceChildren();
   pse.setAttribute("aria-label", "AER events per second, whole box");
@@ -548,10 +553,6 @@ function renderStatus(s) {
       + (phist.some((h) => (h.chains || []).some((x) => x.reset))
         ? " · counters were zeroed during the window" : "")
     : "no PCIe sysfs readable here");
-  // Is the box actually moving anything? That is what makes a sagging link worth colouring: measured on this
-  // box, 16 GT/s on the c6 chain at 3% busy (power management) and the same port at 32 GT/s under load.
-  const busyNow = ((status.live || {}).running || 0) > 0
-    || (status.gpus || []).some((g) => isnum(g.busy_pct) && g.busy_pct >= 25);
   $("pcie").replaceChildren(...chains.map((c2) => pcieRow(c2, phist, busyNow)));
 }
 

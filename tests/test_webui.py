@@ -1004,6 +1004,13 @@ ck("a row shows how many requests shared its decode window, and the tooltip says
 # The clock basis, spelled out on the page instead of assumed: an engine row's wallclock excludes the queue, so
 # a queued request used to print a first token LATER than its whole wall-clock, and the note claimed the opposite
 # of what the number held.
+# The page's own poll wraps its render in try/catch, so a broken section reads as an empty one, and a
+# const used above its declaration (temporal dead zone) is exactly that class of break: string checks pass
+# and the section never renders. Order is therefore asserted, not just presence.
+mon_note = monjs[monjs.index('function renderStatus'):]
+ck("a const the PCIe note uses is declared before the note is built (no temporal-dead-zone ReferenceError)",
+   mon_note.index("const busyNow =") < mon_note.index("const pse = $(\"pcie-spark\")")
+   and mon_note.index("const busyNow =") < mon_note.index("busyNow)"))
 ck("idle link states are named instead of alarmed: parked (D3hot, Gen1) and sagging (D0, nothing served)",
    "parked, max \u00d7" in monjs and "links sag while nothing runs: that is power management" in monjs
    and "a link is below its maximum while work is running" in monjs

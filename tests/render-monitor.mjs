@@ -139,4 +139,8 @@ for (const k of (byId.get("pcie") || new El()).children.slice(0, 4))
   console.log("  " + k.textContent.replace(/\s+/g, " ").trim());
 console.log(`\nrequest rows rendered: ${rows.length}`);
 for (const r of rows.slice(0, 6)) console.log("  " + r.textContent.replace(/\s+/g, " ").trim());
+// The page swallows render errors into its notice bar, so a broken section can look like an empty one.
+const bar = t("error");
+if (bar) { console.log("\nPAGE NOTICE:", bar); process.exitCode = 1; }
+if (!rows.length) { console.log("\nno request rows rendered"); process.exitCode = 1; }
 console.log(`\ncards the page wrote a value into: ${shown.sort().join(" ")}`);
