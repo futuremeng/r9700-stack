@@ -8,8 +8,10 @@ rest of the boot. On this box, at the moment it was asked: the c6 chain had sat 
 activity), and the tone keys off activity -- delta this window, reset, or `quiet_s < 300`. Past that the row is
 neutral, the count is muted, and the window cell says `+0 . quiet 42 min`. The number stays: de-emphasis, not
 concealment. `danger` (uncorrectable, or a link below maximum while the card works) is unchanged. 300 s is
-derived from measurement: this chain runs 11.5-45.7 correctables per minute during a weight-load DMA window, so
-five minutes of silence is not a trickle. Unknown clock counts as loud -- the dimming can turn itself off but
+anchored on the observed non-zero windows (11.5-45.7 correctables per minute during a weight-load DMA window) --
+measured the same day, a second identical load on the same chain produced 0.00/min, so the threshold says "the
+load-window rates we have seen are minutes, not hours", not "a load always moves the counters". See the incident
+note: the load-window rate is not reproducible run to run. Unknown clock counts as loud -- the dimming can turn itself off but
 cannot invent calm. Needs a serve restart to take effect (`webui` runs inside the serve here).
 
 ## The Monitor page can no longer go silently stale

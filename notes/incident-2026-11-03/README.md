@@ -949,3 +949,25 @@ this boot, 0/min at idle, Gen5 held), the other three are exactly zero, the serv
 offline, and the fatal-MCA clock stands at ~1.5 h of clean uptime -- which is `p=0.58` of being luck under the
 pre-change cadence. The decision thresholds in this note are 7.1 h (p=0.05), 10.9 h (p=0.01), and ~24 h for the
 "confined to that core" working conclusion.
+
+## A second identical weight load on the same chain produced nothing (10:33-10:37)
+
+The serve was restarted to put `quiet_s` into the monitor payload (`webui` runs inside the serve here). Same
+card, same slot, same launch line, same `MAXLEN=262144`, ~120 GB across the same link:
+
+| window | chain | correctables | rate | link |
+|---|---|--:|--:|---|
+| 08:45 boot, first load after enumeration | slot 6 | +34 in 3.0 min | 11.5/min | 32.0 GT/s held |
+| 10:33 serve restart, second load | slot 6 | **+0 in 3.9 min** | **0.00/min** | 32.0 GT/s held |
+| 09:42 → 10:33, mostly idle with a few real requests | slot 6 | +1 | ~0.02/min | 32.0 GT/s held |
+| same windows | slots 1, 3, 8 | 0 | 0 | 32.0 GT/s |
+
+What that does and does not change. It does not move the attribution: every correctable this boot is on the
+slot-6 chain, with a different card in the slot than the one that lived there yesterday. What it breaks is any
+quantitative reading of "load causes them": the load-window rate is **not reproducible run to run** — 11.5/min
+then 0/min for an identical transfer — while a single ~47k-token request at 09:39 did produce one event. So the
+honest statement is the weak one: the errors are sporadic, confined to that one hop, and *some* high-DMA
+windows trigger them and others do not. Any rate quoted from one window is a sample, not a property.
+
+It also means the monitor's quiet state is the expected normal, not a suspicious one: after a restart the chain
+sits quiet until something happens again.
