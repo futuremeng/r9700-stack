@@ -449,6 +449,51 @@ def switches():
     return grp
 
 
+def unit_exec_paths(unitdir=Path("/etc/systemd/system")):
+    """Installed r9700-*.service units -> the file paths their ExecStart lines name. Pure; no printing.
+
+    Why this is checked at all: the boot-time interventions on this box (take the failing core out of service,
+    archive the replayed machine-check record) are units whose ExecStart names scripts in this tree, while the
+    units themselves and the per-machine configuration deliberately live outside the repository. The failure mode
+    is quiet and expensive -- someone moves a script, the unit still "succeeds", and the symptom is that the
+    sick core is back in service after the next reset, which is exactly the thing those units exist to prevent.
+    """
+    out = []
+    try:
+        units = sorted(unitdir.glob("r9700-*.service"))
+    except OSError:
+        return out
+    for u in units:
+        try:
+            txt = u.read_text(errors="replace")
+        except OSError:
+            continue
+        # `\s*`, not `\s+`: systemd's syntax is `ExecStart=/path args` with NO space after the equals
+        for m in re.finditer(r"^ExecStart=-?\s*(.*)$", txt, re.M):
+            for tok in m.group(1).split():
+                if tok.endswith((".sh", ".py")) or tok.startswith("/"):
+                    out.append((u.name, tok))
+    return out
+
+
+def ops_units():
+    """Report whether the installed boot-time units still point at files that exist."""
+    named = [(u, p) for u, p in unit_exec_paths() if p.endswith((".sh", ".py"))]
+    if not named:
+        note("no r9700-*.service units with a script ExecStart are installed under /etc/systemd/system -- if "
+             "this box is supposed to keep a core offline or archive machine-check records at boot, that "
+             "intervention is not currently armed")
+        return
+    for unit, path in named:
+        if Path(path).exists():
+            ok(f"{unit}: ExecStart -> {path} exists")
+        else:
+            bad(f"{unit}: ExecStart -> {path} is MISSING -- the unit will run and do nothing, so the "
+                f"intervention is silently disarmed (a core can come back on the next reset)",
+                "re-copy the unit and its script from wherever this machine's operational files are kept, "
+                "then: sudo systemctl daemon-reload && systemctl start <unit>")
+
+
 def dead_core():
     """The core this box keeps offline, and whether it is actually offline right now.
 
@@ -543,6 +588,7 @@ def host(cfg):
     note(f"this box's cap is where PROGRESS.md's '11.7 GiB per process' comes from: offloading 34 GB/rank "
          f"of experts is a container --ulimit and vm.nr_hugepages question, not a ulimit question")
     dead_core()
+    ops_units()
 
 
 def resource_limits():

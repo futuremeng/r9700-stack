@@ -8,3 +8,15 @@ __pycache__/
 # setup.sh state (the image pin it recorded) and the venv it makes for the host tests
 .r9700-state/
 .venv/
+
+# This machine's operational artifacts, deliberately NOT in the repository: which core this box keeps offline
+# and why, the units that re-apply it and archive the machine-check record, and this box's physical protocols.
+# They are not generic health checks -- they name this chassis, its slots and its faults. The tools they run
+# (tools/journal-pcie.py, tools/mca-hazard.py, tools/brief.py, ...) are in the repo; the instructions for this
+# box are not.
+host/offline-core.cpus
+host/r9700-offline-core.sh
+host/r9700-offline-core.service
+host/r9700-mca-archive.service
+notes/incident-*/protocol-local.md
+host/local-*.md

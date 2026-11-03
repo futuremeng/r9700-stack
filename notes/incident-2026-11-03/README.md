@@ -647,80 +647,6 @@ fatal errors are CPU-side, in a different reporting path.
 Totals are per boot and zeroed at enumeration, so compare in-boot rates (`tools/reseat-check.py --save/--diff`);
 `~/aer/watch-*.json`, snapshotted every 5 min by the `aer-watch` tmux session, is the running series.
 
-## For the vendor
-
-```
-AMD EPYC (CPUID 00a10f11), package 0, PPIN 2b61290dcb2002b, core 65 / threads cpu17+cpu113 (APIC 0x82, 0x83)
-recurring fatal MCA: 20 events in 72 h, always MCA bank 5, MCA_STATUS 0xaea0000001000108 (UC=1, PCC=1, AddrV=1),
-MCACOD 0x0108 (cache error, L2), MSCOD 0x0100/0x0000, MCA_IPID 0x0000500b024029a00 / …29b00, MCA_SYND 0x4d000000
-ASUS ESC4000A-E12 / K14PG-U12, BIOS 2501, microcode 0xa101158; SEL empty of these events (GHES/BERT path)
-load-independent: dies 5 s after boot and after 15 h; also dies with zero PCIe AER activity
-open question for AMD: an erratum fix in microcode/AGESA above 0xa101158 for Genoa family 19h L2 MCA
-```
-
-Separate vendor block for the PCIe half (same machine, different fault -- keep the two requests apart, because a
-CPU replacement fixes neither and a board replacement fixes neither):
-
-```
-ASUS ESC4000A-E12 / K14PG-U12, BIOS 2501, 4x Radeon AI PRO R9700 (device 0x7551, subsystem 1efe:1478)
-slot 6 chain: root port 0000:c0:03.1 (AMD 0x14a5) <-> card upstream port 0000:c4:00.0 negotiates 16GT/s while
-  both report LnkCtl2 Target Link Speed 32GT/s and LnkCap2 Supported Link Speeds 2.5-32GT/s (Retimer+ 2Retimers+);
-  lspci marks the card-side port "Speed 16GT/s (downgraded)". The card-internal hop (c5:00.0 -> c6:00.0) is 32GT/s.
-  Same boot, same board: slot 8 (00:03.1 <-> 04:00.0, also AMD 0x14a5) is 32GT/s with zero correctables.
-per-boot AER on the slot-6 hop: c4:00.0 BadTLP up to 84 (+ Timeout 7), root port c0:03.1 Timeout up to 58,
-  endpoint and card-internal ports 1 each; all uncorrectable counters zero; CEMsk/UEMsk unmasked; ECRC on both
-  directions; ASPM disabled on every root port; kernel logs nothing when the speed falls.
-requests: (a) Lane Margining at the Receiver on c0:03.1 and c4:00.0 -- the capability is present and this is the
-  measurement that quantifies "marginal"; (b) the Gen5 equalization parameters for this port (not readable from
-  Linux on these parts: no 32.0 GT/s extended capability is exposed) and whether BIOS 2501 sets per-port EQ or
-  retimer settings for slots 6/8; (c) whether the slot-6/8 expansion board is revised (SI issue on that path).
-```
-
----
-
-# Reboot protocol (what a reboot can and cannot answer)
-
-The core-offline intervention is only a hypothesis until the next boot reports, and a graceful reboot is also the
-cleanest AER measurement available (counters zero at enumeration). So reboot deliberately, but only with these
-steps, or the experiment invalidates itself:
-
-**Before**
-1. Install `host/r9700-offline-core.service` **first**. `online` is not persistent; rebooting without the unit
-   re-arms the sick core and the following data would be measuring the wrong thing. Verified on this box on
-   2026-11-03: `systemctl is-enabled r9700-offline-core.service` -> `not-found`, i.e. nothing was installed, and
-   a reboot at that moment would have put core 65 back in service.
-2. Install `host/r9700-mca-archive.service`, or the record of this boot's death (if any) can be the one that
-   gets overwritten: the firmware keeps ONE BERT record.
-3. `tools/reseat-check.py --save` for the AER baseline; note the boot id. Ledger (`~/logs/requests-8080.jsonl`)
-   lives in home and survives. tmux sessions do not, by definition.
-4. Nothing in flight (`/api/status`, and the ledger's `state`), and the operator at the BMC/iKVM: this box has
-   died **5 s** after a boot before, so it may not come back by itself.
-5. There is deliberately **no serve autostart unit** (confirmed: no r9700 units in /etc/systemd/system). On a box
-   that resets by itself, an auto-restarting 4-minute model load hides the failure rate and re-enters the
-   highest-risk window unattended. The serve is started by hand after the boot, from `setup.py` step [6].
-
-**After** (in this order; the first two decide whether the intervention worked at all)
-1. `cat /sys/devices/system/cpu/cpu17/online` -> must be `0` with nobody touching it. `journalctl -b -u
-   r9700-offline-core.service` should name core 65 and the pair.
-2. `tools/journal-pcie.py 2` and read the **record's own TIME**, not just its presence:
-   - no record, or a record whose TIME is an old death -> the graceful reboot produced no new machine check;
-   - a record whose TIME is within seconds of the reboot -> the shutdown/reboot path itself reached the fault.
-     Bad, but the most informative result available; capture it and stop treating the box as usable.
-   Presence alone is meaningless: the previous death's record can be re-presented. Only TIME distinguishes them,
-   and `tools/journal-pcie.py` prints both the TIME and where it was printed.
-3. `setup.sh --yes --check` (step 1 must print the failing-core line), then `--launch native-flashnext.sh
-   --webui same`.
-4. The AER half gets its own clean measurement off the fresh counters: `reseat-check.py --save` before the
-   launch, `--diff` after the weight-load window. Expected: unchanged (PCIe correctables are a different fault
-   path; an L2 machine check does not live on a PCIe link). If the correctable rate *drops* with a core offline,
-   that is a surprise worth writing down.
-
-**What it cannot answer**: whether the container path works (this box has no `docker` binary, `setup.py` says so
-in steps [2]-[4]), and it cannot prove the CPU is fine — at best it shows the fault is confined to one core.
-The box is on borrowed time either way: the fatal-MCA cadence measured from the journal is 20 deaths in 72 h.
-
----
-
 # First data point: the deliberate reboot, 06:49:06 UTC
 
 The units were installed and enabled before the reboot (verified: `is-enabled` = `enabled` for both, wants links
@@ -873,51 +799,6 @@ Declared in advance, so the result cannot be fitted afterwards:
 Secondary readings that come free with the same power cycle: whether slot 6 enumerates at 32.0 GT/s cold (it did
 at the 06:49 boot and fell during the 07:07-07:12 load window), and one more fatal-MCA data point with core 65
 kept offline by the boot unit (the units are installed and were verified running: 18 s into boot 06:49:06).
-
-### Constraint that changes the plan: the two GPUs on that board are joined, so the board must come out with them
-
-The operator reports the two cards are bound together, so "swap the cards, leave the board alone" is not
-executable. Recorded because it changes what each outcome means, and because it suggests a mechanism:
-**two cards locked into one assembly share their seating depth.** If that assembly is even slightly bowed or the
-bracket alignment is off by a fraction of a millimetre, screwing the board down can seat one card fully and leave
-the other shallow -- a shallow edge connector at Gen5 is exactly a marginal channel (BadTLP, then a fallback to
-Gen4), and it would be *the same slot every time*, which is what the record shows: slot 6 sick across boots,
-slot 8 clean across boots, on one board.
-
-Two things that make the swap worth doing even though the board has to move:
-
-1. **The refit variable has already been exercised and did not fix it.** The board was pulled and refitted in the
-   05:16-05:42 window; the very next boot (`5ec7e479`) counted 87 correctables on the slot-6 chain, and the
-   newest boot counted 144 and lost the Gen5 hold. Refitting it again for the swap repeats a known-ineffective
-   action rather than adding a new confound.
-2. The ambiguous branch is only "everything clean", and it has a cheap tie-breaker (below).
-
-**Feasible variants, in order of how much they answer:**
-
-- **A. Separate the pair if it can be separated** (cable tie / shared bracket unbolted): do the card swap
-  described above. Best answer: card vs slot-6 path.
-- **B. If the pair cannot be separated: swap the whole assemblies.** Move the joined pair+board to the other
-  dual-slot position and the other pair+board into this one. Reading: the fault follows the **board** (the sick
-  chain travels with it) -> replace the board; the fault stays with the **slot 6/8 positions on the
-  motherboard** regardless of which board sits there -> the problem is motherboard-side (root port / PHY / BIOS
-  equalization for those ports), which is a different RMA target. Note the two positions are not electrically
-  identical: slot 6/8 hang off AMD root ports device `0x14a5`, slot 1/3 off device `0x14ab`, so a board swap also
-  changes the port -- say which reading applies if the errors move, and do not claim more than it shows.
-- **C. Neither is possible: refit as-is and re-measure.** Interpretation is then limited to "still sick / no
-  longer sick", and the answer comes from the tie-breaker instead.
-
-**Tie-breaker for a clean result** (this is what keeps "everything got better" from being read as a fix): after a
-clean post-swap measurement, put the original arrangement back (one more cycle). If the fault returns to the
-chain holding serial `0x51E10AFD4A21ADEE`, the fault follows the card; if it returns to slot 6 with a different
-card, it is the slot/board/mechanical path; if it does not come back at all, the box got better for a reason
-this sequence cannot identify -- record it as unresolved, keep measuring, and do not close the RMA request.
-
-**While it is open, look and photograph** (these are measurements, not tidying): the two cards' bracket screws
-against the chassis (flush and tight, or one side taking the screw at an angle); the insertion depth / scratch
-pattern on each edge connector (a shallow card leaves a different wear line); the board's own mounting screws and
-standoffs; and the slot-6 connector for debris or a bent contact. The bow/depth hypothesis predicts a visible
-difference between the two cards' seating -- that is a checkable prediction, and if the two connectors look
-identical it is weakened.
 
 ## Settled by the `lspci -vvv` dump: nothing was configured down -- the link tried Gen5 and settled at Gen4
 

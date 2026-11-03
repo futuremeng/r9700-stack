@@ -1,4 +1,21 @@
 # Changelog
+## Untracked from here on: this box's operational files, kept out of the repository
+
+The health checks stay in git (`tools/journal-pcie.py`, `tools/mca-hazard.py`, `tools/brief.py`,
+`tools/reseat-check.py`, `tools/gpu-identity.py`, `tools/lspci-links.py`, `tools/boot-gaps.py`,
+`tests/test_journal_mca.py`). What does not stay is anything that names this chassis's faulty parts:
+`host/offline-core.cpus`, `host/r9700-offline-core.sh`, `host/r9700-offline-core.service`,
+`host/r9700-mca-archive.service`, `host/local-ops.md`, and `notes/incident-*/protocol-local.md` (the reboot
+protocol, the card/board move procedure, the vendor correspondence drafts). They are on disk, untracked and
+gitignored; the entries below still name those paths because that is what happened at the time.
+
+The split has a failure mode, and it is checked: the units live outside git, the scripts they run live inside
+it, so a moved script leaves a unit that is enabled, runs "successfully" and does nothing -- and the symptom is
+the sick core being back in service after the next reset. `setup.py` now lists every installed
+`r9700-*.service`'s `ExecStart` paths and says which are missing (`unit_exec_paths()`, `ops_units()`).
+`unit_exec_paths` had a bug the test caught immediately: the regex required whitespace after `ExecStart=`, and
+systemd's syntax has none, so it found nothing on the real machine.
+
 
 All notable changes to r9700-stack. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project uses [semantic versioning](https://semver.org/). Every number below was measured on 4× (or 2×)

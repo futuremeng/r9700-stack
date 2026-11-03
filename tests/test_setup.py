@@ -343,5 +343,27 @@ ck("a garbage KV pool becomes None (the line is then simply omitted) rather than
    S.serve_context({"meta": {"maxlen": "262144"}, "config": {"kv_cache_size_tokens": "?"}}, None, CKPT)[2] is None)
 
 
+# The boot-time interventions are armed by units kept OUTSIDE the repository (they name this chassis, its slots,
+# its faults), while the scripts they run are inside it. That split has one quiet failure mode: the unit stays
+# enabled and its ExecStart points at nothing. unit_exec_paths() is the check, so test it against a fake unitdir.
+import tempfile as _tf
+with _tf.TemporaryDirectory() as _d:
+    _d = Path(_d)
+    (_d / "r9700-offline-core.service").write_text(
+        "[Service]\nType=oneshot\nExecStart=/bin/bash /home/jiulu/r9700-stack/host/r9700-offline-core.sh\n")
+    (_d / "r9700-mca-archive.service").write_text(
+        "[Service]\nExecStart=/venv/bin/python /home/jiulu/r9700-stack/tools/journal-pcie.py --boots 3\n")
+    (_d / "unrelated.service").write_text("[Service]\nExecStart=/bin/true\n")
+    _paths = S.unit_exec_paths(_d)
+ck("the unit check reads ExecStart paths out of the r9700 units, including the script argument, not just argv[0]",
+   ("r9700-offline-core.service", "/home/jiulu/r9700-stack/host/r9700-offline-core.sh") in _paths
+   and ("r9700-mca-archive.service", "/home/jiulu/r9700-stack/tools/journal-pcie.py") in _paths, str(_paths))
+ck("it ignores other units (it is about this stack's interventions, not the whole system)",
+   not any(u == "unrelated.service" for u, _ in _paths), str(_paths))
+ck("/bin/bash and /venv/bin/python are also listed (every absolute token counts: a moved interpreter is the same "
+   "failure), and nothing is invented when there are no units",
+   ("/bin/bash" in [x for _, x in _paths]) and S.unit_exec_paths(Path(_d).parent / "nope") == [])
+
+
 print("PASS" if fail == 0 else "FAIL", f"({fail} failing)")
 sys.exit(1 if fail else 0)
