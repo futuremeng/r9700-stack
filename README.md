@@ -5,31 +5,22 @@
   </picture>
 </p>
 
-<h3 align="center">Qwen3.8 and GLM-5.3-Flash, fast on Radeon AI PRO R9700 cards.</h3>
-<p align="center">
-  Tuned HIP and Triton kernels plus a vLLM plugin, on <b>stock vLLM and stock ROCm</b>: no fork, no patched source,
-  no vendored binaries, no re-quantised weights. Everything loads at runtime through vLLM's own extension points, so
-  vLLM and ROCm update underneath it.
-</p>
+Tuned GPU kernels and a vLLM plugin that make **Qwen3.8**, **GLM-5.3-Flash** and **DeepSeek-V4.1-Flash** run fast on **AMD Radeon AI PRO R9700**
+cards (gfx1201 / RDNA4) on **stock vLLM and stock ROCm**. No fork, no patched source, no vendored binaries, no
+re-quantised weights: everything loads at runtime through vLLM's own extension points, so vLLM and ROCm update
+underneath it.
+
+Current release: **v0.4.0** (2026-11-03, the vLLM 0.32 line), [release notes](notes/release-v0.4.0.md),
+[CHANGELOG.md](CHANGELOG.md).
+
+![r9700-stack v0.4.0: what runs on it, the weight formats, the speed](docs/r9700-stack-v0.4.0.svg)
 
 <p align="center">
-  <a href="#what-v038-gives-you">What it gives you</a> · <a href="#what-the-kernels-do">Kernels</a> ·
+  <a href="#what-v040-gives-you">What it gives you</a> · <a href="#what-the-kernels-do">Kernels</a> ·
   <a href="#speed"><b>Speed</b></a> ·
   <a href="#watching-it-the-monitor-and-about-pages">Watching it</a> ·
   <a href="#deploying-it"><b>Deploying it</b></a> · <a href="#licence-and-credits">Licence</a>
 </p>
-
-<p align="center">
-  <a href="https://github.com/futuremeng/r9700-stack/releases/tag/v0.3.8"><img src="https://img.shields.io/github/v/tag/futuremeng/r9700-stack?label=release&color=2f81f7" alt="release v0.3.8"></a>
-  <a href="notes/release-v0.3.8.md"><img src="https://img.shields.io/badge/release%20notes-v0.3.8-2f81f7" alt="release notes v0.3.8"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/futuremeng/r9700-stack?label=license&color=2f81f7" alt="Apache-2.0"></a>
-  <img src="https://img.shields.io/badge/vLLM-0.32%20(stock)-2f81f7" alt="stock vLLM 0.32">
-  <img src="https://img.shields.io/badge/ROCm-10%20(stock)-2f81f7" alt="stock ROCm 10">
-  <img src="https://img.shields.io/badge/Radeon%20AI%20PRO%20R9700-2%20to%208%20cards-6c757d" alt="two to eight Radeon AI PRO R9700 cards">
-</p>
-
-<p align="center"><sub>Current release <b>v0.3.8</b> (2026-10-31, the vLLM 0.32 line) ·
-<a href="notes/release-v0.3.8.md">release notes</a> · <a href="CHANGELOG.md">CHANGELOG.md</a></sub></p>
 
 <p align="center"><b>Bring a box up, or check one that already runs this repo:</b><br>
 <code>./setup.sh --yes --launch native-flashnext.sh --webui same</code><br>
@@ -57,23 +48,12 @@ sample lists and the measurements that were tried and rejected: <a href="#speed"
 <a href="notes/native-4xr9700.md">notes/native-4xr9700.md</a>,
 <a href="notes/context-262k.md">notes/context-262k.md</a>.</sub>
 
-## What v0.3.8 gives you
-
-<p align="center">
-  <a href="docs/r9700-stack-v0.3.8.png"><img src="docs/r9700-stack-v0.3.8.svg" alt="r9700-stack v0.3.8: what runs on it, the weight formats, the speed"></a>
-</p>
-
-<sub>The release on one page: what the stack is, the three model configurations it runs, and how fast they run --
-drawn by `docs/summary-page.py` from the same numbers the tables above carry, so the page and the tables cannot
-drift apart. Its canvas is 1000 px wide against github.com's ~980 px column, so the smallest type on it lands at
-about 14 px and reads where it sits; the picture links to `docs/r9700-stack-v0.3.8.png`, the same drawing at
-2000 × 1816, for zooming. Rows tagged "210 W gate" are the release configuration, rows tagged "the native box"
-are the uncapped four-card box, and the two are not comparable across.</sub>
+## What v0.4.0 gives you
 
 - **Stock vLLM 0.32 on stock ROCm 10.** Pinned to the 2026-10-25 ROCm 10 nightly (vLLM 0.32.1rc1, torch 2.13); the
   plugin registers through vLLM's platform, quantization, model and attention-backend entry points and carries its
   own kernels (`libr9k`, HIP and Triton). Five compatibility fixes for the 0.32 line are in this release.
-- **Three models, unmodified checkpoints:**
+- **Four models, unmodified checkpoints:**
   - **Qwen3.8-27B-NVFP4** (dense) with the **DFlash2-FP8** block drafter: two cards, TP2.
   - **Qwen3.8-Flash-Next** (MoE, 288 routed experts, MXFP4 experts + fp8 dense): four cards TP4, or two cards with the
     experts streamed from pinned host RAM through a device LRU cache. On four cards it runs at the checkpoint's own
@@ -82,10 +62,16 @@ are the uncapped four-card box, and the two are not comparable across.</sub>
   - **GLM-5.3-Flash** (sparse MLA with the DeepSeek-V3.2-style indexer, RedHat NVFP4 checkpoint with its MTP layer):
     eight cards TP8, 32k production recipe; 262k launches retrieve correctly to ~75k tokens on this nightly (216k on
     the previous pin, see the release notes).
+  - **DeepSeek-V4.1-Flash** (552B MoE: 384 routed experts, Engram n-gram tables, the DSpark drafter) from the published
+    **EXL3 2.9 bpw pack** (196 GiB): eight cards, tensor parallel 8 with expert parallel, the Engram tables in pinned host
+    memory, 32k context in the gated recipe and a 128k recipe that retrieves at 126.7k-token prompts. New in v0.4.0;
+    notes/exl3-plan.md is the full story.
 - **Weight formats, handled at load:** NVFP4 checkpoints converted to MXFP4 with MSE-searched block exponents (folded
   exponent, bit-exact on the 27B); fp8 dense, drafter and lm-head GEMMs with per-token fp8 activations; fp8 KV cache;
   the Flash-Next per-layer-embedding table as int6 in pinned host memory; MXFP4 x fp8 grouped MoE GEMMs with routing,
-  activation and top-k sum fused around them.
+  activation and top-k sum fused around them; **EXL3 trellis weights** (QTIP-style, 2-6 bits) through exllamav3's gfx1201
+  extension for the dense linears and our own batched expert decode kernel, with the 6-bit head and the shared experts
+  dequantized to bf16 where the format's 128-wide blocks cannot be sharded.
 - **Speed at a 210 W cap per card (single stream / aggregate / prompt processing):**
   - Qwen3.8-27B TP2: **216 tok/s** (4.5 tokens a step with the drafter), 527 / 640 tok/s at 8 / 16 streams, 3.9k tok/s
     on an 8k prompt, 367k-token KV cache.
@@ -93,11 +79,16 @@ are the uncapped four-card box, and the two are not comparable across.</sub>
     70-80 ms to first token, ~480k-token KV cache.
   - GLM-5.3-Flash TP8: **100 tok/s** (MTP-3; 75-80 before v0.3.8's host-memory collective), 161 tok/s at four streams,
     3.1-3.4k tok/s prompt processing at 2k-32k, needles found at 12.7k / 30k / 67k tokens on this nightly (216k on the previous pin).
-- **Speculative decoding on both families:** MTP-3 for Flash-Next and GLM, the DFlash2 drafter for the 27B, all on the
-  same kernels, with the draft metadata, indexer logits and all-reduces inside the HIP graphs.
+  - DeepSeek-V4.1-Flash TP8 (EXL3 2.9 bpw, DSpark k = 5 with adaptive verification): **70-75 tok/s on prose, 158 on code**
+    single stream, 187 / 336 tok/s aggregate at four streams, 3.4k tok/s prompt processing, decode flat to 28k of context,
+    GSM8K 97-98 %. Two DGX Sparks on TensorFold serve the same pack at 81 / 118 single stream and 154 / 166 at four streams.
+- **Speculative decoding on every family:** MTP-3 for Flash-Next and GLM, the DFlash2 drafter for the 27B, the checkpoint's
+  DSpark drafter for DeepSeek, all on the same kernels, with the draft metadata, indexer logits and all-reduces inside the HIP
+  graphs.
 - **Multi-card communication over plain PCIe:** P2P one-shot / two-shot all-reduce and all-gather for 2 and 4 cards,
-  a hierarchical 8-rank all-reduce across four PCIe switches, a compressed 4/6-bit all-reduce for prefill-sized
-  messages, RCCL above that.
+  a hierarchical 8-rank all-reduce across four PCIe switches (pair stages over P2P, the cross-switch stage through pinned
+  host memory, one fused kernel for 32 KB - 2 MB messages), a compressed 4/6-bit all-reduce for prefill-sized messages, RCCL
+  above that.
 - **Gated like a release, every time:** kernel unit gates, the integration gate against the installed vLLM, strict
   sanity above `max_num_seqs`, mixed-length soaks and long-context needles on every configuration before a tag;
   paired GSM8K (1,319 questions, McNemar) and HumanEval on the numerics (27B: GSM8K 95.75%, HumanEval 162/164;
@@ -128,10 +119,10 @@ multi-rank communication tests and the kernel unit gates. v0.3.2 kernels (unchan
 p = 1.00 against v0.3.1), HumanEval 162 / 164; v0.3.3 validation: 0 bad answers in 5,060 strict-sanity checks,
 0 errors in 1,224 soak requests.
 
-## Speed
+## Speed (210 W with a -42 mV offset, 32k context; the v0.4.0 gate numbers are in the release notes)
 
-Three kinds of number below, and they are not comparable across. The first three tables are the release
-configuration, a 210 W cap per card with a -42 mV offset and 32k context (v0.3.8's gate numbers are in the release
+Three kinds of number below, and they are not comparable across. The first four tables are the release
+configuration, a 210 W cap per card with a -42 mV offset and 32k context (the v0.4.0 gate numbers are in the release
 notes); the next two are one native box with the cards uncapped, the same recipe at 32k and then at the checkpoint's
 full 262,144-token context. Those are all **benchmarks**: fixed prompt lengths, equal `max_tokens` waves, no
 arrivals while you measure. The last subsection is **not** a benchmark — it is 1,400 real requests that arrived at
@@ -139,7 +130,7 @@ the running serve, and its decode numbers are roughly a third of the benchmark o
 rather than surprising. Read the benchmark tables for what the kernels can do; read the real-traffic subsection for
 what a user gets.
 
-### The release configuration: four and two cards, 210 W cap, 32k context
+### The release configuration: four, two and eight cards, 210 W cap, 32k context
 
 **Qwen3.8-Flash-Next (MXFP4 experts, fp8 dense), four cards, TP4, MTP-3**
 
@@ -174,6 +165,18 @@ what a user gets.
 | KV cache | 367,494 tokens |
 
 </details>
+
+**DeepSeek-V4.1-Flash EXL3 2.9 bpw, eight cards, TP8 + expert parallel, DSpark k = 5 adaptive (eight-card runs at a -500 MHz
+clock offset on this box's 120 V feed)**
+
+| | |
+|---|---:|
+| single-stream decode, prose / code / GSM8K-style | 70-75 / 158 / 114-121 tok/s |
+| per-stream decode at four streams, prose / code | 47 / 84 tok/s (187 / 336 aggregate) |
+| decode after a 2k / 16k / 28k-token prompt | 82 / 80 / 75 tok/s |
+| prompt processing | 2,500 tok/s on one 12k prompt, 3,000 aggregate on four at once, 3,400 on the warm short-prompt probe (the first prompt of a process JIT-compiles four Triton kernels) |
+| KV cache | 329k tokens at MAXLEN 32768 (ten 32k requests), 314k at MAXLEN 131072 (`KVMEM=0.8`; one pool, replicated on every card) |
+| accuracy | GSM8K 195 / 200 on the release launch (196 and 194 on the Phase 1 / 2 trees; greedy, thinking on); needles 9 / 9 at 8k, 16k, 28k; strict sanity 0 bad of 105 above max_num_seqs |
 
 ### The same four cards uncapped, at 32k
 
@@ -362,7 +365,9 @@ drawn figure actually contains, so the caption cannot drift from the poll it cla
 
 Requirements: 2x, 4x or 8x Radeon AI PRO R9700, ROCm 10 on the host, the model weights under `~/models`
 (`Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ`, `Qwen3.8-27B-NVFP4` with `Qwen3.8-27B-DFlash2-FP8`,
-`GLM-5.3-Flash-NVFP4-RedHat` for eight cards). Two ways to run it: in the image (docker), or with **no docker at
+`GLM-5.3-Flash-NVFP4-RedHat` for eight cards; for DeepSeek-V4.1-Flash a directory composed of the EXL3 pack's shards and
+config plus the base checkpoint's two Engram shards and tokenizer -- `serve/ds41-exl3.sh`'s header has the recipe -- and
+about 200 GB of host RAM for the Engram tables). Two ways to run it: in the image (docker), or with **no docker at
 all** (a venv plus a `libr9k.so` built on the host, `serve/native-flashnext.sh`), which is what the box behind
 these numbers runs.
 
@@ -433,7 +438,8 @@ these numbers runs.
    ```
    docker build -t r9700/vllm:dev docker/
    ```
-   The pinned nightly (2026-10-25, vLLM 0.32.1rc1, torch 2.13) is in `docker/Dockerfile` (`--build-arg BASE=` for another).
+   The pinned nightly (2026-10-25, vLLM 0.32.1rc1, torch 2.13) is in `docker/Dockerfile` (`--build-arg BASE=` for another);
+   the image also builds exllamav3 v1.6.6's extension for gfx1201 (the EXL3 kernels, MIT).
    `serve.sh` runs the image against the second checkout of this repo (default `~/r9700-build/repo`, mounted at
    `/opt/r9700`) so the running plugin is code you can change without rebuilding; `./setup.sh` names it and offers
    to clone it. Container-only recipes are labelled in `setup.py`'s launch list, and asking for one on a run that
@@ -453,6 +459,7 @@ these numbers runs.
    MAXLEN=262144 NSEQ=32 NBT=8192 PREFIX_CACHE=0 WEBUI=same \
      bash serve/native-flashnext.sh      # Flash-Next, four cards, the full 262k context,
                                          # Monitor and About on the serve's own port
+   bash serve/ds41-exl3.sh                                            # DeepSeek-V4.1-Flash EXL3, eight cards (notes/exl3-plan.md)
    ```
    `serve/native-flashnext.sh` is the container-free launcher for a box with no docker (plugin and vLLM in a venv,
    `libr9k` built with the host `hipcc`, [notes/native-4xr9700.md](notes/native-4xr9700.md)); it takes the same knobs
@@ -464,7 +471,7 @@ these numbers runs.
    the box is running: at the full
    context the KV cache gets bigger rather than smaller (540,202 against 497,588 tokens) and the 32-stream
    throughput wave stays in the band quoted above.
-   OpenAI-compatible API on port 8080 (`PORT=`), model name `Qwen3.8`. Every serve script carries the measured
+   OpenAI-compatible API on port 8080 (`PORT=`), model name `Qwen3.8` (`DeepSeek-V4.1` for the DeepSeek launcher). Every serve script carries the measured
    defaults with the reason next to each knob; `R9K_*=stock` or `=0` switches any kernel back to vLLM's.
    `WEBUI=1` on any of them, or `WEBUI=same` to put the pages on the launch's own port: "Watching it" above.
 3. **Check it** (what each one proves is next to it; run them in this order):

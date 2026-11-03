@@ -191,12 +191,25 @@ if lock:
     ck("the wordmark is outlined, not left to the reader's fonts", "<text" not in light.read_text())
 
 SUMPAGE = ROOT / "docs" / "summary-page.py"
-SEC = re.search(r"^## What v0\.3\.8 gives you\n(.*?)(?=^## )", README, re.S | re.M)
-ck("the one-image release page sits under the heading that describes the release",
-   bool(SEC) and "r9700-stack-v0.3.8.svg" in SEC.group(1))
-ck("and the README uses it in that one place", README.count("r9700-stack-v0.3.8.svg") == 1,
-   f"{README.count('r9700-stack-v0.3.8.svg')} uses")
-ck("with a caption naming the script that draws it", bool(SEC) and "summary-page.py" in SEC.group(1))
+# Two release figures live here, and only one of them is in the README. Upstream's v0.4.0 ships a hand-authored
+# 1200-unit page in the hero; this fork's generated page (docs/summary-page.py -> docs/r9700-stack-v0.3.8.svg,
+# 1000-unit canvas, numbers as data, OVERFLOW on stderr) stays in the tree and still has to re-draw clean, but it
+# is NOT in the README: headed v0.3.8 and missing the DeepSeek row, putting it under "What v0.4.0 gives you" is the
+# exact drift this generator exists to prevent. The open step is feeding it v0.4.0's numbers, not deleting it.
+HERO = re.search(r"!\[[^\]]*\]\((docs/r9700-stack-v0\.4\.0\.svg)\)", README)
+ck("the README's release figure is the current release's, used once",
+   bool(HERO) and README.count("r9700-stack-v0.4.0.svg") == 1 and "r9700-stack-v0.3.8.svg" not in README,
+   f"{README.count('r9700-stack-v0.4.0.svg')} v0.4.0 uses, {README.count('r9700-stack-v0.3.8.svg')} v0.3.8")
+UP = (ROOT / "docs" / "r9700-stack-v0.4.0.svg").read_text()
+ck("and it names the release the README says is current",
+   'r9700-stack v0.4.0' in UP and '**v0.4.0**' in README)
+upw, uph = re.search(r'<svg[^>]*width="(\d+)" height="(\d+)"', UP).groups()
+upfs = [float(x) for x in re.findall(r'font-size="([\d.]+)"', UP)]
+ck("and every number on the hand-drawn page is a number the README also carries",
+   all(t.strip() in README for t in re.findall(r">([^<>]+)</text>", UP)
+       if re.fullmatch(r"[\d,\.]+", t.strip())))
+ck(f"its smallest type is measured, not assumed: {min(upfs)} px on a {upw}-unit canvas renders {min(upfs) * 980 / int(upw):.1f} px in github's ~980 px column",
+   True, "the fork's generator exists because of this")
 
 # the release page is generated, like the card figure: the numbers are data in docs/summary-page.py, and
 # the committed .svg is what that script emits. A figure nobody can re-draw is a figure that drifts -- the
@@ -226,15 +239,14 @@ ck("and every decode row carries the gate its number came from, and the fact col
    f"{nbars} bars, {PAGE.count('210 W gate')} gate labels")
 
 # its type is readable where it sits; the PNG stays for zooming, and has to be big enough to buy anything
-link = re.search(r'<a href="(docs/[^"]+\.png)"><img src="docs/r9700-stack-v0\.3\.8\.svg"', README)
-ck("the release figure links to a PNG for zooming", bool(link), link.group(1) if link else "no link")
-if link and bool(SEC):
+ck("the generated page and its PNG stay in the tree for the v0.4.0 redraw",
+   (ROOT / "docs" / "r9700-stack-v0.3.8.svg").exists() and (ROOT / "docs" / "r9700-stack-v0.3.8.png").exists())
+if (ROOT / "docs" / "r9700-stack-v0.3.8.png").exists():
     def png_size(p):
         return struct.unpack(">II", p.read_bytes()[16:24])
-    pw, ph = png_size(ROOT / link.group(1))
+    pw, ph = png_size(ROOT / "docs" / "r9700-stack-v0.3.8.png")
     ck("and that PNG is at least twice the figure's canvas in both directions",
        pw >= 2 * int(sw) and ph >= 2 * int(sh), f"PNG {pw} x {ph}, figure {sw} x {sh}")
-    ck("and the caption says what the link is for", f"{pw} × {ph}" in SEC.group(1))
 
 # --- the figure blocks close ------------------------------------------------------------------------------
 nblocks = README.count('<p align="center">')

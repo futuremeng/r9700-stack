@@ -12,11 +12,12 @@ register():
   * attention backend CUSTOM = TRITON_ATTN + split-KV for spec verify      attn/triton3d.py
   * one version-gated monkeypatch: MTP k>1 attention-type allowlist          spec/mtp_rocm.py
   * GLM-5.3-Flash on RDNA4: indexer aiter gate + the missing _C top-k ops      models/glm5next.py
+  * quantization config "exl3" (ExLlamaV3 packs) + DeepSeek-V4.1 loader glue  quant/exl3.py, quant/exl3_moe.py, models/deepseek_v41_exl3.py
 Only engages on ROCm. R9K_DISABLE=quant,models,mtp turns individual pieces off (R9K_PLATFORM=0 for the platform).
 """
 import os
 
-__version__ = "0.3.8"
+__version__ = "0.4.0"
 
 
 def _disabled(name: str) -> bool:
@@ -66,5 +67,20 @@ def register() -> None:
         from .models import glm5next
         if glm5next.patch():
             done.append("patch:glm5next_rdna4")
+    if not _disabled("exl3"):
+        # EXL3 packs (DeepSeek-V4.1-Flash 2.9 bpw): experimental; a failure here must never take the production configs down
+        try:
+            from .quant import exl3  # noqa: F401  (registers "exl3")
+            from .models.deepseek_v41_exl3 import ARCHS as EXL3_ARCHS
+            from vllm import ModelRegistry
+            for arch, qualname in EXL3_ARCHS.items():
+                ModelRegistry.register_model(arch, qualname)
+            done.append("quant:exl3" + ("+" + ",".join(EXL3_ARCHS) if EXL3_ARCHS else ""))
+        except Exception as e:  # pragma: no cover
+            log.warning("r9700_vllm: exl3 not registered: %r", e)
+    if not _disabled("dsv41"):
+        from .models import deepseek_v41_rdna4
+        if deepseek_v41_rdna4.patch():
+            done.append("patch:dsv41_rdna4")
     plat = type(current_platform).__name__
     log.info("r9700_vllm %s registered: %s (platform %s)", __version__, ", ".join(done) or "nothing", plat)
