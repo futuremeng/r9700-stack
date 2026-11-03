@@ -63,22 +63,24 @@ function pcieRow(c, phist = [], busyNow = false) {
   // Slot first, same as the card grid: the row is now findable by the number written on the chassis. `cardN`
   // (the driver's per-boot name) and the BDF path follow, because the BDF is what the kernel's own AER and
   // GHES records use, and the two have to be readable side by side to act on either.
-  d.innerHTML = `<b>${c.slot ? `slot ${esc(c.slot)}` : (c.card || short(c.bus))}</b>`
-    + (c.slot ? `<span class="small">${esc(c.card || "unnamed")}`
-      + `${isnum(c.pos) ? ` \u00b7 #${c.pos}` : ""}</span>` : "")
-    + `<span class="chain">${devs.map((x) => short(x.bdf)).join(" → ")}</span>`
-    + `<span class="link" title="negotiated speed and width. A link below its maximum while the card
+  // Every row emits the same seven children, in the same order, whether or not this card has a slot or a
+  // driver name: the grid has seven tracks, and a missing child shifts every later column into the wrong
+  // track -- which reads as "the columns are ragged" and not as "this card is unnamed".
+  d.innerHTML = `<b class="p-slot">${c.slot ? `slot ${esc(c.slot)}` : esc(c.card || short(c.bus))}</b>`
+    + `<span class="small p-drv">${c.slot ? `${esc(c.card || "unnamed")}` : "driver"}${c.slot && isnum(c.pos) ? ` \u00b7 #${c.pos}` : ""}</span>`
+    + `<span class="chain p-chain">${devs.map((x) => short(x.bdf)).join(" → ")}</span>`
+    + `<span class="link p-link" title="negotiated speed and width. A link below its maximum while the card
       is running is the thing to notice; a parked card (D3hot) idles its links on purpose">`
       + (isnum(c.speed) ? `${fmt(c.speed, 1)} GT/s ×${c.width}`
                         + (c.degraded && maxw
                            ? ` <span class="q">(${c.parked ? "parked, max ×"
                               : sag ? "idle, max ×" : "max ×"}${maxw})</span>`
                            : "") : "—") + `</span>`
-    + `<span class="cnt">${cor || unc ? `${cor} corr · ${unc} uncorr` : "no errors"} <span class="q">since boot</span></span>`
-    + `<span class="who" title="the non-zero AER counters on this chain: correctable ones are recovered by the
+    + `<span class="cnt p-cnt">${cor || unc ? `${cor} corr · ${unc} uncorr` : "no errors"} <span class="q">since boot</span></span>`
+    + `<span class="who p-who" title="the non-zero AER counters on this chain: correctable ones are recovered by the
       hardware, the others are not">${cn.length ? `<span class="q">corr</span> ${cn.join(" · ")}` : ""}`
       + (un.length ? ` <span class="unc">${un.join(" · ")}</span>` : "") + `</span>`
-    + `<span class="win" title="this poll's deltas; these counters are quiet unless something happens">`
+    + `<span class="win p-win" title="this poll's deltas; these counters are quiet unless something happens">`
       + (win === null ? "<span class=\"q\">window —</span>" : `+${win} this window`) + `</span>`;
   return d;
 }
@@ -632,7 +634,15 @@ function renderStatus(s) {
       + (phist.some((h) => (h.chains || []).some((x) => x.reset))
         ? " · counters were zeroed during the window" : "")
     : "no PCIe sysfs readable here");
-  $("pcie").replaceChildren(...chains.map((c2) => pcieRow(c2, phist, busyNow)));
+  // A header row on the same grid: with seven columns of mono text, "which number is which" should not be
+  // something the reader has to infer from the panel title.
+  const phead = document.createElement("div");
+  phead.className = "pcie-row pcie-head";
+  phead.innerHTML = `<b class="p-slot">slot</b><span class="small p-drv">driver</span>`
+    + `<span class="chain p-chain">endpoint \u2192 root port</span><span class="link p-link">link</span>`
+    + `<span class="cnt p-cnt">errors since boot</span><span class="who p-who">which counters</span>`
+    + `<span class="win p-win">this window</span>`;
+  $("pcie").replaceChildren(phead, ...chains.map((c2) => pcieRow(c2, phist, busyNow)));
 }
 
 // -- one tick -------------------------------------------------------------------------------------

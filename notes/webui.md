@@ -809,3 +809,39 @@ only true while the order *was* enumeration order (now it identifies cards by na
 does), and `max_speed` was built with webui's `_num()` helper, which answers "is this a number" — so the field
 the page prints as a speed carried `True`.
 
+## The PCIe row grid: seven columns, and the widths are now arithmetic (2026-11-03)
+
+**What was actually broken.** Adding the `slot` label made every row emit **seven** children into a
+**six**-track grid. CSS grid does not complain: the extra child starts a second grid line, so the
+`+0 this window` delta wrapped under the row and the remaining columns looked ragged. The symptom was
+"columns are the wrong width"; the cause was a child with no track for it — which is why the harness now
+asserts each row fills all seven areas instead of trusting that it looks right.
+
+**Layout.** Named areas, shared by the header row and the data rows, so a legend and its columns cannot drift:
+
+```css
+grid-template-areas:"slot drv chain link cnt who win"
+```
+
+**Track widths, sized from the longest live strings at the theme's own sizes** (`em` tracks resolve against the
+row's 16px; `chain`/`who` are 11px mono, `link`/`cnt`/`win` 13px mono, ~0.6em per glyph):
+
+| column | longest string on this box | px needed | track |
+|---|---|---|---|
+| `chain` | `c6:00.0 → c5:00.0 → c4:00.0 → c0:03.1` (37) | 244 | `minmax(16em,1.7fr)` = 256 |
+| `link` | `16.0 GT/s ×16 (idle, max ×16)` (29) | 226 | `minmax(14.5em,auto)` = 232 |
+| `cnt` | `144 corr · 0 uncorr since boot` (30) | 234 | `minmax(15em,auto)` = 240 |
+| `win` | `+0 this window` (14) | 109 | `8.4em` = 134 |
+| `drv` | `unnamed · #12` (13) | 85 | `7.4em` = 118 |
+| `slot` | `slot 6` (16px regular) | 48 | `5.2em` = 83 |
+| `who` | `corr NonFatalErr 3 · BadTLP 77 · Timeout 65` (43) | 284 | `minmax(12em,1.5fr)` — **wraps on purpose** |
+
+Minimum single-line row ≈ 1255px + 60px of gaps, so the single-line layout is only claimed above ~1360px:
+two-line (`slot drv chain link` / `cnt cnt who win`) below that, and a three-line form below 900px. Only
+`chain` and `who` flex, because a counter list may wrap and a BDF path or a link speed may not.
+
+**Not verified as pixels.** There is no browser on this box (no chromium/firefox/playwright), so these numbers
+are arithmetic against the theme's font sizes, not a screenshot. What *is* checked automatically: 7 tracks =
+7 areas, both narrow layouts keep all 7 areas, the header row exists on the same grid, and the live render fills
+all 7 areas in every row (`tests/render-monitor.mjs`, exits non-zero otherwise).
+

@@ -79,8 +79,36 @@ section{margin:18px 0}
    are quiet unless something happens, so curves would be flat lines claiming space. A row that is entirely
    correct says "clean" and costs one line. */
 .pcie-rows{display:grid;gap:5px;margin-top:10px}
-.pcie-row{display:grid;grid-template-columns:5.4em minmax(11em,1.4fr) 9.6em 11em minmax(8em,1.1fr) 8.4em;
-  gap:10px;align-items:baseline;padding:3px 0;border-top:1px solid var(--st-line-soft)}
+/* Seven columns, named once as areas and shared by the header row and every data row. The tracks are sized to
+   the longest string each one has to carry on this box (chain = "c6:00.0 -> c5:00.0 -> c4:00.0 -> c0:03.1",
+   link = "16.0 GT/s x16 (idle, max x16)", cnt = "144 corr . 0 uncorr since boot", who = "corr NonFatalErr 3 .
+   BadTLP 77 . Timeout 65"), and only the two text-heavy ones flex. That matters because a row that emits a
+   child with no track for it does not look wrong -- the extra child silently starts a second grid line, so a
+   panel that gained a "slot" label ended up with its window delta wrapping under the row instead of beside it. */
+.pcie-row{display:grid;gap:4px 10px;align-items:baseline;padding:3px 0;
+  border-top:1px solid var(--st-line-soft);
+  grid-template-columns:5.2em 7.4em minmax(16em,1.7fr) minmax(14.5em,auto) minmax(15em,auto) minmax(12em,1.5fr) 8.4em;
+  grid-template-areas:"slot drv chain link cnt who win"}
+/* The fixed tracks are sized from the longest string each column actually carries on this box, at the theme's
+   own sizes (--st-fs-base 16px is what the em tracks resolve against; chain/who are 11px mono, link/cnt/win
+   13px mono at ~0.6em per glyph):
+     chain  "c6:00.0 -> c5:00.0 -> c4:00.0 -> c0:03.1"  37 chars x 6.6px = 244px   -> 16em = 256px
+     link   "16.0 GT/s x16 (idle, max x16)"             29 chars x 7.8px = 226px   -> 14.5em = 232px
+     cnt    "144 corr . 0 uncorr since boot"            30 chars x 7.8px = 234px   -> 15em = 240px
+     win    "+0 this window"                           14 chars x 7.8px = 109px   ->  8.4em = 134px
+     drv    "unnamed . #12"                            13 chars x 6.5px =  85px   ->  7.4em = 118px
+     slot   "slot 6" (16px regular)                      6 chars x 8px  =  48px   ->  5.2em =  83px
+   chain and who are the flexible ones: a counter list ("corr NonFatalErr 3 . BadTLP 77 . Timeout 65" = 284px)
+   is allowed to wrap, a BDF path or a link speed should not be. Minimum row width is ~1255px + 60px of gaps, so
+   the single-line layout is only claimed above that -- guessing a breakpoint lower is how columns end up
+   wrapping mid-string. No browser exists on this box, so these are arithmetic, not a screenshot. */
+.p-slot{grid-area:slot}.p-drv{grid-area:drv}.p-chain{grid-area:chain}.p-link{grid-area:link}
+.p-cnt{grid-area:cnt}.p-who{grid-area:who}.p-win{grid-area:win}
+/* The header carries the same areas, so it is a legend for the columns rather than a caption above a table
+   whose widths nobody promised. */
+.pcie-head{border-top:0;padding:0 0 3px;font-size:var(--st-fs-xs);color:var(--st-ink-muted);
+  text-transform:uppercase;letter-spacing:.06em}
+.pcie-head b{font-weight:600;color:var(--st-ink-muted)}
 .pcie-row:first-child{border-top:0}
 .pcie-row b{font-weight:700}
 .pcie-row .chain,.pcie-row .who{font:11px var(--st-font-mono);color:var(--st-ink-muted);overflow-wrap:anywhere}
@@ -93,8 +121,14 @@ section{margin:18px 0}
 .spark--pcie{margin-left:auto;width:min(180px,34%);height:26px;color:var(--st-ink-soft)}
 .spark--pcie[data-tone=warn]{color:var(--st-warn)}
 
-@media(max-width:900px){.pcie-row{grid-template-columns:5.4em 1fr auto;row-gap:3px}
-  .pcie-row .who,.pcie-row .win{grid-column:2 / -1;text-align:left}}
+/* Two lines before anything gets squeezed into an unreadable column, and the split follows the reading order:
+   identity and the chain on the first, then what the link is doing and what the counters say. All seven areas
+   survive at every width -- a column that disappears is information that disappeared. */
+@media(max-width:1360px){.pcie-row{grid-template-columns:5.2em 7.4em minmax(15em,1.2fr) minmax(13em,1fr);
+  grid-template-areas:"slot drv chain link" "cnt cnt who win"}}
+@media(max-width:900px){.pcie-row{grid-template-columns:5.2em minmax(0,1fr) auto;
+  grid-template-areas:"slot drv win" "chain chain chain" "link cnt who"}
+  .pcie-row .who,.pcie-row .win{text-align:left}}
 
 @media(max-width:980px){.workspace{grid-template-columns:1fr}.requests{border-right:0;border-bottom:1px solid var(--st-line-soft);max-height:280px}
   .facts{grid-template-columns:repeat(2,minmax(0,1fr))}#search{width:160px}}

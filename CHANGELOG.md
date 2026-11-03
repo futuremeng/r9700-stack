@@ -392,6 +392,16 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   the operator command list, including `sel elist | grep -iE "chassis|power|reset"`, which lines the forced
   operations up against the 18 death times without any interpretation from me.
 
+- **PCIe columns: seven named grid areas, sized from measured string widths, plus a header row.** The `slot`
+  label had made each row emit seven children into a six-track grid — CSS grid stays silent and wraps the extra
+  child onto a new line, so `+0 this window` dropped under the row and everything looked mis-sized. The row is now
+  `"slot drv chain link cnt who win"`, only `chain` and `who` flex (a counter list may wrap, a BDF path or a link
+  speed may not), the fixed tracks are sized from the longest strings this box actually produces
+  (`chain` 244px → 16em, `link` 226px → 14.5em, `cnt` 234px → 15em, `win` 109px → 8.4em), single-line layout is
+  claimed only above ~1360px, and two-line/three-line forms below that keep all seven areas. A header row on the
+  same grid labels the columns. `tests/render-monitor.mjs` now fails if any row fails to fill all 7 areas —
+  the structural check is the point, since **there is no browser on this box** to photograph the result.
+
 - **Cards and PCIe rows are now listed in physical-slot order, and numbered `#1..#N` by it**
   ([notes/webui.md](notes/webui.md)). The headline of each card is its firmware slot (`slot 6`) with the driver
   name underneath (`card2 · #3 in slot order · PCI c6:00.0`), the chain rows lead with the slot too, and a new

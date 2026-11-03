@@ -139,7 +139,23 @@ for (const [label, id] of [["cards", "gpus"], ["pcie", "pcie"]]) {
   }
 }
 
-console.log("\nPCIe note:", t("pcie-note"));
+// Grid rows are silent about their own shape: a row that emits six children into a seven-track grid does not
+// throw, it just starts a second line, and the panel reads as "the columns are ragged". So the child count is
+// asserted here, where it is cheap, rather than discovered by someone squinting at a screenshot.
+const PROWS = (byId.get("pcie") || new El()).children;
+const AREAS = ["p-slot", "p-drv", "p-chain", "p-link", "p-cnt", "p-who", "p-win"];
+const misshapen = PROWS.filter((r) => AREAS.some((a) => !String(r.innerHTML || "").includes(a)))
+  .map((r) => { const have = AREAS.filter((a) => String(r.innerHTML || "").includes(a));
+    return `${r.textContent.replace(/\s+/g, " ").trim().slice(0, 34)} -> ${have.length}/7 columns,`
+      + ` missing ${AREAS.filter((a) => !have.includes(a)).join(" ")}`; });
+if (misshapen.length) {
+  console.log("\nBAD PCIe GRID ROWS (each must fill all 7 grid areas):");
+  for (const m of misshapen) console.log("  " + m);
+  process.exitCode = 1;
+} else {
+  console.log(`\npcie grid: ${PROWS.length} rows, all filling the 7 areas (${AREAS.join(" ")})`);
+}
+console.log(`\nPCIe note: ${t("pcie-note")}`);
 for (const k of (byId.get("pcie") || new El()).children.slice(0, 4))
   console.log("  " + k.textContent.replace(/\s+/g, " ").trim());
 console.log(`\nrequest rows rendered: ${rows.length}`);

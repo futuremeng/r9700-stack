@@ -1259,10 +1259,10 @@ ck("a card's caption carries the thermal trio and busy, each as peak and average
 ck("the PCIe panel exists and says what it is not (no byte counters on these cards)",
    'id="pcie"' in monhtml and 'id="pcie-note"' in monhtml and "pcieRow(" in monjs
    and "N/A" in monjs and "no root and no /dev/kfd" in monjs)
-ck("a chain is one row: card, device chain, negotiated link, totals since boot, which counters, this window",
+ck("a chain is one row: slot, driver, device chain, negotiated link, totals since boot, which counters, window",
    'class="pcie-rows"' in monhtml and all(x in monjs for x in
-                                          ('"pcie-row"', 'class="chain"', 'class="link"',
-                                           'class="cnt"', 'class="who"', 'class="win"')))
+                                          ('"pcie-row"', 'class="chain p-chain"', 'class="link p-link"',
+                                           'class="cnt p-cnt"', 'class="who p-who"', 'class="win p-win"')))
 ck("no per-chain waveforms are drawn any more -- a flat line for a static or eventual number reads as a fault",
    "spark" not in monjs.split("function pcieRow")[1].split("\nfunction")[0],
    str([l.strip() for l in monjs.split("function pcieRow")[1].split("\nfunction")[0].splitlines()
@@ -1487,6 +1487,52 @@ ck("the page leads with the slot and says which numbering it is using",
                           "slot ${esc(c.slot)}"))
    and all(k in open(os.path.join(ROOT, "serve/web/common.js")).read()
            for k in ("slot ${g.slot}", "#${g.pos} in slot order")))
+
+# ---- the PCIe grid: seven columns, and the widths are a promise the rows have to keep
+_css = open(os.path.join(ROOT, "serve/web/monitor.css")).read()
+_mjs2 = open(os.path.join(ROOT, "serve/web/monitor.js")).read()
+
+
+def _tracks(decl):
+    """Count grid tracks, respecting minmax(...)/(180px,34%) so a comma inside a function is not a column."""
+    out, depth, cur = [], 0, ""
+    for ch in decl:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch.isspace() and depth == 0:
+            if cur:
+                out.append(cur)
+                cur = ""
+        else:
+            cur += ch
+    if cur:
+        out.append(cur)
+    return out
+
+
+_pblk = _css.split(".pcie-row{display:grid;")[1].split("\n}")[0]
+_ptk = _tracks(_pblk.split("grid-template-columns:")[1].split(";")[0])
+_par = _pblk.split('grid-template-areas:"')[1].split('"')[0].split()
+ck("the PCIe row grid declares as many tracks as areas, and every area has a class to land in",
+   len(_ptk) == 7 and len(_par) == 7 and _par == ["slot", "drv", "chain", "link", "cnt", "who", "win"]
+   and all(f".p-{a}{{grid-area:{a}}}" in _css for a in _par)
+   and all(f'p-{a}' in _mjs2 for a in _par), f"{len(_ptk)} tracks / {len(_par)} areas")
+_narrow = [x for x in _css.split("@media")[1:] if "pcie-row" in x and "grid-template-areas" in x]
+ck("both narrow layouts keep all seven areas, spread over more lines (a dropped column is dropped information)",
+   len(_narrow) >= 2 and all(sorted(set(x.split("grid-template-areas:")[1].split("}")[0]
+                                         .replace('"', " ").split())) == sorted("slot drv chain link cnt who win".split())
+                             for x in _narrow),
+   f"{len(_narrow)} narrow layouts checked")
+
+ck("the PCIe table has a header row on the same grid, naming each column",
+   'phead.className = "pcie-row pcie-head"' in _mjs2
+   and all(f'class="{cls} p-{a}"' in _mjs2 or f'p-{a}"' in _mjs2 for a, cls in
+           [("slot", "b"), ("drv", "small"), ("chain", "chain"), ("link", "link"), ("cnt", "cnt"),
+            ("who", "who"), ("win", "win")]))
+ck("slot labels and driver names are separate columns, so one can be long without shoving the other",
+   '<b class="p-slot">' in _mjs2 and 'class="small p-drv"' in _mjs2)
 
 print("PASS" if fail == 0 else "FAIL", f"({fail} failing)")
 sys.exit(1 if fail else 0)
