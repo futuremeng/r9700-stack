@@ -268,3 +268,23 @@ The box died again at **02:50 UTC on 11-03**, under two minutes after its last j
 **242,882-token prompt**, the largest this box has ever completed — with five long requests in flight. No BMC read
 for that death yet; the PSU and PDU questions left open above (§5c, §5d) are still the cheapest things to look at.
 
+---
+
+## Corrected on 11-03: the deaths are logged, and they name one CPU core
+
+Two things in this file were wrong because the evidence was incomplete at the time, and both matter for anyone
+reading it as the account of the incident:
+
+- **"15 boots by 11:20"** — the journal's own boot list says the box died **18 times between 2026-11-01 20:36 and
+  2026-11-03 02:50**, 14 of them on 11-02. The instability started at least a day before this file's first entry.
+- **The deaths were not evidence-free.** The firmware writes one record per crash into ACPI **BERT**, and the kernel
+  replays it at the next boot; `journalctl -k` needs no root. All 18 records read
+  `fru_text: ProcessorError`, `event severity: fatal`, `Machine Check ... Bank 5` with the uncorrectable bit set,
+  and an IPID the kernel's own SMCA table resolves to **`execution_unit`** — a core's execution logic. The CPU is
+  always **17 or 113**, which sysfs shows are the **two SMT threads of one physical core** (`core_id 65`).
+
+That does not retire the PSU/PDU findings in `bmc-sensors-watchdog-psu.txt` — a supply showing 0 W out with both
+cords on one PDU is a real gap and should still be fixed — but it demotes them as an *explanation*: a feed event
+does not hit the same core 18 times out of 18. Full record text, the decode, and what to do next are in
+[../incident-2026-11-03/README.md](../incident-2026-11-03/README.md).
+

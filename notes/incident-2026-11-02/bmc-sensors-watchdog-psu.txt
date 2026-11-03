@@ -270,3 +270,31 @@ IP). That page, not the SEL, is what settles reading A vs reading B in `bmc-powe
 Box up 22 min (boot `7e5bfe69`, 00:27:28 -> past 00:50), load 0.1-0.3, no vLLM running, all four
 `1002:7551` GPUs enumerating normally, `CPU_Power 96 W`, `Memory_Power 8 W`, total ~208 W on PSU1.
 Idle, and idle is where death 7 happened.
+
+================================================================================
+5f.  Re-framed on 2026-11-03: the resets have a record, and it is a CPU machine check
+================================================================================
+
+Everything in 5a-5e stands as measurement of the power hardware: two supplies, one PDU, PSU2 carrying 0 W
+out. That is still a redundancy gap worth closing.
+
+What changed is the causal weight. The kernel journal (readable without root) replays, at the start of every
+boot, the record the firmware kept in ACPI BERT from the crash that ended the previous one. 18 of 18 boots in
+the journal carry one, and all 18 name the same thing:
+
+    [Hardware Error]: event severity: fatal
+    [Hardware Error]:  fru_text: ProcessorError
+    mce: [Hardware Error]: CPU 17: Machine Check: 0 Bank 5: aea0000001000108
+    PPIN 2b61290dcb2002b SYND 4d000000 IPID 500b024029a00
+    mce: [Hardware Error]: PROCESSOR 2:a10f11 TIME <epoch> SOCKET 0 APIC 82 microcode a101158
+
+IPID 500b024029a00 -> hwid 0xB0 mcatype 0x5 -> SMCA_EX, "execution_unit" (the kernel's own table). CPU 17 and
+CPU 113 are the SMT siblings of physical core 65. So: one core's execution unit, uncorrectable, 18 times, at
+both ends of the box's load range.
+
+A droop severe enough to be involved in that would not be so precisely core-local, which is why the PSU question
+is now "fix the redundancy, and expect it not to explain the resets". The next things that would actually move
+this forward are: rasdaemon installed so records survive; BIOS + microcode current (box is at 0x0a101158,
+linux-firmware carries 0x0a101253 for this family); and a deliberate reproduction with taskset on CPUs 17,113
+and the GPUs idle. See ../incident-2026-11-03/README.md.
+

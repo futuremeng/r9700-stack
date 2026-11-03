@@ -379,6 +379,23 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   note that the count grows while the statistics do not (1,400 rows: prompt p50 74,381; 1,417 rows: 74,066).
 
 
+- **The deaths have a record after all, and it names one CPU core** (`serve/webui.py`, `serve/web/`,
+  `tools/journal-pcie.py`; [notes/incident-2026-11-03/README.md](notes/incident-2026-11-03/README.md)). The firmware
+  writes one record per crash into ACPI **BERT** and the kernel replays it at the next boot — `journalctl -k` needs
+  no root, and I had been asking the operator for IPMI reads while this was sitting in a log I could open. 18 of 18
+  boots in the journal (2026-11-01 20:36 → 2026-11-03 02:50) carry one, each `TIME` 17–18 s before its boot, each
+  reading `fru_text: ProcessorError`, `severity: fatal`, `Machine Check Bank 5` with the uncorrectable bit set, and
+  an IPID that the kernel's own SMCA table resolves to **`execution_unit`**. The CPU is always **17 or 113**, and
+  sysfs says those are the SMT siblings of **one physical core (core_id 65)** on an EPYC 9654 — so 18 deaths, one
+  core. The Monitor now says this out loud instead of coming back green: `last_death` / `deaths` in the payload and a
+  red line naming the block, the core, the time and how many such records survive (`execution unit ×12 · core 65
+  ×12 · fatal ×12` for the last 12 boots). Supporting lookups, each one a place a naive version goes wrong:
+  `smca_bank()` (IPID → block name, kernel's masks), `core_of()` (logical CPU → physical core and SMT siblings), and
+  a per-boot scan instead of `-b all`, which measures 55 s against this box's 517 MB journal. Also recorded: the box
+  runs microcode `0x0a101158` while linux-firmware's `microcode_amd_fam19h.bin` carries `0x0a101253` for this family,
+  and the PCIe AER/Gen4 thread is demoted to a chronic side condition — real, still worth fixing, not what killed the
+  box 18 times.
+
 - **Serve restarted at 03:21 to pick up the panel fix; the restart turned into a clean AER experiment** (244 checks;
   [notes/incident-2026-11-03/README.md](notes/incident-2026-11-03/README.md)). A serve restart neither re-trains PCIe
   links nor zeroes the counters, so before/after is a pure launch delta: card4's chain **17 → 28**, card2's

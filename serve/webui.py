@@ -677,6 +677,218 @@ def aer_deltas(chains, last, named=None, events=None, at=None):
     return out, nxt
 
 
+# --------------------------------------------------------------------------------- the previous death
+# A hard reset leaves almost nothing behind on this box, but not nothing: the firmware keeps one record from
+# the crash in ACPI **BERT**, and the kernel replays it into the log at the START of the next boot. Measured
+# across every boot in this machine's journal -- 18 deaths from 2026-11-01 20:36 to 2026-11-03 02:50 -- each
+# boot carries exactly one `BERT: Total records found: 1`, and each record's own TIME lands 17-18 s before
+# that boot, which is the BMC's reset-and-POST latency. So the deaths are not silent and not unrecorded: they
+# are CPU machine checks. Every one of the 18 is Bank 5 with IPID 0x500b024029a00 (or ...b00), which the
+# kernel's own table resolves to SMCA_EX, `execution_unit`; the CPU number is 17 or 113, and sysfs says
+# 17 and 113 are SMT siblings of ONE physical core (core_id 65, package 0). That is the strongest clue this
+# box has produced: one core's execution unit, 18 times, at both ends of the machine's idle and load range.
+#
+# The Monitor shows it because the alternative is worse: after a reboot the page comes back with a healthy
+# green look and no memory of what killed the last launch.
+SMCA_IPID_HWID = 0xFFF
+SMCA_IPID_MCATYPE = 0xFFFF0000
+
+# From arch/x86/kernel/cpu/mce/amd.c, smca_hwid_mcatypes: (hwid, mcatype) -> bank name. Only the blocks a
+# machine-check record can plausibly name here are listed, and the point of listing them is that the page can
+# say "execution unit" or "memory controller" instead of leaving the reader with a hex number.
+SMCA_NAMES = {
+    (0xB0, 0x00): "load-store unit", (0xB0, 0x01): "instruction fetch", (0xB0, 0x02): "L2 cache",
+    (0xB0, 0x03): "decode", (0xB0, 0x05): "execution unit", (0xB0, 0x06): "floating point",
+    (0xB0, 0x07): "L3 cache", (0xB0, 0x10): "load-store unit",
+    (0x96, 0x00): "memory controller", (0x96, 0x01): "memory controller",
+    (0x46, 0x00): "PCIe", (0x46, 0x01): "PCIe", (0x18, 0x00): "NBIO", (0x6C, 0x00): "NBIF",
+    (0x80, 0x00): "system fabric", (0x50, 0x00): "xGMI PCS", (0x259, 0x00): "xGMI PHY",
+    (0x01, 0x00): "SMU", (0xFF, 0x00): "PSP", (0xAA, 0x00): "USB", (0xA8, 0x00): "SATA",
+}
+
+MC_LINE = re.compile(r"Machine check: (\d+) Bank (\d+): ([0-9a-f]+)", re.I)
+MC_CPU = re.compile(r"CPU (\d+):", re.I)
+MC_IPID = re.compile(r"IPID ([0-9a-f]+)", re.I)
+MC_PPIN = re.compile(r"PPIN ([0-9a-f]+) SYND ([0-9a-f]+)", re.I)
+MC_PROC = re.compile(r"PROCESSOR (\S+) TIME (\d+) SOCKET (\d+) APIC (\d+)", re.I)
+MC_ADDR = re.compile(r"ADDR ([0-9a-f]+)", re.I)
+MC_BERT = re.compile(r"BERT: Total records found: (\d+)", re.I)
+# The CPER header lines carry the human-level answer -- this box's records say `event severity: fatal` and
+# `fru_text: ProcessorError`, which is a stronger statement than any decoded bit and comes straight from the
+# firmware that saw it.
+MC_SEV = re.compile(r"event severity:\s*(\w+)", re.I)
+MC_FRU = re.compile(r"fru_text:\s*(\S+)", re.I)
+MC_STATUS_UC = 1 << 61          # MCi_STATUS bit 61: uncorrectable
+
+
+def smca_bank(ipid):
+    """Name the SMCA bank an MCA_IPID points at, the way the kernel does."""
+    hi = (ipid >> 32) & 0xFFFFFFFF
+    key = (hi & SMCA_IPID_HWID, (hi & SMCA_IPID_MCATYPE) >> 16)
+    return SMCA_NAMES.get(key) or f"bank hwid 0x{key[0]:x} type 0x{key[1]:x}"
+
+
+def core_of(cpu, root="/sys/devices/system/cpu"):
+    """Which physical core a logical CPU belongs to: SMT siblings plus the core id.
+
+    This is what turns "CPU 17" and "CPU 113" into one suspect: sysfs says both are siblings of core_id 65,
+    so 18 records over two days point at one physical core rather than at two, or at the platform.
+    """
+    try:
+        sib = _read_str(Path(f"{root}/cpu{cpu}/topology/thread_siblings_list"))
+        cid = _read_str(Path(f"{root}/cpu{cpu}/topology/core_id"))
+    except OSError:
+        sib = cid = None
+    return {"cpu": cpu, "siblings": sib, "core_id": cid}
+
+
+def parse_death(lines):
+    """Pull the boot-replayed error record out of kernel log lines (oldest fields win)."""
+    out = {}
+    for line in lines:
+        # The record arrives as a block of separate lines with no common prefix: `mce:` for the CPU line,
+        # `[Hardware Error]:` for the CPER fields, bare `PPIN ... IPID ...` for the identity of the failing
+        # block. Gating on `mce:` alone silently loses the IPID, which is the whole decode.
+        if not any(k in line for k in ("mce:", "Hardware Error", "BERT", "IPID", "PPIN", "fru_text")):
+            continue
+        m = MC_BERT.search(line)
+        if m:
+            out["bert_records"] = int(m.group(1))
+            continue
+        m = MC_SEV.search(line)
+        if m and "severity" not in out:
+            out["severity"] = m.group(1)
+            continue
+        m = MC_FRU.search(line)
+        if m and "fru" not in out:
+            out["fru"] = m.group(1)
+            continue
+        m = MC_LINE.search(line)
+        if m and "status" not in out:
+            out["bank"] = int(m.group(2))
+            out["status"] = int(m.group(3), 16)
+            out["uncorrectable"] = bool(out["status"] & MC_STATUS_UC)
+            c = MC_CPU.search(line)
+            if c:
+                out["cpu"] = int(c.group(1))
+            continue
+        m = MC_IPID.search(line)
+        if m and "ipid" not in out:
+            out["ipid"] = int(m.group(1), 16)
+            out["bank_name"] = smca_bank(out["ipid"])
+            continue
+        m = MC_PPIN.search(line)
+        if m:
+            out["ppin"] = m.group(1)
+            out["synd"] = m.group(2)
+            a = MC_ADDR.search(line)
+            if a:
+                out["addr"] = a.group(1)
+            continue
+        m = MC_PROC.search(line)
+        if m:
+            out["at"] = int(m.group(2))
+            out["socket"] = int(m.group(3))
+            out["apic"] = int(m.group(4))
+            out["cpuid"] = m.group(1)
+            mc = re.search(r"microcode (\S+)", line)
+            if mc:
+                out["microcode"] = mc.group(1)
+            continue
+        m = MC_ADDR.search(line)
+        if m and "addr" not in out:
+            out["addr"] = m.group(1)
+    if "at" not in out:
+        return None
+    if out.get("cpu") is not None:
+        out["core"] = core_of(out["cpu"])
+    return out
+
+
+def boot_ids(limit=12):
+    """The boots the journal still holds, newest last, capped: `-b all` is not an option here -- measured on
+    this box it scans 517 MB of journal and takes 55 s, while one boot reads in 0.4 s."""
+    try:
+        out = subprocess.run(["journalctl", "--list-boots", "--no-pager"],
+                             capture_output=True, text=True, timeout=10.0).stdout
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    ids = [l.split()[0] for l in out.splitlines() if l.split() and l.split()[0].lstrip("-").isdigit()]
+    return ids[-limit:]
+
+
+def boot_log(bid):
+    try:
+        out = subprocess.run(["journalctl", "-k", "-b", bid, "--no-pager", "-o", "short-iso"],
+                             capture_output=True, text=True, timeout=10.0).stdout
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    return out.splitlines()
+
+
+def split_records(lines):
+    """Cut a kernel log into its boot-error record blocks (one per previous death)."""
+    chunks, cur = [], []
+    for line in lines:
+        if "Error records from previous boot" in line:
+            if cur:
+                chunks.append(cur)
+            cur = [line]
+        elif cur:
+            cur.append(line)
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def death_history(lines=None, boots=12):
+    """Every previous death the journal can still name, as a count plus who each one blamed.
+
+    Worth one pass at startup (in a thread, ~0.3 s per boot): on this box the answer is the whole argument --
+    18 records across the boots the journal holds (2026-11-01 20:36 to 2026-11-03 02:50), and every one of
+    them names the same bank and the same physical core. A count with the named block beside it is what
+    separates a box that dies of the platform from a box that dies of one bad core.
+    """
+    logs = [lines] if lines is not None else [boot_log(b) for b in boot_ids(boots)]
+    recs = [r for log in logs for r in (parse_death(c) for c in split_records(log)) if r]
+    if not recs:
+        return None
+    named, cores = {}, {}
+    for r in recs:
+        named[r.get("bank_name") or f"bank {r.get('bank')}"] = named.get(r.get("bank_name") or
+                                                                        f"bank {r.get('bank')}", 0) + 1
+        c = (r.get("core") or {}).get("core_id")
+        if c is not None:
+            cores[f"core {c}"] = cores.get(f"core {c}", 0) + 1
+    return {"records": len(recs), "first_at": min(r["at"] for r in recs),
+            "last_at": max(r["at"] for r in recs), "named": named, "cores": cores,
+            "severities": {s: sum(1 for r in recs if r.get("severity") == s)
+                           for s in {r.get("severity") for r in recs} if s},
+            "boots_scanned": len(logs)}
+
+
+def read_death(lines=None):
+    """The record the firmware kept from the crash that ended the PREVIOUS boot.
+
+    Read from the CURRENT boot's kernel log, because that is where the replay lands. `journalctl -k` is
+    readable without root here (verified 2026-11-03); where it is not, this returns None and the page simply
+    has no death line.
+    """
+    if lines is None:
+        try:
+            out = subprocess.run(["journalctl", "-k", "-b", "0", "--no-pager", "-o", "short-iso"],
+                                 capture_output=True, text=True, timeout=6.0).stdout
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
+        if not out:
+            return None
+        lines = out.splitlines()
+    try:
+        return parse_death(lines)
+    except Exception:                                    # noqa: BLE001 - a page must not die on a log
+        return None
+
+
 # --------------------------------------------------------------------------------- request record
 # What a row in the request list carries, in one place because two different backends build rows: the
 # relay (`Records`, which sees bytes) and the engine's own stat logger (`EngineRecords`, which sees the
@@ -1081,13 +1293,26 @@ class Hub:
         # the payload.
         self.aer_named, self.pcie_events = {}, deque(maxlen=60)
         self.health, self.engine, self.host = None, {}, read_host()
+        # What ended the PREVIOUS boot (ACPI BERT, replayed by the kernel at startup) and how many such
+        # records the journal still holds. Read once: neither can change while this process is alive.
+        self.death, self.deaths = read_death(), None
         self.key_needed, self.smi_error = False, None
         self.lock = threading.Lock()
+        if self.death is not None:
+            # The count costs one kernel-log read per boot the journal holds, so it runs in a thread: the page
+            # comes up at once and gains "18 deaths, all naming the same block" a second or two later.
+            threading.Thread(target=self._read_deaths, name="r9700-webui-deaths", daemon=True).start()
         if cfg["meta"]:
             try:
                 self.meta = json.loads(Path(cfg["meta"]).read_text())
             except (OSError, ValueError) as e:
                 print(f"webui: --meta {cfg['meta']} not read: {e}", file=sys.stderr)
+
+    def _read_deaths(self):
+        """The death count, off the startup path (see Hub.__init__)."""
+        hist = death_history()
+        with self.lock:
+            self.deaths = hist
 
     # ---- upstream reads (observe mode's whole footprint) -----------------------------------------
     def get(self, path, timeout=4.0):
@@ -1142,6 +1367,9 @@ class Hub:
                     # came from -- after a hard reset, the rows on screen are evidence from the dead launch.
                     j = getattr(self.eng, "journal", None) or self.journal
                     payload["journal"] = j.info() if j else None
+                    # The last thing the firmware recorded about the death that precedes this launch.
+                    payload["last_death"] = self.death
+                    payload["deaths"] = self.deaths
                     self.prev, self.prev_t, self.status = cur, t0, payload
                 self.hist.append({"at": t0, "gen_tok_s": payload["rate"].get("generation_tok_s"),
                                   "stream_tok_s": payload["rate"].get("stream_tok_s_live"),

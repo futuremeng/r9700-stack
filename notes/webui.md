@@ -695,3 +695,25 @@ back to an empty payload labelled as such), which is precisely when those rows m
 - No per-request queue/prefill/decode split (see above), no cancellation UI, no chat tab.
 - `--proxy` measures token counts as *deltas seen* when the client did not ask vLLM for a `usage`
   block, and the detail pane says `≈ estimated` when it had to.
+
+## The page says what ended the previous boot
+
+A hard reset takes the process, the journals and the page's memory of the launch with it, and the Monitor would
+come back looking healthy. It no longer has to forget: the firmware keeps one record of the crash in ACPI BERT and
+the kernel replays it at the start of the next boot, and `journalctl -k` is readable here without root. So the
+Monitor now prints, under the request-journal line, what the last death was — severity, whether the machine check
+was uncorrectable, which block the record names, which CPU and physical core, and when — with a second line giving
+how many such records the journal still holds and who each of them blamed.
+
+The three pieces worth naming, because each one is where a naive version goes wrong:
+
+- **`smca_bank()`** resolves the record's `IPID` to the block it names, using the same mask arithmetic as the
+  kernel's `smca_hwid_mcatypes` table. Without it the page shows `Bank 5`, which means nothing; with it, "the
+  execution unit" — and the same lookup is what keeps a memory-controller record (`0x96`) from being described as a
+  core fault.
+- **`core_of()`** turns a logical CPU number into its physical core and SMT siblings. On this box that is the whole
+  argument: `CPU 17` and `CPU 113` are siblings of `core_id 65`, so 18 records name one core, not eighteen victims.
+- **`death_history()` reads one boot at a time.** `-b all` on this box scans 517 MB of journal and measured **55 s**;
+  one boot measures 0.4 s. The count runs in a thread so the page comes up immediately and gains the tally a second
+  or two later.
+

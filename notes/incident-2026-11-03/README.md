@@ -196,3 +196,96 @@ did move counters on 11-02 is a **long-prompt prefill** (`c4:00.0` and `04:00.0`
 landed), and that probe costs ~20 s of box time plus one more journalled row — a decision for the operator, not for me
 unilaterally.
 
+# Correcting the premise of this whole file: the deaths DO leave a record, and it names a CPU core
+
+I wrote above that this death had no BMC read because the account cannot open `/dev/ipmi0`. That was true and
+irrelevant: **the record was sitting in a log this account can read.** The firmware writes one error record
+into ACPI **BERT** when the crash happens, and the kernel replays it into the log at the start of the next boot.
+`journalctl -k` needs no root here (measured). Everything below comes from that, and it is the strongest finding
+of the entire incident.
+
+## 18 of 18 boots in the journal carry one, and they are all the same fault
+
+`journalctl --list-boots` holds 19 boots from 2026-11-01 20:36 to now. **Every boot after the first carries
+exactly one `BERT: Total records found: 1` / `BERT: Error records from previous boot:`** — so the box has died
+18 times in the two days the journal covers, not the "15 boots on 11-02" I had counted, and the deaths begin
+**2026-11-01 20:36**, a day earlier than the incident note assumed.
+
+Each record has the same shape (verbatim, the one that ended the 15.7 h launch at 02:50):
+
+```text
+BERT: Error records from previous boot:
+[Hardware Error]: event severity: fatal
+[Hardware Error]:  Error 0, type: fatal
+[Hardware Error]:  fru_text: ProcessorError
+mce: [Hardware Error]: CPU 17: Machine Check: 0 Bank 5: aea0000001000108
+mce: [Hardware Error]: TSC 0
+ADDR 142d6f3
+MISC d0140ff600000000
+PPIN 2b61290dcb2002b SYND 4d000000 IPID 500b024029a00
+mce: [Hardware Error]: PROCESSOR 2:a10f11 TIME 1793674220 SOCKET 0 APIC 82 microcode a101158
+```
+
+- **`fru_text: ProcessorError`, `event severity: fatal`** — the firmware's own summary. It is a processor fault.
+- **`Machine Check ... Bank 5`**, status `aea0000001000108` or `aea0000000000108`: MCi_STATUS bit 63 (VAL) set,
+  **bit 61 (UC) set — uncorrectable**, ADDRV and MISCV set, PCC (bit 56) clear.
+- **`IPID 500b024029a00`** resolves through the kernel's own table (`arch/x86/kernel/cpu/mce/amd.c`,
+  `smca_hwid_mcatypes`: high half `0x000500b0` → hwid `0xB0`, mcatype `0x5`) to **`SMCA_EX`**, which the kernel
+  names **`execution_unit`** — a core's execution logic. **Not** the memory controller (`0x96`), **not** PCIe
+  (`0x46`), **not** NBIO/fabric (`0x18`/`0x80`).
+- **`CPU 17` (APIC 82) or `CPU 113` (APIC 83)**, and sysfs says those two are the **SMT siblings of one physical
+  core**: `/sys/devices/system/cpu/cpu17/topology/thread_siblings_list = 17,113`, `core_id = 65`, package 0.
+  So 18 records do not name 18 victims or even two CPUs — they name **one core**, thread 0 or thread 1.
+- Same `PPIN 2b61290dcb2002b` (one physical socket), same `microcode a101158`, CPU is **EPYC 9654** (96c/192t).
+- **`TIME <epoch>` lands 17–18 s before the first kernel line of the next boot** in every single case — the BMC's
+  reset-and-POST latency. That is what makes the record belong to *this* death rather than a stale one.
+
+The 18 death times, from the records themselves: 2026-11-01 20:36:21, 21:03:39, 23:52:18, 2026-11-02 00:04:37,
+00:16:55, 00:27:11, 01:07:19, 01:18:29, 01:30:09, 03:00:24, 06:34:49, 09:11:14, 09:41:07, 10:30:57, 10:36:54,
+11:00:29, 11:07:20, and 2026-11-03 02:50:20. Gaps from 11 minutes to 5.3 hours.
+
+## What this changes, and what it does not
+
+**Changes:** the deaths are not silent, not unlogged, and not first-and-foremost a PCIe event. The AER correctables
+and the Gen4 uplink on card2's chain are real and worth fixing, but they are a *chronic side condition* — the
+machine-check record names the CPU's execution unit, 18 times out of 18, always the same core.
+
+**Does not change, but sharpens:** the electrical question. A feed droop CAN produce a core-level uncorrectable
+error, so the PSU/PDU gap still matters — but a droop does not pick the same two threads of the same core 18 times
+while leaving 190 other threads alone. Core-locality points at that core (or its rail/CCX domain) first, and at the
+platform second.
+
+**What the microcode lookup says.** The box runs **0x0a101158**. Fetching `amd-ucode/microcode_amd_fam19h.bin`
+from linux-firmware today, the Genoa (`19h`) revisions present upstream are **0x0a101148, 0x0a101153, 0x0a101158,
+0x0a101248, 0x0a10124e, 0x0a101253** — so the box is **three revisions behind** what upstream carries. I could not
+reach AMD's errata documents from this box (search engines unreachable; only direct fetches), so I am *not* claiming
+one of those revisions fixes this. It is a cheap, in-scope thing for the operator to rule in or out.
+
+## What I would do with this, in order
+
+1. **Keep the records.** BERT holds exactly **one** record, so every death destroys the previous evidence, and the
+   journal's own power-loss records are already full (`0 bytes free`). Install `rasdaemon` (it decodes and stores
+   CPER/MCE records in a database), and `ipmitool sel save` + `sel clear` on the BMC side.
+2. **BIOS + microcode update**, then re-observe. Also worth reading while there: AMD's Genoa errata list for
+   execution-unit/EX MCE entries against `0x0a101253`.
+3. **Try to reproduce it deliberately, cheaply, with no GPUs involved**: hammer that core alone —
+   `taskset -c 17,113 <a busy loop>` for an hour, then with GPU load alongside. If the machine check comes back
+   with the same IPID and the same core while the GPUs are idle, the platform question is answered in one evening.
+4. **Interim containment for a serving box** (operator/root, and honest about its status as a workaround): disable
+   that physical core in the BIOS (or offline CPU 17/113 — a core that is not executing cannot take an EX fault).
+   Losing 2 of 192 threads costs this workload nothing. If the deaths then move to a different core, that is itself
+   the answer: platform, not core.
+5. Ask the operator for the BMC's own view now that we know what to ask for: `sel elist` around those 18 timestamps
+   should contain processor MCE records, not power ones.
+
+## The Monitor now says this out loud
+
+`serve/webui.py` gained `read_death()` (the record for the boot before this one, 0.4 s, read once), `death_history()`
+(one kernel-log read per boot the journal holds, ~0.3 s each, in a thread — **not** `-b all`, which measures 55 s
+against this box's 517 MB journal), `smca_bank()` (the IPID → block-name lookup) and `core_of()` (logical CPU →
+physical core and SMT siblings). The payload carries `last_death` and `deaths`; the Monitor prints a red line under
+the journal line: what ended the previous boot, which block, which core, when, and how many such records the journal
+still holds. Verified live: `12 records across the last 12 boots`, `execution unit ×12`, `core 65 ×12`,
+`fatal ×12`. `tools/journal-pcie.py` is the same questions from a terminal, per boot, with the AER counts beside
+them.
+

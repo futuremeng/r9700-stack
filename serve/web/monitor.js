@@ -350,6 +350,27 @@ function renderStatus(s) {
       : "";
     jl.dataset.tone = j && !j.ok ? "danger" : "";
   }
+  const dl = $("death-line");
+  if (dl) {
+    const d = s.last_death, h = s.deaths;
+    const then = (t) => new Date((t || 0) * 1000).toLocaleString([], {
+      month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+    const tally = (o) => Object.entries(o || {}).map(([k, v]) => `${k} ×${v}`).join(", ");
+    dl.hidden = !d;
+    dl.textContent = d ? [
+      `the boot before this one ended with a ${d.severity || "hardware"}`
+      + `${d.uncorrectable ? ", uncorrectable" : ""} machine check in the ${d.bank_name || "unnamed block"}`
+      + ` (bank ${d.bank})`
+      + (d.cpu != null ? ` on CPU ${d.cpu}` + (d.core && d.core.siblings
+        ? ` = core ${d.core.core_id} (SMT ${d.core.siblings})` : "") : "")
+      + ` at ${then(d.at)} · ${d.bert_records ?? "?"} firmware record kept`,
+      h ? `${h.records} such record${h.records === 1 ? "" : "s"} across the last ${h.boots_scanned}`
+        + ` boot${h.boots_scanned === 1 ? "" : "s"} the journal holds (${then(h.first_at)} to ${then(h.last_at)})`
+        + ` · who they blame: ${tally(h.named)}`
+        + ` · where: ${tally(h.cores)}` : "counting the earlier ones…"
+    ].join("\n") : "";
+    dl.dataset.tone = d && (d.severity === "fatal" || d.uncorrectable) ? "danger" : "warn";
+  }
   text("active", inflight ? `${Math.round(inflight)} running / waiting at the engine`
     : s.mode === "proxy" ? "Nothing in flight"
       : s.mode === "merged" ? "Finished requests only: the engine reports a request when it ends"

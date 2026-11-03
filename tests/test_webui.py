@@ -976,6 +976,64 @@ ck("no CSS variable is used without being defined", not (used - defined), f"{sor
 ck("every page carries a theme switch and an API key control",
    all('data-theme-toggle' in (WEB / h).read_text() and 'id="key-btn"' in (WEB / h).read_text()
        for h in ("monitor.html", "about.html")))
+# ------------------------------------------------- (3c) what ended the PREVIOUS boot (ACPI BERT / MCE)
+# A hard reset on this box leaves almost nothing, but not nothing: the firmware keeps one record in ACPI BERT
+# and the kernel replays it at the start of the next boot. These lines are verbatim from this machine's own
+# journal at 2026-11-03 02:50:38 -- the death that ended the 15.7 h launch. All 18 deaths the journal holds
+# have this shape, and every one names the same bank and the same physical core.
+DEATH_LOG = [
+    "2026-11-03T02:50:38+00:00 jiulu-9700 kernel: BERT: Error records from previous boot:",
+    "2026-11-03T02:50:38+00:00 jiulu-9700 kernel: [Hardware Error]: event severity: fatal",
+    "2026-11-03T02:50:38+00:00 jiulu-9700 kernel: [Hardware Error]:  Error 0, type: fatal",
+    "2026-11-03T02:50:38+00:00 jiulu-9700 kernel: [Hardware Error]:  fru_text: ProcessorError",
+    "2026-11-03T02:50:38+00:00 jiulu-9700 kernel: mce: [Hardware Error]: Machine check events logged",
+    "2026-11-03T02:50:38+00:00 jiulu-9700 kernel: mce: [Hardware Error]: CPU 17: Machine Check: 0 Bank 5:"
+    " aea0000001000108",
+    "2026-11-03T02:50:38+00:00 jiulu-9700 kernel: TSC 0 ",
+    "2026-11-03T02:50:38+00:00 jiulu-9700 kernel: ADDR 142d6f3 ",
+    "2026-11-03T02:50:38+00:00 jiulu-9700 kernel: MISC d0140ff600000000 ",
+    "2026-11-03T02:50:38+00:00 jiulu-9700 kernel: PPIN 2b61290dcb2002b SYND 4d000000 IPID 500b024029a00 ",
+    "2026-11-03T02:50:38+00:00 jiulu-9700 kernel: mce: [Hardware Error]: PROCESSOR 2:a10f11 TIME 1793674220"
+    " SOCKET 0 APIC 82 microcode a101158",
+    "2026-11-03T02:50:38+00:00 jiulu-9700 kernel: BERT: Total records found: 1",
+]
+_death = W.parse_death(DEATH_LOG)
+ck("the record the firmware kept is parsed: severity, uncorrectable, bank, CPU, time, fru_text",
+   _death and _death["severity"] == "fatal" and _death["uncorrectable"] and _death["bank"] == 5
+   and _death["cpu"] == 17 and _death["at"] == 1793674220 and _death["fru"] == "ProcessorError"
+   and _death["bert_records"] == 1, str(_death))
+ck("the IPID is resolved to the block it names, the way the kernel's own smca table does",
+   _death["bank_name"] == "execution unit", str(_death))
+ck("a memory-controller IPID is named as one, so the page cannot call a UMC fault a core fault",
+   W.smca_bank(0x00000096 << 32) == "memory controller" and W.smca_bank(0x00000046 << 32) == "PCIe")
+ck("an unknown IPID says so with its numbers instead of guessing",
+   W.smca_bank(0x00001234 << 32).startswith("bank hwid"), W.smca_bank(0x00001234 << 32))
+ck("MCi_STATUS bit 61 is what makes a record uncorrectable, and a record without it is not",
+   W.parse_death([l.replace("aea0000001000108", "8ea0000001000108") for l in DEATH_LOG])["uncorrectable"]
+   is False)
+ck("a torn record is not invented into a death",
+   W.parse_death(["kernel: mce: [Hardware Error]: TSC 0 ", "kernel: PPIN x SYND y IPID 500b024029a00"]) is None)
+# The CPU number is only half the story: 17 and 113 are the two SMT threads of ONE physical core, and that is
+# what turns "two CPUs failed" into "one core failed 18 times". Read from sysfs, so fixture it.
+cpu = Path("/tmp/r9700-webui-cpu")
+shutil.rmtree(cpu, ignore_errors=True)
+(cpu / "cpu17" / "topology").mkdir(parents=True)
+(cpu / "cpu17" / "topology" / "thread_siblings_list").write_text("17,113\n")
+(cpu / "cpu17" / "topology" / "core_id").write_text("65\n")
+ck("a CPU number resolves to its physical core and SMT siblings",
+   W.core_of(17, root=str(cpu)) == {"cpu": 17, "siblings": "17,113", "core_id": "65"},
+   str(W.core_of(17, root=str(cpu))))
+ck("a CPU with no topology node still returns, with nothing claimed",
+   W.core_of(999, root=str(cpu)) == {"cpu": 999, "siblings": None, "core_id": None})
+_hist = W.death_history(lines=DEATH_LOG)
+ck("the count, the span and the block every record blames are derived for the page",
+   _hist and _hist["records"] == 1 and _hist["named"] == {"execution unit": 1}
+   and _hist["severities"] == {"fatal": 1} and _hist["first_at"] == _hist["last_at"] == 1793674220,
+   str(_hist))
+ck("the expensive scan is per boot, not `-b all`: the boot list is what bounds the work",
+   "journalctl" in open(os.path.join(ROOT, "serve", "webui.py")).read()
+   and '"-b", "all"' not in open(os.path.join(ROOT, "serve", "webui.py")).read())
+
 monjs = (WEB / "monitor.js").read_text()
 # A request row is scanned, not read, so its order is the design: the request's own prefill and decode speeds
 # first and largest, the supporting detail after them, and the things that never carried information gone.
@@ -1075,6 +1133,10 @@ ck("the prompt tok/s line says it is credited at request end, not measured live"
 monhtml = (WEB / "monitor.html").read_text()
 ck("the four rates lead the Monitor, before the per-request cards",
    monhtml.index("grid--rates") < monhtml.index('id="speed"'), "rates row is not first")
+ck("the page says what ended the previous boot, in the firmware record's own terms",
+   'id="death-line"' in monhtml and "machine check in the" in monjs and "who they blame" in monjs
+   and "the boot before this one ended with a" in monjs
+   and '#death-line[data-tone="danger"]' in (WEB / "monitor.css").read_text())
 ck("they are rendered at display size",
    'class="value value--xl"' in monhtml and ".value--xl{font-size:var(--st-fs-display)}" in (WEB / "web.css").read_text())
 ck("all four rate slots exist and are written",
@@ -1214,6 +1276,14 @@ compile(_pl, "probe-load-link.py", "exec")        # syntax only -- running it wo
 ck("the link probe sends exactly one request, samples at a stated rate, and states what it cannot show",
    _pl.count("urllib.request.Request(") == 1 and "max_tokens" in _pl and "HZ = 10.0" in _pl
    and "what it cannot show is whether the hop is marginal under a heavy" in _pl)
+# tools/journal-pcie.py asks the page's questions from a terminal, per boot: AER by port and name, and the
+# crash record the firmware kept. Read-only, and it must stay that way -- a tool that pokes the box while
+# diagnosing it changes what it diagnoses.
+_jp = open(os.path.join(ROOT, "tools", "journal-pcie.py")).read()
+compile(_jp, "journal-pcie.py", "exec")            # syntax only -- running it reads the whole journal
+ck("the journal tool only reads the log: no file writes, no requests to the serve",
+   "journalctl" in _jp and "subprocess.run" in _jp
+   and "urlopen(" not in _jp and "open(" not in _jp and "write" not in _jp)
 # gpu_busy_percent on this box is coarse, not finely readable: refused with nothing running, 0 stopped, 24-29
 # idle, 46-100 under load, 95-99 through long decode. The page says so, because otherwise a flat 99 reads as
 # "fully loaded" and a 0 as "healthy idle" when either could also mean "the launch let go".
