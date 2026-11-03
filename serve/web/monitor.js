@@ -31,7 +31,7 @@ function aerKind(k) {
 // times in 90 idle samples and 0 times through an eight-stream burst, but ~12 times around two serve restarts.
 // Curves of either are flat and read as a broken panel; totals plus an event with a timestamp say all a curve
 // would. Byte traffic is not collectable here (the counters answer N/A, and the PMU needs root or /dev/kfd).
-function pcieRow(c, phist = []) {
+function pcieRow(c, phist = [], busyNow = false) {
   const short = (b) => String(b || "").replace(/^0000:/, "");
   const devs = c.devices || [];
   const sum = (k) => devs.reduce((a, x) => a + (x[k] || 0), 0);
@@ -49,14 +49,25 @@ function pcieRow(c, phist = []) {
   const maxw = Math.max(...devs.map((x) => x.max_width || 0), 0);
   const d = document.createElement("div");
   d.className = "pcie-row";
-  // Colour means "look here": a link below its maximum or an uncorrectable error is the danger; correctable
+  // Colour means "look here": a link below its maximum, or an uncorrectable error, is the danger; correctable
   // errors are noted but not alarming on their own (they are correctable, and this box has them by the dozen).
-  d.dataset.tone = c.degraded || unc ? "danger" : cor ? "warn" : "";
+  // A link below its maximum is only a fault when the card is being asked to move something. Two idle states
+  // were measured on this box: with the GPUs runtime-suspended (D3hot, no context open) every chain drops to
+  // Gen1 (2026-11-03 03:00, all four at 2.5 GT/s x16), and with the serve up but nothing served the links sit
+  // at Gen4 -- 16 GT/s on the c6 chain at 3% busy, 32 GT/s through the same port under load. Alarming at an
+  // idle box is how a warning stops being read at all, so the alarm is tied to work: parked, or no card
+  // working, says so in muted type instead of turning red.
+  const sag = c.degraded && !c.parked && !busyNow;
+  d.dataset.tone = (c.degraded && !c.parked && busyNow) || unc ? "danger" : cor ? "warn" : "";
   d.innerHTML = `<b>${c.card || short(c.bus)}</b>`
     + `<span class="chain">${devs.map((x) => short(x.bdf)).join(" → ")}</span>`
-    + `<span class="link" title="negotiated speed and width; a link below its maximum is the thing to notice">`
+    + `<span class="link" title="negotiated speed and width. A link below its maximum while the card
+      is running is the thing to notice; a parked card (D3hot) idles its links on purpose">`
       + (isnum(c.speed) ? `${fmt(c.speed, 1)} GT/s ×${c.width}`
-                        + (c.degraded && maxw ? ` <span class="q">(max ×${maxw})</span>` : "") : "—") + `</span>`
+                        + (c.degraded && maxw
+                           ? ` <span class="q">(${c.parked ? "parked, max ×"
+                              : sag ? "idle, max ×" : "max ×"}${maxw})</span>`
+                           : "") : "—") + `</span>`
     + `<span class="cnt">${cor || unc ? `${cor} corr · ${unc} uncorr` : "no errors"} <span class="q">since boot</span></span>`
     + `<span class="who" title="the non-zero AER counters on this chain: correctable ones are recovered by the
       hardware, the others are not">${cn.length ? `<span class="q">corr</span> ${cn.join(" · ")}` : ""}`
@@ -531,11 +542,17 @@ function renderStatus(s) {
               return `${when(e.at)} ${shortb(e.bdf)} ${name}${kind === "correctable" ? "" : ` ${kind}`} +${e.n}`;
             }).join(" \u00b7 ")}`
           : " \u00b7 nothing moved while this page has been watching")
-      + (chains.some((c2) => c2.degraded) ? " · a link is below its maximum" : "")
+      + (chains.some((c2) => c2.degraded && !c2.parked && busyNow) ? " · a link is below its maximum while work is running" : "")
+      + (chains.length && chains.every((c2) => c2.parked) ? " · cards parked: the links idle at Gen1 while nothing runs"
+        : chains.some((c2) => c2.degraded) ? " · links sag while nothing runs: that is power management, watch them under load" : "")
       + (phist.some((h) => (h.chains || []).some((x) => x.reset))
         ? " · counters were zeroed during the window" : "")
     : "no PCIe sysfs readable here");
-  $("pcie").replaceChildren(...chains.map((c2) => pcieRow(c2, phist)));
+  // Is the box actually moving anything? That is what makes a sagging link worth colouring: measured on this
+  // box, 16 GT/s on the c6 chain at 3% busy (power management) and the same port at 32 GT/s under load.
+  const busyNow = ((status.live || {}).running || 0) > 0
+    || (status.gpus || []).some((g) => isnum(g.busy_pct) && g.busy_pct >= 25);
+  $("pcie").replaceChildren(...chains.map((c2) => pcieRow(c2, phist, busyNow)));
 }
 
 // -- one tick -------------------------------------------------------------------------------------

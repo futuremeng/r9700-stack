@@ -378,6 +378,22 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   denominators, the MTP-2-versus-MTP-3 reconciliation that keeps 158 from reading as a regression, and the snapshot
   note that the count grows while the statistics do not (1,400 rows: prompt p50 74,381; 1,417 rows: 74,066).
 
+- **Relaunched, and the PCIe panel now distinguishes a sagging link from a broken one** (243 checks;
+  [notes/incident-2026-11-03/README.md](notes/incident-2026-11-03/README.md)). The serve came back at ~03:09 and the
+  journal did its job: the Monitor reopened holding **100 rows from the dead launch**, newest first — the 242,882-token
+  request, `shared ×2.1` — with `preemptions_total` and `shared_decode` live on the new build. What the counters said
+  ten minutes in, with no user traffic yet: card2's chain **144 correctable** (`BadTLP 77`, Timeout 65 — 80 at the
+  switch upstream port `c4:00.0`, 62 at the root port `c0:03.1`), card4's 17, card1 and card3 **zero** — and
+  **card2's switch uplink has renegotiated to 16.0 GT/s ×16** at `c4:00.0` and `c0:03.1` while its endpoint and
+  downstream port still read 32.0. First sighting of that out-of-pattern condition on this box. Recorded without a
+  causal claim, alongside the two shape facts: AER counters are **per-boot** (the kernel zeroes them at enumeration, so
+  11-02's 39/12/0/0 is history, not a baseline), and the accrual happened during the launch, not during idle — 45 s
+  later at 3% busy the totals had not moved. The panel fix: `degraded` used to colour a chain red whatever the box was
+  doing, and both of this machine's idle states trip it — no context open means **D3hot and 2.5 GT/s on every chain**,
+  serve-up-but-idle means **Gen4 at 3% busy** — so the page now says which it is (`parked`, `idle`, or below-maximum
+  **while work is running**, the only one that turns to danger), with the alarm tied to `running > 0` or a card
+  ≥25% busy.
+
 - **Another death at 02:50 UTC on 11-03, under two minutes after the largest prompt this box has ever completed**
   ([notes/incident-2026-11-03/README.md](notes/incident-2026-11-03/README.md)). Boot at 02:50 ending a 15.7 h
   uptime; serve not restarted since. The journal carried the last minute: five completed requests with prompts of

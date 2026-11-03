@@ -351,6 +351,8 @@ class Fin:                                                    # a FinishedReques
         s.finish_reason = "stop"
 
 
+# (one run at a time: these journal paths are fixed names, so two suites in flight at once read each
+# other's half-written files and report a journal test failing that is not)
 jpath = Path("/tmp/r9700-webui-journal.jsonl")
 jpath.unlink(missing_ok=True)
 j1 = W.Journal(jpath, keep=5)
@@ -516,7 +518,7 @@ pnodevs.mkdir(parents=True)
 
 
 def pci_dev(parent, bdf, driver="pcieport", speed="32.0 GT/s PCIe", width="16",
-            max_speed="32.0 GT/s PCIe", max_width="16", aer=None):
+            max_speed="32.0 GT/s PCIe", max_width="16", aer=None, state="D0"):
     d = parent / bdf
     d.mkdir(parents=True, exist_ok=True)
     (d / "uevent").write_text(f"DRIVER={driver}\nPCI_SLOT_NAME=0000:{bdf}\n")
@@ -524,7 +526,7 @@ def pci_dev(parent, bdf, driver="pcieport", speed="32.0 GT/s PCIe", width="16",
     (d / "current_link_width").write_text(width + "\n")
     (d / "max_link_speed").write_text(max_speed + "\n")
     (d / "max_link_width").write_text(max_width + "\n")
-    (d / "power_state").write_text("D0\n")
+    (d / "power_state").write_text(state + "\n")
     for name, rows in (aer or {}).items():
         (d / name).write_text("".join(f"{k} {v}\n" for k, v in rows))
     (pnodevs / bdf).symlink_to(d, target_is_directory=True)     # sysfs links the same way, absolute here
@@ -535,14 +537,16 @@ AER_COR = [("RxErr", 0), ("BadTLP", 0), ("BadDLLP", 0), ("TOTAL_ERR_COR", 0)]
 AER_NF = [("DLP", 0), ("TOTAL_ERR_NONFATAL", 0)]
 AER_FT = [("DLP", 0), ("TOTAL_ERR_FATAL", 0)]
 root_a = pci_dev(fakepci / "devices" / "pci0000:c0", "0000:c0:03.1")          # root port, no AER files here
-up_a = pci_dev(root_a, "0000:c4:00.0", aer={"aer_dev_correctable":
+# chain A idles: the endpoint is runtime-suspended (D3hot) and its upstream port has dropped to Gen1, which
+# is what every chain on this box reads between launches (measured 2026-11-03 03:00, nothing running).
+up_a = pci_dev(root_a, "0000:c4:00.0", speed="2.5 GT/s PCIe", aer={"aer_dev_correctable":
                                             [("RxErr", 0), ("BadTLP", 24), ("NonFatalErr", 1),
                                              ("TOTAL_ERR_COR", 24)],
                                             "aer_dev_nonfatal": AER_NF, "aer_dev_fatal": AER_FT})
 down_a = pci_dev(up_a, "0000:c5:00.0", aer={"aer_dev_correctable":
                                             [("BadTLP", 7), ("TOTAL_ERR_COR", 7)],
                                             "aer_dev_nonfatal": AER_NF, "aer_dev_fatal": AER_FT})
-endpoint_a = pci_dev(down_a, "0000:c6:00.0", driver="amdgpu", aer={"aer_dev_correctable":
+endpoint_a = pci_dev(down_a, "0000:c6:00.0", driver="amdgpu", state="D3hot", aer={"aer_dev_correctable":
                                                                    [("BadTLP", 1), ("TOTAL_ERR_COR", 1)],
                                                                    "aer_dev_nonfatal": AER_NF,
                                                                    "aer_dev_fatal": AER_FT})
@@ -775,9 +779,17 @@ ck("multi-digit AER counts parse -- 24 BadTLP is exactly the number that matters
 ck("a bridge whose AER files are missing reads as unknown, never as zero",
    _ck_ch["c6:00.0"]["devices"][3]["cor"] is None, str(_ck_ch["c6:00.0"]["devices"][3]))
 ck("a link that came up x8 on an x16 lane is flagged, and the chain reports its weakest link",
-   _ck_ch["06:00.0"]["degraded"] and _ck_ch["06:00.0"]["width"] == 8 and not _ck_ch["c6:00.0"]["degraded"],
+   _ck_ch["06:00.0"]["degraded"] and _ck_ch["06:00.0"]["width"] == 8 and not _ck_ch["06:00.0"]["parked"],
    str([(c["bus"], c["width"], c["degraded"]) for c in _pc]))
+# Parked is not damaged. With the GPUs runtime-suspended the switch links drop to Gen1 and EVERY chain reads
+# "below maximum" -- the panel alarming on all four at an idle box is how a warning stops being read at all.
+ck("a suspended card is reported as parked, so an idle Gen1 link is not painted as a fault",
+   _ck_ch["c6:00.0"]["degraded"] and _ck_ch["c6:00.0"]["parked"] and not _ck_ch["06:00.0"]["parked"]
+   and _ck_ch["c6:00.0"]["devices"][0]["power_state"] == "D3hot",
+   str([(c["bus"], c["degraded"], c["parked"]) for c in _pc]))
 _d1, _last = W.aer_deltas(_pc, {})
+ck("the parked flag rides the panel rows, which is where the colour decision is made",
+   all("parked" in d for d in _d1), str([(d["bus"], d.get("parked")) for d in _d1]))
 ck("the first window has no delta to show, which is a gap rather than a zero",
    all(d["cor_d"] is None for d in _d1), str([(d["bus"], d["cor_d"]) for d in _d1]))
 (down_a / "aer_dev_correctable").write_text("BadTLP 12\nTOTAL_ERR_COR 12\n")      # five more, one bridge
@@ -992,6 +1004,10 @@ ck("a row shows how many requests shared its decode window, and the tooltip says
 # The clock basis, spelled out on the page instead of assumed: an engine row's wallclock excludes the queue, so
 # a queued request used to print a first token LATER than its whole wall-clock, and the note claimed the opposite
 # of what the number held.
+ck("idle link states are named instead of alarmed: parked (D3hot, Gen1) and sagging (D0, nothing served)",
+   "parked, max \u00d7" in monjs and "links sag while nothing runs: that is power management" in monjs
+   and "a link is below its maximum while work is running" in monjs
+   and "2.5 GT/s x16" in monjs and "16 GT/s on the c6 chain at 3% busy" in monjs)
 ck("wall-clock is summed per path, and the note says which sum it is",
    "of it queue" in monjs and "all in ${seconds(total)}" in monjs
    and "plus the queue wait before them" in monjs
@@ -1172,8 +1188,10 @@ ck("a page talking to a serve build too old to report events says so, instead of
 ck("an AER counter name is shown with its kind, so a correctable NonFatalErr is not read as uncorrectable",
    "function aerKind(" in monjs and '/#(nf|ft)$/.test(k)' in monjs and '<span class=\"q\">corr</span>' in monjs
    and 'class="unc"' in monjs)
-ck("a link below its maximum names the width it fell short of and turns to danger",
-   "(max \u00d7${maxw})" in monjs and 'c.degraded || unc ? "danger"' in monjs)
+ck("a link below its maximum names what it fell short of, and only work-in-progress turns it to danger",
+   'c.parked ? "parked, max \u00d7"' in monjs and 'sag ? "idle, max \u00d7" : "max \u00d7"' in monjs
+   and '(c.degraded && !c.parked && busyNow) || unc ? "danger"' in monjs
+   and "g.busy_pct >= 25" in monjs)
 # tools/watch-live.py is the page's questions asked from a terminal. Its one hard property is that it observes:
 # measuring someone else's concurrency by adding your own requests would contaminate exactly what is being read.
 _wl = open(os.path.join(ROOT, "tools", "watch-live.py")).read()

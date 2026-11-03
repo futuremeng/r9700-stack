@@ -601,7 +601,14 @@ def read_pcie(root):
                        "width": min(lows["width"]) if lows["width"] else None,
                        "degraded": any(_num(d["speed"]) and _num(d["max_speed"]) and d["speed"] < d["max_speed"]
                                        or _num(d["width"]) and _num(d["max_width"]) and d["width"] < d["max_width"]
-                                       for d in chain)})
+                                       for d in chain),
+                       # A parked card explains a slow link without anything being wrong: with the GPUs runtime-
+                       # power-suspended (D3hot -- the state this box sits in between launches) the switch
+                       # upstream and root-port links drop to Gen1, all four chains read "below maximum", and
+                       # the panel would scream danger at an idle box. Measured 2026-11-03 03:00: every chain
+                       # 2.5 GT/s x16 at the upstream port, endpoints in D3hot, nothing running.
+                       "parked": any((d.get("power_state") or "").upper().startswith("D3")
+                                     for d in chain if d["role"] == "endpoint")})
     return chains
 
 
@@ -635,7 +642,8 @@ def aer_deltas(chains, last, named=None, events=None, at=None):
     change always lands in the non-zero set."""
     out, nxt = [], {}
     for ch in chains:
-        d = {"bus": ch["bus"], "speed": ch["speed"], "width": ch["width"], "degraded": ch["degraded"]}
+        d = {"bus": ch["bus"], "speed": ch["speed"], "width": ch["width"], "degraded": ch["degraded"],
+             "parked": ch.get("parked")}
         reset = False
         for k in ("cor", "nonfatal", "fatal"):
             tot, acc = 0, 0

@@ -61,3 +61,45 @@ the interesting rows are gone from the serve's memory a minute after they finish
    `ipmitool fru print` for the two supplies, and the physical PDU/cord question.
 3. After a relaunch, the Monitor's PCIe panel gives timestamped AER events per chain, and
    `tools/watch-live.py` samples live traffic without adding any.
+
+## Relaunched at 03:00, and what the counters said ten minutes later (the box had been idle for 10 min)
+
+`MAXLEN=262144 NSEQ=32 NBT=8192 PREFIX_CACHE=0 WEBUI=same bash serve/native-flashnext.sh` — `/health` 200 by
+~03:09, no request sent by me. The journal did what it was built for: the Monitor came back holding **100 rows
+from the dead launch**, newest first, and the newest is the **242,882-token request** (`shared ×2.1`, first token
+35.3 s). `live.preemptions_total` is present on this build (0), and `shared_decode` rides every row.
+
+### The AER counters are per-boot, so yesterday's numbers are gone — and today's are worse than any launch on 11-02
+
+The kernel zeroes these at enumeration, so "39 / 12 / 0 / 0" from the end of 11-02 is history, not a baseline.
+Read at ~03:10, i.e. after the launch (110 GiB of weights, graph capture, warmup) and with **no user traffic yet**
+(`since.requests` = 0, cards at 3% busy, 16-20 W, sclk 41 MHz):
+
+| chain | correctable total | where | named | link |
+|---|---:|---|---|---|
+| **card2 `c6:00.0`** | **144** | `c4:00.0` upstream 80, `c0:03.1` root 62, endpoint + downstream 1 each | **BadTLP 77**, Timeout 65, NonFatalErr 1 | **16.0 GT/s ×16** at `c4:00.0` and `c0:03.1` |
+| **card4 `06:00.0`** | 17 | `04:00.0` upstream 11, `00:03.1` root 4, endpoint + downstream 1 each | BadTLP 9, BadDLLP 1, Timeout 5 | 32.0 GT/s ×16 |
+| card1 `c3:00.0` | 0 | — | — | 32.0 GT/s ×16 |
+| card3 `03:00.0` | 0 | — | — | 32.0 GT/s ×16 |
+
+**card2's switch uplink has renegotiated down to Gen4.** The endpoint (`c6:00.0`) and the switch downstream port
+still read 32.0 GT/s; the two ends of the **switch-uplink** — `c4:00.0` and the root port `c0:03.1` — read 16.0.
+So it is not the card's link that dropped, it is the hop that carries its traffic to the CPU, and it is the same
+port that accounted for most of 11-02's events. Per the out-of-pattern list written on 11-02, a link renegotiated
+below 32.0 GT/s ×16 **is** one of the things that was supposed to make us look — and this is the first time it has
+been seen.
+
+Still no claim of cause. Two things are observed together: a renegotiated uplink and 144 correctable events on
+that chain, and both appeared during a launch rather than during idle — 45 s later, with the cards parked at 3%
+busy, the totals had not moved (144 → 144, 17 → 17) and the sidecar logged no events.
+
+### The panel's own semantics, fixed while reading this
+
+`degraded` (link below its own maximum) used to colour a chain red whatever the box was doing, and both idle
+states of this machine trip it: with **no context open** the GPUs sit in **D3hot and every chain reads
+2.5 GT/s ×16** (measured 03:00, before the relaunch), and with **the serve up but nothing served** the links sit at
+Gen4 — 16 GT/s on the c6 chain at 3% busy. So the page now says which of the three it is looking at:
+`parked` (D3hot), `idle` (D0, nothing running — the alarm waits for work), or below-maximum **while work is
+running**, which is the only case that turns to danger. Tests cover all three. The in-serve Monitor on `:8080`
+predates this change and will keep colouring those chains red until the next restart; the `:8099` sidecar has it.
+
