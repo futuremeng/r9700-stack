@@ -497,3 +497,16 @@ serve is carrying real long-prefill traffic** (or a combined CPU+GPU+PCIe load).
 heartbeat log is fsynced every second, so if a future run ends in a reset, the last line is the run record —
 that is the whole reason the tool writes it.
 
+## The slot-6 chain is not the only one counting: card4's chain is actively moving while the box is idle
+
+```text
+05:0x  slot 8 / card4 chain: 56 -> 59 -> 63 correctable since boot, and the panel's event list is live:
+       04:51:38 04:00.0 BadTLP +1, 04:51:49 04:00.0 BadTLP +1, 04:52:06 04:00.0 BadTLP +1
+       with busy% a few percent and no request in flight
+```
+
+So two chains have correctable traffic, and the more active one right now is **card4 (slot 8)** — the one whose
+memory also runs hottest — not slot 6, which sits at 144 accumulated and quiet. Both are the chronic side
+condition, not the machine-check deaths. Reseating slot 6 is still the action that targets the downgraded
+uplink; it will not address a chain that trains at full speed and still racks up `BadTLP`.
+

@@ -67,7 +67,11 @@ function pcieRow(c, phist = [], busyNow = false) {
   // driver name: the grid has seven tracks, and a missing child shifts every later column into the wrong
   // track -- which reads as "the columns are ragged" and not as "this card is unnamed".
   d.innerHTML = `<b class="p-slot">${c.slot ? `slot ${esc(c.slot)}` : esc(c.card || short(c.bus))}</b>`
-    + `<span class="small p-drv">${c.slot ? `${esc(c.card || "unnamed")}` : "driver"}${c.slot && isnum(c.pos) ? ` \u00b7 #${c.pos}` : ""}</span>`
+    // Empty, never a placeholder word: an older build behind this page has no slot/pos in its payload, and a
+    // column that printed the literal word "driver" would read as data. The track stays, the cell stays blank.
+    // The driver name goes here only when the headline is a slot; with no slot in the payload the headline IS
+    // the driver name, and repeating it in the next column is the duplicate-column look people read as a bug.
+    + `<span class="small p-drv">${c.slot && c.card ? `${esc(c.card)}${isnum(c.pos) ? ` \u00b7 #${c.pos}` : ""}` : ""}</span>`
     + `<span class="chain p-chain">${devs.map((x) => short(x.bdf)).join(" → ")}</span>`
     + `<span class="link p-link" title="negotiated speed and width. A link below its maximum while the card
       is running is the thing to notice; a parked card (D3hot) idles its links on purpose">`

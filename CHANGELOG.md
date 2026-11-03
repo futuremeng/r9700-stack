@@ -392,6 +392,14 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   the operator command list, including `sel elist | grep -iE "chassis|power|reset"`, which lines the forced
   operations up against the 18 death times without any interpretation from me.
 
+- **Also: no duplicate identity column, and the two PCIe conditions separated further.** With an older in-serve
+  build (no `slot` in its payload) the row printed `card3 card3` — headline and driver column both the driver
+  name; the driver cell is now blank in that case rather than repeating itself. Meanwhile the Monitor's event list
+  caught card4's chain (**slot 8**) adding `BadTLP` at 04:51:38, :49 and :52 with no request in flight — its
+  correctables went 56 → 59 → 63 this boot, while slot 6's 144 sit quiet. So the reseat targets the downgraded
+  uplink in slot 6, and it will not address a chain that trains at full width and speed and still racks up
+  correctables.
+
 - **PCIe columns: seven named grid areas, sized from measured string widths, plus a header row.** The `slot`
   label had made each row emit seven children into a six-track grid — CSS grid stays silent and wraps the extra
   child onto a new line, so `+0 this window` dropped under the row and everything looked mis-sized. The row is now
