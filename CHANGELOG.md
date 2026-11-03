@@ -8,6 +8,13 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
 ## [Unreleased]
 
 ### Added
+- **A launch is no longer called "up" just because it answers `/health` -- its context is compared to the
+  checkpoint** (`setup.py`, `tests/test_setup.py`). After health, `setup.py` reads the context the launch is
+  actually running at (`/api/status` `meta.maxlen`, falling back to the command line in the launch log) and
+  compares it to the checkpoint's `max_position_embeddings`, printing the KV pool it measured and, on a
+  mismatch, the exact relaunch line. `/api/status`'s `config` block is **not** a source: it carries no
+  `max_model_len` field at all. What this would have caught: the launch below, healthy in 150 s at 1/8 of the
+  model's context.
 - **`journal-pcie.py` now names the thing that kills the box, and the box has a name for it too**
   (`tools/journal-pcie.py`, `host/offline-core.cpus`, `host/r9700-offline-core.sh`,
   `host/r9700-offline-core.service`, `tests/test_journal_mca.py`,
@@ -882,6 +889,16 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   tokens). It replaces the ad-hoc `/tmp` script that a reboot deleted mid-run.
 
 ### Fixed
+- **The native launcher's `MAXLEN` default was 32,768 on a box whose ledger p99 prompt is 245,792 tokens**
+  (`serve/native-flashnext.sh`, `README.md`, [notes/native-4xr9700.md](notes/native-4xr9700.md)). README's own
+  "what this box runs today" line has always spelled `MAXLEN=262144`; the launcher defaulted to 32,768; nothing
+  compared them, and the failure is silent -- every logged launch on this box came up at 32,768, including the
+  one `setup.py --launch` started with only `WEBUI=` given. The ledger says the cap was refusing four requests
+  in five (1,483 rows, max prompt 262,059 tokens, p99 245,792, 1,195 at or above 32,000). The default is now
+  262,144, the value the checkpoint declares (`text_config.max_position_embeddings`), and it costs nothing in
+  KV: measured 540,202 pool tokens and `Maximum concurrency for 262,144 tokens per request: 2.06x` against
+  497,588 at 32,768, because sizing is bounded by `NBT`, not `MAXLEN`. Verified live: 140,401-token prompt →
+  200 in 18.5 s; ~300k-token prompt → 400 in 0.8 s naming the 262,144 limit.
 - **`journal-pcie.py` had never counted the busiest AER source on this box.** Its BDF patterns matched `\d{2}`
   for the bus number, so every port whose bus is spelled with a hex letter -- `0000:c4:00.0`, the switch
   upstream port carrying slot 6, the one with 55 BadTLP in sysfs -- matched nothing, and the tool reported a
