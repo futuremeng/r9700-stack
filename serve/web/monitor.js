@@ -32,6 +32,9 @@ function aerKind(k) {
 // times in 90 idle samples and 0 times through an eight-stream burst, but ~12 times around two serve restarts.
 // Curves of either are flat and read as a broken panel; totals plus an event with a timestamp say all a curve
 // would. Byte traffic is not collectable here (the counters answer N/A, and the PMU needs root or /dev/kfd).
+// "12 min" / "1.4 h": the span since a chain last moved is read as a duration, never as a raw second count.
+const ago = (s2) => (s2 >= 5400 ? `${(s2 / 3600).toFixed(1)} h` : `${Math.round(s2 / 60)} min`);
+
 function pcieRow(c, phist = [], busyNow = false) {
   const short = (b) => String(b || "").replace(/^0000:/, "");
   const devs = c.devices || [];
@@ -72,16 +75,6 @@ function pcieRow(c, phist = [], busyNow = false) {
   const justNow = (win ?? 0) > 0 || !!last?.reset;
   const liveErrs = justNow || !last || rate === null || rate > 1;
   const sparse = !!cor && !unc && !justNow && rate !== null && rate <= 1;
-  const lastEv = (((status && status.pcie_events) || []).filter((e) => e.bus === c.bus) || [])[0] || null;
-  const ago = (s2) => (s2 >= 5400 ? `${(s2 / 3600).toFixed(1)} h` : `${Math.round(s2 / 60)} min`);
-  const info = [`${cor} correctable \u00b7 ${unc} uncorrectable since boot`,
-    cn.length ? `correctable: ${cn.join(" \u00b7 ")}` : "",
-    un.length ? `uncorrectable: ${un.join(" \u00b7 ")}` : "",
-    rate !== null ? `${rate.toFixed(2)} counters per minute over the ${span} min this sidecar has watched` : "",
-    quiet !== null ? `nothing has moved for ${ago(quiet)}` : "",
-    lastEv ? `last: ${esc(lastEv.bdf)} ${esc(lastEv.kind)} +${lastEv.n} at ${new Date(lastEv.at * 1000).toLocaleTimeString()}`
-           : "no counter moved while this page has been open",
-    "the numbers live here now -- this chain does have counters; only their prominence changed"].filter(Boolean).join("\n");
   // Colour means "look here": a link below its maximum, or an uncorrectable error, is the danger; correctable
   // errors are noted but not alarming on their own (they are correctable, and this box has them by the dozen).
   // Two idle states are measured on this box, and neither should be painted as a fault: with the GPUs
@@ -116,11 +109,13 @@ function pcieRow(c, phist = [], busyNow = false) {
     // The glyph is drawn, not typed: the page's body font ships a Latin subset, so U+24D8 came back from the
     // browser as a missing-glyph box (a "big question mark" at a glance) instead of an i-in-a-circle. An ASCII
     // `i` inside a CSS circle needs no font support at all.
-    + `<span class="cnt p-cnt">${sparse ? `<span class="p-info" title="${esc(info)}">i</span>`
+    // The count cell is a BUTTON in every state that has numbers: the detail has to be openable, and a `title`
+    // tooltip cannot be selected, cannot be copied, and disappears the moment the pointer leaves. A chain with
+    // nothing raised stays a plain dash -- there is nothing there to open.
+    + `<span class="cnt p-cnt">${sparse
+        ? `<button type="button" class="p-glyph" data-bus="${esc(c.bus)}" title="quiet \u2014 click to keep the numbers open">i</button>`
         : cor || unc
-        ? (cor && !liveErrs
-           ? `<span class="q">${cor} corr${unc ? ` · ${unc} uncorr` : ""}</span>`   // muted: idle
-           : `${cor} corr · ${unc} uncorr`)      // the header above already names the span this column counts
+        ? `<button type="button" class="p-info" data-bus="${esc(c.bus)}" title="click to keep this chain's full account open">${cor} corr${unc ? ` \u00b7 ${unc} uncorr` : ""}</button>`
         : `<span class="q" title="no AER counter on this chain has moved since boot">\u2014</span>`}</span>`
     + `<span class="who p-who" title="the non-zero AER counters on this chain: correctable ones are recovered by the
       hardware, the others are not">${sparse ? "" : cn.length ? `<span class="q">corr</span> ${cn.join(" · ")}` : ""}`
@@ -693,7 +688,99 @@ function renderStatus(s) {
     + `<span class="cnt p-cnt">errors since boot</span><span class="who p-who">which counters</span>`
     + `<span class="win p-win">this window</span>`;
   $("pcie").replaceChildren(phead, ...chains.map((c2) => pcieRow(c2, phist, busyNow)));
+  paintPcieDetail(s);
 }
+
+// The full account for one chain, as text. Labels are padded because the panel is `white-space:pre-wrap`, so
+// what the reader sees is what the reader copies -- no HTML structure between them and the numbers.
+function pcieDetailLines(c, phist = []) {
+  const short = (b) => String(b || "").replace(/^0000:/, "");
+  const devs = c.devices || [];
+  const sum = (k) => devs.reduce((a, x) => a + (x[k] || 0), 0);
+  const named = {};
+  devs.forEach((x) => Object.entries(x.notable || {}).forEach(([k, v]) => { named[k] = (named[k] || 0) + v; }));
+  const cn = Object.entries(named).filter(([k]) => !/#(nf|ft)$/.test(k))
+    .map(([k, v]) => `${k} ${v}`).sort((a, b) => parseInt(b.split(" ")[1]) - parseInt(a.split(" ")[1]));
+  const un = Object.entries(named).filter(([k]) => /#(nf|ft)$/.test(k))
+    .map(([k, v]) => `${aerKind(k).name} ${v} ${aerKind(k).kind}`);
+  const at = (s2) => (s2.chains || []).find((x) => x.bus === c.bus) || null;
+  const last = phist.length ? at(phist[phist.length - 1]) : null;
+  const cor = sum("cor"), unc = sum("nonfatal") + sum("fatal");
+  const quiet = isnum(last?.quiet_s) ? last.quiet_s : null;
+  const rate = isnum(last?.rate_per_min) ? last.rate_per_min : null;
+  const span = Math.max(1, Math.round((last?.window_s || 300) / 60));
+  const win = last && isnum(last.cor_d) ? last.cor_d + (last.nonfatal_d || 0) + (last.fatal_d || 0) : null;
+  const ev = (((status && status.pcie_events) || []).filter((e) => e.bus === c.bus) || [])[0] || null;
+  const L = [];
+  const put = (k, v) => { if (v) L.push(k.padEnd(14, " ") + v); };
+  put("chain", devs.map((x) => short(x.bdf)).join(" \u2192 ") + "  (gpu \u2192 root port)");
+  const mxs = Math.max(...devs.map((x) => x.max_speed || 0), 0), mxw = Math.max(...devs.map((x) => x.max_width || 0), 0);
+  put("link", (isnum(c.speed) ? `${c.speed.toFixed(1)} GT/s \u00d7${c.width}` : "\u2014")
+    + (mxs ? `   (each port here is rated ${mxs.toFixed(1)} GT/s \u00d7${mxw})` : "")
+    + (c.parked ? "  \u00b7 parked: D3hot, idling its links on purpose"
+       : c.degraded ? "  \u00b7 BELOW its rating" : "  \u00b7 at its rating"));
+  put("slot", `registered at ${c.slot_at || "?"} (${c.slot_role || "?"})`
+    + `  \u00b7 ${devs.length} port(s) on this chain, gpu function at the endpoint ${short(c.bus)}`);
+  put("since boot", `${cor} correctable \u00b7 ${unc} uncorrectable`
+    + (cor || unc ? ` \u00b7 across ${devs.filter((x) => (x.cor || x.nonfatal || x.fatal)).length} device(s) of ${devs.length} on this chain` : ""));
+  put("correctable", cn.join(" \u00b7 "));
+  put("uncorrectable", un.join(" \u00b7 "));
+  put("this window", win === null ? "no sidecar history for this chain" : `+${win} event(s)`);
+  put("rate", rate === null ? "unknown: this sidecar predates rate_per_min"
+      : `${rate.toFixed(2)} counters/min, measured over the ${span} min this serve has been up`);
+  put("quiet", quiet === null ? "unknown" : `nothing has moved for ${ago(quiet)}`);
+  put("last event", ev ? `${ev.bdf} ${ev.kind} +${ev.n} at ${new Date(ev.at * 1000).toLocaleTimeString()}`
+      : "no counter moved while this page has been open"
+      + " \u00b7 anything before the engine started belongs to aer-watch and journal-pcie.py, not to this page");
+  put("watched", `${phist.length} sidecar samples \u00b7 this page's clock starts after the weights are loaded`);
+  return L;
+}
+
+// A pinned block of real text, OUTSIDE the row container: #pcie is rebuilt every second, so anything inside it
+// (and any handler attached to it) is thrown away each tick. Pinned state lives in `detailBus`, and the click
+// is delegated to the container for the same reason.
+let detailBus = null, detBuilt = null, detLines = [], detHead = null, detCopy = null;
+function paintPcieDetail(st) {
+  const box = $("pcie-detail");
+  const ch = detailBus ? (((st && st.pcie) || []).find((x) => x.bus === detailBus) || null) : null;
+  if (!ch) { detBuilt = null; detLines = []; box.hidden = true; box.replaceChildren(); return; }
+  if (detBuilt !== detailBus) {                       // pinned to another chain: build once, then update
+    detBuilt = detailBus; detLines = []; detHead = document.createElement("b");
+    detCopy = document.createElement("button"); detCopy.type = "button"; detCopy.className = "chip";
+    detCopy.textContent = "Copy";
+    detCopy.onclick = () => navigator.clipboard.writeText(box.textContent)
+      .then(() => { detCopy.textContent = "Copied"; setTimeout(() => { detCopy.textContent = "Copy"; }, 1200); })
+      .catch(() => {});
+    const x = document.createElement("button"); x.type = "button"; x.className = "chip"; x.textContent = "Close";
+    x.onclick = () => { detailBus = null; paintPcieDetail(status); };
+    const head = document.createElement("div"); head.className = "pcie-detail-head";
+    head.append(detHead, detCopy, x, Object.assign(document.createElement("span"),
+                                                  { className: "small", textContent: " Esc closes \u00b7 the text is selectable" }));
+    box.replaceChildren(head);
+  }
+  detHead.textContent = `slot ${ch.slot ?? "-"} \u00b7 ${ch.card || "card?"} \u00b7 #${ch.pos ?? "?"} in slot order`
+    + ` \u00b7 gpu ${ch.bus}`;
+  box.hidden = false;
+  pcieDetailLines(ch, (st && st.pcie_history) || []).forEach((t, i) => {
+    let el = detLines[i];
+    if (!el) { el = document.createElement("div"); el.className = "pcie-detail-line"; box.append(el); detLines[i] = el; }
+    // Only what actually changed is written. Re-creating the block every second would destroy whatever text the
+    // reader has selected to copy -- and being able to copy it is the entire reason this block exists.
+    if (el.textContent !== t) el.textContent = t;
+  });
+}
+
+// The rows are rebuilt every tick, so the handler lives on the container; a handler attached to a row would
+// vanish with it. Clicking the same chain again unpins it.
+$("pcie").onclick = (e) => {
+  const b = e && e.target && e.target.closest ? e.target.closest("[data-bus]") : null;
+  if (!b || !b.dataset || !b.dataset.bus) return;
+  detailBus = detailBus === b.dataset.bus ? null : b.dataset.bus;
+  paintPcieDetail(status);
+};
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && detailBus) { detailBus = null; paintPcieDetail(status); }
+});
 
 // -- one tick -------------------------------------------------------------------------------------
 async function refresh() {

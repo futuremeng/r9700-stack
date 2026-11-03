@@ -342,6 +342,15 @@ long prefill is the KV pool filling (measured: 5.1 -> 32.1% in 3.0% steps for a 
 Cards whose sysfs answers `EBUSY` are shown as unread rather than as 0%. Where every number comes from, and what
 cannot be answered per request from outside: [notes/webui.md](notes/webui.md).
 
+The PCIe card follows activity, not history: a chain's error cell prints `45 corr · 0 uncorr` while counters are
+moving (this poll, or above one per minute over the trailing span), a drawn i-in-a-circle when the counters exist
+but the span rate is at or under 1/min, and a bare dash when nothing has moved since boot; uncorrectable counters
+and a link below its rating stay red whatever the rate. **The error cell is a button wherever there are numbers**:
+clicking pins a block of text under the grid - the chain, the negotiated link and each port's rating, where the
+slot is registered, totals since boot, the counter names, this window's delta, the rate over its span, how long
+the calm has run, and the last event - which you can select, `Copy`, and close with `Esc`. A tooltip cannot be
+copied, and this is text people paste into vendor reports.
+
 What the page's own JavaScript renders can be checked against a live serve without a browser: `node
 tests/render-monitor.mjs` runs `serve/web/monitor.js` unmodified in a stub DOM and prints the cards and the request
 rows. That covers the JS and the payloads it is fed (a per-request card borrowing an engine-wide number, a real 0

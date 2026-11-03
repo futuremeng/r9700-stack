@@ -528,7 +528,7 @@ rarity means. The rate says what is actually true: this chain adds a twelfth of 
 | `danger` | uncorrectable counters, or a link below maximum while the card works | unchanged, whatever the rate |
 | digits + colour | movement this poll, or `rate > 1/min` (weight load measured **11.3/min**), or rate unknown | `44 corr · 0 uncorr` |
 | `—` | no AER counter raised on this chain since boot (measured: slots 1 and 3, all day) | `—` |
-| **info glyph** | correctables exist, nothing this poll, `rate ≤ 1/min` (measured **0.081/min** under 47 requests at mean 104,160 tokens; **~0.2/min** was the 4–5-concurrent-stream measurement) | `ⓘ`; window cell `+0 · 0.33/min · quiet 4 min` |
+| **info glyph** | correctables exist, nothing this poll, `rate ≤ 1/min` (measured **0.081/min** under 47 requests at mean 104,160 tokens; **~0.2/min** was the 4–5-concurrent-stream measurement) | `a drawn i-in-a-circle`; window cell `+0 · 0.33/min · quiet 4 min` |
 
 **One limit the merged page cannot escape:** it starts with the engine, i.e. *after* the weights are up, so the
 launch window -- historically where the bursts are (11.3-45.7/min) -- is outside the page's own clock. Measured at
@@ -542,15 +542,51 @@ fact nobody needs reminded of; the tooltip still says what the dash means).
 **The icon is drawn, not typed.** It started as `i`-in-a-circle (U+24D8) and arrived in the browser as a
 missing-glyph box -- the body font ships a **Latin subset** (`fonts/outfit-latin-wght.woff2`) and nothing in the
 fallback chain has that code point, so the thing that was supposed to whisper "there is detail here" instead
-looked like a large question mark. It is now an ASCII `i` inside a CSS circle (`.p-info`: 1.3em, 1px
+looked like a large question mark. It is now an ASCII `i` inside a CSS circle (`.p-glyph`: 1.35em, 1px
 `--st-line` border, 50% radius, muted ink, `cursor:help`), which needs no font support. `tests/test_webui.py`
 now enumerates every code point the pages emit (escapes and literals, across js/css/html) and requires it to be
 Latin-1 or one of the punctuation marks these pages have rendered for weeks (em dash, curly quotes, ellipsis,
 arrow, almost-equal) -- a font gap is otherwise silent.
 
-Three guards: the glyph never applies while **uncorrectable** counters are nonzero; the numbers move into the
-`title` (totals, which counters, rate and its span, how long the calm has been, the last event's `bdf`/`kind`/
-time) so nothing is lost, only demoted; and an **unknown** rate (older sidecar, first sample) counts as loud.
+Three guards: the glyph never applies while **uncorrectable** counters are nonzero; the numbers are still
+there to read (see below) so nothing is lost, only demoted; and an **unknown** rate (older sidecar, first
+sample) counts as loud.
+
+## The account is a pinned block of text, not a tooltip
+
+The demotion put the numbers in a `title`. That worked for *seeing* and failed for *using*: a tooltip cannot be
+selected, cannot be copied, and disappears the moment the pointer leaves -- and this is the text people want to
+**paste into a report**. So the count cell is now a `<button>` in every state that has numbers (the sparse glyph,
+and the `45 corr · 0 uncorr` tally alike), and clicking it pins a block of real DOM text under the grid:
+
+```
+slot 6 · card2 · #3 in slot order · gpu c6:00.0            Copy  Close   Esc closes · the text is selectable
+chain         c6:00.0 → c5:00.0 → c4:00.0 → c0:03.1  (gpu → root port)
+link          32.0 GT/s ×16   (each port here is rated 32.0 GT/s ×16)  · at its rating
+slot          registered at 0000:c4:00.0 (upstream port)  · 4 port(s) on this chain, gpu function at …
+since boot    45 correctable · 0 uncorrectable · across 4 device(s) of 4 on this chain
+correctable   BadTLP 30 · Timeout 13 · NonFatalErr 3
+this window   +0 event(s)
+rate          0.00 counters/min, measured over the 5 min this serve has been up
+quiet         nothing has moved for 25 min
+last event    no counter moved while this page has been open · anything before the engine started belongs
+              to aer-watch and journal-pcie.py, not to this page
+watched       90 sidecar samples · this page's clock starts after the weights are loaded
+```
+
+That block is what `node tests/render-monitor.mjs` prints after driving the page's own click handler -- not a
+transcription of the code. Four decisions in it are load-bearing:
+
+* **The panel lives outside `#pcie`.** The rows are replaced wholesale every tick, so a pinned element inside
+  them would vanish a second after it opened; pinned state is one variable, `detailBus`.
+* **The click is delegated to `#pcie`** for the same reason -- a handler attached to a row is garbage with the
+  row. Clicking the same chain again unpins; `Esc` and a `Close` chip also unpin.
+* **A repaint writes only the lines whose text actually changed** (`if (el.textContent !== t)`), because
+  re-creating the block each second would destroy whatever text the reader has halfway selected. The harness
+  counts this: it marks the pinned lines, ticks the page again with nothing changed, and requires **0 writes**
+  (measured: `0 line write(s) across 10 pinned lines`).
+* **Labels are padded and the block is `white-space:pre-wrap`**, so what is aligned on screen is aligned in what
+  `Copy` puts on the clipboard -- no HTML between the reader and the numbers.
 
 So a chain is now **one row**: card, the device chain (`c6:00.0 → c5:00.0 → c4:00.0 → c0:03.1`), the negotiated
 link (`32.0 GT/s ×16`, and `(max ×16)` stated when it fell short), totals since boot (`36 corr · 0 uncorr`), the
@@ -925,7 +961,7 @@ asserted rather than written down: `tests/test_webui.py` parses the tracks out o
 `glyphs x 0.6 x font-size` with the sizes that file itself assigns (chain/who 11px mono, link/cnt/win 13px, slot
 at 16px), and fails if any track is narrower than its string or if the seven minimums plus the gaps exceed the
 breakpoint. **The widths moved because the content moved:** `cnt` shrank from 15em to 9.5em (a quiet chain is now a
-`ⓘ` or a `—`, and the redundant per-row "since boot" — the header says it — left the cell), and `win` grew from
+`a drawn i-in-a-circle` or a `—`, and the redundant per-row "since boot" — the header says it — left the cell), and `win` grew from
 8.4em to 14.5em because it now carries the rate and the calm span (`+0 · 0.00/min · quiet 7 min`).
 
 Minimum single-line row ≈ 1258px + 60px of gaps = **1318px**, so the single-line layout is claimed above 1360px:

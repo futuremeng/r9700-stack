@@ -160,6 +160,38 @@ if (misshapen.length) {
 } else {
   console.log(`\npcie grid: ${PROWS.length} rows, all filling the 7 areas (${AREAS.join(" ")})`);
 }
+// Pinning is a DELEGATED click on the rows container: the rows are rebuilt every second, so a handler -- or a
+// pinned panel -- attached to a row would not survive the tick. Drive it the way a click does, then read what
+// the panel says: those lines are the reason the detail is DOM text rather than a `title` tooltip.
+const PEL = byId.get("pcie"), DET = byId.get("pcie-detail");
+const click = (bus) => PEL.onclick && PEL.onclick({
+  target: { closest: (sel) => (sel === "[data-bus]" ? { dataset: { bus } } : null) } });
+if (!PEL.onclick) {
+  console.log("BAD  #pcie has no delegated click handler, so the count cell cannot be opened"); process.exitCode = 1;
+} else {
+  click("c6:00.0");
+  console.log(`\ndetail pinned on c6:00.0 -- hidden=${DET.hidden}, ${DET.children.length} blocks:`);
+  DET.children.forEach((c) => console.log("   |", c.textContent));
+  if (DET.hidden || DET.children.length < 5) {
+    console.log("BAD  pinning wrote no readable detail"); process.exitCode = 1;
+  }
+  // Count DOM writes on the pinned lines, then paint again with nothing changed. A panel that rewrote every
+  // line each second would destroy the text selection the reader is making -- which is the whole point of it.
+  let detWrites = 0;
+  const proto = Object.getPrototypeOf(new El("i"));
+  const dsc = Object.getOwnPropertyDescriptor(proto, "textContent");
+  Object.defineProperty(proto, "textContent", { configurable: true, get: dsc.get,
+    set(v) { if (this._det) detWrites++; dsc.set.call(this, v); } });
+  DET.children.forEach((c) => { if (c.className === "pcie-detail-line") c._det = true; });
+  const marked = DET.children.filter((c) => c._det).length;
+  await ctx.refresh();
+  console.log(`repainted with nothing changed: ${detWrites} line write(s) across ${marked} pinned lines`);
+  if (detWrites > 0) { console.log("BAD  a pinned panel rewrites lines it did not have to"); process.exitCode = 1; }
+  click("c6:00.0");
+  console.log(`clicked the same chain again -> hidden=${DET.hidden}, children=${DET.children.length}`);
+  if (!DET.hidden) { console.log("BAD  unpinning left the panel open"); process.exitCode = 1; }
+  Object.defineProperty(proto, "textContent", dsc);
+}
 console.log(`\nPCIe note: ${t("pcie-note")}`);
 for (const k of (byId.get("pcie") || new El()).children.slice(0, 4))
   console.log("  " + k.textContent.replace(/\s+/g, " ").trim());

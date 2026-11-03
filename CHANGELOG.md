@@ -1,4 +1,16 @@
 # Changelog
+## A chain's error account is now a pinned block of text you can select and copy
+
+The demotion had moved the numbers into a `title`, which serves seeing and not using: a tooltip cannot be
+selected, cannot be copied, and is gone when the pointer leaves -- and this is text that ends up pasted into a
+report. The count cell is a button in every state that has numbers; clicking pins a `pre-wrap` block of real
+text below the grid (chain, rated link, where the slot is registered, totals, counter names, window delta,
+rate over its span, how long the calm has run, the last event, and how much of it the page itself watched).
+The panel sits outside `#pcie` and the click is delegated to `#pcie`, because the rows are replaced every
+second. A repaint writes only lines whose text changed -- the render harness now proves it by marking the
+pinned lines, ticking again with nothing changed and requiring 0 writes (measured 0 across 10 lines).
+`Esc`/`Close` unpin; `Copy` puts the same aligned text on the clipboard.
+
 ## The sparse-state icon was a missing-glyph box, not an i-in-a-circle
 
 It was typed as U+24D8, but the page's body font ships a Latin subset and no fallback on the box has that code

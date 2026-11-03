@@ -107,9 +107,22 @@ section{margin:18px 0}
 /* The sparse state: a chain that adds at most one AER counter a minute over the trailing hour shows an info
    glyph instead of its numbers, with the numbers in the title. Small and muted, but it must still read as
    "there is something here", so it keeps the muted ink rather than vanishing. */
-.p-info{display:inline-flex;align-items:center;justify-content:center;width:1.3em;height:1.3em;
+/* The count cell is a button in every state that has numbers (see pcieRow): the account has to be openable, and
+   a `title` tooltip cannot be selected or copied. The circle is DRAWN, not typed -- the body font ships a Latin
+   subset, so a code point like U+24D8 came back as the browser's missing-glyph box. */
+.p-info,.p-glyph{font:inherit;color:inherit;background:none;border:0;padding:0;margin:0;cursor:pointer;
+  text-align:right;text-decoration:underline dotted var(--st-line);text-underline-offset:3px}
+.p-glyph{display:inline-flex;align-items:center;justify-content:center;width:1.35em;height:1.35em;
   border:1px solid var(--st-line);border-radius:50%;color:var(--st-ink-muted);
-  font:italic 11px/1 var(--st-font-mono);cursor:help;text-align:center}
+  font:italic 11px/1 var(--st-font-mono);text-decoration:none}
+.p-info:hover,.p-glyph:hover{color:var(--st-ink);border-color:var(--st-ink-muted)}
+.pcie-detail{margin-top:8px;padding:9px 12px;border:1px solid var(--st-line);border-radius:var(--st-r-sm);
+  background:var(--st-bg);white-space:pre-wrap;user-select:text}
+.pcie-detail[hidden]{display:none}                /* display:none beats [hidden] -- guard it, as everywhere */
+.pcie-detail-head{display:flex;gap:8px;align-items:baseline;margin-bottom:6px;
+  font:600 12px var(--st-font);white-space:normal}
+.pcie-detail-head .chip{cursor:pointer}
+.pcie-detail-line{font:12px/1.6 var(--st-font-mono);color:var(--st-ink-soft)}
 /* The header carries the same areas, so it is a legend for the columns rather than a caption above a table
    whose widths nobody promised. */
 .pcie-head{border-top:0;padding:0 0 3px;font-size:var(--st-fs-xs);color:var(--st-ink-muted);

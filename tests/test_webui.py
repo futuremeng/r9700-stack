@@ -1065,17 +1065,17 @@ ck("the rate, not the time since the last event, decides: a one-per-few-minutes 
    "traffic, a 300 s gate would leave the row coloured forever")
 ck("the window cell carries the rate and the calm span once it is sparse",
    '/min${quiet !== null ? ` \u00b7 quiet' in _m2 or "/min${quiet !== null ? ` · quiet" in _m2)
-ck("the numbers survive in the glyph's title rather than being dropped",
-   r"correctable \u00b7 ${unc} uncorrectable since boot" in _m2
-   and "counters per minute over the ${span} min" in _m2
-   and "const info = [" in _m2 and 'title="${esc(info)}"' in _m2)
+ck("the demoted numbers survive in pinned panel text, not in a tooltip that cannot be selected or copied",
+   'put("since boot", `${cor} correctable' in _m2 and 'put("rate",' in _m2
+   and 'put("correctable", cn.join' in _m2 and "function pcieDetailLines" in _m2)
 ck("a chain with nothing raised is a dash, not the sentence 'no errors since boot'",
    "no errors" not in _js["monitor.js"]
    and 'title="no AER counter on this chain has moved since boot">' in _js["monitor.js"]
    and r">\u2014</span>" in _js["monitor.js"], "the dash must be there as a dash, with the meaning in the title")
-ck("the sparse glyph has its own style with a defined variable",
-   ".p-info{" in open(os.path.join(ROOT, "serve", "web", "monitor.css")).read()
-   and "var(--st-fs-sm)" in open(os.path.join(ROOT, "serve", "web", "monitor.css")).read())
+_mc = open(os.path.join(ROOT, "serve", "web", "monitor.css")).read()
+ck("the sparse icon and the panel have styles, built from tokens this page defines",
+   ".p-glyph{" in _mc and "var(--st-line)" in _mc and "var(--st-ink-muted)" in _mc
+   and ".pcie-detail{" in _mc and "var(--st-r-sm)" in _mc)
 ck("the quiet row says how long it has been quiet instead of pretending there is nothing there",
    re.search(r"\+0 · \$\{rate[^}]*\}/min", _m2) and re.search(r"quiet \$\{ago\(quiet\)\}", _m2)
    and "const ago = (s2) =>" in _m2)
@@ -1674,10 +1674,30 @@ _cps = {int(m.group(1), 16) for m in re.finditer(r"\\u([0-9a-fA-F]{4})", _weball
 _SAFE = {cp for cp in _cps if cp <= 0x00FF} | {0x2014, 0x201C, 0x201D, 0x2026, 0x2192, 0x2248}
 ck("every glyph the pages emit is one their fonts actually have (U+24D8 came back as a missing-glyph box)",
    _cps <= _SAFE, sorted("U+%04X" % cp for cp in _cps - _SAFE))
-ck("the sparse icon is drawn -- a CSS circle around an ASCII i -- not typed as a font glyph",
-   'class="p-info" title="${esc(info)}">i<' in _mjs2 and r"\u24d8" not in _mjs2
-   and chr(0x24d8) not in _mjs2      # the escape and the literal; a comment may still name the code point
-   and ".p-info{" in _css and "border-radius:50%" in _css and "cursor:help" in _css)
+
+# The detail has to be DOM text, not a `title` tooltip. A tooltip cannot be selected, cannot be copied, and
+# vanishes when the pointer leaves -- which is exactly what the reader asked for after the demotion moved the
+# numbers into one. So the count cell is a button, the panel is outside #pcie (which is rebuilt every tick), and
+# the click is delegated to the container for the same reason.
+ck("a chain's account opens as real text (the cell is a button, the panel is outside the rebuilt rows)",
+   'class="p-glyph" data-bus="${esc(c.bus)}"' in _mjs2 and 'class="p-info" data-bus="${esc(c.bus)}"' in _mjs2
+   and "pcie-detail" in _mjs2 and 'id="pcie-detail"' in open(os.path.join(ROOT, "serve", "web", "monitor.html")).read()
+   and "paintPcieDetail(s);" in _mjs2,
+   "the count cell, the container outside #pcie, and the call that keeps a pinned panel live each tick")
+ck("the click is delegated to the row container, and Esc closes what opened",
+   '$("pcie").onclick = (e) =>' in _mjs2 and 'closest("[data-bus]")' in _mjs2
+   and 'e.key === "Escape" && detailBus' in _mjs2,
+   "#pcie is replaced wholesale every second: a handler on a row would be garbage within the tick")
+ck("the panel is selectable, monospace-aligned text (pre-wrap, so what is seen is what is copied)",
+   ".pcie-detail{" in _css and "white-space:pre-wrap" in _css and "user-select:text" in _css
+   and ".pcie-detail[hidden]{display:none}" in _css
+   and "k.padEnd(14," in _mjs2,
+   "[hidden] needs the display:none guard because .pcie-detail sets display itself")
+ck("a pinned panel only writes the lines that changed (re-writing them would destroy the selection)",
+   "if (el.textContent !== t) el.textContent = t;" in _mjs2)
+ck("the sparse icon is still drawn, not typed (a Latin-subset font has no U+24D8)",
+   'class="p-glyph"' in _mjs2 and ">i</button>" in _mjs2 and r"\u24d8" not in _mjs2
+   and chr(0x24d8) not in _mjs2 and ".p-glyph{" in _css and "border-radius:50%" in _css)
 _narrow = [x for x in _css.split("@media")[1:] if "pcie-row" in x and "grid-template-areas" in x]
 ck("both narrow layouts keep all seven areas, spread over more lines (a dropped column is dropped information)",
    len(_narrow) >= 2 and all(sorted(set(x.split("grid-template-areas:")[1].split("}")[0]
