@@ -379,8 +379,9 @@ these numbers runs.
    existence** -- its hash, whether the copy `kernels/build.sh` wrote and the copy the launcher loads through
    `R9K_LIB` agree, and whether either is older than the newest `.hip` it is built from (step 1a's build line
    ends in a `cp`, and a build that skipped it is a build that never reached the serve). What it does with a
-   launch: a native launch starts inside a `tmux` session so it survives the terminal that ran setup (a plain
-   detached start died with it once, mid-load, with no error line -- see the `--no-tmux` help text), it refuses
+   launch: a native launch starts inside a `tmux` session -- it has to outlive the ssh session that started it by
+   four minutes of loading, there is a pane to attach to while it loads, and the session is then the liveness
+   probe (`--no-tmux` keeps the bare detached start and gives all three up), it refuses
    up front when the GPUs are still held by a stopped launch or when `OFFLOAD_GB` wants more pinned memory than
    this box's `RLIMIT_MEMLOCK` allows, it notices a launch that died instead of waiting out the 7-minute
    `/health` window, and it prints that log's last lines plus the `STOP=1` that clears the ranks. Each run

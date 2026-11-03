@@ -15,7 +15,16 @@ yesterday's fault:
   replayed  -- the record was recovered at boot from the previous crash (its TIME predates this boot)
 
 Read-only: `journalctl --list-boots` and `journalctl -k -b <id>` for the last N boots (default 10).
+
+    tools/journal-pcie.py            # the last 10 boots
+    tools/journal-pcie.py 4          # the last 4
+    tools/journal-pcie.py --boots 4  # same thing
+
+The count used to be `int(sys.argv[1])`, so `--boots 4` -- the flag this file's own header suggests -- raised a
+ValueError traceback. Asking for the last few boots is exactly the moment a tool has to answer instead of
+throwing: it is run while something is already wrong.
 """
+import argparse
 import re
 import subprocess
 import sys
@@ -99,7 +108,12 @@ def scan(bid):
 
 
 def main():
-    n = int(sys.argv[1]) if len(sys.argv) > 1 else 10
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("n", nargs="?", type=int, default=None,
+                    help="how many boots to read (default 10); --boots is the same option")
+    ap.add_argument("--boots", type=int, default=None, help=argparse.SUPPRESS)
+    a = ap.parse_args()
+    n = a.n or a.boots or 10
     for bid, start, end in boots(n):
         live, names, replayed, mce, blocks, first, last = scan(bid)
         print(f"\nboot {bid}  {start} -> {end}   (kernel lines to {last})")

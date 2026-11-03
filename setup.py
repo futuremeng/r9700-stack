@@ -779,10 +779,12 @@ def sidecar(cfg):
 def start_tmux(sess, script, env, rest, log):
     """The native launch inside a tmux session.
 
-    Why not just Popen(start_new_session=True): measured 2026-11-03, a launch started that way still died with
-    the terminal (here, the tool call) that ran setup -- the log stops mid multiproc_executor at exactly
-    12288 bytes, no error line, no shutdown record in the request journal, four cards back to 0.056 GiB. A
-    tmux session is outside that process tree, and it leaves a pane to attach to while the engine loads.
+    Why a session rather than a bare detached child: the serve has to outlive the ssh session that started it by
+    four minutes of loading, there is a pane to attach to while it loads, and after it is up the session IS the
+    liveness probe (`tmux has-session`) -- `--no-tmux` loses all three. Not because a death was ever traced to
+    the caller's tree: the 2026-11-03 launch whose log stops mid multiproc_executor at exactly 12288 bytes was
+    the machine itself going down (that boot's kernel lines end 36 s after the launch, and the boot after it
+    replays a machine-check record timed 05:47:12) -- see notes/launch-methodology.md §3 and tools/journal-pcie.py.
     The environment is passed with -e because the tmux server has its own (see launcher_env)."""
     cmd = f'bash {shlex.quote(str(script))} {" ".join(shlex.quote(a) for a in rest)} 2>&1 | tee -a {shlex.quote(log)}'
     args = ["tmux", "new-session", "-d", "-s", sess]
@@ -795,8 +797,9 @@ def launch_status():
     """Report the launch this script last started and whether it is still up.
 
     A launch that dies during the load leaves no shutdown record, no /metrics and no process anyone told us
-    about, so without this record the only way to find out is reading a log by hand -- which is how the dead
-    2026-11-03 launch was found. The record is written at the start of a launch, so a death is visible even
+    about, so without this record the only way to find out is reading a log by hand -- which is how the 2026-11-03
+    launch was found stopped mid-load (that one turned out to be the machine going down, not the launcher: see
+    notes/launch-methodology.md §3). The record is written at the start of a launch, so a death is visible even
     when setup.py itself never saw it."""
     prev = state_read("launch.json")
     if not prev:
@@ -888,8 +891,8 @@ def launch(cfg, have="docker"):
             with open(log, "ab") as fh:
                 proc = subprocess.Popen(["bash", str(script), *cfg.rest], stdout=fh, stderr=subprocess.STDOUT,
                                         env=env, start_new_session=True)
-            note("no tmux here (or --no-tmux): detached, but still inside this machine's session tree, so a "
-                 "hard-killed terminal takes the launch with it -- that is what killed the 2026-11-03 launch")
+            note("no tmux here (or --no-tmux): detached only -- no pane to attach to while the engine loads, and "
+                 "no session left to ask whether the launch is still up (notes/launch-methodology.md)")
     else:
         subprocess.call(["bash", str(ROOT / "serve" / pick), *cfg.rest], env=env)
     state_write("launch.json", {"recipe": pick, "webui": WEBUI_ENV[cfg.webui], "port": port, "path": have,
@@ -944,8 +947,8 @@ def main():
     grp.add_argument("--no-docker", dest="docker", action="store_const", const="no",
                      help="keep the container path off without asking (the default answer, said out loud)")
     ap.add_argument("--no-tmux", action="store_true",
-                    help="start a native launch detached without tmux: it then dies with the session that ran "
-                         "setup, which is how the 2026-11-03 launch was lost")
+                    help="start a native launch detached without tmux: no pane to watch while it loads and no "
+                         "session to ask afterwards whether the launch is still up")
     cfg, extra = ap.parse_known_args()
     cfg.rest = extra
     cfg.webui = cfg.webui or ("off" if cfg.no_webui else "side")

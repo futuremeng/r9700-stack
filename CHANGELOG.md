@@ -65,11 +65,28 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
     last 14 lines of the log with `\r` folded -- vLLM's progress bars rewrite a line with carriage returns, so a
     raw `tail` of a dead engine is one 12 KB line -- and the `STOP=1 bash serve/<name>` that actually clears ranks
     which ignore `SIGTERM`.
-  - **A native launch starts inside tmux** (`--no-tmux` for the old detached start). `start_new_session=True` puts
-    it in a new session, which is not the same as being outside the caller's process tree: that is what killed the
-    launch above. The environment is handed over with `tmux new-session -e`, built from the `${NAME:-...}` uses in
-    the launch script itself, because tmux starts its session in the *tmux server's* environment -- `VENV=`, `GPUS=`,
-    `TP=`, `OFFLOAD_GB=` and every `R9K_*` would otherwise have vanished at the boundary, silently.
+  - **A native launch starts inside tmux** (`--no-tmux` for the bare detached start): the serve has to outlive the
+    ssh session that started it by four minutes of loading, there is a pane to attach to while it loads, and
+    afterwards the session is the liveness probe (`tmux has-session`) the health loop polls alongside `/health`.
+    The environment is handed over with `tmux new-session -e`, built from the `${NAME:-...}` uses in the launch
+    script itself, because tmux starts its session in the *tmux server's* environment -- `VENV=`, `GPUS=`, `TP=`,
+    `OFFLOAD_GB=` and every `R9K_*` would otherwise have vanished at the boundary, silently.
+  - **The attribution above was wrong, and correcting it matters more than the fix.** `journalctl --list-boots`
+    ends the boot that ran that launch (`6a51a2dc`) with kernel lines at **05:45:19** -- 36 s after the launch, inside
+    the weight load -- and the boot that follows opens by **replaying a machine-check record timed 05:47:12**
+    (`mce: [Hardware Error]: … SOCKET 0 APIC 82`). That boot died too at 05:57:43, and the one now running opened at
+    06:00:23 replaying an MCE timed **06:00:06**: three resets in 18 minutes, one landing exactly on the moment the
+    launch stopped writing. Nothing here ever showed a `start_new_session` child dying with its caller's tree, and
+    the earlier text said it had. What the death *is* evidence about is the box: `tools/journal-pcie.py`
+    (live vs **replayed** records) is the instrument for a crash, because the deaths are CPU-side machine checks
+    through HEST/GHES, not link errors -- the boot in which that launch stopped had **one** AER event, so "0
+    uncorrectable on the link" says nothing about them. What the AER counters *do* track, measured the same morning:
+    on boot `5ec7e479` **all 53 AER event lines fall in 06:02-06:05**, the window in which the serve read 120.3 GB of
+    weights out of host RAM and pushed them across slot 6's riser (`c4:00.0` counting BadTLP as the link's receiver,
+    root port `c0:03.1` counting the Timeout as its transmitter), against an idle rate of **+1 event in 5.7 min**.
+    Totals are per boot and zeroed at enumeration on a box that reboots by itself, so `tools/reseat-check.py
+    --save/--diff` reports the in-boot rate; and `journal-pcie.py`'s argument parsing, which raised a traceback on
+    `--boots 4`, is now argparse with a usage line.
   - **State, so the next run reports drift instead of existence.** `.r9700-state/native.json` keeps the venv's
     vllm/torch/hip and the `libr9k.so` hash; `.r9700-state/launch.json` keeps the recipe, port, log and session of
     the launch last started, and gets `died_at` when it stops. Step 8 now answers "did my launch die, and which log

@@ -2379,11 +2379,14 @@ prompt_tokens 29,984-29,994. Re-drawing the figure from that committed poll is a
 
 Six of its behaviours were wrong, and all six showed up in one bring-up on this box rather than in review. The
 trigger is the kind of failure that reads as "slow boot" from outside: a `--launch native-flashnext.sh` started
-by `setup.py` (`Popen(..., start_new_session=True)`) died mid-load at 05:45 UTC — log stops at **exactly 12288
-bytes** on the `multiproc_executor ... world_size=4` line, no error, no traceback, **no shutdown record in
-`~/logs/requests-8080.jsonl`**, four cards back to 0.056 GiB, nothing in `dmesg`. `setup.py` then polled
-`/health` for the full 420 s *after the process was gone* and printed one line about it. A new session is not the
-same as being outside the caller's process tree; that distinction is now
+by `setup.py` stopped writing mid-load at 05:45 UTC — log cut at **exactly 12288 bytes** on the
+`multiproc_executor ... world_size=4` line, no error, no traceback, **no shutdown record in
+`~/logs/requests-8080.jsonl`**, four cards back to 0.056 GiB. `setup.py` then polled `/health` for the full 420 s
+*after the process was gone* and printed one line about it. **What killed it was the machine, not the launch:**
+`journalctl --list-boots` ends that boot (`6a51a2dc`) with kernel lines at 05:45:19 — 36 s after the launch — and
+the boot after it replays a machine-check record timed **05:47:12**; that boot died too at 05:57:43, and this one
+opened at 06:00:23 replaying an MCE timed **06:00:06**. Three resets in 18 minutes. A new session was never shown
+to be the problem, and saying so here at first was wrong; the reasoning and the corrected instrument are in
 [notes/launch-methodology.md](notes/launch-methodology.md) §3, the note the CHANGELOG had been citing without
 existing.
 
