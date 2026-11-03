@@ -125,6 +125,11 @@ for (const [k, v] of Object.entries({
 
 // The card grids are built by gpuCard / pcieCard in common.js and monitor.js: print what the first card of
 // each actually says, because a panel that renders an empty div looks identical to a panel with nothing to show.
+// The chassis mapping line is the one place the two numbering systems have to agree out loud, so it is printed
+// like any other piece of copy: if the join (slot at the switch upstream port, card by BDF) breaks, the line
+// goes blank or wrong rather than throwing.
+console.log("\nslot map:", t("slot-map").replace(/\s+/g, " ").trim());
+
 for (const [label, id] of [["cards", "gpus"], ["pcie", "pcie"]]) {
   const kids = (byId.get(id) || new El()).children;
   console.log(`\n${label} cards rendered: ${kids.length}`);

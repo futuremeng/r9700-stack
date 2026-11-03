@@ -753,7 +753,21 @@ ck("healthz", status == 200 and body["ok"] and body["upstream_reachable"], str(b
 status, s = call(port, "/api/status")
 ck("status reads the engine", s["reachable"] and s["model_name"] == "Qwen3.8", str(s)[:120])
 ck("status carries config labels", s["config"].get("block_size") == "1088")
-ck("status carries cards", len(s["gpus"]) == 3 and s["gpus"][0]["busy_pct"] == 87, str(len(s.get("gpus", []))))
+ck("status carries cards, delivered in chassis order and numbered",
+   len(s["gpus"]) == 3 and any(g["card"] == "card0" and g["busy_pct"] == 87 for g in s["gpus"])
+   and [g["pos"] for g in s["gpus"]] == [1, 2, 3]          # 1-based, and the delivered order IS slot order
+   and s["gpus"] == sorted(s["gpus"], key=lambda g: W.slot_key(g.get("slot"), g.get("bus"))),
+   str([(g.get("pos"), g.get("slot"), g.get("card")) for g in s.get("gpus", [])])[:160])
+# Was `s["gpus"][0]["busy_pct"] == 87`: position-dependent, and the order is no longer enumeration order.
+# A card's identity is its bus/card name -- which is also how the history ring is aligned.
+ck("the payload carries the chassis mapping the page prints (slot, driver name, GPU bus, chain)",
+   [(m["pos"], m["slot"], m["bus"]) for m in s.get("slot_map", [])] == [(1, "6", "c6:00.0"), (2, "8", "06:00.0")]
+   and all(m["chain"] for m in s["slot_map"])
+   and s["slot_map"][0]["slot_at"] == "0000:c4:00.0"
+   # `card` may be None when the DRM tree and the PCI tree do not overlap (as in these fixtures): the page
+   # prints "unnamed" rather than inventing a driver name for a chain it cannot match.
+   and all(m["card"] is None or isinstance(m["card"], str) for m in s["slot_map"]),
+   str(s.get("slot_map"))[:200])
 # Per-card history, so a card's busy% and VRAM are waveforms like everything else. Two things the test
 # insists on: the ring is capped (a page open for a day must not grow the payload), and a card that refuses
 # to answer (the fixture's card5, standing in for EBUSY on a live box) is a null in the ring, not a 0 --
@@ -1444,6 +1458,35 @@ ck("the reseat check reads sysfs only (no requests to the serve) and carries its
    "urlopen(" not in rsrc
    and all(k in rsrc for k in ("--save", "--diff", "read_pcie", "MISSING after", "per boot",
                                  "different physical slot")))
+
+# --------------------------------------------- chassis order: the panel's order is the machine's order
+ck("slot ordering is numeric and handles sub-slots, where string order would put slot 10 second",
+   sorted(["10", "2", "1-1", "1", "3"], key=lambda x: W.slot_key(x, "")) == ["1", "1-1", "2", "3", "10"])
+ck("a card the firmware names no slot for sorts last, never into the middle of chassis order",
+   [x["slot"] for x in sorted([{"slot": None, "bus": "99:00.0"}, {"slot": "10", "bus": "a:0"},
+                               {"slot": "2", "bus": "c:0"}], key=lambda x: W.slot_key(x["slot"], x["bus"]))]
+   == ["2", "10", None])
+
+_g = [{"card": "card1", "bus": "c3:00.0", "slot": "3"}, {"card": "card2", "bus": "c6:00.0", "slot": "6"},
+      {"card": "card3", "bus": "03:00.0", "slot": "1"}, {"card": "card4", "bus": "06:00.0", "slot": "8"}]
+_c = [{"bus": x["bus"], "card": x["card"], "slot": x["slot"], "devices": [{"bdf": "0000:x", "max_speed": 32.0,
+       "cor": 0, "nonfatal": 0, "fatal": 0}]} for x in _g]
+W.order_by_slot(_g, _c)
+ck("order_by_slot numbers the cards in chassis order and keeps the driver name as the key",
+   [(x["pos"], x["slot"], x["card"]) for x in _g] == [(1, "1", "card3"), (2, "3", "card1"),
+                                                      (3, "6", "card2"), (4, "8", "card4")]
+   and [(x["pos"], x["slot"]) for x in _c] == [(1, "1"), (2, "3"), (3, "6"), (4, "8")])
+ck("the chain ceiling is a speed, not the truthiness helper's bool (the page prints it as a number)",
+   all(isinstance(x["devices"][0]["max_speed"], float) for x in _c)
+   and max([(d.get("max_speed") or 0) for d in _c[0]["devices"]]) == 32.0)
+ck("gpu_poll orders both lists and publishes the mapping, and both pages read the same order",
+   "order_by_slot(self.gpus, chains)" in wsrc and 'payload["slot_map"] = self.slotmap' in wsrc
+   and "slot_map=self.slotmap" in wsrc)
+ck("the page leads with the slot and says which numbering it is using",
+   all(k in mjs for k in ("slot-map", "chassis order", "firmware slot numbers, not driver names",
+                          "slot ${esc(c.slot)}"))
+   and all(k in open(os.path.join(ROOT, "serve/web/common.js")).read()
+           for k in ("slot ${g.slot}", "#${g.pos} in slot order")))
 
 print("PASS" if fail == 0 else "FAIL", f"({fail} failing)")
 sys.exit(1 if fail else 0)

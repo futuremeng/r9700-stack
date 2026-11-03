@@ -392,6 +392,17 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   the operator command list, including `sel elist | grep -iE "chassis|power|reset"`, which lines the forced
   operations up against the 18 death times without any interpretation from me.
 
+- **Cards and PCIe rows are now listed in physical-slot order, and numbered `#1..#N` by it**
+  ([notes/webui.md](notes/webui.md)). The headline of each card is its firmware slot (`slot 6`) with the driver
+  name underneath (`card2 · #3 in slot order · PCI c6:00.0`), the chain rows lead with the slot too, and a new
+  mapping line prints both numbering systems in one row: `#1 slot 1 card3 GPU 03:00.0 32.0 GT/s ×16 · #3 slot 6
+  card2 GPU c6:00.0 16.0 GT/s ×16 of 32, 144 corr …`. Three rules hold it together: `cardN` is kept as the join
+  key for the history ring (renaming it would mis-plot every waveform), slot sorting is **numeric** (this box's
+  table is `1, 1-1, 2, 3, 3-1, 4, 6, 8, 10` — string order puts slot 10 second), and the order is computed once
+  on the server so the API, Cards, PCIe and About cannot mean different things by "#3". Found while doing it: a
+  test that asserted `gpus[0]["busy_pct"] == 87` was quietly depending on enumeration order, and `max_speed` was
+  built from `_num()`, which answers "is this a number" — the field the page prints as a speed held `True`.
+
 - **The Monitor now names where each card physically is, and what to do when the serve is gone**
 - **The core-65 hammer finished clean: 45 min, 1.32 trillion integer iterations, no new kernel record.**
   `tools/core-hammer.c` ran its full 2,700 s pinned to CPU 17/113 (physical core 65) and exited normally at

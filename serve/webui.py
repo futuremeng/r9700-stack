@@ -610,6 +610,38 @@ def slot_of(devs, slots):
     return None, None, None
 
 
+def slot_key(slot, bus):
+    """Sort key that means *chassis order*, not string order.
+
+    Firmware slot names are not zero-padded and can carry a sub-slot: this box's table reads
+    `1, 1-1, 2, 3, 3-1, 4, 6, 8, 10`. Plain `sorted()` puts slot 10 second, which is exactly the kind of
+    quietly-wrong ordering a panel can carry for months. A card whose firmware names no slot sorts last, by
+    BDF, so an unnamed card never jumps ahead of the chassis order a person is reading off the machine.
+    """
+    name = str(slot if slot is not None else "")
+    m = re.match(r"(\d+)(?:[-.](\d+))?", name)
+    if not m:
+        return (1, 10 ** 9, 10 ** 9, name, str(bus or ""))
+    return (0, int(m.group(1)), int(m.group(2) or 0), name, str(bus or ""))
+
+
+def order_by_slot(gpus, chains):
+    """Put the cards and their PCIe chains in physical-slot order and number them (1-based `pos`).
+
+    Both identities stay on screen: `cardN` is the driver's name and the key that aligns sensor history with
+    the chain rows, so it cannot simply be replaced; `pos` is the position in chassis order, which lets the
+    page say "chassis #3" without inventing a third name for the same card. Sorting here rather than in the
+    page means the API and every consumer (Cards panel, PCIe rows, About page) agree on one order.
+    """
+    gpus.sort(key=lambda g: slot_key(g.get("slot"), g.get("bus")))
+    for i, g in enumerate(gpus, 1):
+        g["pos"] = i
+    chains.sort(key=lambda c: slot_key(c.get("slot"), c.get("bus")))
+    for i, ch in enumerate(chains, 1):
+        ch["pos"] = i
+    return gpus, chains
+
+
 def read_pcie(root):
     """One chain per GPU endpoint: the card, then each bridge above it, with link state and AER counters."""
     # /sys/bus/pci/slots and /sys/bus/pci/devices are siblings, so the cfg's devices root gives us both.
@@ -1373,6 +1405,7 @@ class Hub:
         self.health, self.engine, self.host = None, {}, read_host()
         # What ended the PREVIOUS boot (ACPI BERT, replayed by the kernel at startup) and how many such
         # records the journal still holds. Read once: neither can change while this process is alive.
+        self.slotmap = []
         self.death, self.deaths = read_death(), None
         self.launch = None                                  # set below, once the meta file has been read
         self.key_needed, self.smi_error = False, None
@@ -1456,6 +1489,7 @@ class Hub:
                     payload["last_death"] = self.death
                     payload["deaths"] = self.deaths
                     payload["port"] = self.cfg.get("port")
+                    payload["slot_map"] = self.slotmap
                     payload["launch"] = self.launch
                     self.prev, self.prev_t, self.status = cur, t0, payload
                 self.hist.append({"at": t0, "gen_tok_s": payload["rate"].get("generation_tok_s"),
@@ -1472,6 +1506,7 @@ class Hub:
                                        key_needed=self.key_needed or bool(self.cfg["key"]),
                                        gpus=self.gpus, gpus_history=list(self.gpuhist),
                                        pcie=self.pcie, pcie_history=list(self.pciehist),
+                                       slot_map=self.slotmap,
                                        pcie_events=list(self.pcie_events),
                                        models=self.models, engine=self.engine,
                                        meta=self.meta, requests_kept=self.kept())
@@ -1530,6 +1565,20 @@ class Hub:
                 slot_by_ep = {ch["bus"]: ch.get("slot") for ch in chains if ch.get("slot")}
                 for g in self.gpus:
                     g["slot"] = slot_by_ep.get((g.get("bus") or "").replace("0000:", "").lower())
+                # Chassis order, and the one-line answer to "which GPU is which PCIe address in which slot".
+                order_by_slot(self.gpus, chains)
+                self.slotmap = [{"pos": ch.get("pos"), "slot": ch.get("slot"), "card": ch.get("card"),
+                                 "bus": ch["bus"], "speed": ch.get("speed"), "width": ch.get("width"),
+                                 # The ceiling this chain could run at, so the line can say "16.0 of 32.0".
+                                 # Not `_num(...)`: that helper answers "is this a number" (a bool), and using it
+                                 # here put `True` in the field the page prints as a speed.
+                                 "max_speed": max([(d.get("max_speed") or 0) for d in ch["devices"]]) or None,
+                                 "chain": [d["bdf"] for d in ch["devices"]],
+                                 "slot_at": ch.get("slot_at"),
+                                 "corr": sum((d.get("cor") or 0) for d in ch["devices"]),
+                                 "uncorr": sum((d.get("nonfatal") or 0) + (d.get("fatal") or 0)
+                                               for d in ch["devices"])}
+                                for ch in chains]
                 new_events = []
                 deltas, self.aer_last = aer_deltas(chains, self.aer_last, self.aer_named, new_events,
                                                    time.time())

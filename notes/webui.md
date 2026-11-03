@@ -774,3 +774,38 @@ bookmarked — went away with it. Three changes:
   `const where` sat **below** its use in `gpuCard` (TDZ `ReferenceError`, swallowed by the page's `try/catch`,
   blanking the whole Cards panel). The harness prints `PAGE NOTICE` and fails the suite for exactly this class.
 
+## The panel is ordered by the chassis, not by enumeration (2026-11-03)
+
+Decision: **the Cards grid, the PCIe rows and the mapping line are all in physical-slot order**, numbered
+`#1..#N` by `pos`. Reason is operational, not cosmetic — the instruction that came out of the incident was
+"reseat slot 6", and a panel that lists cards in `amdgpu` enumeration order makes someone translate that
+translation by hand while standing at an open machine.
+
+Three rules the implementation keeps:
+
+- **`cardN` is never dropped.** It is the key the sensor history ring and the chain rows are aligned by
+  (`at = (s) => …c.bus === g.bus || c.card === g.card`), and renaming it mid-session would mis-plot every
+  waveform. So the headline is the slot and the driver name sits underneath:
+  `slot 6` / `card2 · #3 in slot order · PCI c6:00.0`.
+- **Slot sorting is numeric.** The firmware's names on this box are `1, 1-1, 2, 3, 3-1, 4, 6, 8, 10`; plain
+  string sort puts slot 10 second. `slot_key()` parses the number and any sub-slot, and a card with no slot
+  name sorts **last** rather than into the middle of chassis order.
+- **One order, computed on the server.** `order_by_slot()` runs in `gpu_poll` over both lists, so the API, the
+  Cards panel, the PCIe panel and the About page cannot disagree about what "#3" means.
+
+The mapping line spells both numbering systems out in one row:
+
+```text
+chassis order  firmware slot numbers, not driver names
+  #1 slot 1  card3  GPU 03:00.0  32.0 GT/s ×16
+  #2 slot 3  card1  GPU c3:00.0  32.0 GT/s ×16
+  #3 slot 6  card2  GPU c6:00.0  16.0 GT/s ×16 of 32   144 corr
+  #4 slot 8  card4  GPU 06:00.0  32.0 GT/s ×16          63 corr
+  the slot is registered at the card's switch upstream port (01:00.0 for slot 1), not at the GPU endpoint
+```
+
+Two bugs found on the way, both the kind that hide: a test asserted `s["gpus"][0]["busy_pct"] == 87`, which was
+only true while the order *was* enumeration order (now it identifies cards by name, as the history ring already
+does), and `max_speed` was built with webui's `_num()` helper, which answers "is this a number" — so the field
+the page prints as a speed carried `True`.
+

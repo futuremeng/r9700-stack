@@ -148,7 +148,11 @@ function gpuCard(g, ghist = [], i = 0) {
   // chassis; the BDF is the card's identity and the slot number (from the firmware's own table, via sysfs, no
   // root needed) is where the machine says it is plugged in. On this box: card3 slot 1, card1 slot 3,
   // card2 slot 6, card4 slot 8. A board whose firmware describes no slots simply shows no slot.
-  const where = [g.bus && `PCI ${g.bus}`, g.slot && `slot ${g.slot}`].filter(Boolean).join(" \u00b7 ");
+  // The headline is the physical slot, because that is the identity that survives a reseat and the one a person
+  // standing at the machine can point at. `cardN` is kept underneath: it is the name the driver assigned this
+  // boot, and it is also the key the sensor history and the PCIe rows are aligned by, so it is never dropped --
+  // and `#N in slot order` says where this card sits in the order the panel is showing them.
+  const where = [g.pos && `#${g.pos} in slot order`, g.bus && `PCI ${g.bus}`].filter(Boolean).join(" \u00b7 ");
 
   const unread = (g.unread || []).length
     ? `<div class="muted small">not readable from sysfs: ${(g.unread || []).join(", ")}</div>` : "";
@@ -182,8 +186,8 @@ function gpuCard(g, ghist = [], i = 0) {
       + "It is the sensor that separates these four cards, so read it both ways: against its limit and against "
       + "its neighbours"]);
   }
-  d.innerHTML = `<b>${g.name || g.card}</b>`
-    + `<span class="small">${[g.card, where].filter(Boolean).join(" · ")}</span>`
+  d.innerHTML = `<b>${g.slot ? `slot ${g.slot}` : (g.name || g.card)}</b>`
+    + `<span class="small">${[g.card, where].filter(Boolean).join(" \u00b7 ")}</span>`
     + `<div class="pct">${busy}</div>`
     + rows.map(([lab, title]) => `<div class="sparkrow"><span title="${title}">${lab}</span>`
         + `<div class="sparkline spark--gpu"></div></div>`).join("")

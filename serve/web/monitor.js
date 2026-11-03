@@ -60,11 +60,12 @@ function pcieRow(c, phist = [], busyNow = false) {
   // alarm that fires at an idle box is the alarm that stops being read.
   const sag = c.degraded && !c.parked && !busyNow;
   d.dataset.tone = (c.degraded && !c.parked && busyNow) || unc ? "danger" : cor ? "warn" : "";
-  d.innerHTML = `<b>${c.card || short(c.bus)}</b>`
-    // The slot number is what a person at an open chassis can act on. `card2` is a name the driver assigned
-    // this boot and says nothing about the machine; the BDF is the card's identity and the slot, from the
-    // firmware's own table (/sys/bus/pci/slots), is where it is plugged in. This box: slots 1, 3, 6, 8.
-    + (c.slot ? `<span class="chip" title="physical slot, from the firmware's slot table">slot ${esc(c.slot)}</span>` : "")
+  // Slot first, same as the card grid: the row is now findable by the number written on the chassis. `cardN`
+  // (the driver's per-boot name) and the BDF path follow, because the BDF is what the kernel's own AER and
+  // GHES records use, and the two have to be readable side by side to act on either.
+  d.innerHTML = `<b>${c.slot ? `slot ${esc(c.slot)}` : (c.card || short(c.bus))}</b>`
+    + (c.slot ? `<span class="small">${esc(c.card || "unnamed")}`
+      + `${isnum(c.pos) ? ` \u00b7 #${c.pos}` : ""}</span>` : "")
     + `<span class="chain">${devs.map((x) => short(x.bdf)).join(" → ")}</span>`
     + `<span class="link" title="negotiated speed and width. A link below its maximum while the card
       is running is the thing to notice; a parked card (D3hot) idles its links on purpose">`
@@ -557,6 +558,34 @@ function renderStatus(s) {
     + " · busy % is coarse here (refused with nothing running, 0 stopped, ~25 idle, 46-100 under load)"
     + (s.smi ? " + rocm-smi" : "") + (quiet ? ` · ${quiet} refusing sysfs reads` : "")
     : "no amdgpu sysfs readable here");
+  // The mapping line, in the machine's own numbering. Two naming systems are in play on this box and the page
+  // has to keep both straight: the firmware's slot numbers (1, 3, 6, 8 here) and amdgpu's enumeration names
+  // (card1..card4), which are per-boot and can name a different card after a reseat. Reading them off in slot
+  // order is what makes "reseat slot 6" an instruction someone can actually follow.
+  const sm = $("slot-map");
+  const smap = s.slot_map || [];
+  if (sm) {
+    sm.hidden = !smap.length;
+    sm.innerHTML = smap.length
+      ? `chassis order <span class="q">firmware slot numbers, not driver names</span> \u00b7 `
+        + smap.map((m) => {
+            const link = isnum(m.speed) ? `${fmt(m.speed, 1)} GT/s \u00d7${m.width}` : "link unreadable";
+            const short_ = isnum(m.max_speed) && isnum(m.speed) && m.speed < m.max_speed
+              ? ` <span class="q">of ${fmt(m.max_speed, 0)}</span>` : "";
+            const errs = (m.corr || m.uncorr)
+              ? ` <span class="q">${m.corr} corr${m.uncorr ? ` / ${m.uncorr} uncorr` : ""}</span>` : "";
+            return `<b>#${m.pos} slot ${esc(m.slot != null ? m.slot : "?")}</b>`
+              + ` <span class="q">${esc(m.card || "unnamed")}</span> GPU <code>${esc(m.bus)}</code>`
+              + ` ${link}${short_}${errs}`;
+          }).join(" \u00b7 ")
+        + ` <span class="q">the slot is registered at the card's switch upstream port`
+        + ` (${esc((smap[0].slot_at || "n/a").replace(/^0000:/, ""))} for slot ${esc(smap[0].slot != null ? smap[0].slot : "?")}),`
+        + ` not at the GPU endpoint</span>`
+      : "";
+    sm.dataset.tone = smap.some((m) => isnum(m.max_speed) && isnum(m.speed) && m.speed < m.max_speed) ? "warn" : "";
+  }
+  // Cards and chains are ordered by the server (chassis order), not by enumeration order -- one order across
+  // Cards, PCIe rows and the About page, so a card number never means a different position in two places.
   $("gpus").replaceChildren(...gpus.map((g) => gpuCard(g, s.gpus_history || [])));
   // The PCIe chains get their own panel because they answer a different question than the cards: the cards say
   // what the GPU did, this says whether the wire under it was clean. The wording has to stay honest about scope:

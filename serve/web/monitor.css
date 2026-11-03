@@ -115,3 +115,10 @@ section{margin:18px 0}
 .down-line code { font-size: 12px; word-break: break-all; }
 .pcie-row .chip { font-size: 11px; opacity: .85; border: 1px solid #444; border-radius: 3px;
                   padding: 0 5px; margin: 0 6px; }
+
+/* The chassis mapping line: two numbering systems on one row, so it is set smaller than the values and the
+   firmware-side facts are the muted parts. */
+.slot-map { margin: 2px 0 8px; line-height: 1.55; }
+.slot-map code { font-size: 11px; }
+.slot-map b { font-weight: 600; }
+.slot-map[data-tone="warn"] { border-left: 3px solid #d9a441; padding-left: 8px; }
