@@ -379,6 +379,19 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   note that the count grows while the statistics do not (1,400 rows: prompt p50 74,381; 1,417 rows: 74,066).
 
 
+- **Checked the "did the forced power cycle write those records?" question at register level, and corrected two of
+  my own claims** ([notes/incident-2026-11-03/README.md](notes/incident-2026-11-03/README.md)). All 18 records pulled
+  per boot: constant `MISC`/`PPIN`/`SYND`, bank 5, `fatal/ProcessorError`, core 65 — but a **different `ADDR` every
+  time**, the failing **SMT thread alternating** (IPID `...29a00` on CPU 17 vs `...29b00` on CPU 113) and two
+  MCi_STATUS variants, which is what 18 distinct faults look like and not what one stale bank re-logged after a warm
+  reset looks like. Also corrected: the record `TIME` 17–18 s before boot does **not** tie a record to its own death
+  (POST-time either way) — the register content is the discriminator. And: "the AER counters don't move at idle" was
+  wrong — this boot carries **42 APEI GHES `corrected` / `PcieError` records**, including two with no request in
+  flight, and the Monitor's 1 Hz differ caught the 04:06:08 one. Why the BMC shows nothing: the SEL is full
+  (`0 bytes free`), and this BIOS reports PCIe errors to GHES/WHEA whether or not it mirrors them into SEL — hence
+  the operator command list, including `sel elist | grep -iE "chassis|power|reset"`, which lines the forced
+  operations up against the 18 death times without any interpretation from me.
+
 - **`tools/core-hammer.c`: a test that can settle the CPU-vs-platform question in one sitting**
   ([notes/incident-2026-11-03/README.md](notes/incident-2026-11-03/README.md)). Pins the whole process to a sibling
   pair (default `17,113` = physical core 65, verified by `taskset -pc` and `ps -L`) and drives eight independent
