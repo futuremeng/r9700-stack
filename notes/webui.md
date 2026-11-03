@@ -529,6 +529,12 @@ rarity means. The rate says what is actually true: this chain adds a twelfth of 
 | digits + colour | movement this poll, or `rate > 1/min` (weight load measured **11.3/min**), or rate unknown | `44 corr · 0 uncorr` |
 | **info glyph** | correctables exist, nothing this poll, `rate ≤ 1/min` (measured **0.081/min** under 47 requests at mean 104,160 tokens; **~0.2/min** was the 4–5-concurrent-stream measurement) | `ⓘ`; window cell `+0 · 0.33/min · quiet 4 min` |
 
+**One limit the merged page cannot escape:** it starts with the engine, i.e. *after* the weights are up, so the
+launch window -- historically where the bursts are (11.3-45.7/min) -- is outside the page's own clock. Measured at
+the 11:05 restart: the page reported `events [], rate 0/min` while an external `reseat-check.py` diff over the
+same window counted +4 correctables on the slot-8 chain. So the page's glyph is honest about what it watched, and
+the launch window belongs to the external watchers (`tools/reseat-check.py --save/--diff`, `tools/brief.py`).
+
 Three guards: the glyph never applies while **uncorrectable** counters are nonzero; the numbers move into the
 `title` (totals, which counters, rate and its span, how long the calm has been, the last event's `bdf`/`kind`/
 time) so nothing is lost, only demoted; and an **unknown** rate (older sidecar, first sample) counts as loud.

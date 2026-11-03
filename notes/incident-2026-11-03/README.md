@@ -979,3 +979,31 @@ weight load can do 0), but not random in time either (events land inside large p
 
 It also means the monitor's quiet state is the expected normal, not a suspicious one: after a restart the chain
 sits quiet until something happens again.
+
+## The 11:05 restart moved the counters on slot 8, not slot 6 -- same board, same signature
+
+Third serve restart of the day (11:05:23 stop, up 155 s later). Baseline saved at 11:05:34, diffed at 11:08:45:
+
+| chain | board | correctables over the 3.2 min load window | counters that moved |
+|---|---|--:|---|
+| slot 8 `06:00.0` | **the expansion board** | **0 → 4 (+4, 1.25/min)** | `04:00.0 BadTLP 1`, root port `00:03.1 Timeout 1`, `NonFatalErr 1` on the card's two switch ports |
+| slot 6 `c6:00.0` | **the same expansion board** | 45 → 45 (+0) | (unchanged; `c4:00.0 BadTLP 30`, `c0:03.1 Timeout 13` since boot) |
+| slot 3 `c3:00.0` | other | 0 → 0 | none |
+| slot 1 `03:00.0` | other | 0 → 0 | none |
+
+All four chains at 32.0 GT/s x16 at the time of the diff; while the serve was stopped the root ports sat at
+2.5 GT/s (the parked-card idle state already documented in `notes/webui.md`) and returned on their own.
+
+Why this matters for the RMA target: the signature on slot 8 is the **same shape** as slot 6's -- BadTLP at the
+card's own upstream port, Timeout at the root port above it -- on a third card (`0xD9B246D580E8CD73`, which has
+never left slot 8), in a window where slot 6 produced nothing. Put next to the swap experiment, today's samples
+read: slot 6 with card A 45.7/min, slot 6 with card B 11.5/min and later 0/min, card A moved to slot 3 exactly 0,
+and slot 8 with card C 4 in one window. **The errors follow the board that carries slots 6 and 8, not the slot
+and not the card**, and which of its two slots moves varies from window to window. That does not change what to
+replace -- it is the same part, and arguably makes the case cleaner: it is not one connector, it is that board,
+seen misbehaving on both of its slots with three different cards.
+
+It also bounds what the monitor's new rate can show: the merged page starts with the engine, after the weights
+are up, so **launch-window errors are never witnessed by the page's own clock** (this restart: page events `[]`,
+`rate 0/min`, while the external diff above counted +4). The external watchers cover that window --
+`tools/reseat-check.py --save/--diff` around the restart, `tools/brief.py` in the 5-minute `aer-watch` loop.
