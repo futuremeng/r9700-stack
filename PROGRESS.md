@@ -1,4 +1,4 @@
-## 2026-11-03 (14:34-14:55): merge upstream v0.4.0 (187 commits) and make the fp8 QSA main KV this box's default
+## 2026-11-03 (14:34-15:20): merge upstream v0.4.0 (187 commits), make the fp8 QSA main KV this box's default, and put the release page back on the generator
 
 * Saved the fp8 work as `b13d63d` first, then `git fetch upstream` + merge: **187 upstream commits, 54 local, and only
   two conflicts** -- `kernels/build.sh` and `README.md`. Upstream had touched neither `r9k_qsa.hip` nor
@@ -33,6 +33,22 @@
   upstream's 187 commits did not move this model's numerics or its throughput. Box left running this launch.
 * Not done: nothing pushed (origin/master is still where it was; the merge and the fp8 work are 2 commits + this one
   on local `master`), and the generated release page still awaits v0.4.0's numbers.
+
+* **README data and figure carry v0.4.0 now** (15:05-15:20). The numbers: the four-cards block and the 262k table name
+  the fp8 launch's absolutes rather than a percentage -- aggregate **1,792** at @32x1200 (1,789 / 1,796 against bf16's
+  1,817 / 1,831), prefill **2,614 / 7,886 / 9,702 / 8,965 / 8,282 tok/s at 485 / 1,976 / 7,792 / 31,131 / 77,733
+  tokens**, pools 1,009,899 against 540,202. The figure: the hero points at the generated page again. `docs/summary-page.py`
+  gained the fourth model (DeepSeek-V4.1-Flash: 552B MoE, EXL3 2.9 bpw, TP8+EP, 158 tok/s on code at its "-500 MHz"
+  gate), a per-bar gate label, a 2x2 card grid (`COLS` -- four names at 19 px do not fit four across at 276 px, so two
+  across at 421), the fp8 facts column, and a **version-free output name**: `docs/r9700-stack-page.svg` (+ a
+  2000 x 2532 PNG for zooming), because the version is data in the script and the README's pointer should not age at
+  the next tag. It draws 1000 x 1266 with no OVERFLOW. Why that page and not the tag's own graphic is measured, not
+  asserted: upstream's hand-drawn `docs/r9700-stack-v0.4.0.svg` floors at 11.0 px on a 1200-unit canvas = **9.0 px**
+  rendered in github's ~980 px column; this one floors at 14 px on 1000. `tests/test_readme.py` checks that shape --
+  the README carries exactly one release-page figure, the caption names the script, every numeric text on the page
+  appears in the README (7 today), four bars each naming its gate, re-draw reproduces the committed file text for text,
+  PNG at least 2x the canvas -- and keeps the hand-drawn page's measurement in the output. `docs/summary-image.py`'s
+  cross-reference to the old filename fixed. `test_readme.py` and `test_lockup.py` PASS.
 
 ## 2026-11-03 (afternoon): fp8 QSA main KV -- the writer was already fp8, so the whole ask is three guards and one read path
 

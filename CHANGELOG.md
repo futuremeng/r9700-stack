@@ -1,4 +1,30 @@
 # Changelog
+## fp8 e4m3 main KV is this box's default, upstream v0.4.0 is merged, and the release page is generated again
+
+- **Main KV in e4m3 for Qwen4Exp QSA** (`R9K_QSA_KVF8` + `compat/qsa_kvfp8.py` + a KV-element-typed `r9k_qsa.hip`):
+  the writer already stored fp8, so this is three guards and a read path. Twelve full-attention layers quantized, the
+  QSA side/indexer caches left bf16 so top-k selection does not move. Measured in paired arms on this box: KV pool
+  540,202 → **1,009,899-1,021,931 tokens**, 262,144-token concurrency **2.06x → 3.85-3.90x**, attention block
+  448 → 880; GSM8K no-think 800 @8 95.6 → **96.0 %**, HumanEval 164 96.95 → **98.17 %** (McNemar b=2, c=0, p=0.50),
+  needle intact cold and warm to 250,078 tokens, prefill flat to ±0.5 % out to 77,733 tokens. Aggregate decode is
+  1.5-4 % lower and the counter says why: accepted tokens per draft 1.604/1.620 → 1.549, i.e. 2.61 → 2.55 tokens a
+  step, while the kernel alone measures 7-11 % faster (`tests/test_qsa_fp8.py`). `serve/native-flashnext.sh`
+  defaults it, refuses the `R9K_QSA_KVF8=0` + fp8 `KVDTYPE` combination that stock QSA would raise on, and prints the
+  bf16 rollback. `notes/kv-fp8-qsa.md` is the whole account, including what was not measured.
+- **A build.sh landmine**: the export check's `nm -D "$OUT" | grep -q` under `set -o pipefail` fails a **clean**
+  build at random (`grep -q` closes the pipe, nm dies of SIGPIPE 141, the pipeline reads as MISSING EXPORT) -- two
+  builds killed in a row on different symbols, the same loop passing seconds later on the same file. Now one `nm`
+  pass into a temp.
+- **upstream/master (v0.4.0) merged**: 187 commits, DeepSeek-V4.1-Flash EXL3, the ar8 8-rank collective, dsv41
+  kernels. Two conflicts (`kernels/build.sh`, `README.md`); nothing of the QSA work was touched upstream. Gates on
+  the merged launch: `probe32` in band, needle 8/8 to 250,078, accepted per draft 1.548 against 1.549 pre-merge.
+- **The README's release figure is generated again** (`docs/summary-page.py` → `docs/r9700-stack-page.svg`, version
+  in the script rather than the filename): four model cards on a 2x2 grid, a fourth decode bar for DeepSeek at its
+  "-500 MHz" gate, and the native box's fp8 numbers. The tag's own hand-drawn `docs/r9700-stack-v0.4.0.svg` stays in
+  the tree and out of the README, measured reason: 11.0 px type on a 1200-unit canvas renders 9.0 px in github's
+  ~980 px column, against this page's 14 px floor on 1000. `tests/test_readme.py` now derives the number check from
+  the figure instead of a hardcoded list: every numeric text on the page has to appear in the README.
+
 ## After the slot cleaning, the slot-8 path runs ~45x worse per unit of traffic
 
 Normalising by the prompt tokens the serve actually moved (5.29M over 100 requests / 26 min): slot 8 = 18.5

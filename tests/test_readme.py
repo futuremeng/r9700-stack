@@ -191,31 +191,25 @@ if lock:
     ck("the wordmark is outlined, not left to the reader's fonts", "<text" not in light.read_text())
 
 SUMPAGE = ROOT / "docs" / "summary-page.py"
-# Two release figures live here, and only one of them is in the README. Upstream's v0.4.0 ships a hand-authored
-# 1200-unit page in the hero; this fork's generated page (docs/summary-page.py -> docs/r9700-stack-v0.3.8.svg,
-# 1000-unit canvas, numbers as data, OVERFLOW on stderr) stays in the tree and still has to re-draw clean, but it
-# is NOT in the README: headed v0.3.8 and missing the DeepSeek row, putting it under "What v0.4.0 gives you" is the
-# exact drift this generator exists to prevent. The open step is feeding it v0.4.0's numbers, not deleting it.
-HERO = re.search(r"!\[[^\]]*\]\((docs/r9700-stack-v0\.4\.0\.svg)\)", README)
-ck("the README's release figure is the current release's, used once",
-   bool(HERO) and README.count("r9700-stack-v0.4.0.svg") == 1 and "r9700-stack-v0.3.8.svg" not in README,
-   f"{README.count('r9700-stack-v0.4.0.svg')} v0.4.0 uses, {README.count('r9700-stack-v0.3.8.svg')} v0.3.8")
-UP = (ROOT / "docs" / "r9700-stack-v0.4.0.svg").read_text()
-ck("and it names the release the README says is current",
-   'r9700-stack v0.4.0' in UP and '**v0.4.0**' in README)
-upw, uph = re.search(r'<svg[^>]*width="(\d+)" height="(\d+)"', UP).groups()
-upfs = [float(x) for x in re.findall(r'font-size="([\d.]+)"', UP)]
-ck("and every number on the hand-drawn page is a number the README also carries",
-   all(t.strip() in README for t in re.findall(r">([^<>]+)</text>", UP)
-       if re.fullmatch(r"[\d,\.]+", t.strip())))
-ck(f"its smallest type is measured, not assumed: {min(upfs)} px on a {upw}-unit canvas renders {min(upfs) * 980 / int(upw):.1f} px in github's ~980 px column",
-   True, "the fork's generator exists because of this")
+PAGEFILE = ROOT / "docs" / "r9700-stack-page.svg"
+# The README's release figure is the generated page: a 1000-unit canvas against github.com's ~980 px column, the
+# numbers as data in docs/summary-page.py, every string measured before it is placed, OVERFLOW reported on stderr.
+# Its file name carries no version -- the version is VERSION in the script -- so what the README points at cannot go
+# stale at the next tag. The tag also ships upstream's hand-authored docs/r9700-stack-v0.4.0.svg, which stays in the
+# tree as the tag's artifact and is measured below, but it is not the README's figure: 11.0 px type on a 1200-unit
+# canvas lands at 9.0 px in that column, which is exactly the page docs/summary-page.py was written to replace.
+FIGS = re.findall(r'<img src="(docs/r9700-stack-(?:page|v[\d.]+)\.svg)"', README)   # release pages, not the lockup
+ck("the README's release figure is the generated page, and it is the only one",
+   FIGS == ["docs/r9700-stack-page.svg"], str(FIGS))
+HERO = re.search(r'<a href="(docs/[^"]+\.png)"><img src="docs/r9700-stack-page\.svg"', README)
+HERO_BLOCK = re.search(r'<p align="center">(.*?r9700-stack-page\.svg.*?)</p>', README, re.S)
+ck("with a caption naming the script that draws it", bool(HERO_BLOCK) and "summary-page.py" in HERO_BLOCK.group(1))
 
 # the release page is generated, like the card figure: the numbers are data in docs/summary-page.py, and
 # the committed .svg is what that script emits. A figure nobody can re-draw is a figure that drifts -- the
 # one this replaced still said 210 and 216 tok/s where the README's table said 225 and 222
 import tempfile
-PAGE = (ROOT / "docs" / "r9700-stack-v0.3.8.svg").read_text()
+PAGE = PAGEFILE.read_text()
 with tempfile.TemporaryDirectory() as td:
     out = str(Path(td) / "page.svg")
     r = subprocess.run([sys.executable, str(SUMPAGE), out], capture_output=True, text=True)
@@ -231,22 +225,37 @@ ck("the canvas is the column it renders in: 1000 px wide against github.com's ~9
 sizes = [float(x) for x in re.findall(r'font-size="([\d.]+)"', PAGE)]
 ck("and nothing on it is smaller than 14 px, so the small print is not 9.8 px again",
    min(sizes) >= 14, f"smallest {min(sizes)}px, which at this canvas renders at {min(sizes) * 980 / int(sw):.1f}px")
-ck("every number the release page shows is a number the README also carries",
-   all(n in README for n in ("225", "222", "100", "1,823", "9,633", "540,202", "250,078")))
+pn = [t.strip() for t in re.findall(r">([^<>]+)</text>", PAGE) if re.fullmatch(r"[\d,\.]+", t.strip())]
+ck("every number on the release page is a number the README also carries",
+   all(n in README for n in pn), f"{len(pn)} numbers, missing: {[n for n in pn if n not in README][:6]}")
+ck("and the claims the page exists to make are on it: four models' single-stream decode and the native box's pool",
+   all(n in PAGE for n in ("225", "222", "100", "158", "1,009,899", "250,078")))
 nbars = len(re.findall(r'fill="#7b93ff"', PAGE))
 ck("and every decode row carries the gate its number came from, and the fact column names its own",
-   PAGE.count("210 W gate") >= nbars and PAGE.count("the native box, uncapped") >= 1 and nbars == 3,
-   f"{nbars} bars, {PAGE.count('210 W gate')} gate labels")
+   nbars == 4 and PAGE.count("210 W gate") >= 3 and PAGE.count("-500 MHz") >= 1
+   and PAGE.count("the native box, uncapped") >= 1,
+   f"{nbars} bars, {PAGE.count('210 W gate')} x 210 W, {PAGE.count('-500 MHz')} x -500 MHz")
+
+# the tag's own graphic: kept, measured, and not the README's figure
+UP = (ROOT / "docs" / "r9700-stack-v0.4.0.svg").read_text()
+upw, uph = re.search(r'<svg[^>]*width="(\d+)" height="(\d+)"', UP).groups()
+upfs = [float(x) for x in re.findall(r'font-size="([\d.]+)"', UP)]
+ck(f"and why the hand-drawn one is not the README's figure is measured, not assumed: {min(upfs)} px on a {upw}-unit "
+   f"canvas renders {min(upfs) * 980 / int(upw):.1f} px in that column, against {min(sizes)} px on this one",
+   "docs/r9700-stack-v0.4.0.svg" not in FIGS and min(upfs) * 980 / int(upw) < 14,
+   f"canvas {upw} x {uph}, smallest {min(upfs)}px")
 
 # its type is readable where it sits; the PNG stays for zooming, and has to be big enough to buy anything
-ck("the generated page and its PNG stay in the tree for the v0.4.0 redraw",
-   (ROOT / "docs" / "r9700-stack-v0.3.8.svg").exists() and (ROOT / "docs" / "r9700-stack-v0.3.8.png").exists())
-if (ROOT / "docs" / "r9700-stack-v0.3.8.png").exists():
+ck("the generated page and its PNG are both in the tree",
+   PAGEFILE.exists() and (ROOT / "docs" / "r9700-stack-page.png").exists())
+if HERO and (ROOT / "docs" / "r9700-stack-page.png").exists():
     def png_size(p):
         return struct.unpack(">II", p.read_bytes()[16:24])
-    pw, ph = png_size(ROOT / "docs" / "r9700-stack-v0.3.8.png")
-    ck("and that PNG is at least twice the figure's canvas in both directions",
+    pw, ph = png_size(ROOT / HERO.group(1))
+    ck("and the figure links to a PNG for zooming, at least twice the canvas in both directions",
        pw >= 2 * int(sw) and ph >= 2 * int(sh), f"PNG {pw} x {ph}, figure {sw} x {sh}")
+    ck("and the caption says what the link is for", f"{pw} × {ph}" in (HERO_BLOCK.group(1) if HERO_BLOCK else ""),
+       f"{pw} × {ph} in the caption: {f'{pw} × {ph}' in (HERO_BLOCK.group(1) if HERO_BLOCK else '')}")
 
 # --- the figure blocks close ------------------------------------------------------------------------------
 nblocks = README.count('<p align="center">')

@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""docs/r9700-stack-v0.3.8.svg -- the README's one-page release figure, drawn from the numbers below.
+"""docs/r9700-stack-page.svg -- the README's one-page release figure, drawn from the numbers below. The name is
+version-free on purpose: the version is data in the script (VERSION below), so the figure the README points at does
+not go stale at the next tag and the tag's own copy is a git artifact, not a filename.
 
 Why a script and not the file: the figure is a stack of claims, and every release moves some of them.
 Hand-edited, it drifts -- the version this replaces still said Flash-Next 210 tok/s and 27B 216 under a
 "210 W cap" banner while the README's own table said 225 and 222, and it drew uncapped numbers under
-that same banner. Here the numbers are data, each row names the gate it was measured at, and
+that same banner. The same argument is why this page, not the tag's own hand-drawn
+``docs/r9700-stack-v0.4.0.svg``, is what the README carries after the v0.4.0 merge: measured, that one's smallest
+type is 11.0 px on a 1200-unit canvas, 9.0 px rendered in the column; this one's floor is 14 px on a 1000-unit
+canvas. tests/test_readme.py measures both rather than asserting the preference. Here the numbers are data, each row names the gate it was measured at, and
 tests/test_readme.py re-draws the figure and compares it string for string, so a number can move in one
 place only.
 
@@ -19,11 +24,11 @@ the content that has to fit in it, and anything that would still run past its bo
 as OVERFLOW -- the test fails on that rather than shipping a figure with text under a border.
 
     python3 docs/summary-page.py                       # writes the .svg
-    rsvg-convert -w 2400 docs/r9700-stack-v0.3.8.svg -o docs/r9700-stack-v0.3.8.png
+    rsvg-convert -w 2000 docs/r9700-stack-page.svg -o docs/r9700-stack-page.png
 """
 import sys
 
-OUT = sys.argv[1] if len(sys.argv) > 1 else "docs/r9700-stack-v0.3.8.svg"
+OUT = sys.argv[1] if len(sys.argv) > 1 else "docs/r9700-stack-page.svg"
 
 BG, CARD, CARD2, LINE, INK, SOFT, MUTED = ("#0e1113", "#161a1d", "#1d2226", "#2a3036",
                                            "#eef1f3", "#c7cdd3", "#8e979f")
@@ -33,7 +38,7 @@ W, PAD = 1000, 16
 CHAR = 0.60                                              # em per glyph, as in docs/monitor-cards.py
 HEAD, BODY, SMALL = 19, 15, 14                           # SMALL is the floor: 14 px at the column's width
 
-VERSION, RELEASED, LINE_OF = "v0.3.8", "2026-10-31", "vLLM 0.32 line, nightly e4a5b553"
+VERSION, RELEASED, LINE_OF = "v0.4.0", "2026-11-03", "vLLM 0.32 line, nightly 2026-10-25"
 TAGLINE = "LLM inference on 2 to 8 AMD Radeon AI PRO R9700"
 WHAT = "a vLLM plugin plus HIP and Triton kernels for gfx1201 (RDNA4)"
 BADGES = [("stock vLLM 0.32", 1), ("stock ROCm 10", 1), ("no fork", 0),
@@ -43,9 +48,9 @@ BADGES = [("stock vLLM 0.32", 1), ("stock ROCm 10", 1), ("no fork", 0),
 MODELS = [
     ("Qwen3.8-Flash-Next", "MoE, 288 experts", [
         "MXFP4 experts, fp8 dense",
-        "MTP-3 speculative decoding",
+        "MTP-2/3 speculative decoding",
         "int6 embeddings in host RAM",
-        "262k context on four cards"], 4,
+        "262k context, fp8 e4m3 main KV"], 4,
      "or two cards, experts in RAM"),
     ("Qwen3.8-27B-NVFP4", "dense + DFlash2 drafter", [
         "NVFP4 in, MXFP4 at load",
@@ -56,28 +61,38 @@ MODELS = [
         "NVFP4 in, MXFP4 at load",
         "fp8 KV cache, MTP-3"], 8,
      "8-rank collective via host RAM"),
+    ("DeepSeek-V4.1-Flash", "552B MoE, EXL3 2.9 bpw", [
+        "384 routed experts, Engram tables",
+        "EXL3 trellis, our decode kernel",
+        "DSpark k=5 drafter, adaptive",
+        "329k-token KV pool at 32k"], 8,
+     "128k recipe retrieves at 126.7k"),
 ]
 
 # single-stream decode. Every row names its gate: the 210 W figures and the uncapped ones come from
 # different machines and have never been measured on both, so they do not share a banner.
 GATE, UNCAP = "210 W gate", "the native box, uncapped"
+DSGATE = "8 cards, -500 MHz"                      # upstream's eight-card gate: a clock offset, not a power cap
 BARMAX, BARLEN = 250.0, 300
 BARS = [
-    ("Qwen3.8-Flash-Next", "TP4, four cards", 225, "14.3-14.4 ms a step; best sample 228"),
-    ("Qwen3.8-27B-NVFP4", "TP2, two cards", 222, "4.5 tokens a step with the DFlash2 drafter"),
-    ("GLM-5.3-Flash", "TP8, eight cards", 100, "75-80 before v0.3.8's host-memory collective"),
+    ("Qwen3.8-Flash-Next", "TP4, four cards", 225, "14.3-14.4 ms a step; best sample 228", GATE),
+    ("Qwen3.8-27B-NVFP4", "TP2, two cards", 222, "4.5 tokens a step with the DFlash2 drafter", GATE),
+    ("GLM-5.3-Flash", "TP8, eight cards", 100, "75-80 before v0.3.8's host-memory collective", GATE),
+    ("DeepSeek-V4.1-Flash", "TP8+EP, EXL3", 158, "on code; 70-75 on prose, GSM8K-style 114-121", DSGATE),
 ]
 
 # the column beside the bars: what the same four cards do in aggregate, and what the context costs.
 # One gate label for the whole column, in its header -- every row in it is the uncapped native box.
 FACTS = [
-    ("1,823 tok/s", "aggregate decode, 32 in flight, 1,200-token waves"),
-    ("9,633 tok/s", "reading a 7,789-token prompt"),
-    ("540,202 tokens", "KV pool at MAXLEN 262,144; a needle found at 250,078"),
+    ("1,792 tok/s", "aggregate decode, 32 in flight, 1,200-token waves, fp8 main KV"),
+    ("9,702 tok/s", "reading a 7,792-token prompt on that same fp8 launch"),
+    ("1,009,899 tokens", "KV pool at MAXLEN 262,144 with fp8 e4m3 main KV, 540,202 at bf16; a needle found at 250,078"),
 ]
 
 FOOT = ["Each number names its machine: \"210 W gate\" is the release configuration (210 W a card, -42 mV, 32k); "
         "\"the native box\" is one 4x R9700 box, uncapped. They are not comparable across.",
+        "The Flash-Next column is the fp8 e4m3 main-KV launch this box runs by default: the pool doubles (1,009,899 "
+        "against 540,202 tokens) and GSM8K 800 reads 96.0 against 95.6 %, HumanEval 164 98.17 against 96.95.",
         "github.com/bkvargyas/r9700-stack"]
 
 warn, out = [], []
@@ -164,7 +179,8 @@ for r_ in badges:
         if x + w_ > R:
             warn.append(f"01 badges: {s!r} still runs past the frame at x={x + w_:.0f}")
 
-CW = (SECW - 2 * 14) / 3                            # three model cards
+COLS = 2                                           # four models, two cards across: the name still fits at 19 px
+CW = (SECW - (COLS - 1) * 14) / COLS               # one 14 px gutter between the cards of a row
 cards = []
 for name, sub, bullets, n, note in MODELS:
     bl = [ln for b in bullets for ln in wrap(b, SMALL, CW - 24)]
@@ -183,13 +199,14 @@ def card_h(nlines, notes):
 
 
 CARDH = max(card_h(len(c[2]), len(c[4])) for c in cards)
+ROWS = (len(cards) + COLS - 1) // COLS
 
 bar_rows = []
-for name, tp, v, note in BARS:
+for name, tp, v, note, gate in BARS:
     fits(f"03 {name}", name, BODY, 210)
-    fits(f"03 {name} sub", f"{tp} · {GATE}", SMALL, 300)
+    fits(f"03 {name} sub", f"{tp} · {gate}", SMALL, 300)
     fits(f"03 {name} note", note, SMALL, SECW - BARLEN - 130)
-    bar_rows.append((name, f"{tp} · {GATE}", v, note))
+    bar_rows.append((name, f"{tp} · {gate}", v, note))
 BARH = 64 + 86 * (len(bar_rows) - 1) + 62 + 16        # model, gate, bar, note, descent
 
 FACTW = 340
@@ -198,7 +215,7 @@ facts = [(v, wrap(what, SMALL, FACTW)) for v, what in FACTS]
 FACTH = 56 + 18 + sum(22 + 18 * len(f[1]) + 12 for f in facts)   # +18: the column names its gate
 
 SEC1H = 110 + 26 * (len(what_lines) - 1) + 30 * (badge_rows - 1)
-SEC2H = CARDH + 52                                     # 26 px of panel above and below the card
+SEC2H = 52 + ROWS * CARDH + (ROWS - 1) * 14        # 26 px of panel above and below each card row
 SEC3H = max(BARH, FACTH) + 16
 HEADH = 84
 
@@ -242,14 +259,15 @@ for row in badges:
     for x, s, solid, w_ in row:
         pill(x, by, s, SMALL, INK if solid else MUTED, solid, bg=CARD2, stroke=LINE)
 
-# 02 -- three models, the cards each one runs on
+# 02 -- the models this release runs, and the cards each one runs on
 y = ys[1]
 for i, (name, sub, bl, n, nl) in enumerate(cards):
-    x = SECX + i * (CW + 14)
-    rect(x, y + 26, CW, CARDH, CARD2, rx=10, stroke=LINE)
-    text(x + 12, y + 52, name, HEAD, INK, "700")
-    text(x + 12, y + 72, sub, SMALL, TAG)
-    ly = y + 100
+    x = SECX + (i % COLS) * (CW + 14)
+    p = y + 26 + (i // COLS) * (CARDH + 14)        # this card's panel top; the row below starts 14 px on
+    rect(x, p, CW, CARDH, CARD2, rx=10, stroke=LINE)
+    text(x + 12, p + 26, name, HEAD, INK, "700")
+    text(x + 12, p + 46, sub, SMALL, TAG)
+    ly = p + 74
     for j, ln in enumerate(bl):
         text(x + 12, ly, ("·  " if j == 0 else "   ") + ln, SMALL, SOFT)
         ly += 20

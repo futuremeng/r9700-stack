@@ -13,7 +13,17 @@ underneath it.
 Current release: **v0.4.0** (2026-11-03, the vLLM 0.32 line), [release notes](notes/release-v0.4.0.md),
 [CHANGELOG.md](CHANGELOG.md).
 
-![r9700-stack v0.4.0: what runs on it, the weight formats, the speed](docs/r9700-stack-v0.4.0.svg)
+<p align="center">
+  <a href="docs/r9700-stack-page.png"><img src="docs/r9700-stack-page.svg" alt="r9700-stack v0.4.0: what runs on it, the weight formats, the speed"></a>
+  <br><sub>The release on one page: what the stack is, the four model configurations it runs, and how fast they run --
+drawn by <code>docs/summary-page.py</code> from the same numbers the tables below carry, so a figure nobody can
+re-draw cannot drift from them. Its canvas is 1000 px against github.com's ~980 px column, so the smallest type on
+it lands at 14 px; the tag's own hand-drawn <code>docs/r9700-stack-v0.4.0.svg</code> carries the same claims at
+11 px on a 1200-unit canvas, which measures out at 9.0 px in that column -- clicked-to-read, so the generated page
+is what this README carries. The picture links to <code>docs/r9700-stack-page.png</code>, the same drawing at
+2000 × 2532, for zooming. Rows tagged "210 W gate" are the release configuration, "the native box" is one uncapped
+4x R9700 box, and "-500 MHz" is upstream's eight-card gate; the three are not comparable across.</sub>
+</p>
 
 <p align="center">
   <a href="#what-v040-gives-you">What it gives you</a> · <a href="#what-the-kernels-do">Kernels</a> ·
@@ -36,8 +46,8 @@ Qwen3.8-Flash-Next (MoE, MXFP4 experts plus fp8 dense) on four Radeon AI PRO R97
 | | measured | where it came from |
 |---|---:|---|
 | **decoding, one stream** | **225 tok/s** (best sample 228) | 14.3-14.4 ms a step; release configuration, 210 W cap, 32k |
-| **decoding, 32 streams** | **1,823 tok/s** aggregate (best sample 1,836.3) | 1,200-token waves, `bench/probe32.sh`; the native box, uncapped |
-| **reading a prompt** | **9,633 tok/s** | 7,789-token prompt, the native box uncapped (7,141 at the 210 W gate) |
+| **decoding, 32 streams** | **1,823 tok/s** aggregate (best sample 1,836.3) | 1,200-token waves, `bench/probe32.sh`; the native box, uncapped. The fp8 main-KV launch this box now defaults to reads **1,792** (1,789 / 1,796) at the same protocol |
+| **reading a prompt** | **9,633 tok/s** | 7,789-token prompt, the native box uncapped (7,141 at the 210 W gate); **9,702** on the fp8 launch, 7,792 tokens |
 | **context** | **262,144 tokens**, needle found at 250,078 | the checkpoint's own ceiling, running on this box today; KV pool 1,009,899 tokens with the fp8 main KV the launcher now defaults to, 540,202 at bf16 |
 | **decoding, in real work** (not a benchmark) | **158 tok/s** with the box to yourself, **61 tok/s** as a request actually finishes | 1,400 real requests off the request journal, prompts p50 74k; the benchmark rows above describe a machine nobody sits on |
 
@@ -209,7 +219,7 @@ TP4, MTP-3. Except where a row names another launch, this is the launch that run
 | | |
 |---|---:|
 | KV cache at MAXLEN=262,144 | **540,202 tokens**; vLLM: `Maximum concurrency for 262,144 tokens per request: 2.06x` |
-| the same launch with an **fp8 e4m3 main KV** (the default since 2026-11-03: 12 full-attention layers quantized, the QSA side caches left bf16) | **1,009,899-1,021,931 tokens**, `3.85-3.90x`; attention block size 880 instead of 448; GSM8K 800 @8 96.0 against 95.6, HumanEval 164 98.17 against 96.95 (McNemar b=2, c=0, p=0.50), needle intact cold and warm to 250,078, prefill flat to +-0.5% to 77,811 tokens, aggregate decode 1.5-4% lower and that is MTP acceptance (2.55 against 2.61 tokens a step) rather than the kernel, which measures 7-11% faster -- [notes/kv-fp8-qsa.md](notes/kv-fp8-qsa.md) |
+| the same launch with an **fp8 e4m3 main KV** (the default since 2026-11-03: 12 full-attention layers quantized, the QSA side caches left bf16) | **1,009,899-1,021,931 tokens**, `3.85-3.90x`; attention block size 880 instead of 448; prefill **2,614 / 7,886 / 9,702 / 8,965 / 8,282 tok/s at 485 / 1,976 / 7,792 / 31,131 / 77,733 tokens** (bf16: 2,586 / 7,938 / 9,705 / 8,928 / 8,252 -- flat); 32 in flight, 1,200-token waves **1,789 / 1,796** (bf16 1,817 / 1,831) and 300-token waves 1,511-1,563 (bf16 1,594-1,640), and that 1.5-4% is MTP acceptance -- 2.55 against 2.61 tokens a step -- not the kernel, which measures 7-11% faster; GSM8K 800 @8 **96.0 against 95.6**, HumanEval 164 **98.17 against 96.95** (McNemar b=2, c=0, p=0.50), needle intact cold and warm to 250,078 tokens: [notes/kv-fp8-qsa.md](notes/kv-fp8-qsa.md) |
 | KV cache at MAXLEN=32,768 (same launch shape) | 497,588 tokens: raising context 8x made the pool **bigger**, because the sizing run is bounded by `NBT`, not by MAXLEN |
 | prompt processing at 60k / 120k / 180k | 8,672-8,742 / 8,062-8,064 / 7,416-7,436 tok/s, each tier sent twice back to back with no prefix cache to help it |
 | time to first token at 60k / 120k / 180k | 6.87-6.93 / 14.89 / 24.22-24.28 s, needle found at 60,061 / 120,066 / 180,070 tokens |
