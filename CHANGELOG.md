@@ -1,4 +1,13 @@
 # Changelog
+## After the slot cleaning, the slot-8 path runs ~45x worse per unit of traffic
+
+Normalising by the prompt tokens the serve actually moved (5.29M over 100 requests / 26 min): slot 8 = 18.5
+correctables per 1M prompt tokens, slot 6 = 0.6, slots 1/3 = 0 -- against 0.41 per 1M measured before the
+cleaning on the same board. Same shape (BadTLP at the card's upstream port, Timeout at the root port, link still
+Gen5 x16, nothing uncorrectable), growing continuously rather than in a load burst. Recorded with the trap that
+nearly produced the wrong number: `aer_dev_correctable` carries a `TOTAL_ERR_COR` line, so summing the file with
+`awk` double-counts it.
+
 ## A watcher's rate has to be computed inside one boot, and a watcher has to be watched
 
 `tools/brief.py` rated a chain against the previous *call* while AER counters reset at enumeration, so across a

@@ -1061,3 +1061,33 @@ Two observation fixes came out of the same morning:
   pane-hosted watcher is not a watcher: the loop now runs under `setsid nohup` (verified: `12:13:50 … cor=12
   0.00/min serve 200`). Its gap — no 5-minute samples 11:55→12:12 — is the price of not having checked that the
   session was alive, so `brief.py`'s own line is now the liveness proof: a missing line means the watcher is dead.
+
+
+## 12:38 — after the cleaning, the slot-8 path is ~45x worse per unit of traffic
+
+Counters reset at enumeration, so the only fair comparison is **events per unit of DMA**. Normalising the current
+window by the prompt tokens the serve actually moved (the engine's own `usage.prompt_tokens` per request):
+
+```
+window 26.0 min from the serve coming up, 100 requests, 5.29M prompt tokens, mean 52,884 tok
+slot 8  98 correctable =  3.8/min = 18.5 events per 1M prompt tokens
+slot 6   3 correctable =  0.1/min =  0.6 events per 1M prompt tokens
+slot 1, 3           0
+before the cleaning (10:39-10:57, same board, 47 requests, 4.9M tokens):  0.41 events per 1M tokens
+```
+
+**Same board, same slot, same card, ~45x the error rate per million prompt tokens.** slot 6 sits at the
+pre-cleaning level (0.6 vs 0.41) and slots 1/3 are still exactly zero, so this is not the box degrading
+globally -- it is one path, and it changed when that path was physically touched.
+
+The shape is unchanged, which is what makes the contact hypothesis the leading one and the "just dust" version
+untenable: BadTLP all at the card's own **upstream port** `04:00.0` (89 BadTLP, 2 Timeout, 1 NonFatalErr),
+`Timeout` only at the root port `00:03.1` above it, **link still 32.0 GT/s x16**, **zero uncorrectable**. The
+counters also grew continuously through the window (12 -> 27 -> 53 -> 82 -> 98 at ~3.8/min with a flat stretch
+12:13-12:17), so this is not a one-off load-window burst.
+
+One measurement trap caught while doing this: `aer_dev_correctable` contains a `TOTAL_ERR_COR` line, so an
+`awk '{s+=$2}'` over the file **double counts** and reported 175 where the truth was 87 (this kernel has no
+`aer_dev_total_correctable` file at all, and `aer_dev_correctable` does not reset on read -- verified with two
+back-to-back reads). The tools parse the totals separately (`serve/webui.py:AER_FILES`); ad-hoc shell sums do
+not, so use the tools for any number that will be quoted.
