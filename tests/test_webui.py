@@ -1305,9 +1305,15 @@ ck("the link probe sends exactly one request, samples at a stated rate, and stat
 # diagnosing it changes what it diagnoses.
 _jp = open(os.path.join(ROOT, "tools", "journal-pcie.py")).read()
 compile(_jp, "journal-pcie.py", "exec")            # syntax only -- running it reads the whole journal
-ck("the journal tool only reads the log: no file writes, no requests to the serve",
+ck("the journal tool reads the log and the kernel's read-only sysfs: it sends no requests, and its only writes "
+   "are its own archive and topology snapshot -- never a control file (the reason it exists is to not poke the "
+   "box it is diagnosing)",
    "journalctl" in _jp and "subprocess.run" in _jp
-   and "urlopen(" not in _jp and "open(" not in _jp and "write" not in _jp)
+   and "urlopen(" not in _jp and "Request(" not in _jp
+   and "w" not in re.findall(r'open\([^)]*["\'](\w*)["\']\)', _jp)      # no open(..., 'w') on anything
+   and "echo" not in _jp and "sudo" not in _jp                          # nothing echoed into /sys, no privileges
+   and "online" in _jp and (".read_text()" in _jp)                      # sysfs read, not written
+   and 'p.write_text' in _jp and "cpu-topology" in _jp)   # the only two writes it makes, both its own
 # gpu_busy_percent on this box is coarse, not finely readable: refused with nothing running, 0 stopped, 24-29
 # idle, 46-100 under load, 95-99 through long decode. The page says so, because otherwise a flat 99 reads as
 # "fully loaded" and a 0 as "healthy idle" when either could also mean "the launch let go".

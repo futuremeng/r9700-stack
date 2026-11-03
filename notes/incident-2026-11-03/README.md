@@ -563,3 +563,97 @@ from the launch's own meta file), keeps the 100 attached journal rows, keeps the
 AER counters on its own — which is the "clear" we decided not to do by hand, so the post-reseat comparison starts
 from a clean boot with the saved signature in `~/logs/reseat-before-20261103T0505Z.json` as the reference.
 
+
+---
+
+# The correction: the deaths are not the link. One core's L2 is producing fatal machine checks.
+
+Written later the same day, after `./setup.sh` usage forced the question "how did that launch die?" and the
+answer was not in the boot where the launch stopped. **This section supersedes the framing above**, which
+attributed the deaths to the riser chains. The chains are a real and separate problem (§4) — they are not what
+kills the box.
+
+## The record lives in the NEXT boot
+
+`journalctl --list-boots` on this box: **33 boots** between 2026-10-31 06:20 and 2026-11-03 06:30 — 32 boot
+boundaries, of which **20 open with a replayed hardware-error record** carrying the crash's own `TIME`. That is
+where a death's record is: the firmware keeps it (BERT/GHES) and hands it to the OS at the start of the boot
+*after* the crash. Looking at the dying boot finds nothing, which is exactly how
+[incident-2026-11-02](../incident-2026-11-02/idle-deaths.txt) came to conclude "no AER, no MCE, nothing in the
+log". The other 13 boots left no record at all — and the firmware keeps only **one** (`BERT: Total records found:
+1`), so the OS journal of the following boot is the only accumulating archive we have.
+
+## The signature is identical 20 times
+
+```
+mce: [Hardware Error]: CPU {17|113}: Machine Check: 0 Bank 5: aea000000{0,1}000108
+     TSC 0 ADDR …a1efa MISC d0140ff600000000 PPIN 2b61290dcb2002b
+     SYND 4d000000 IPID 500b024029a00 (or …29b00)
+     PROCESSOR 2:a10f11 SOCKET 0 APIC 0x82|0x83 microcode a101158
+CPER: event severity: fatal | fru_text: ProcessorError | section_type: IA32/X64 processor error
+      Error Structure Type: cache error | Uncorrected: true | Processor Context Corrupt: true
+```
+
+`MCA_STATUS 0xaea0000001000108` decoded: `VAL=1, OVER=0, UC=1` (uncorrectable), `PCC=1` (processor context
+corrupt — not recoverable), `AddrV=1`, **MCACOD 0x0108 = architectural cache error, level 2 → the L2**,
+MSCOD 0x0100 (or 0x0000 in the other variant). Bank 5 every time. `SYND` and `IPID` every time.
+
+**cpu17 and cpu113 are the two SMT threads of one physical core**: `thread_siblings_list = 17,113`, `core_id 65`,
+`physical_package_id 0`, and `cache/index2/shared_cpu_list = 17,113` on a 1024K L2. So 20 fatal machine checks
+in 72 hours were reported by that core and by no other: **15 by cpu17, 5 by cpu113**. Two "different" CPUs was
+one core all along — which is why `tools/journal-pcie.py` now prints the cpu number reduced to a core.
+
+Independent of load, which is what separates it from everything else in this note: a boot lived **5 s**
+(`-7`), another **12 s** (`-13`); boots with **zero** PCIe AER activity died the same way (`-7`, `-5`, `-13`);
+a boot with 1783 AER events died the same way (`-11`). Idle deaths, boot-time deaths, prefill deaths — same bank,
+same codes, same core.
+
+## Why the BMC has nothing
+
+The operator confirms the SEL has never carried an event of this class, and that is expected rather than
+reassuring: these records reach the OS through **APEI/GHES + BERT** (`HEST corrected error threshold limit: 10`
+is in boot `-2`'s log), and this firmware (ASUS **ESC4000A-E12**, board **K14PG-U12**, **BIOS 2501**, microcode
+**0xa101158**) does not put GHES-delivered processor errors into the SEL. What the SEL's silence *does* rule out
+is a power-side trigger: no power-event record for any of these deaths, so the PSU2-at-0-W redundancy problem
+(incident-2026-11-02) is not the mechanism. In-band `ipmitool` still needs a password, so the SEL itself is read
+by the operator, not from here.
+
+## What was done, and what it predicts
+
+At 06:28 UTC the operator took the two threads offline (`/proc/cpuinfo` 190 of 192 threads). Persisted so a
+reset cannot quietly undo it: `host/offline-core.cpus` (the pairing and the reason), `host/r9700-offline-core.sh`
+(refuses a pair that is not one core's SMT siblings; snapshots the sysfs topology first, because sysfs drops a
+cpu's topology the moment it goes offline and the evidence would be lost), `host/r9700-offline-core.service`
+(re-applies it at boot — there is no x86 cmdline that offlines a named core), and `setup.py` step 1 now reports
+the state on every run, warning if the sick core is back in service.
+
+The hypothesis this makes testable, and the only honest way to state it: **if the fatal MCA stops appearing in
+the replayed records, the fault is confined to that core's L2 and the box is usable while it waits for an
+RMA**; if deaths continue with a different bank or a different core, it is package-level and offlining bought
+nothing. Neither is claimed here yet — the first data point is the next boot.
+
+## §4 kept, because it is real but separate: the riser chains
+
+Reading the counters properly (the tool's BDF regex used decimal buses, so **`0000:c4:00.0` — the busiest port
+on this box — had never been counted**; fixed, `tests/test_journal_mca.py`) for boot `5ec7e479`:
+`c4:00.0` BadTLP 49 + BadDLLP 1, root port `c0:03.1` Timeout 26 — kernel named lines 52 BadTLP / 28 Timeout —
+and **every one of them inside 06:02–06:05**, the window in which `vllm serve` read 120.3 GB of weights out of
+host RAM and pushed them across slot 6's riser. Idle afterwards: **+1 event in 5.7 min**. Each event is delivered
+twice (`pcieport … aer_status:` from the port driver, `aer_cor_status:` inside a CPER block from firmware-first:
+87 and 92 lines respectively), which is why block and event counts differ. sysfs per-boot totals for the boot:
+slot 6 chain 83→85 correctable, slot 8 chain 6, slot 1 and slot 3 zero, **no uncorrectable on any link** — the
+fatal errors are CPU-side, in a different reporting path.
+
+Totals are per boot and zeroed at enumeration, so compare in-boot rates (`tools/reseat-check.py --save/--diff`);
+`~/aer/watch-*.json`, snapshotted every 5 min by the `aer-watch` tmux session, is the running series.
+
+## For the vendor
+
+```
+AMD EPYC (CPUID 00a10f11), package 0, PPIN 2b61290dcb2002b, core 65 / threads cpu17+cpu113 (APIC 0x82, 0x83)
+recurring fatal MCA: 20 events in 72 h, always MCA bank 5, MCA_STATUS 0xaea0000001000108 (UC=1, PCC=1, AddrV=1),
+MCACOD 0x0108 (cache error, L2), MSCOD 0x0100/0x0000, MCA_IPID 0x0000500b024029a00 / …29b00, MCA_SYND 0x4d000000
+ASUS ESC4000A-E12 / K14PG-U12, BIOS 2501, microcode 0xa101158; SEL empty of these events (GHES/BERT path)
+load-independent: dies 5 s after boot and after 15 h; also dies with zero PCIe AER activity
+open question for AMD: an erratum fix in microcode/AGESA above 0xa101158 for Genoa family 19h L2 MCA
+```

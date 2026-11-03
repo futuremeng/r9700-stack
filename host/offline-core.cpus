@@ -1,0 +1,17 @@
+# The CPU threads to keep offline, and why. Read by host/r9700-offline-core.sh, by setup.py's step 1, and by
+# tools/journal-pcie.py (which loses a cpu's sysfs topology the moment it is offlined, and needs the pairing to
+# keep saying "these two cpu numbers are one physical core").
+#
+# cpu17 and cpu113 are the two SMT threads of ONE physical core: thread_siblings_list = 17,113, core_id 65,
+# physical_package_id 0, sharing the same 1 MiB L2 (cache/index2/shared_cpu_list = 17,113). Read from sysfs on
+# 2026-11-03 while both threads were online.
+#
+# Why this core: 20 of the 33 boots in the journal end with the same fatal machine check -- MCA bank 5,
+# MCA_STATUS 0xaea000000{0,1}000108 (UC=1, PCC=1), MCACOD 0x0108 (cache error, level 2 = L2), MSCOD 0x0100/0,
+# MCA_IPID 0x0000500b024029a00 / ...b00, MCA_SYND 0x4d000000 -- and every one of them is reported by cpu 17 or
+# cpu 113, i.e. by this core and nothing else. Full account: notes/incident-2026-11-03.
+#
+# Offlining removes the failing block from use; it does not repair it. Re-checked on every boot by
+# setup.py -- if these come back online (a reset does that), step 1 says so and names this file.
+17 113
+core=65 package=0

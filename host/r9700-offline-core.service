@@ -1,0 +1,31 @@
+# One-shot: keep the sick core out of service after every boot.
+#
+# Why a unit and not just the script: this box resets by itself (notes/incident-2026-11-03: 20 fatal machine
+# checks in the 33 boots the journal holds), and a reset brings EVERY core back online -- sysfs `online` is not
+# persistent and there is no x86 kernel cmdline that offlines one named core. So the workaround has to be
+# re-applied at boot, before anything heavy starts, or the next fatal MCA is one scheduled task away.
+#
+# Install (root):
+#   sudo cp host/r9700-offline-core.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now r9700-offline-core.service
+#   systemctl status r9700-offline-core.service      # ExecStart's output names the core and the pair
+#
+# It runs before the network targets and before docker/login, so a serve cannot start on the sick core. It does
+# NOT touch the running serve: if the box is already up and the pair is still online, run
+# `sudo host/r9700-offline-core.sh` by hand -- offlining a core under a running engine migrates its threads,
+# which is safe but is a change nobody asked for mid-request.
+
+[Unit]
+Description=r9700-stack: keep the core with the failing L2 offline (host/offline-core.cpus)
+After=systemd-udev-settle.service
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /home/jiulu/r9700-stack/host/r9700-offline-core.sh
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target

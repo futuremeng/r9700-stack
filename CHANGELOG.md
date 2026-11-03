@@ -8,6 +8,26 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
 ## [Unreleased]
 
 ### Added
+- **`journal-pcie.py` now names the thing that kills the box, and the box has a name for it too**
+  (`tools/journal-pcie.py`, `host/offline-core.cpus`, `host/r9700-offline-core.sh`,
+  `host/r9700-offline-core.service`, `tests/test_journal_mca.py`,
+  [notes/incident-2026-11-03](notes/incident-2026-11-03/README.md)). The tool already read the per-boot kernel
+  journal; it did not print the fields that turned out to matter, so 20 deaths had been walked past. It now
+  decodes the machine check per boot -- MCA bank, `MCA_STATUS` flags (`UC`, `PCC`, `AddrV`), architectural
+  **MCACOD/MSCOD** with the cache-class level, `SYND`/`IPID`, CPER severity and `fru_text`, the `BERT` record
+  count -- and reduces the reporting **cpu number to a physical core** via sysfs topology, with a snapshot
+  (`.r9700-state/cpu-topology.json`) and `host/offline-core.cpus` as fallbacks, because sysfs drops an offlined
+  cpu's topology and the evidence would otherwise vanish exactly when someone acts on it. What it found on this
+  box: **20 of 33 boots open with the same fatal machine check** -- bank 5, MCACOD 0x0108 (cache, level 2 = the
+  L2), UC=1, PCC=1, `SYND 0x4d000000`, `IPID 0x0000500b024029a00` -- reported by cpu17 or cpu113, which are the
+  two SMT siblings of **one core** (core_id 65, package 0, shared 1 MiB L2). Load-independent (a boot lived 5 s;
+  boots with zero PCIe AER activity died; a boot with 1783 AER events died the same way), invisible to the BMC
+  (GHES/BERT path, firmware keeps **one** record), and separate from the riser-chain correctables that this
+  repo's PCIe notes are about. The surgical workaround is now scripted and, crucially, **re-applied at boot**
+  (a reset puts every core back, and this box resets by itself): `host/r9700-offline-core.sh` refuses a pair
+  that is not one core's SMT siblings, `host/offline-core.cpus` holds the pairing and the reason, the unit
+  installs it before anything heavy starts, and `setup.py` step 1 warns if the sick core is back in service.
+  `--json FILE` appends one record per boot, because the firmware's single BERT slot is not an archive.
 - **Monitor and About pages for a running launch** (`serve/webui.py`, `serve/web/`, `serve/webui.sh`;
   [notes/webui.md](notes/webui.md)). A stdlib-only host sidecar next to the container: `observe` mode
   (default) reads `/health`, `/v1/models`, `/metrics` and the amdgpu sysfs and changes nothing in the
@@ -862,6 +882,15 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   tokens). It replaces the ad-hoc `/tmp` script that a reboot deleted mid-run.
 
 ### Fixed
+- **`journal-pcie.py` had never counted the busiest AER source on this box.** Its BDF patterns matched `\d{2}`
+  for the bus number, so every port whose bus is spelled with a hex letter -- `0000:c4:00.0`, the switch
+  upstream port carrying slot 6, the one with 55 BadTLP in sysfs -- matched nothing, and the tool reported a
+  fraction of the events while the sysfs counters said otherwise (boot `5ec7e479`: 105 lines reported for what
+  the corrected pattern counts as 187 records, `c4:00.0` BadTLP 49 + BadDLLP 1 and `c0:03.1` Timeout 26 among
+  them). It also raised a `ValueError` traceback on `--boots 4`, the spelling its own header suggests; argparse
+  now, with `4` / `--boots 4` / a usage line. Both pinned by `tests/test_journal_mca.py` against a captured
+  real record block (a regex that quietly stops matching on a crash record answers "no machine check" about a
+  crash that happened, which is the worst possible way for this tool to be wrong).
 - **"tokens per engine step" was not a step size, on either card.** `vllm:iteration_tokens_total`'s own HELP text
   says "Histogram of number of tokens per engine_step", and `loggers.py:1273` observes
   `prompt_token_stats.computed + num_generation_tokens` -- but measured against a single request on 0.32.0, a

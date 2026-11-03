@@ -393,6 +393,41 @@ def switches():
     return grp
 
 
+def dead_core():
+    """The core this box keeps offline, and whether it is actually offline right now.
+
+    A reset puts every core back, and this box resets by itself (notes/incident-2026-11-03: 20 identical fatal
+    machine checks in the 33 boots the journal holds, all reported by the two SMT threads of one core), so
+    'someone offlined it once' is not a state worth trusting. host/offline-core.cpus is the pairing; the unit
+    host/r9700-offline-core.service is what re-applies it at boot."""
+    conf = ROOT / "host" / "offline-core.cpus"
+    if not conf.exists():
+        return
+    cpus = []
+    for ln in conf.read_text().splitlines():
+        ln = ln.split("#")[0].strip()
+        if ln and "=" not in ln:
+            cpus = ln.split()
+    if not cpus:
+        return
+    st = {}
+    for c in cpus:
+        f = Path(f"/sys/devices/system/cpu/cpu{c}/online")
+        try:
+            st[c] = f.read_text().strip()
+        except OSError:
+            st[c] = "?"
+    off = [c for c in cpus if st[c] == "0"]
+    if len(off) == len(cpus):
+        ok(f"the failing core is out of service: cpu {' '.join(cpus)} offline "
+           f"(host/offline-core.cpus, notes/incident-2026-11-03)")
+    else:
+        bad(f"cpu {' '.join(c for c in cpus if st.get(c) != '0')} is ONLINE again -- that is the core whose L2 "
+            f"produced the fatal machine checks (state: " + ", ".join(f"cpu{c}={st[c]}" for c in cpus) + ")",
+            f"sudo bash {conf.parent / 'r9700-offline-core.sh'}   and enable the unit next to it, or every "
+            f"reset re-arms it (tools/journal-pcie.py shows the MCA record of each boot)")
+
+
 def host(cfg):
     step(1, "the guest the launch will run in (host-side BAR/ACS work is host/README.md, not this file)")
     cs = cards()
@@ -451,6 +486,7 @@ def host(cfg):
            "(serve/native-flashnext.sh) and host-side pinning"))
     note(f"this box's cap is where PROGRESS.md's '11.7 GiB per process' comes from: offloading 34 GB/rank "
          f"of experts is a container --ulimit and vm.nr_hugepages question, not a ulimit question")
+    dead_core()
 
 
 def resource_limits():

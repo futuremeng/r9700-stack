@@ -53,3 +53,20 @@ the fault domain is not the load path: the same signature appears at idle and at
 still common to all seven is *the box being up and running Linux on this platform* -- and death 4 (`3b531c63`,
 32 s of life, no firmware latch) is inside the recovery of death 3, so a death can be followed by another
 death within half a minute of boot with nothing running at all.
+
+## CORRECTION (2026-11-03, from the next day's setup work): these deaths DID leave a record — one boot later
+
+The conclusion above ("no AER, no MCE, nothing in the log") was right about the boot that died and wrong about
+the death. The firmware keeps the crash record and hands it to the OS at the START of the NEXT boot (BERT/GHES),
+so reading only the dying boot finds nothing. Re-reading this box's journal with
+`tools/journal-pcie.py`: 20 of the 33 boots in the journal open with a replayed record whose own TIME is a few
+seconds before that boot, and all 20 are the same fatal machine check — MCA bank 5, MCACOD 0x0108 (cache, level
+2 = L2), UC=1, PCC=1, SYND 0x4d000000, IPID 0x0000500b024029a00 — reported by cpu17 or cpu113, which are the two
+SMT threads of one physical core (core_id 65, package 0, shared 1 MiB L2).
+
+That covers death 7 above (idle, 8 min of life, load average 0.12): the boot after it replays its record, and the
+record is that core's L2. So "idle death" was never a category of unknown cause — it is the same single-core
+fault, and it is load-independent, which the idle cases establish rather than contradict. Full account, the
+offline-the-core action and the vendor block: ../incident-2026-11-03/README.md.
+
+The one thing that stays true here: nothing on the GPU side, in amdgpu or in PCIe, had said anything about it.
