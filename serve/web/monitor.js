@@ -4,6 +4,7 @@
 let records = [], status = null, selected = null, detail = null, pane = "input", stampOf = "";
 let detailSig = "", follow = true;                    // follow: show the newest row nobody clicked on yet
 let paused = false, actionError = "";
+let lastOk = 0, lastErr = "";                // when a tick last got an answer, and why the last one did not
 
 const active = (r) => !["completed", "error", "disconnected"].includes(r.state);
 const rid = (r) => r.id || `req-${r.seq}`;
@@ -668,6 +669,7 @@ async function refresh() {
       if (c && rid(c) !== selected) { selected = rid(c); detail = null; }
     }
     text("kept", String(h.kept));
+    lastOk = Date.now() / 1000; lastErr = "";
     $("observe-note").textContent = h.mode === "observe"
       ? "Start this sidecar with --proxy (or point a client at it) to record requests here."
       : h.mode === "merged" ? "Rows come from the engine as its own per-request stats: timings and token "
@@ -687,6 +689,7 @@ async function refresh() {
     if (!actionError && s.error) notice(`upstream not answering: ${s.error}`);
     else if (!actionError) notice("");
   } catch (e) {
+    lastErr = e.message;
     notice(e.message);
     text("updated", "Disconnected · retrying");
   }
@@ -730,4 +733,25 @@ $("copy").onclick = async () => {
 };
 bindTheme();
 
-(async function poll() { await refresh(); setTimeout(poll, 1000); })();
+// A background tab is throttled by the browser (Chrome clamps timers to about one tick a minute after five
+// minutes hidden, and can freeze the tab outright), and a fetch that stalls no longer has to be fatal now that
+// every api() call has a deadline -- but either way the reader has to be able to tell "the box is quiet" from
+// "this page stopped listening". So the tick always reschedules, and a stale page says how stale it is.
+(async function poll() {
+  try {
+    await refresh();
+  } catch (e) {
+    notice(e.message);           // refresh() already catches; this is so the finally always runs
+  } finally {
+    const since = lastOk ? Date.now() / 1000 - lastOk : null;
+    if (!paused && since !== null && since > 5) {
+      text("fresh", `snapshot is ${since.toFixed(0)} s old -- this tab is not getting answers`
+        + (lastErr ? ` (${lastErr})` : ""));
+      if (!lastErr) text("updated", "Stale · retrying");   // a failed fetch already said "Disconnected"
+    }
+    setTimeout(poll, 1000);
+  }
+})();
+
+// Coming back to the tab should show now, not whatever the throttled timer gets around to next.
+document.addEventListener("visibilitychange", () => { if (!document.hidden && !paused) refresh().catch(() => {}); });

@@ -153,4 +153,8 @@ $("api-key").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); $
 document.addEventListener("need-key", () => $("api-key").focus());
 bindTheme();
 
-(async function loop() { await load(); setTimeout(loop, 5000); })();
+(async function loop() {
+  try { await load(); } catch (e) { notice(e.message); }   // load() catches; this keeps the finally running
+  finally { setTimeout(loop, 5000); }
+})();
+document.addEventListener("visibilitychange", () => { if (!document.hidden) load().catch(() => {}); });

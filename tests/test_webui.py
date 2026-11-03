@@ -991,6 +991,26 @@ for js, html in (("monitor.js", "monitor.html"), ("about.js", "about.html")):
     ck(f"{js} only touches ids {html} has", not (used - have), f"missing: {sorted(used - have)}")
     ck(f"{html} links assets that exist", all((WEB / a).is_file() for a in
        re.findall(r'(?:href|src)="/web/([^"]+)"', page)), str(re.findall(r'(?:href|src)="/web/([^"]+)"', page)))
+# The pages poll themselves, and how they poll is load-bearing: a fetch that never returns used to leave the
+# tab showing its last render forever (the loop was `await refresh(); setTimeout(poll, 1000)`, so the tick that
+# stalled was the last tick there ever was), and a background tab throttled to one tick a minute looked exactly
+# like a quiet machine. All three JS files are syntax-checked when node is present, and the loop shape is
+# asserted, because every one of those failures is silent on screen.
+_js = {p.name: p.read_text() for p in WEB.glob("*.js")}
+ck("every api() call carries a deadline (a stalled request must become one visible error and the next tick)",
+   all(x in _js["common.js"] for x in ("AbortController", "signal: ctl.signal", "clearTimeout", "FETCH_MS",
+                                       "did not answer within")),
+   sorted(x for x in ("AbortController", "signal: ctl.signal", "clearTimeout", "FETCH_MS",
+                      "did not answer within") if x not in _js["common.js"]))
+_m = _js["monitor.js"]
+ck("the poll loop reschedules in a finally, so no tick can be the last one",
+   bool(re.search(r"finally\s*\{.*setTimeout\(poll", _m, re.S)) and "await refresh(); setTimeout(poll" not in _m)
+ck("a page with no answer for 5 s says how old its numbers are, and stays quiet while deliberately paused",
+   bool(re.search(r"!paused.*snapshot is \$\{since", _m, re.S)))
+ck("returning to a throttled background tab refetches at once instead of waiting for the timer",
+   all("visibilitychange" in _js[f] for f in ("monitor.js", "about.js")))
+ck("the About page loop cannot die on one bad tick either",
+   bool(re.search(r"finally\s*\{.*setTimeout\(loop", _js["about.js"], re.S)))
 tokens = (WEB / "tokens.css").read_text() + "".join(p.read_text() for p in WEB.glob("*.css") if p.name != "tokens.css")
 used = set()
 for p in list(WEB.glob("*.css")) + [WEB / "monitor.html", WEB / "about.html", WEB / "monitor.js", WEB / "about.js"]:

@@ -25,6 +25,7 @@ function syncTheme(root = document) {
 
 // -- fetching ----------------------------------------------------------------------
 // The key lives in sessionStorage only: it is the serve key, this page never has one of its own.
+const FETCH_MS = 4000;                       // a GET of a local sidecar answers in well under 0.1 s
 function setKey(k) { apiKey = (k || "").trim(); sessionStorage.setItem(KEY, apiKey); }
 function headers(json) {
   const h = {};
@@ -32,9 +33,25 @@ function headers(json) {
   if (json) h["Content-Type"] = "application/json";
   return h;
 }
-async function api(path, body) {
-  const r = await fetch(path, {cache: "no-store", headers: headers(body !== undefined),
-    ...(body !== undefined ? {method: "POST", body: JSON.stringify(body)} : {})});
+async function api(path, body, timeoutMs = FETCH_MS) {
+  // Every call carries a deadline. The pages re-fetch on a self-rescheduling timer
+  // (`await refresh(); setTimeout(poll, 1000)`), so one request that never returns -- a stalled connection, a
+  // proxy that swallowed it, a half-closed socket -- would leave the page showing its last render forever,
+  // silently, with no way for the reader to tell a quiet box from a dead page. A timeout turns that into one
+  // visible error and the next tick.
+  const ctl = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, timeoutMs);
+  let r;
+  try {
+    r = await fetch(path, {cache: "no-store", signal: ctl.signal, headers: headers(body !== undefined),
+      ...(body !== undefined ? {method: "POST", body: JSON.stringify(body)} : {})});
+  } catch (e) {
+    throw new Error(timedOut ? `${path} did not answer within ${(timeoutMs / 1000).toFixed(0)} s`
+                             : (e && e.message) || `${path} failed`);
+  } finally {
+    clearTimeout(timer);
+  }
   let value = null;
   try { value = await r.json(); } catch (_) { /* an empty body is an answer too */ }
   if (!r.ok) {
