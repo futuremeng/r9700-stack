@@ -6,8 +6,14 @@ TAG=sys.argv[1] if len(sys.argv)>1 else "run"
 N=int(sys.argv[2]) if len(sys.argv)>2 else 164
 CONC=8
 def load():
-    url="https://raw.githubusercontent.com/openai/human-eval/master/data/HumanEval.jsonl.gz"
-    raw=urllib.request.urlopen(url,timeout=60).read()
+    # offline cache, same trick as bench/quality.py's GSM8K set: GitHub is intermittent here (a 60 s fetch died
+    # mid-gate on 2026-11-03), and a gate that dies mid-A/B costs a whole arm of the comparison.
+    cache = os.path.expanduser("~/data/HumanEval.jsonl.gz")
+    if os.path.exists(cache):
+        raw = open(cache, "rb").read()
+    else:
+        url = "https://raw.githubusercontent.com/openai/human-eval/master/data/HumanEval.jsonl.gz"
+        raw = urllib.request.urlopen(url, timeout=60).read()
     return [json.loads(l) for l in gzip.decompress(raw).decode().splitlines()]
 def gen(prompt):
     msg=("Complete the following Python function. Reply with the complete function "

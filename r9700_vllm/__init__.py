@@ -58,6 +58,10 @@ def register() -> None:
         from .spec import mtp_rocm
         if mtp_rocm.patch():
             done.append("patch:mtp_allowlist")
+    if not _disabled("qsa_kvfp8"):
+        from .compat import qsa_kvfp8
+        if qsa_kvfp8.patch():
+            done.append("patch:qsa_kvfp8")
     if not _disabled("glm5next"):
         from .models import glm5next
         if glm5next.patch():

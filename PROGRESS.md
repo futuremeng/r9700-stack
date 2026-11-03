@@ -1,3 +1,60 @@
+## 2026-11-03 (afternoon): fp8 QSA main KV -- the writer was already fp8, so the whole ask is three guards and one read path
+
+* Reopened `PROGRESS.md:896` ("fp8 KV is refused by stock QSA"). Reading `vllm models/qwen4_exp/amd/`: the **write**
+  side already does e4m3 -- the fused QSA prepare Triton kernel stores K/V through `_to_dst_dtype()` (`tl.float8e4nv`,
+  `amd/ops/qsa_prepare.py:123-140,268`) with descales `attn._k_scale_float` / `._v_scale_float`
+  (`amd/indexer_qsa.py:323-326`) -- and upstream's **NVIDIA reader** already reads fp8 with those same scales
+  (`nvidia/qsa.py:306`). On the ROCm side the walls are three `raise`s (`amd/qsa.py:113,190,273`), our own guard
+  (`attn/qsa.py:138`) and a bf16-only `r9k_qsa.hip`. Full write-up: **`notes/kv-fp8-qsa.md`**.
+* Prize, from the running instance's own log (block 448, mamba pad 1.98%, `7.22 GiB` a card, `540,202 tokens`,
+  `2.06x` at 262,144): the main KV is 12 full-attention layers x 1,024 B/token = **12,288 of the 14,348 B/token/card**
+  (85.6%), so e4m3 there puts the pool at **~0.96-1.02M tokens** and 262k-context concurrency at **~3.7-3.9x**. The
+  block size moves 448 -> 896 (attention page must stay >= the 449,828 B GDN page); decode/prefill gain ~nothing
+  (2,048 tokens x 1,024 B x 12 layers is ~1% of GDDR7) -- **this is a capacity change, not a speed one**.
+* Built (offline; the box served the whole session, nothing was restarted): `r9k_qsa.hip` attention kernel templated
+  on the KV element type -- fp8 changes only the two stage loads (16 B of 16 fp8 for K, `global_load_tr_b64_v2i32` for
+  V^T, `fp8x8_to_bf16` on the way in) and keeps the **bf16 LDS layout, occupancy and WMMA pipeline identical**; K's
+  descale folds into `scale_log2`, V's into the output normalizer (correct through split+merge too). New entry
+  `r9k_qsa_attn_f8`. `attn/qsa.py` dispatches by dtype and reads the descale once per layer from the same
+  `_k_scale_float` / `_v_scale_float` the writer used. `compat/qsa_kvfp8.py` (+ `gate.py`, plugin registration) builds
+  the layer with `cache_dtype` temporarily reported as bf16 -- which also keeps the **side** caches bf16 -- then sets
+  the layer's own dtype to fp8 for `get_kv_cache_spec()`. `tests/test_qsa_fp8.py` separates kernel correctness from
+  quantization error per case (GQA 6/12, rows 1-2048, split/merge, page 448/896, descale 1.0/0.5).
+* **Measured on this box in the 13:23-13:52 idle window** (two fresh instances, box left on bf16). Kernel test:
+  the fp8 read path is as tight as bf16 (rel 1.7e-3-3.9e-3 across rows 1-2048, page 448/896, nsplit auto/1,
+  descale 1.0/0.5/0.25) and **7-11% faster**. Serving: block size **448 -> 880** (mamba pad 1.98% -> 0.16%),
+  `GPU KV cache size` **540,202 -> 1,021,931 tokens (+89.2%)**, `Maximum concurrency for 262,144` **2.06x -> 3.90x**.
+  **needle 8/8 including 250,078-token prompts** (depth 105,747). GSM8K no-think 300 @8: 95.3% vs 96.0% bf16 --
+  two questions, no detectable difference at that n. `probe32`: @32x1200 1,785/1,802 vs 1,808/1,811 (-0.7%),
+  @32x300 1,528-1,576 vs 1,594-1,596, @16x300 1,122 vs 1,131; accepted/draft 1.549 vs 1.604 (-3.4%); power still a
+  flat 300 W. One real cost: the fp8 cache dtype invalidates the AOT compile (**32.1 s** vs 0.53 s on the first
+  launch). Table and reading: `notes/kv-fp8-qsa.md`.
+* **Second window, paired arms** (13:51-14:00 bf16 then 14:06-14:15 fp8, one fresh instance each, `bench/quality.py
+  800 8` + `needle_long` + `prefill.py` + `probe32` in the same order, logs `~/logs/gatepair-{bf16,kvf8}.log`):
+  GSM8K no-think 800 @8 **96.0% fp8 against 95.6% bf16**; needle 3/3 and 8/8 cold+warm out to 250,078 tokens in both
+  arms; **prefill flat to +-0.5% at 483 / 1,964 / 7,777 / 31,147 / 77,811 tokens** -- so half the KV bytes buys nothing
+  on the prefill side, as predicted. `probe32` pooled over two instances per arm: @32x1200 1,814 -> 1,787 (-1.5%),
+  @32x300 1,612 -> 1,543 (-4.3%), @16x300 1,141 -> 1,091 (-4.4%). The kernel is *faster*, so the gap is MTP acceptance:
+  accepted tokens per draft 1.604 / 1.620 (two bf16 instances) against 1.549 (fp8), i.e. **2.61 -> 2.55 tokens per step,
+  -2.3%**, which is the whole 1,200-token-wave gap.
+* HumanEval 164 (greedy, thinking on): **fp8 161/164 = 98.17% against bf16 159/164 = 96.95%**; McNemar b=2, c=0,
+  exact p=0.50. `bench/humaneval.py` now reads `~/data/HumanEval.jsonl.gz` when present (the GSM8K cache trick -- a
+  GitHub fetch died mid-gate and cost a minute of an arm). `bench/ab.sh`, the formal randomized pair, **cannot run
+  here**: it drives `serve/serve.sh` and greps `docker ps` for `vllmstock`, and this box has no docker -- which is why
+  `serve/native-flashnext.sh` exists.
+* Net: **+87% KV (2.06x -> 3.85x at 262k) for no measurable quality cost and 1.5-4% of decode**, plus one 32 s recompile
+  on the first fp8 launch (the second hit the AOT cache: 20.9 s init, 0.52 s compile). For this box's ledger -- p99
+  prompt 245,792, KV usage seen at 82% under three streams -- that trade is worth taking; flip with
+  `R9K_QSA_KVF8=1 KVDTYPE=fp8_e4m3`. **Box left on bf16** pending that call. Scales are still the 1.0 defaults, and a
+  calibration pass for the 12 main layers is the obvious place to claw the -2.3% acceptance back.
+* A build.sh landmine, fixed on the way: the export check's `nm -D "$OUT" | grep -q` under `set -o pipefail` fails a
+  **clean** build at random (`grep -q` closes the pipe -> nm SIGPIPE 141 -> reads as MISSING EXPORT); it killed two
+  builds in a row on different symbols and passed when the same loop was re-run on the same file. Now one `nm` pass
+  into a temp file.
+* libr9k.so in both places now carries `r9k_qsa_attn_f8`; the bf16 production instance relaunched on it and read the
+  same pool and throughput as before, so the templated kernel costs the bf16 path nothing. Previous builds kept as
+  `libr9k.so.pre-f8`. Box left running **bf16 production config**.
+
 ## 2026-11-01 (end): queue knobs on wall time -- MWAITX=0 costs 3x, HWQ=2 neutral -- and shape (b) now has no marker
 
 * Wall-based re-run, one launch per arm: default **5.3-5.5 s**, `HWQ=2` **5.2-5.7 s** (neutral), `MWAITX=0`

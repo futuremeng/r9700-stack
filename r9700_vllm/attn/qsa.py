@@ -24,6 +24,7 @@ logger = init_logger("vllm." + __name__)
 
 _L = None
 _SCRATCH: dict = {}
+_DESCALE: dict = {}
 _GS = 4                  # indexer_compress_ratio (the kernel's group size)
 
 
@@ -38,6 +39,10 @@ def lib():
         L.r9k_qsa_attn.restype = ctypes.c_int
         L.r9k_qsa_attn.argtypes = [ctypes.c_long] * 8 + [ctypes.c_int] * 2 + [ctypes.c_long] * 5 + \
             [ctypes.c_int] * 4 + [ctypes.c_long] * 5 + [ctypes.c_int] + [ctypes.c_long]
+        if hasattr(L, "r9k_qsa_attn_f8"):                        # an older libr9k.so without the fp8 entry must not
+            L.r9k_qsa_attn_f8.restype = ctypes.c_int              # disable the whole r9k QSA path (available() calls
+            L.r9k_qsa_attn_f8.argtypes = [ctypes.c_long] * 8 + [ctypes.c_int] * 2 + [ctypes.c_long] * 5 + \
+                [ctypes.c_int] * 4 + [ctypes.c_long] * 5 + [ctypes.c_int] + [ctypes.c_double] * 2 + [ctypes.c_long]
         L.r9k_qsa_merge.restype = ctypes.c_int
         L.r9k_qsa_merge.argtypes = [ctypes.c_long] * 6 + [ctypes.c_int] * 3 + [ctypes.c_long]
         _L = L
@@ -49,6 +54,22 @@ def available() -> bool:
         return hasattr(lib(), "r9k_qsa_attn")
     except Exception:
         return False
+
+
+FP8 = (torch.float8_e4m3fn, torch.uint8)
+
+
+def kv_descale(layer) -> tuple:
+    """(k, v) host floats the main cache was written with. The fused QSA prepare quantizes K/V with
+    ``layer._k_scale_float`` / ``._v_scale_float`` (vllm models/qwen4_exp/amd/indexer_qsa.py:325-326), so the reader
+    must use exactly those. Read once per layer: no per-call host sync (same rule as models/glm5next.py for the GLM
+    fp8 pool)."""
+    key = id(layer)
+    got = _DESCALE.get(key)
+    if got is None:
+        got = (float(getattr(layer, "_k_scale_float", 1.0) or 1.0), float(getattr(layer, "_v_scale_float", 1.0) or 1.0))
+        _DESCALE[key] = got
+    return got
 
 
 def _scratch(device, rows: int, bw: int):
@@ -77,10 +98,11 @@ def num_splits(rows: int, hkv: int) -> int:
 
 
 def sparse_attention(q, key_cache, value_cache, logical_indices, block_table, token_to_req, query_start_loc,
-                     seq_lens, out, nsplit: int | None = None):
-    """q [rows, hq, 256] bf16; key/value_cache [blocks, page, hkv, 256] bf16 views (any strides, head dim
-    contiguous); logical_indices [rows, width] i32 (-1 padded, the stock expanded list); block_table [nreq, W];
-    token_to_req [rows]; query_start_loc [nreq+1]; seq_lens [nreq]; out [rows, hq, 256] (pre-zeroed by caller)."""
+                     seq_lens, out, nsplit: int | None = None, descale: tuple = (1.0, 1.0)):
+    """q [rows, hq, 256] bf16; key/value_cache [blocks, page, hkv, 256] bf16 or fp8-e4m3 views (any strides, head
+    dim contiguous); logical_indices [rows, width] i32 (-1 padded, the stock expanded list); block_table [nreq, W];
+    token_to_req [rows]; query_start_loc [nreq+1]; seq_lens [nreq]; out [rows, hq, 256] (pre-zeroed by caller).
+    fp8: `descale` = (k, v) per-tensor scales, the same two the writer quantized with (kv_descale)."""
     rows, hq, hd = q.shape
     if rows == 0:
         return out
@@ -103,13 +125,21 @@ def sparse_attention(q, key_cache, value_cache, logical_indices, block_table, to
     if ns > 1:
         po = torch.empty((ns, rows, hq, hd), dtype=torch.float32, device=q.device)
         plse = torch.empty((ns, rows, hq), dtype=torch.float32, device=q.device)
-    rc = L.r9k_qsa_attn(q.data_ptr(), q.stride(0), q.stride(1), key_cache.data_ptr(), value_cache.data_ptr(),
-                        key_cache.stride(0), key_cache.stride(1), key_cache.stride(2), page, hd,
-                        block_table.data_ptr(), block_table.stride(0), token_to_req.data_ptr(), pos.data_ptr(),
-                        bm.data_ptr(), bm.shape[1], rows, hq, hkv, out.data_ptr(), out.stride(0), out.stride(1),
-                        po.data_ptr() if po is not None else 0, plse.data_ptr() if plse is not None else 0, ns, st)
-    if rc:
-        raise RuntimeError(f"r9k_qsa_attn failed ({rc})")
+    args = (q.data_ptr(), q.stride(0), q.stride(1), key_cache.data_ptr(), value_cache.data_ptr(),
+            key_cache.stride(0), key_cache.stride(1), key_cache.stride(2), page, hd,
+            block_table.data_ptr(), block_table.stride(0), token_to_req.data_ptr(), pos.data_ptr(),
+            bm.data_ptr(), bm.shape[1], rows, hq, hkv, out.data_ptr(), out.stride(0), out.stride(1),
+            po.data_ptr() if po is not None else 0, plse.data_ptr() if plse is not None else 0, ns)
+    if key_cache.dtype in FP8:
+        if not hasattr(L, "r9k_qsa_attn_f8"):
+            raise RuntimeError("fp8 QSA cache asked for but this libr9k.so has no r9k_qsa_attn_f8: rebuild kernels")
+        rc = L.r9k_qsa_attn_f8(*args, float(descale[0]), float(descale[1]), st)
+        if rc:
+            raise RuntimeError(f"r9k_qsa_attn_f8 failed ({rc})")
+    else:
+        rc = L.r9k_qsa_attn(*args, st)
+        if rc:
+            raise RuntimeError(f"r9k_qsa_attn failed ({rc})")
     if ns > 1:
         rc = L.r9k_qsa_merge(po.data_ptr(), plse.data_ptr(), out.data_ptr(), out.stride(0), out.stride(1),
                              pos.data_ptr(), rows, hq, ns, st)
@@ -135,11 +165,13 @@ def _forward_qsa(self, layer, query, key, value, kv_cache, attn_metadata, output
     key_cache, value_cache = kv_cache.transpose(1, 2).split(self.head_size, dim=-1)
     key_cache = canonicalize_singleton_dim_strides(key_cache)
     value_cache = canonicalize_singleton_dim_strides(value_cache)
-    if key_cache.dtype != torch.bfloat16 or query.dtype != torch.bfloat16:
-        raise NotImplementedError("Qwen4Exp QSA requires BF16 Q/K/V")
+    if key_cache.dtype != torch.bfloat16 and key_cache.dtype not in FP8:
+        raise NotImplementedError("Qwen4Exp QSA supports BF16 and fp8-e4m3 K/V")
+    if query.dtype != torch.bfloat16 or value_cache.dtype != key_cache.dtype:
+        raise NotImplementedError("Qwen4Exp QSA requires BF16 Q and one K/V dtype")
     sparse_attention(query[:num_tokens], key_cache, value_cache, topk_buffer[:num_tokens], attn_metadata.block_table,
                      token_to_req[:num_tokens], attn_metadata.query_start_loc, attn_metadata.seq_lens,
-                     output[:num_tokens])
+                     output[:num_tokens], descale=kv_descale(layer))
     return output
 
 
@@ -151,6 +183,12 @@ def install(model: torch.nn.Module) -> int:
     indexer_glue.install(model)                 # independent knob R9K_QSA_GLUE (norm + rope glue per head)
     if os.environ.get("R9K_QSA", "r9k") != "r9k" or not available():
         return 0
+    if os.environ.get("R9K_QSA_KVF8", "0") == "1":
+        if hasattr(lib(), "r9k_qsa_attn_f8"):
+            logger.info("r9700: r9k QSA fp8-e4m3 main KV enabled (descales from the layer's k_scale/v_scale)")
+        else:
+            logger.warning("r9700: R9K_QSA_KVF8=1 but this libr9k.so has no r9k_qsa_attn_f8 -- rebuild kernels; "
+                           "staying on bf16 K/V")
     n = nf = 0
     fuse = os.environ.get("R9K_FUSED_QKROPE", "1") == "1"
     for mod in model.modules():

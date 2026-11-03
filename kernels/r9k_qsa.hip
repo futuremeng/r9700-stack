@@ -26,8 +26,15 @@
 // lane column. K staged coalesced, V staged with hardware-transposed loads from per-lane gathered addresses.
 // Splits (decode: few rows, so few workgroups) partition the group-id range; kernel 3 merges them by LSE.
 //
-// Geometry: head_size 256, GQA <= 12, bf16 K/V in any paged layout given by element strides (block, token, head),
-// page size a multiple of 4. No device printf/assert (the build enforces hostcall-free objects).
+// Geometry: head_size 256, GQA <= 12, bf16 or fp8 e4m3 K/V in any paged layout given by element strides (block,
+// token, head), page size a multiple of 4. No device printf/assert (the build enforces hostcall-free objects).
+//
+// fp8 KV (r9k_qsa_attn_f8, 2026-11-03): the same kernel instantiated on uint8_t cache elements. Only the two stage
+// loads change (16 B of 16 fp8 for K, and global_load_tr_b64 for V^T, converted with v_cvt_pk_f32_fp8 on the way
+// into LDS); the LDS layout stays bf16, so LDS size, occupancy and the WMMA pipeline are bit-for-bit the bf16
+// kernel's. The win is the pool: an fp8 main KV cache halves the bytes vLLM spends per token on the 12
+// full-attention layers (see notes/kv-fp8-qsa.md). K's descale rides in on scale_log2, V's on the output
+// normalizer, so no element carries an extra multiply. Same reasoning and same helpers as r9k_attn.hip's fp8 path.
 #include <hip/hip_runtime.h>
 #include <stdint.h>
 
@@ -38,6 +45,8 @@ typedef short v8s __attribute__((ext_vector_type(8)));
 typedef float v8f __attribute__((ext_vector_type(8)));
 typedef unsigned v4u __attribute__((ext_vector_type(4)));
 typedef __bf16 v2bf16 __attribute__((ext_vector_type(2)));
+typedef int v2i __attribute__((ext_vector_type(2)));
+typedef float v2f __attribute__((ext_vector_type(2)));
 
 constexpr int HD = 256;
 constexpr int HH = HD / 2;
@@ -95,6 +104,21 @@ __device__ __forceinline__ float bf16x8_sum(v8bf16 v, float acc) {
   return acc;
 }
 
+// fp8 e4m3 KV: 8 fp8 -> 8 bf16 (same as r9k_attn.hip: the hardware convert is exact, and e4m3's 3 mantissa bits
+// survive the truncating fp32 -> bf16 pack exactly).
+__device__ __forceinline__ v8bf16 fp8x8_to_bf16(v2i w) {
+  const v2f a = __builtin_amdgcn_cvt_pk_f32_fp8(w[0], false), b = __builtin_amdgcn_cvt_pk_f32_fp8(w[0], true);
+  const v2f c = __builtin_amdgcn_cvt_pk_f32_fp8(w[1], false), d = __builtin_amdgcn_cvt_pk_f32_fp8(w[1], true);
+  const v4u r = {pack_hi16(a[0], a[1]), pack_hi16(b[0], b[1]), pack_hi16(c[0], c[1]), pack_hi16(d[0], d[1])};
+  return __builtin_bit_cast(v8bf16, r);
+}
+
+// Stage element type per KV cache dtype: K chunks are 16 B either way (8 bf16 / 16 fp8 elements), V^T is a
+// hardware-transposed 16 B (bf16) or 8 B (fp8) load.
+template <typename KV> struct Frag;
+template <> struct Frag<uint16_t> { using K = v8bf16; using V = v8bf16; static constexpr int KCHUNK = 512; };
+template <> struct Frag<uint8_t>  { using K = v4u;    using V = v2i;  static constexpr int KCHUNK = 256; };
+
 // Staged K / V^T layout, identical to r9k_attn.hip (bank-conflict-free fragment reads).
 constexpr int LDS_K = 16 * 512;
 constexpr int LDS_V = 256 * 32;
@@ -142,16 +166,17 @@ struct Lds {
   static constexpr int BYTES = 2 * LDS_BUF + NW * 256 * 4 + LISTN * 12 + (WINW + 1) * 4 + TILE * 8;
 };
 
-template <int GQA>
+template <int GQA, typename KV>
 __global__ void __launch_bounds__(GQA * 64) r9k_qsa_attn_kernel(
-    const uint16_t* __restrict__ q, long q_srow, long q_shead, const uint16_t* __restrict__ kc,
-    const uint16_t* __restrict__ vc, long s_blk, long s_tok, long s_head, int page_size,
+    const uint16_t* __restrict__ q, long q_srow, long q_shead, const KV* __restrict__ kc,
+    const KV* __restrict__ vc, long s_blk, long s_tok, long s_head, int page_size,
     const int* __restrict__ bt, long bt_stride, const int* __restrict__ t2r, const int* __restrict__ pos,
     const unsigned* __restrict__ bm, int bw, int rows, int hq, uint16_t* __restrict__ out, long o_srow,
-    long o_shead, float* __restrict__ po, float* __restrict__ plse, int nsplit, float scale_log2) {
+    long o_shead, float* __restrict__ po, float* __restrict__ plse, int nsplit, float scale_log2, float vdesc) {
   typedef Lds<GQA> L;
   constexpr int NW = L::NW, NT = NW * 32;
-  constexpr int NK = (512 + NT - 1) / NT;          // 16 B K chunks per thread per stage
+  using Fr = Frag<KV>;
+  constexpr int NK = (Fr::KCHUNK + NT - 1) / NT;   // 16 B K chunks per thread per stage
   constexpr int NV = (16 + NW - 1) / NW;           // V d-tiles per wave per stage
   __shared__ __attribute__((aligned(16))) unsigned char lds[L::BYTES];
   unsigned char* xs = lds + 2 * LDS_BUF;                                   // S^T partial exchange
@@ -266,35 +291,61 @@ __global__ void __launch_bounds__(GQA * 64) r9k_qsa_attn_kernel(
       __syncthreads();
 
       // ---- staged K (coalesced) / V^T (transposed) loads for stage s, from the gathered groups
-      v8bf16 sk[NK], sv[NV];
+      typename Fr::K sk[NK];
+      typename Fr::V sv[NV];
+      const int kv_row = sizeof(KV) == 2 ? 8 * (lane >> 4) + (lane & 7)
+                                         : 8 * (lane >> 4) + 4 * ((lane >> 3) & 1) + (lane & 3);
+      const int vbyte = sizeof(KV) == 2 ? 8 * ((lane >> 3) & 1) : 8 * ((lane >> 2) & 1);
       auto load = [&](int s) {
+        const KV* vb = vc + l_off[4 * s + (kv_row >> 2)] + (long)(kv_row & 3) * s_tok + head_off + vbyte;
 #pragma unroll
         for (int i = 0; i < NK; i++) {
           const int c = t + i * NT;
-          if (c < 512) {
-            const int krow = c >> 5;
-            sk[i] = ld_frag(kc + l_off[4 * s + (krow >> 2)] + (long)(krow & 3) * s_tok + head_off + (c & 31) * 8);
+          if constexpr (sizeof(KV) == 2) {
+            if (c < 512) {
+              const int krow = c >> 5;
+              sk[i] = ld_frag(kc + l_off[4 * s + (krow >> 2)] + (long)(krow & 3) * s_tok + head_off + (c & 31) * 8);
+            }
+          } else {
+            if (c < 256) {
+              const int krow = c >> 4;
+              sk[i] = *reinterpret_cast<const v4u*>(
+                  kc + l_off[4 * s + (krow >> 2)] + (long)(krow & 3) * s_tok + head_off + (c & 15) * 16);
+            }
           }
         }
-        const int kv_row = 8 * (lane >> 4) + (lane & 7);
-        const uint16_t* vb = vc + l_off[4 * s + (kv_row >> 2)] + (long)(kv_row & 3) * s_tok + head_off +
-                             8 * ((lane >> 3) & 1);
 #pragma unroll
         for (int i = 0; i < NV; i++) {
           const int dt = wave + i * NW;
-          if (dt < 16) sv[i] = ld_frag_tr(vb + 16 * dt);
+          if (dt < 16) {
+            if constexpr (sizeof(KV) == 2) sv[i] = ld_frag_tr(vb + 16 * dt);
+            else sv[i] = __builtin_amdgcn_global_load_tr_b64_v2i32((v2i*)(vb + 16 * dt));
+          }
         }
       };
       auto store = [&](unsigned char* buf) {
 #pragma unroll
         for (int i = 0; i < NK; i++) {
           const int c = t + i * NT;
-          if (c < 512) *reinterpret_cast<v8bf16*>(buf + lds_k_off(c >> 5, c & 31)) = sk[i];
+          if constexpr (sizeof(KV) == 2) {
+            if (c < 512) *reinterpret_cast<v8bf16*>(buf + lds_k_off(c >> 5, c & 31)) = sk[i];
+          } else {
+            if (c < 256) {
+              const v2i lo = {(int)sk[i][0], (int)sk[i][1]}, hi = {(int)sk[i][2], (int)sk[i][3]};
+              *reinterpret_cast<v8bf16*>(buf + lds_k_off(c >> 4, 2 * (c & 15))) = fp8x8_to_bf16(lo);
+              *reinterpret_cast<v8bf16*>(buf + lds_k_off(c >> 4, 2 * (c & 15) + 1)) = fp8x8_to_bf16(hi);
+            }
+          }
         }
 #pragma unroll
         for (int i = 0; i < NV; i++) {
           const int dt = wave + i * NW;
-          if (dt < 16) *reinterpret_cast<v8bf16*>(buf + lds_v_off(16 * dt + (lane & 15), lane >> 4)) = sv[i];
+          if (dt < 16) {
+            if constexpr (sizeof(KV) == 2)
+              *reinterpret_cast<v8bf16*>(buf + lds_v_off(16 * dt + (lane & 15), lane >> 4)) = sv[i];
+            else
+              *reinterpret_cast<v8bf16*>(buf + lds_v_off(16 * dt + (lane & 15), lane >> 4)) = fp8x8_to_bf16(sv[i]);
+          }
         }
       };
       load(0);
@@ -369,7 +420,7 @@ __global__ void __launch_bounds__(GQA * 64) r9k_qsa_attn_kernel(
     const float ltot = lsum + lane_swap16(lsum);
     if (active) {
       const int orow = row0 + r;
-      const float inv = ltot > 0.f ? 1.f / ltot : 0.f;
+      const float inv = ltot > 0.f ? vdesc / ltot : 0.f;      // fp8: V's descale rides the normalizer
       if (nsplit == 1) {
         uint16_t* op = out + (long)orow * o_srow + (long)head * o_shead + d0 + 8 * kh;
 #pragma unroll
@@ -416,15 +467,15 @@ __global__ void __launch_bounds__(256) r9k_qsa_merge_kernel(
   out[(long)row * o_srow + (long)head * o_shead + d] = (uint16_t)((x + 0x7FFFu + ((x >> 16) & 1u)) >> 16);
 }
 
-template <int GQA>
+template <int GQA, typename KV>
 int launch_attn(long q, long q_srow, long q_shead, long k, long v, long s_blk, long s_tok, long s_head, int ps,
                 long bt, long bt_stride, long t2r, long pos, long bm, int bw, int rows, int hq, int hkv, long out,
-                long o_srow, long o_shead, long po, long plse, int nsplit, hipStream_t st) {
+                long o_srow, long o_shead, long po, long plse, int nsplit, float kdesc, float vdesc, hipStream_t st) {
   dim3 grid((rows + TILE - 1) / TILE, hkv, nsplit), block(GQA * 64);
-  r9k_qsa_attn_kernel<GQA><<<grid, block, 0, st>>>(
-      (const uint16_t*)q, q_srow, q_shead, (const uint16_t*)k, (const uint16_t*)v, s_blk, s_tok, s_head, ps,
+  r9k_qsa_attn_kernel<GQA, KV><<<grid, block, 0, st>>>(
+      (const uint16_t*)q, q_srow, q_shead, (const KV*)k, (const KV*)v, s_blk, s_tok, s_head, ps,
       (const int*)bt, bt_stride, (const int*)t2r, (const int*)pos, (const unsigned*)bm, bw, rows, hq,
-      (uint16_t*)out, o_srow, o_shead, (float*)po, (float*)plse, nsplit, (1.f / 16.f) * LOG2E);
+      (uint16_t*)out, o_srow, o_shead, (float*)po, (float*)plse, nsplit, (1.f / 16.f) * LOG2E * kdesc, vdesc);
   return (int)hipGetLastError();
 }
 
@@ -450,13 +501,36 @@ extern "C" int r9k_qsa_attn(long q, long q_srow, long q_shead, long k, long v, l
   if (rows <= 0) return 0;
   hipStream_t st = (hipStream_t)stream;
 #define QSA_CASE(G) \
-  case G: return launch_attn<G>(q, q_srow, q_shead, k, v, s_blk, s_tok, s_head, page_size, bt, bt_stride, t2r, pos, bm, \
-                                bw, rows, hq, hkv, out, o_srow, o_shead, po, plse, nsplit, st);
+  case G: return launch_attn<G, uint16_t>(q, q_srow, q_shead, k, v, s_blk, s_tok, s_head, page_size, bt, bt_stride, \
+                                          t2r, pos, bm, bw, rows, hq, hkv, out, o_srow, o_shead, po, plse, nsplit, \
+                                          1.f, 1.f, st);
   switch (hq / hkv) {
     QSA_CASE(1) QSA_CASE(2) QSA_CASE(3) QSA_CASE(4) QSA_CASE(6) QSA_CASE(8) QSA_CASE(12)
     default: return -2;
   }
 #undef QSA_CASE
+}
+
+// The fp8 e4m3 entry: identical geometry, cache pointers read as fp8 elements (element strides, so 1 B each), and
+// two per-tensor descales -- kdesc folded into the softmax scale, vdesc into the output normalizer. vLLM's fused
+// QSA prepare already writes an fp8 main cache (models/qwen4_exp/amd/ops/qsa_prepare.py _to_dst_dtype), so the
+// scales here must match the ones that writer used.
+extern "C" int r9k_qsa_attn_f8(long q, long q_srow, long q_shead, long k, long v, long s_blk, long s_tok,
+                               long s_head, int page_size, int head_size, long bt, long bt_stride, long t2r, long pos,
+                               long bm, int bw, int rows, int hq, int hkv, long out, long o_srow, long o_shead,
+                               long po, long plse, int nsplit, double kdesc, double vdesc, long stream) {
+  if (head_size != HD || page_size <= 0 || page_size % GS || hkv <= 0 || hq % hkv || nsplit <= 0) return -1;
+  if (rows <= 0) return 0;
+  hipStream_t st = (hipStream_t)stream;
+#define QSA_F8CASE(G) \
+  case G: return launch_attn<G, uint8_t>(q, q_srow, q_shead, k, v, s_blk, s_tok, s_head, page_size, bt, bt_stride, \
+                                         t2r, pos, bm, bw, rows, hq, hkv, out, o_srow, o_shead, po, plse, nsplit, \
+                                         (float)kdesc, (float)vdesc, st);
+  switch (hq / hkv) {
+    QSA_F8CASE(1) QSA_F8CASE(2) QSA_F8CASE(3) QSA_F8CASE(4) QSA_F8CASE(6) QSA_F8CASE(8) QSA_F8CASE(12)
+    default: return -2;
+  }
+#undef QSA_F8CASE
 }
 
 extern "C" int r9k_qsa_merge(long po, long plse, long out, long o_srow, long o_shead, long pos, int rows, int hq,
