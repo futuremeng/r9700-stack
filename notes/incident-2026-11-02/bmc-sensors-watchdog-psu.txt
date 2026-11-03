@@ -106,7 +106,10 @@ What survives from this section is narrower but still live:
 
 ### 5c. 2026-11-02 15:3x: the operator confirms **two** 2600 W supplies -- so PSU2 at 0 W is a fault, not a parked bay
 
-That settles the ambiguity left open in §5 ("could be a parked/standby redundant supply by design"). A dual-2600 W
+*(Written before the standby question in §5e was raised: "settles" was too strong. Two 2600 W supplies show the
+hardware is capable of N+1; they do not show the configured policy. Read §5e together with this.)*
+
+A dual-2600 W
 chassis is an N+1 pair: each unit is rated to carry the box alone, and 52-62% loading on one (§5b) is exactly the
 case the pair exists to survive. **This box has been running with its redundancy absent** -- through all fifteen
 resets of 2026-11-02 and every death in this note -- and the failure mode those deaths have (OS gone, no kernel
@@ -176,6 +179,36 @@ open `/dev/ipmi0`, and the box cannot see its own inlet):
    and the fix at once: if the deaths and the correctable `BadTLP` events at `c4:00.0`/`04:00.0` thin out with two
    feeds, the electric branch gains; if nothing changes, it weakens sharply and the switch-side and thermal/airflow
    branches take over. Track it with `:8099 /api/status` -> `.pcie_events` and the per-chain AER counters.
+
+### 5e. 2026-11-02 15:5x: "isn't one of them supposed to be the standby?" -- a fair question, and one number answers it
+
+Two supplies with one carrying all the load **can** be exactly the intended configuration: hot standby, or "cold
+redundancy" on some firmware, where the spare's output is deliberately idle until the active unit fails. So before
+calling this a fault, settle the one thing that distinguishes a designed standby from a dead feed:
+
+    sudo ipmitool -I open sdr get 'PSU2 In Voltage'
+    sudo ipmitool -I open sdr elist | grep -i psu        # note In Voltage for both units
+
+- **`PSU2 In Voltage ~ 240 V` with 0 W out** -> a standby, **normal**. Then the useful follow-ups are which policy
+  it is (load-sharing vs hot spare vs cold redundancy -- vendor names differ), whether the BMC/BIOS power
+  redundancy setting is what the operator intends, and a cheap trust test: does the BMC assert anything when the
+  active unit is pulled while the box runs? (Do that only with the operator's consent and on a box that may die.)
+- **`PSU2 In Voltage = 0 V`** -> **not** a standby: a standby always has AC on its input, even when its output is
+  deliberately off. Zero input volts means the cord, the outlet or the supply's input side is not conducting.
+
+Provenance, stated honestly because it is the deciding number: the `PSU2 In Current 0.000 A` / `In Voltage 0 V`
+readings cited above were taken live during the 2026-11-02 session but **were not stored verbatim in this capture**
+(§5 kept only the Power In/Out and the two `Presence detected` lines), and this account cannot open `/dev/ipmi0`.
+So the number that settles the question is the one we do not have on file: **re-read it.**
+
+Corroboration either way, weak but real: across 3,639 SEL entries there is **no** `Redundancy Lost`-style power
+record (`sel-decode.txt` §4). A BMC that thinks a redundant pair has lost a member usually says so, which mildly
+favours "deliberate standby" -- but this SEL is full and rolling (0 bytes free, oldest records already deleted),
+and plenty of firmware never logs redundancy loss at all, so silence here is a hint, not a verdict.
+
+What does **not** change under either answer: both supplies sit on one PDU (§5d), so a standby -- however healthy
+-- loses its input at the same instant as the active unit. PSU-level failover, if it is working, buys nothing
+against the single thing this box is exposed to: its one feed.
 
     sudo ipmitool -I open sdr get 'PSU2 Power In'
     sudo ipmitool -I open sdr get 'PSU2 Power Out'

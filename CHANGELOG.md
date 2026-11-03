@@ -366,6 +366,19 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   like an uncorrectable fault. Serving traffic does not move these counters; launches do — recorded in the incident
   note, where the takeaway is that a mid-decode event is now the out-of-pattern thing to look for.
 
+- **"Isn't one PSU supposed to be the standby?" -- fair, and it is settled by one number we no longer have on file**
+  ([notes/incident-2026-11-02/bmc-sensors-watchdog-psu.txt](notes/incident-2026-11-02/bmc-sensors-watchdog-psu.txt)
+  §5e, with §5c's "this settles it" softened accordingly). Two 2600 W supplies prove the hardware is N+1-capable, not
+  what policy is configured: hot standby and "cold redundancy" both leave the spare's output at 0 W on purpose. The
+  discriminator is **`PSU2 In Voltage`**: ~240 V with 0 W out is a normal standby (then the questions become which
+  policy and whether the BMC/BIOS redundancy setting is the intended one); **0 V is not a standby** — a standby
+  always has AC at its input even with its output off. The `0.000 A / 0 V` readings cited earlier were taken live in
+  that session but never stored in the capture, and this account cannot open `/dev/ipmi0`, so that is the one
+  reading to re-take. Weak corroboration the other way: 3,639 SEL entries contain no `Redundancy Lost`-style record
+  — but the SEL is full and rolling, and plenty of firmware never logs that, so it is a hint, not a verdict. Unchanged
+  under either answer: both supplies share one PDU, so however healthy the standby, it loses input at the same instant
+  as the active unit.
+
 - **Both cords are on one PDU, which reopens the "not a mains event" conclusion** (operator; recorded in
   [notes/incident-2026-11-02/bmc-sensors-watchdog-psu.txt](notes/incident-2026-11-02/bmc-sensors-watchdog-psu.txt)
   §5d). Two supplies on one PDU, one of which outputs 0 W, is no redundancy at any level. It also weakens
