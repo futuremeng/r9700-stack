@@ -350,14 +350,14 @@ import tempfile as _tf
 with _tf.TemporaryDirectory() as _d:
     _d = Path(_d)
     (_d / "r9700-offline-core.service").write_text(
-        "[Service]\nType=oneshot\nExecStart=/bin/bash /home/jiulu/r9700-stack/host/r9700-offline-core.sh\n")
+        f"[Service]\nType=oneshot\nExecStart=/bin/bash {ROOT}/host/r9700-offline-core.sh\n")
     (_d / "r9700-mca-archive.service").write_text(
-        "[Service]\nExecStart=/venv/bin/python /home/jiulu/r9700-stack/tools/journal-pcie.py --boots 3\n")
+        f"[Service]\nExecStart=/venv/bin/python {ROOT}/tools/journal-pcie.py --boots 3\n")
     (_d / "unrelated.service").write_text("[Service]\nExecStart=/bin/true\n")
     _paths = S.unit_exec_paths(_d)
 ck("the unit check reads ExecStart paths out of the r9700 units, including the script argument, not just argv[0]",
-   ("r9700-offline-core.service", "/home/jiulu/r9700-stack/host/r9700-offline-core.sh") in _paths
-   and ("r9700-mca-archive.service", "/home/jiulu/r9700-stack/tools/journal-pcie.py") in _paths, str(_paths))
+   ("r9700-offline-core.service", f"{ROOT}/host/r9700-offline-core.sh") in _paths
+   and ("r9700-mca-archive.service", f"{ROOT}/tools/journal-pcie.py") in _paths, str(_paths))
 ck("it ignores other units (it is about this stack's interventions, not the whole system)",
    not any(u == "unrelated.service" for u, _ in _paths), str(_paths))
 ck("/bin/bash and /venv/bin/python are also listed (every absolute token counts: a moved interpreter is the same "
