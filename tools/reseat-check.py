@@ -65,7 +65,12 @@ def snapshot():
             "chain": [{"bdf": d["bdf"], "role": d["role"], "speed": d.get("speed"),
                        "width": d.get("width"), "max_speed": d.get("max_speed"),
                        "max_width": d.get("max_width"), "power_state": d.get("power_state"),
-                       "cor": d.get("cor"), "nonfatal": d.get("nonfatal"), "fatal": d.get("fatal")}
+                       "cor": d.get("cor"), "nonfatal": d.get("nonfatal"), "fatal": d.get("fatal"),
+                       # The named split is the diagnosis: on this box both riser chains count their bad packets
+                       # at the SWITCH UPSTREAM PORT (BadTLP 77 on c4:00.0, 50 on 04:00.0) while the root ports
+                       # count retries (Replay Timer Timeout 62 on c0:03.1, 7 on 00:03.1) -- the same link seen
+                       # from both ends. Totals alone would lose that, and totals are per boot anyway.
+                       "notable": d.get("notable") or {}}
                       for d in ch["devices"]],
             "aer_cor": sum_("cor"), "aer_nonfatal": sum_("nonfatal"), "aer_fatal": sum_("fatal"),
             # What the card itself says, when sysfs will answer — busy/VRAM/clocks come from the same sysfs the
@@ -103,7 +108,21 @@ def diff(old, new):
             lines.append(f"{a['card']}: slot {a['slot']} -> {b['slot']} (the card is in a different physical slot)")
         if [d["bdf"] for d in a["chain"]] != [d["bdf"] for d in b["chain"]]:
             lines.append(f"{a['card']}: chain {[d['bdf'] for d in a['chain']]} -> {[d['bdf'] for d in b['chain']]}")
+        # Named counters, per node, before and after. `nb` above is the card map -- shadowing it here broke the
+        # loop after the first card (KeyError on the second), which is the kind of bug a diff tool hides until
+        # the moment you need it, so the names here are deliberately long.
         for da, db in zip(a["chain"], b["chain"]):
+            names_before = {k: v for k, v in (da.get("notable") or {}).items() if v}
+            names_after = {k: v for k, v in (db.get("notable") or {}).items() if v}
+            if names_before and not names_after and da.get("cor") != db.get("cor"):
+                pass                                        # older snapshot without the named split: no claim
+            if names_before and names_after and names_before != names_after:
+                lines.append(f"{a['card']} {da['bdf']}: counters moved -- before: "
+                             + (" ".join(f"{k} {v}" for k, v in names_before.items()) or "quiet")
+                             + " | after: " + (" ".join(f"{k} {v}" for k, v in names_after.items()) or "quiet"))
+            if names_before and not names_after:
+                lines.append(f"{a['card']} {da['bdf']}: counters zeroed at enumeration (new boot); before this "
+                             f"boot read: " + " ".join(f"{k} {v}" for k, v in na.items()))
             if (da["speed"], da["width"]) != (db["speed"], db["width"]):
                 lines.append(f"{a['card']} {da['bdf']}: {da['speed']} GT/s x{da['width']} -> "
                              f"{db['speed']} GT/s x{db['width']}"
@@ -111,6 +130,18 @@ def diff(old, new):
     if old["boot_id"] != new["boot_id"]:
         lines.append("different boot: AER counters are zeroed at enumeration, so compare growth within one boot,"
                      " not these totals")
+    else:
+        # Same boot, so the only number worth having is a RATE: correctables per minute between the two
+        # snapshots. Totals are per boot and this box reboots on its own, so a total can never be compared
+        # across the reseat -- a rate can, and a rate is what answers "did reseating change anything".
+        mins = (new["at"] - old["at"]) / 60.0
+        if mins > 0.5:
+            for bus in sorted(set(ob) & set(nb)):
+                a, b = ob[bus], nb[bus]
+                d = (b["aer_cor"] + b["aer_nonfatal"] + b["aer_fatal"]) \
+                    - (a["aer_cor"] + a["aer_nonfatal"] + a["aer_fatal"])
+                lines.append(f"{a['card']} slot {b['slot']} {bus}: {a['aer_cor']} -> {b['aer_cor']} correctable"
+                             f" ({d:+d} in {mins:.1f} min = {d / mins:.2f}/min)")
     return lines or ["no change in slot assignment, BDF, chain, link speed or width"]
 
 

@@ -392,6 +392,15 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   the operator command list, including `sel elist | grep -iE "chassis|power|reset"`, which lines the forced
   operations up against the 18 death times without any interpretation from me.
 
+- **The AER signature says the riser board, not the cards — and clearing counters now would only destroy it.**
+  Per-node counts: bad packets sit on the **switch upstream ports** of the two riser chains (`c4:00.0` BadTLP 77;
+  `04:00.0` BadTLP 50 + BadDLLP 2) while the **root ports count replays** (`c0:03.1` Timeout 62, `00:03.1` 7) —
+  the same link seen from both ends. The two cards on the other root-port pair (slots 1, 3) read **zero**, and the
+  operator confirms slots 6 and 8 share one extension board. Measured rate, one boot, 19.7 min idle: slot 8
+  +0.15/min, slot 6 +0/min (quiet since 03:23, still at 16.0 GT/s), slots 1/3 zero. `reseat-check.py` now saves the
+  named per-node split and prints growth as **correctables per minute**, because totals are per boot and cannot
+  cross a reseat (also fixed: an inner `nb` shadowed the card map, so the diff died on the second card).
+
 - **Also: no duplicate identity column, and the two PCIe conditions separated further.** With an older in-serve
   build (no `slot` in its payload) the row printed `card3 card3` — headline and driver column both the driver
   name; the driver cell is now blank in that case rather than repeating itself. Meanwhile the Monitor's event list

@@ -510,3 +510,29 @@ memory also runs hottest — not slot 6, which sits at 144 accumulated and quiet
 condition, not the machine-check deaths. Reseating slot 6 is still the action that targets the downgraded
 uplink; it will not address a chain that trains at full speed and still racks up `BadTLP`.
 
+## The two error chains are the riser pair, and the split is clean (2026-11-03 05:09)
+
+The operator says slot 6 and slot 8 sit on one extension board. The counter layout agrees with that, and says
+more than the totals do:
+
+| chain | endpoint | downstream | **upstream port (on the board)** | **root port** | link |
+|---|---|---|---|---|---|
+| slot 6 / card2 | 1 (NonFatalErr) | 1 | **80 — BadTLP 77, Timeout 3** | **62 — Replay Timer Timeout** | **16.0 GT/s ×16** |
+| slot 8 / card4 | 1 | 1 | **54 — BadTLP 50, BadDLLP 2, Timeout 2** | **7 — Timeout** | 32.0 GT/s ×16 |
+| slot 3 / card1 | 0 | 0 | 0 | 0 | 32.0 GT/s ×16 |
+| slot 1 / card3 | 0 | 0 | 0 | 0 | 32.0 GT/s ×16 |
+
+- **Every counted event on this box lives in the two `:03.1` root-port chains** (`c0:03.1`, `00:03.1`); the two
+  cards on `01.1` root ports read **zero**. If the board is fed by those two root ports, the grouping is exact.
+- Bad packets are counted at the **switch upstream port** — the device on the board, on the link that crosses the
+  connector — while the **root ports count replays** (`Timeout` 62 and 7). Same physical link, seen from both
+  ends: one side receives malformed TLPs, the other is retransmitting.
+- Rate, same boot, 19.7 min idle: **slot 8 +0.15/min, slot 6 +0/min**, slots 1/3 zero. So slot 6 accumulated its
+  144 earlier (and keeps the downgraded link) but is currently quiet; slot 8 is the one still talking badly.
+
+**Decision recorded: do not clear counters before the reseat.** AER counters are per boot and zeroed at
+enumeration, and a reseat means a power cycle — the reboot is the clear. Clearing now would only destroy the
+per-node signature above, which is the thing the post-reseat comparison needs. What was saved instead:
+`~/logs/reseat-before-20261103T0505Z.json` (now including the named per-node split), plus `rasdaemon` recording
+timestamped per-device events from now on, plus the Monitor's per-poll deltas and event timestamps.
+
