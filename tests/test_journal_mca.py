@@ -92,26 +92,41 @@ ck("the printed line names the class, the fatality and the codes",
 with tempfile.TemporaryDirectory() as td:
     td = Path(td)
     J.TOPOLOGY = td / "cpu-topology.json"
+    # The conf is deliberately NOT in the repository (it names one machine's faulty core), so the fallback is
+    # tested against a conf this test writes. Testing the real file instead would make a clean clone of this
+    # repository fail its own tests.
+    conf = td / "offline-core.cpus"
+    conf.write_text("17 113\ncore=65 package=0\n")
+    J.OFFLINE_CONF = conf
     ck("an unknown cpu still resolves through the saved conf",
        J.core_of(17) == ("65", "0", "17,113"), str(J.core_of(17)))
     ck("... and so does its SMT sibling -- the two are the same core",
        J.core_of(17)[:2] == J.core_of(113)[:2] and J.core_of(113)[2] == "17,113", str(J.core_of(113)))
     J.TOPOLOGY = td / "nothing.json"
-    ck("no sysfs and no snapshot: None, not a crash", J.core_of(9999) == (None, None, None))
+    J.OFFLINE_CONF = td / "absent.cpus"
+    ck("no sysfs, no snapshot, no conf: None, not a crash and not an invented core",
+       J.core_of(9999) == (None, None, None) and J.core_of(17) == (None, None, None)
+       and J.offline_conf() == {})
+    J.TOPOLOGY = Path(__file__).resolve().parent.parent / ".r9700-state" / "cpu-topology.json"
+    J.OFFLINE_CONF = Path(__file__).resolve().parent.parent / "host" / "offline-core.cpus"
 
 conf = Path(ROOT) / "host" / "offline-core.cpus"
-ck("host/offline-core.cpus names a pair, not a bare number",
-   conf.exists() and len(J.offline_conf()) >= 2, str(J.offline_conf()))
-online = {c: (Path(f"/sys/devices/system/cpu/cpu{c}/online").read_text().strip()
-              if Path(f"/sys/devices/system/cpu/cpu{c}/online").exists() else "?")
-          for c in J.offline_conf()}
-if all(v == "1" for v in online.values()):
-    sibs = {J.core_of(c)[2] for c in online}
-    ck("while the pair is online, sysfs agrees they are one core (the guard in the offline script depends on this)",
-       len(sibs) == 1, str(sibs))
+if conf.exists():
+    ck("where this machine keeps a conf, it names a pair and not a bare number",
+       len(J.offline_conf()) >= 2, str(J.offline_conf()))
+    online = {c: (Path(f"/sys/devices/system/cpu/cpu{c}/online").read_text().strip()
+                  if Path(f"/sys/devices/system/cpu/cpu{c}/online").exists() else "?")
+              for c in J.offline_conf()}
+    if all(v == "1" for v in online.values()):
+        sibs = {J.core_of(c)[2] for c in online}
+        ck("while the pair is online, sysfs agrees they are one core (the guard in the offline script depends on this)",
+           len(sibs) == 1, str(sibs))
+    else:
+        print(f"  skip sibling re-verification: the pair is offline ({online}); sysfs has no topology for them -- "
+              f"that is why the conf exists")
 else:
-    print(f"  skip sibling re-verification: the pair is offline ({online}); sysfs has no topology for them -- "
-          f"that is why the conf exists")
+    print("  skip: host/offline-core.cpus is absent, by design -- it names one chassis's faulty core, so it is "
+          "untracked. The conf fallback is covered above with a conf this test writes itself.")
 
 ck("a boot with no machine check says so rather than printing a blank",
    J.mca_line([], [], [], None) is None)
