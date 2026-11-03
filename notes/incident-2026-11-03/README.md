@@ -700,3 +700,40 @@ steps, or the experiment invalidates itself:
 **What it cannot answer**: whether the container path works (this box has no `docker` binary, `setup.py` says so
 in steps [2]-[4]), and it cannot prove the CPU is fine — at best it shows the fault is confined to one core.
 The box is on borrowed time either way: the fatal-MCA cadence measured from the journal is 20 deaths in 72 h.
+
+---
+
+# First data point: the deliberate reboot, 06:49:06 UTC
+
+The units were installed and enabled before the reboot (verified: `is-enabled` = `enabled` for both, wants links
+present). The reboot was graceful, and the protocol's clean branch is what happened.
+
+**The boot-time workaround ran, on the real box, for the first time.** `journalctl -b -u r9700-offline-core.service`:
+at **06:49:24 — 18 s after boot** — `cpu 17 113 = core 65 of package 0 (siblings 17,113, L2 1024K)`, `core 65
+taken out of use: 190 of 192 threads online`. Before this run the pairing guard and the `echo 0` had literally
+never executed (the manual 06:28 run took the already-offline early exit), so this was their first execution and
+it happened before anything heavy started.
+
+**No machine check.** Boot 0 presents **no BERT record at all** (`~/aer/mca-archive.jsonl` newest line: `mca
+None, replayed_at [], bert None`): the 06:00:06 record was consumed by the graceful reboot. That is an
+instrumentation gain by itself — from now on, a record whose TIME is recent cannot be confused with the old one.
+`journal-pcie.py 1` over the whole boot including the model load: CPER severity `corrected` only, `fru_text
+PcieError` only, and the single MCE line is `HEST corrected error threshold limit: 10` (the GHES threshold
+notice, not a machine check).
+
+**It survived the worst window.** The serve came up in **150 s** and generated a real completion afterwards. The
+weight-load window — when 20 of 33 previous boots' faults were being produced, and the one this box dies in —
+passed with the sick core out of service.
+
+**The PCIe half, measured off counters that enumeration had zeroed** (`--save` at 06:54, `--diff` 3.1 min later,
+during the load): slot 6 chain **+129 correctable in 3.1 min = 41.9/min**, root port `c0:03.1` Timeout 1 → 50,
+`c4:00.0` BadTLP 67 + Timeout 7; **slots 1, 3 and 8: +0**. Same load correlation as the previous boot. Offlining
+a CPU core changed nothing on the PCIe path — which is the negative control that says these really are two
+independent faults, and it also means the riser problem is now the only PCIe problem left to chase, cleanly
+measured from zero.
+
+**What this does not establish.** One boot without a fatal MCA. The measured cadence before the change was 20
+fatal events in 72 h (~one per 3.6 h), and this boot is ~8 minutes old, so the verdict is hours away, not here.
+And the window the workaround cannot cover: **the 18 s between power-on and the unit** had all 192 threads
+schedulable, and boot `-7` in the journal died 5 s after boot. A firmware/BIOS-level core disable is the durable
+form of this workaround; worth putting to ASUS/AMD along with the MCACOD 0x0108 bank-5 evidence.
