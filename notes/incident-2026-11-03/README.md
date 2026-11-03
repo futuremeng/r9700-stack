@@ -1007,3 +1007,57 @@ It also bounds what the monitor's new rate can show: the merged page starts with
 are up, so **launch-window errors are never witnessed by the page's own clock** (this restart: page events `[]`,
 `rate 0/min`, while the external diff above counted +4). The external watchers cover that window --
 `tools/reseat-check.py --save/--diff` around the restart, `tools/brief.py` in the 5-minute `aer-watch` loop.
+
+
+## 12:08 — the fourth load window, and two poweroffs that were not faults
+
+Today the box came down twice more, and neither was a fault: both journals end with `Reached target
+poweroff.target - System Power Off` and **zero machine-check records** in the boot (11:38:24 and 11:57:52). The
+second one was a maintenance stop — the slots were blown out for dust and the **cards' power connectors went back
+in unplugged**.
+
+That produced the most useful failure message of the day. In the 11:52:43–11:57:52 boot only two cards enumerated
+(`lspci -d 1002:` → `03:00.0`, `06:00.0`) and the launch died with:
+
+```
+AssertionError: DP adjusted local rank 2 is out of bounds for 2 devices.
+RuntimeError: Engine core initialization failed.
+```
+
+Two things worth keeping. **(1)** An unpowered card is not a link error: the chain was **absent from the bus**, so
+every PCIe watcher had nothing to report and the counter totals looked clean at 0. The signal was the device
+count, not the AER counters. **(2)** `brief.py` printed the slots it could see and `serve URLError`, so the
+watcher degraded honestly instead of inventing the missing chains.
+
+The fourth load window (launch 12:08:27, `/health` 200 at 12:11:01, `up after 150 s`, context 262,144 = the
+checkpoint's declared `max_position_embeddings`, KV pool 540,202) measured externally against a 12:08 baseline:
+
+```
+card4 slot 8 06:00.0:  0 -> 12 correctable  (+12 in 3.9 min = 3.08/min)
+card2 slot 6 c6:00.0:  0 ->  0 correctable  (+0)
+card3 slot 1 03:00.0:  0 ->  0            card1 slot 3 c3:00.0:  0 -> 0
+all four chains 32.0 GT/s ×16; AER totals since enumeration 12, all on slot 8
+```
+
+The load-window series is now: **08:45** slot 6 +34/3.0 min (11.5/min, Gen5 held) · **10:33** slot 6 +0 ·
+**11:05** slot 8 +4 (1.25/min), slot 6 +0 · **12:08** slot 8 +12 (3.08/min), slot 6 +0. Three consecutive windows
+with slot 6 exactly zero, and the errors sitting on the **slot-8 path** on the same card
+(`0xD9B246D580E8CD73`) both times. That sharpens the 11:05 sentence above: slots 6 and 8 sit on the same
+expansion board but behind **different root ports** (`c0:03.1` and `00:03.1`), so the honest current statement is
+"the board carrying slots 6 and 8, and within it the slot-8 path in each of the last two windows", not "either
+slot of that board at random". Same part to replace; a narrower sentence to say when it is replaced.
+
+Two observation fixes came out of the same morning:
+
+* `tools/brief.py` computed its rate against the previous **call**, while AER counters reset at enumeration.
+  Across a boot boundary that delta is the difference of two unrelated counters — and it goes **negative** when a
+  new boot comes up quieter than the boot it replaced (this morning's first sample after the power cycle printed
+  `0.71/min` for a chain whose true this-boot rate was 3.08). The state file now carries the boot id and
+  `prev_window()` drops a previous sample from another boot: no rate rather than a false one. New
+  `tests/test_brief.py` covers that, the chain-wide sum, the weakest-link rule, and the empty-chain case.
+* The 5-minute watcher was hosted in a `tmux` pane and **died with it**; the previous boot's journal recorded
+  `tmux-spawn-*.scope: Failed to add PIDs to scope's control group: Permission denied` four times, and after the
+  reboot the session was simply gone (`can't find pane`) with exactly one sample in the new boot's series. A
+  pane-hosted watcher is not a watcher: the loop now runs under `setsid nohup` (verified: `12:13:50 … cor=12
+  0.00/min serve 200`). Its gap — no 5-minute samples 11:55→12:12 — is the price of not having checked that the
+  session was alive, so `brief.py`'s own line is now the liveness proof: a missing line means the watcher is dead.

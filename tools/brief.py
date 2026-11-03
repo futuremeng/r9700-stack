@@ -12,7 +12,8 @@ series is readable without opening JSON:
 
 Rate is computed against the previous call (state in ~/aer/brief-prev.json), so it is a per-boot, per-window
 rate -- the counters themselves reset at enumeration, and this box reboots itself, so an absolute number across
-boots would be meaningless.
+boots would be meaningless. The state therefore carries the boot id: across a boot boundary there is NO previous
+sample, and the line prints no rate rather than a negative one.
 
 Read-only: sysfs, one /health request, no writes outside ~/aer.
 """
@@ -30,10 +31,21 @@ import webui  # noqa: E402
 STATE = Path(os.path.expanduser("~/aer/brief-prev.json"))
 
 
+def prev_window(prev, boot):
+    """The previous sample, but only if it came from THIS boot.
+
+    AER counters are zeroed at enumeration, so a delta across a boot boundary is not a rate: it is the
+    difference of two unrelated counters, and it goes NEGATIVE whenever the machine came up quieter than the
+    boot it replaced. This box powers itself off and on, so that is not hypothetical."""
+    return prev if prev.get("b") == boot else {}
+
+
 def main():
     chains = webui.read_pcie("/sys/bus/pci/devices")
     out, prev = {}, json.loads(STATE.read_text()) if STATE.exists() else {}
     now = time.time()
+    boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()[:4]
+    prev = prev_window(prev, boot)
     for ch in chains:
         b = ch["bus"]
         dev = ch.get("devices") or ch.get("chain") or []   # read_pcie calls it "devices"; reseat-check renames it to "chain" when snapshotting
@@ -46,7 +58,7 @@ def main():
     # reads one low and would make the offline-core intervention look different from what `nproc` shows
     threads = sum(1 for ln in Path("/proc/cpuinfo").read_text().splitlines() if ln.startswith("processor"))
     parts = [datetime.now(timezone.utc).strftime("%H:%M:%S"),
-             Path("/proc/sys/kernel/random/boot_id").read_text().strip()[:4],
+             boot,
              f"threads {threads}"]
     for b, v in sorted(out.items(), key=lambda kv: str(kv[1]["slot"])):
         rate = ""
@@ -62,7 +74,7 @@ def main():
     line = "  ".join(parts)
     print(line)
     STATE.parent.mkdir(parents=True, exist_ok=True)
-    STATE.write_text(json.dumps({"t": now, "c": out}))
+    STATE.write_text(json.dumps({"t": now, "b": boot, "c": out}))
     log = STATE.parent / "series.log"
     with log.open("a") as f:
         f.write(line + "\n")

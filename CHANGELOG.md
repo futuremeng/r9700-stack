@@ -1,4 +1,21 @@
 # Changelog
+## A watcher's rate has to be computed inside one boot, and a watcher has to be watched
+
+`tools/brief.py` rated a chain against the previous *call* while AER counters reset at enumeration, so across a
+boot boundary it printed the difference of two unrelated counters -- negative when the new boot came up quieter
+(the morning's first sample after a power cycle said 0.71/min for a chain actually running 3.08). The state file
+now carries the boot id and a previous sample from another boot is dropped: no rate rather than a false one, with
+a new `tests/test_brief.py` for that, the chain-wide sum, the weakest-link rule and an empty chain. Separately:
+the 5-minute loop was hosted in a tmux pane and died with it (the journal had recorded
+`tmux-spawn-*.scope: Failed to add PIDs to scope's control group: Permission denied`), leaving an hour of
+silence that nobody noticed until a manual check. It runs under `setsid nohup` now, and a missing line in
+`series.log` is the alarm.
+
+Also logged: today's two box-down events were **clean poweroffs** (0 machine-check records), one of them leaving
+the cards' power connectors unplugged -- which produced no PCIe error at all, only `AssertionError: DP adjusted
+local rank 2 is out of bounds for 2 devices`, and a fourth load-window measurement (slot 8 +12/3.9 min, slot 6
++0 for the third window running).
+
 ## A chain's error account is now a pinned block of text you can select and copy
 
 The demotion had moved the numbers into a `title`, which serves seeing and not using: a tooltip cannot be
