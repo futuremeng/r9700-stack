@@ -401,3 +401,62 @@ sudo apt-get install -y rasdaemon && sudo systemctl enable --now rasdaemon   # d
 The `grep -iE "chassis|power|reset"` line is the direct test of the hypothesis: those SEL records mark forced power
 operations, and lining them up against the 18 death times above answers it without any interpretation from me.
 
+## What the operator's IPMI run established (2026-11-03 04:26) — including one claim of mine that was wrong
+
+### `sel info`: the BMC **was** recording at the moment of death, and the SEL was unreadable, so its contents are gone
+
+```text
+Entries : 3639   Free Space : 0 bytes   Percent Used : 100%   Overflow : false
+Last Add Time : 11/03/2026 02:50:11 AM UTC
+```
+
+- **`Last Add Time 02:50:11`** is 9 s before the BERT record's `TIME 02:50:20` for the last death. So the BMC added
+  a record at the death — we simply cannot see what kind it was: `sel elist` failed with
+  `Get SEL Entry 0 command failed: Requested sensor, data, or record not found` and the `sel save` that ran before
+  the `clear` therefore wrote nothing usable. **3,639 records are lost.** Noted here rather than hidden: the lesson
+  is that a full SEL is not merely "no room for new events" but "the log may stop being readable at all", and
+  `Percent Used 100%` with `Overflow: false` is the state to catch early.
+- The forward path is now clean: the SEL is empty, so **the next crash's record will be enumerable** —
+  `sudo ipmitool sel elist` should work, and it should be read before anything else fills it.
+
+### PSU2 answered: energized, carrying nothing
+
+`PSU2 Power In 16 W / Power Out 0 W` with `PSU1 In 320 W / Out 320 W`. 16 W on the input side means **AC is alive at
+PSU2** — so it is not a dead supply and not an AC-less feed: standby-with-AC, exactly the discriminator asked for on
+11-02. With both cords on one PDU, the practical redundancy is still absent, but the hardware at PSU2 is not broken.
+Rails at that moment: `VCORE0 1.11 V`, `VCORE1 1.12 V`, `VSOC 0.98 V`, `VDDIO 1.14 V`, `CPU1 56 °C`,
+`CPU_Power 136 W` (with the core hammer running). All nominal — and all second-cadence sensors, so none of them can
+see a millisecond droop; that limitation from 5c still stands.
+
+### My microcode claim was wrong, corrected
+
+I wrote that the box is "three revisions behind what upstream carries". The box's own installed
+`/lib/firmware/amd-ucode/microcode_amd_fam19h.bin` is **byte-for-byte the same size as the file I fetched from
+linux-firmware and contains the same Genoa revisions**: `0x0a101148, 0x0a101153, 0x0a101158, 0x0a101248, 0x0a10124e,
+0x0a101253, 0x0a108109`. What runs is **`0x0a101158` on all 192 threads**, with the kernel saying only
+`Current revision: 0x0a101158 / Updated early from: 0x0a101158` — no refusal, no late-load line. So the newer blobs
+are on disk but the loader does not select them for this CPUID (AMD gates patches by CPUID/patch-level, and the
+BIOS applies its own first). **The lever is the vendor BIOS/AGESA, not `apt install amd64-microcode`.** That also
+means the box is not obviously "out of date" on microcode: `0x0a101158` may be the newest patch that exists for this
+part. Ask the vendor for the BIOS/AGESA note before treating this as an available fix.
+
+### A locality fact that strengthens the one-core reading
+
+Core 65's CCD (its L3 domain) is **CPUs `16-23,112-119`** — 8 cores, 32 MB L3. Across 18 records, the named thread is
+always `17` or `113`: **never any of the six other physical cores on that same CCD**. A droop on the CCD's supply
+would be expected to implicate CCD siblings at least sometimes; 18/18 landing on one physical core, alternating
+between its two SMT threads, fits "that core" better than "that CCD's rail". Cheap next test, if we want it: hammer a
+**sibling** core on the same CCD (say 18/114) — if it can be loaded for the same window with nothing logged, the
+core-local reading gains again.
+
+### rasdaemon installed (and why it will not show the 18 deaths)
+
+`rasdaemon` is now installed and enabled. It records from now on — the 18 BERT records were replayed at 02:50:38,
+before the daemon existed, so they are **not** in its database. Worth knowing for the next event:
+
+```bash
+sudo ras-mc-ctl --summary
+sudo ras-mc-ctl --errors                       # decoded records; rasdaemon decodes AMD SMCA banks via extlog
+sudo sqlite3 /var/lib/rasdaemon/ras_mc_event.db 'select timestamp,error_type,mcistatus,mciaddr from extlog;'
+```
+

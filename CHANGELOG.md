@@ -392,6 +392,19 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   the operator command list, including `sel elist | grep -iE "chassis|power|reset"`, which lines the forced
   operations up against the 18 death times without any interpretation from me.
 
+- **The operator's IPMI run: PSU2 answered, the SEL lost its 3,639 records, and my microcode claim corrected**
+  ([notes/incident-2026-11-03/README.md](notes/incident-2026-11-03/README.md)). `sel info` shows
+  `Last Add Time 02:50:11` — 9 s before the last death's BERT `TIME 02:50:20`, so the BMC **was** writing at the
+  death — but `sel elist` could not enumerate entry 0 on a 100%-full log, so the `sel save` before `clear` captured
+  nothing and the records are gone: a full SEL is not just "no room", it can be "unreadable", and `100% used` with
+  `Overflow: false` is the state to catch early. `PSU2 Power In 16 W` settles the standby-vs-dead question — AC is
+  alive there, it is simply carrying nothing. And I was wrong that the box is three microcode revisions behind: its
+  installed `microcode_amd_fam19h.bin` is the same file as upstream's and contains `0x0a101253`, while the loader
+  runs `0x0a101158` on all 192 threads without complaint — AMD gates patches by CPUID/patch-level and the BIOS applies
+  its own, so the lever is the vendor BIOS/AGESA, not the package. Also sharper locality: core 65's CCD is CPUs
+  `16-23,112-119`, and 18/18 records name only threads 17/113 — never a CCD sibling — which fits one bad core better
+  than one bad rail.
+
 - **`tools/core-hammer.c`: a test that can settle the CPU-vs-platform question in one sitting**
   ([notes/incident-2026-11-03/README.md](notes/incident-2026-11-03/README.md)). Pins the whole process to a sibling
   pair (default `17,113` = physical core 65, verified by `taskset -pc` and `ps -L`) and drives eight independent
