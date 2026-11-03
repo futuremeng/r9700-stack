@@ -822,3 +822,36 @@ Swapping across boards would not answer it -- the boards differ.
 None of this touches the fatal-MCA half of this note: the CPU/L2 deaths happened with this board in both its
 pre- and post-refit states, on a different reporting path, and offlining core 65 changed nothing on the PCIe
 side.
+
+## Pre-registered before the swap: what each outcome will mean
+
+The operator is about to power down and exchange the two GPUs **on the same board** -- slot 6 (`c6:00.0` chain)
+and slot 8 (`06:00.0` chain). Identity is locked first, because PCI BDF follows the slot and only `ASIC_SERIAL`
+follows the card (`tools/gpu-identity.py`, output kept in `~/aer/identity-pre-swap.txt`, 07:28:35):
+
+```
+0x2DCB548B0D0A5DFC  0000:03:00.0  slot 1   chain all 32.0 GT/s
+0xD9B246D580E8CD73  0000:06:00.0  slot 8   chain all 32.0 GT/s     <-- the clean one
+0x179155577B336A5A  0000:c3:00.0  slot 3   chain all 32.0 GT/s
+0x51E10AFD4A21ADEE  0000:c6:00.0  slot 6   c4:00.0=16.0, c0:03.1=16.0   <-- the sick chain
+```
+
+Nothing about the board is touched during this operation -- the board was refitted already, and changing the
+board and the cards in the same power-down would confound the one question the swap answers.
+
+Declared in advance, so the result cannot be fitted afterwards:
+
+- **errors follow the card** (after the swap the *slot 8* chain, carrying serial `0x51E1…ADEE`, accumulates
+  BadTLP and/or drops to 16.0 GT/s, while slot 6 with serial `0xD9B2…CD73` stays clean) → the marginal Gen5 path
+  is on that **card** (its edge connector or its Gen5 receiver). RMA the card, and the board is innocent.
+- **errors stay with slot 6** (whatever card sits there errors, and the previously sick card is clean in slot 8)
+  → the **board's slot-6 path** (connector, lane routing, power for that slot) or the CPU PHY/EQ for that port.
+  RMA/replace the board, and the cards are innocent.
+- **neither side errors after the swap** → the refit that happened on the way in fixed a contact problem, and the
+  question is then "which of the two moves fixed it", which cannot be answered from this run -- note it as
+  inconclusive rather than as a fix.
+- **both sides error** → common-mode on that board or on the BIOS/PHY configuration, and the per-slot story dies.
+
+Secondary readings that come free with the same power cycle: whether slot 6 enumerates at 32.0 GT/s cold (it did
+at the 06:49 boot and fell during the 07:07-07:12 load window), and one more fatal-MCA data point with core 65
+kept offline by the boot unit (the units are installed and were verified running: 18 s into boot 06:49:06).
