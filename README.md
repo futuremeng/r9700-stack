@@ -388,7 +388,7 @@ these numbers runs.
    not a ReBAR claim), `/dev/kfd`, kernel cmdline, memlock, **docker or the native path**, the pinned image and
    whether its nightly pin moved, the second checkout `serve.sh` mounts, every checkpoint the serve scripts name,
    and the tests that need no GPU.
-   ```
+   ```bash
    ./setup.sh --check                                    # report only, changes nothing
    ./setup.sh --yes --launch native-flashnext.sh --webui same   # check, then start the native launch
    ./setup.sh --docker --launch 27b                      # the container path: asked for, default n
@@ -420,7 +420,7 @@ these numbers runs.
 
 1a. **Native (no docker)**. One-time on the host; `./setup.sh --check` reports each missing piece with the command
    to run (the exact versions and URLs live in [notes/native-4xr9700.md](notes/native-4xr9700.md)):
-   ```
+   ```bash
    python3 -m venv ~/venv-r9700
    ~/venv-r9700/bin/pip install vllm==0.32.0+rocm723 --extra-index-url \
      https://wheels.vllm.ai/rocm/<pin>/rocm723/          # torch 2.13.0+git733fca1 and triton 3.8.0 come with it
@@ -446,7 +446,7 @@ these numbers runs.
    docker binary on it.
 
 1b. **In the image**. Build it once (stock vLLM ROCm 10 nightly plus the plugin; the kernels compile inside):
-   ```
+   ```bash
    docker build -t r9700/vllm:dev docker/
    ```
    The pinned nightly (2026-10-25, vLLM 0.32.1rc1, torch 2.13) is in `docker/Dockerfile` (`--build-arg BASE=` for another);
@@ -457,7 +457,7 @@ these numbers runs.
    took the native path is refused with the `--docker --launch <name>` command that would take it.
 
 2. **Serve** (the same knobs either way):
-   ```
+   ```bash
    # in the image
    bash serve/27b.sh                                                  # 27B-NVFP4, two cards
    GPUS=0,1,2,3 TP=4 OFFLOAD_GB=0 NSEQ=16 bash serve/flashnext.sh     # Flash-Next, four cards
@@ -486,7 +486,7 @@ these numbers runs.
    defaults with the reason next to each knob; `R9K_*=stock` or `=0` switches any kernel back to vLLM's.
    `WEBUI=1` on any of them, or `WEBUI=same` to put the pages on the launch's own port: "Watching it" above.
 3. **Check it** (what each one proves is next to it; run them in this order):
-   ```
+   ```bash
    ~/venv-r9700/bin/python3 bench/warmup.py        # the launch answers; the lazily-JIT'd kernels are compiled in
    ~/venv-r9700/bin/python3 bench/quality.py 100 8 # the standing gate: GSM8K + the needle ladder
    ~/venv-r9700/bin/python3 bench/sanity_stress.py # strict 8-way sanity above max_num_seqs, under load
