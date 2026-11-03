@@ -1,4 +1,22 @@
 # Changelog
+## The Monitor page can no longer go silently stale
+
+Asked as "why have the Monitor's numbers stopped moving?" -- and the serve side answered first: `/api/status`
+was advancing, samples 1 s apart, and the last PCIe event was 42 minutes old, so frozen counters meant an idle
+box. But three client-side ways to look identical to that were real, and are gone:
+
+- `api()` had **no timeout**, and the poll loop was `await refresh(); setTimeout(poll, 1000)`: one request that
+  never returns (stalled socket, swallowed proxy request) left the tab rendering its last payload forever.
+  Every call now carries a 4 s deadline via `AbortController` and reports `path did not answer within 4 s`.
+- The reschedule moved into a **`finally`** on both pages, so no tick can be the last one.
+- A **background tab is throttled** (about one tick a minute after five minutes hidden; sometimes frozen), which
+  is the usual cause in practice. A page with no answer for 5 s now rewrites its own age line --
+  `snapshot is 41 s old -- this tab is not getting answers (error)` -- and `visibilitychange` refetches the
+  moment it is visible again. A deliberately paused page stays quiet.
+
+`tests/test_webui.py` asserts the loop shape and the deadline (and it already ran `node --check` over every
+`serve/web/*.js`, which caught nothing here because the files were valid -- the bug was structural, not syntax).
+
 ## Untracked from here on: this box's operational files, kept out of the repository
 
 The health checks stay in git (`tools/journal-pcie.py`, `tools/mca-hazard.py`, `tools/brief.py`,

@@ -372,6 +372,28 @@ requests free blocks), with the exact counter rate appearing beside it when the 
 2 s to 1 s on both beats (engine poll and browser refetch), and the page prints its own age (`1.0 s poll ·
 snapshot 0.4 s ago`) instead of letting the reader guess.
 
+**A page that stops listening has to look different from a box that went quiet** (2026-11-03, asked as
+"why have the Monitor's numbers stopped moving?"). Three ways that used to be indistinguishable, all fixed:
+
+- **One stalled request killed the page.** The loop was `await refresh(); setTimeout(poll, 1000)`, and `api()`
+  had no timeout — `fetch` waits forever by default, so the tick that stalled was the last tick there would ever
+  be: the tab kept showing its last render indefinitely and looked like an idle machine. Every `api()` call now
+  carries a 4 s deadline (`AbortController`, `FETCH_MS`), which turns a stall into one visible error and the
+  next tick. Every call these pages make is a GET of a sidecar that answers in well under 0.1 s, so the
+  deadline is 40x slack on a request measured in tenths of a millisecond.
+- **The loop can no longer end.** The reschedule moved into a `finally`, so nothing — not a bug in the rendering
+  of a new payload — can be the last tick.
+- **A background tab is throttled**, not dead: Chrome clamps timers to about one tick a minute after five
+  minutes hidden and can freeze a tab outright. That is the single most common reason the numbers "stop" while
+  the serve is provably fine, so the page now says it: if no answer has arrived for 5 s the age line becomes
+  `snapshot is 41 s old -- this tab is not getting answers (…the error…)`, and `visibilitychange` refetches the
+  moment the tab comes back instead of waiting for the throttled timer.
+
+While **Pause** is held deliberately, none of this speaks: a paused page is not stale, it is paused.
+The serve side is unchanged — `/api/status` was already advancing (samples 1 s apart, `pcie_history` 90 deep),
+which is how the question got answered before the fix: frozen counters plus a moving `at` means the box is idle,
+not the page.
+
 **The order on the page, now that there are two kinds of number.** Row 0 is values only — one stream, all
 streams, prefill, engine step + first token — at `--st-fs-display`. Row 1 is the four waveforms the sidecar
 keeps a ring for, in one row over the same span, each captioned `last · peak · avg · n/90 pts over 90 s`: the
