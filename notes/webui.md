@@ -539,6 +539,15 @@ the launch window belongs to the external watchers (`tools/reseat-check.py --sav
 A chain with **nothing raised at all** is a bare `—` (the sentence "no errors since boot" spent four words on a
 fact nobody needs reminded of; the tooltip still says what the dash means).
 
+**The icon is drawn, not typed.** It started as `i`-in-a-circle (U+24D8) and arrived in the browser as a
+missing-glyph box -- the body font ships a **Latin subset** (`fonts/outfit-latin-wght.woff2`) and nothing in the
+fallback chain has that code point, so the thing that was supposed to whisper "there is detail here" instead
+looked like a large question mark. It is now an ASCII `i` inside a CSS circle (`.p-info`: 1.3em, 1px
+`--st-line` border, 50% radius, muted ink, `cursor:help`), which needs no font support. `tests/test_webui.py`
+now enumerates every code point the pages emit (escapes and literals, across js/css/html) and requires it to be
+Latin-1 or one of the punctuation marks these pages have rendered for weeks (em dash, curly quotes, ellipsis,
+arrow, almost-equal) -- a font gap is otherwise silent.
+
 Three guards: the glyph never applies while **uncorrectable** counters are nonzero; the numbers move into the
 `title` (totals, which counters, rate and its span, how long the calm has been, the last event's `bdf`/`kind`/
 time) so nothing is lost, only demoted; and an **unknown** rate (older sidecar, first sample) counts as loud.

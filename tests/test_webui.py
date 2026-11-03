@@ -1659,6 +1659,25 @@ ck("no per-cell 'since boot' is repeated when the column header already says it"
    "since boot" not in _cnt and "errors since boot</span>" in _mjs2, _cnt.strip()[:160])
 ck("the render harness stubs the globals the page has started to use (a missing one silences every row)",
    "AbortController" in open(os.path.join(ROOT, "tests", "render-monitor.mjs")).read())
+
+# The page's body font ships a Latin subset (serve/web/fonts/outfit-latin-wght.woff2), so a code point outside
+# that subset falls back to a system font -- and when nothing has it, the browser draws a missing-glyph box.
+# That is exactly how the sparse-state icon arrived: U+24D8 (ⓘ) rendered as a "?"-looking box, which reads as
+# "what is this?" rather than "there is information here". The icon is now drawn in CSS around an ASCII `i`.
+_weball = "".join(open(os.path.join(ROOT, "serve", "web", f), encoding="utf-8").read()
+                  for f in ("common.js", "monitor.js", "about.js", "monitor.html", "about.html",
+                            "monitor.css", "web.css", "tokens.css"))
+_cps = {int(m.group(1), 16) for m in re.finditer(r"\\u([0-9a-fA-F]{4})", _weball)} | {ord(c) for c in _weball
+                                                                                     if ord(c) > 127}
+# Everything below U+0100 is in the subset; the rest are the characters the pages have been rendering for weeks
+# (em dash, curly quotes, ellipsis, arrow, almost-equal) -- present in every system fallback on this box.
+_SAFE = {cp for cp in _cps if cp <= 0x00FF} | {0x2014, 0x201C, 0x201D, 0x2026, 0x2192, 0x2248}
+ck("every glyph the pages emit is one their fonts actually have (U+24D8 came back as a missing-glyph box)",
+   _cps <= _SAFE, sorted("U+%04X" % cp for cp in _cps - _SAFE))
+ck("the sparse icon is drawn -- a CSS circle around an ASCII i -- not typed as a font glyph",
+   'class="p-info" title="${esc(info)}">i<' in _mjs2 and r"\u24d8" not in _mjs2
+   and chr(0x24d8) not in _mjs2      # the escape and the literal; a comment may still name the code point
+   and ".p-info{" in _css and "border-radius:50%" in _css and "cursor:help" in _css)
 _narrow = [x for x in _css.split("@media")[1:] if "pcie-row" in x and "grid-template-areas" in x]
 ck("both narrow layouts keep all seven areas, spread over more lines (a dropped column is dropped information)",
    len(_narrow) >= 2 and all(sorted(set(x.split("grid-template-areas:")[1].split("}")[0]

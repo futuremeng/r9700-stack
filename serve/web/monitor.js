@@ -113,7 +113,10 @@ function pcieRow(c, phist = [], busyNow = false) {
                            ? ` <span class="q">(${c.parked ? "parked, max ×"
                               : sag ? "idle, max ×" : "max ×"}${maxw})</span>`
                            : "") : "—") + `</span>`
-    + `<span class="cnt p-cnt">${sparse ? `<span class="p-info q" title="${esc(info)}">\u24d8</span>`
+    // The glyph is drawn, not typed: the page's body font ships a Latin subset, so U+24D8 came back from the
+    // browser as a missing-glyph box (a "big question mark" at a glance) instead of an i-in-a-circle. An ASCII
+    // `i` inside a CSS circle needs no font support at all.
+    + `<span class="cnt p-cnt">${sparse ? `<span class="p-info" title="${esc(info)}">i</span>`
         : cor || unc
         ? (cor && !liveErrs
            ? `<span class="q">${cor} corr${unc ? ` · ${unc} uncorr` : ""}</span>`   // muted: idle

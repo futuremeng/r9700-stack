@@ -1,4 +1,13 @@
 # Changelog
+## The sparse-state icon was a missing-glyph box, not an i-in-a-circle
+
+It was typed as U+24D8, but the page's body font ships a Latin subset and no fallback on the box has that code
+point, so the browser drew its missing-glyph placeholder -- which reads as a large question mark, the opposite of
+the message. The icon is now drawn: an ASCII `i` in a CSS circle (`.p-info`), no font support required.
+`tests/test_webui.py` enumerates every code point the pages emit (both `\uXXXX` escapes and literal characters,
+across js/css/html) and allows only Latin-1 plus the punctuation these pages have rendered for weeks, because a
+font gap is otherwise silent on screen.
+
 ## The PCIe row's column widths got re-derived, because the content they were sized for changed
 
 `cnt` went from 15em to 9.5em (a quiet chain renders a glyph or a dash, and the per-row "since boot" left the
