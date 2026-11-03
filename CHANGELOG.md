@@ -1,14 +1,16 @@
 # Changelog
 ## The PCIe row's third level: at most one counter a minute collapses to an info glyph
 
-... and the criterion changed on the way there. The first pass dimmed a chain after 300 s with no counter move,
-with 300 s anchored on the weight-load windows (11.3-45.7 counters/min). Put back under this box's real traffic
--- a ~100k-token prompt every ~20 s, twelve consecutive requests measured at 97,205 to 115,950 tokens -- that
-chain produces ~1 BadTLP every three minutes, `quiet_s` never crossed 300, and the row stayed coloured forever:
-the same failure as painting a number that never moves, reached from the opposite direction. `aer_deltas` now
+... and the criterion changed on the way there. The first pass dimmed a chain after 300 s with no counter move, with 300 s anchored on the weight-load windows
+(11.3-45.7 counters/min). Measured over the 24.6 min this sidecar has been up, the box carries 47 requests at a
+mean prompt of 104,160 tokens (max 169,294) -- 1.91 requests/min -- and that chain produced 2 AER events 17.9
+min apart: 0.081/min. So the time gate re-lit the row for 5 of those 17.9 minutes (28% of the time, and close to
+100% at the ~1-event-per-3-min cadence measured with 4-5 concurrent streams): colouring a chain for five minutes
+after an event that arrives once a dozen minutes is the same failure as colouring a number that never moves,
+approached from the other side. `aer_deltas` now
 also emits `rate_per_min` (events averaged over the trailing 300 s, with `window_s` alongside), and the row
-becomes an `i`-in-a-circle glyph when the rate is at or below 1/min: measured ~0.2-0.33/min under traffic vs
-11.3/min during a weight load. Digits and colour survive for movement in this poll (a one-poll flash), for a
+becomes an `i`-in-a-circle glyph when the rate is at or below 1/min: measured 0.081/min under traffic (and
+~0.2/min with 4-5 concurrent streams) vs 11.3/min during a weight load. Digits and colour survive for movement in this poll (a one-poll flash), for a
 rate above 1/min, and always for uncorrectable counters; the full numbers, the last event's bdf/kind/time, the
 rate and its span, and `quiet_s` go into the glyph's title. Unknown rate counts as loud.
 
