@@ -26,6 +26,10 @@ Type=oneshot
 User=jiulu
 Group=jiulu
 ExecStart=/home/jiulu/r9700-stack/.venv/bin/python /home/jiulu/r9700-stack/tools/journal-pcie.py --boots 3 --json /home/jiulu/aer/mca-archive.jsonl
+# and the running verdict on the fatal-machine-check clock: cumulative clean uptime since the last fatal event,
+# and the probability that this stretch of silence is luck under the old cadence (mca-hazard.py). `-` prefix: a
+# failure here must not mark the unit failed -- the archive above is the part that must not be lost.
+ExecStart=-/home/jiulu/r9700-stack/.venv/bin/python /home/jiulu/r9700-stack/tools/mca-hazard.py
 
 [Install]
 WantedBy=multi-user.target

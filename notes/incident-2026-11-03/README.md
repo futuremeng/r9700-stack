@@ -1041,3 +1041,30 @@ Separately, and because a boot boundary is also an MCA sample: this boot again c
 record**, third in a row, with core 65 taken offline automatically. Total uptime observed with the core offline
 so far is ~90 minutes across three boots, against a pre-change fatal cadence of about one per 3.6 h -- a
 positive trend, not yet a verdict.
+
+## Observation is now on a clock, not on whoever remembers
+
+Two questions are open and both are answered by accumulated samples, so the accumulation was made automatic:
+
+- **`tools/brief.py`** -- one line per call into `~/aer/series.log`: boot id, threads online, per-slot link speed
+  of the weakest hop, per-slot correctable total and the rate against the previous sample, and serve health. It
+  runs inside the `aer-watch` loop every 5 minutes alongside the JSON snapshot. Rates are per boot on purpose:
+  the counters reset at enumeration and this box reboots itself, so a rate spanning boots would be fiction.
+  Example (2026-11-03 09:06, after the swap):
+
+  ```
+  09:06:58  15d3  threads 190  slot1(03:00.0) 32GT cor=0  slot3(c3:00.0) 32GT cor=0
+            slot6(c6:00.0) 32GT cor=42  0.00/min  slot8(06:00.0) 32GT cor=0  serve 200
+  ```
+
+- **`host/r9700-mca-archive.service`** now runs `tools/mca-hazard.py` at every boot as well, so the fatal-MCA
+  verdict series lands in the journal without anyone being asked: cumulative clean uptime since the last fatal
+  event and the probability that the silence is luck under the old cadence. (The unit in `/etc` predates that
+  line; re-copy it before the next boot when convenient -- nothing is lost meanwhile, the numbers are one
+  command away.)
+
+What the current numbers say, at the moment this was written: slot 6 is the only erroring chain (42 correctables
+this boot, 0/min at idle, Gen5 held), the other three are exactly zero, the serve is answering, core 65 is
+offline, and the fatal-MCA clock stands at ~1.5 h of clean uptime -- which is `p=0.58` of being luck under the
+pre-change cadence. The decision thresholds in this note are 7.1 h (p=0.05), 10.9 h (p=0.01), and ~24 h for the
+"confined to that core" working conclusion.

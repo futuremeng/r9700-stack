@@ -1314,6 +1314,13 @@ ck("the journal tool reads the log and the kernel's read-only sysfs: it sends no
    and "echo" not in _jp and "sudo" not in _jp                          # nothing echoed into /sys, no privileges
    and "online" in _jp and (".read_text()" in _jp)                      # sysfs read, not written
    and 'p.write_text' in _jp and "cpu-topology" in _jp)   # the only two writes it makes, both its own
+# tools/brief.py is the one-line-per-call state log (the series that outlives any one conversation). Same
+# property as the other watchers: it observes, it does not participate.
+_bf = open(os.path.join(ROOT, "tools", "brief.py")).read()
+compile(_bf, "brief.py", "exec")
+ck("the brief line only reads: one /health GET, no request bodies, nothing echoed into /sys",
+   "/health" in _bf and "Request(" not in _bf and "data=" not in _bf and "POST" not in _bf
+   and "sudo" not in _bf and "write_text" in _bf and "series.log" in _bf)
 # gpu_busy_percent on this box is coarse, not finely readable: refused with nothing running, 0 stopped, 24-29
 # idle, 46-100 under load, 95-99 through long decode. The page says so, because otherwise a flat 99 reads as
 # "fully loaded" and a 0 as "healthy idle" when either could also mean "the launch let go".
