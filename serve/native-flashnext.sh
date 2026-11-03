@@ -35,6 +35,7 @@ export R9K_LIB=$SO VLLM_CACHE_ROOT=${VLLM_CACHE_ROOT:-$HOME/vllm-native-cache} T
 # Pre-flight. Measured 2026-10-31: SIGTERM does not stop the ranks -- pkill'ing the API server leaves four
 # VLLM::Worker_TP* holding 27-31 GiB a card, and the next launch dies with "Free memory on device cuda:0
 # (0.0/31.86 GiB)". Refuse rather than eat a 2-minute failure; STOP=1 clears them, FORCE=1 launches anyway.
+# (notes/launch-methodology.md: this check, why a launch is started in tmux, and what notices a death.)
 if [ "${STOP:-0}" = 1 ]; then
   pkill -9 -f 'VLLM[::]' 2>/dev/null; pkill -9 -f 'vll[m] serve' 2>/dev/null; sleep 5
   echo "leftover vLLM processes after STOP: $(pgrep -cf 'VLLM[::]|vll[m] serve')"

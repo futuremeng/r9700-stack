@@ -2374,3 +2374,41 @@ the poll with the longest waiting queue kept and committed as `docs/r9700-stack-
 2026-11-02 06:47:35 UTC: `running 2 / waiting 6 / capacity 6 / deferred 0` at KV **10.1%** of 540,644 tokens,
 prompt_tokens 29,984-29,994. Re-drawing the figure from that committed poll is a test
 (`tests/test_readme.py`, 21 checks), so the picture, the poll and the caption cannot drift apart.
+
+## 2026-11-03: what `./setup.sh` does when it is used for real
+
+Six of its behaviours were wrong, and all six showed up in one bring-up on this box rather than in review. The
+trigger is the kind of failure that reads as "slow boot" from outside: a `--launch native-flashnext.sh` started
+by `setup.py` (`Popen(..., start_new_session=True)`) died mid-load at 05:45 UTC — log stops at **exactly 12288
+bytes** on the `multiproc_executor ... world_size=4` line, no error, no traceback, **no shutdown record in
+`~/logs/requests-8080.jsonl`**, four cards back to 0.056 GiB, nothing in `dmesg`. `setup.py` then polled
+`/health` for the full 420 s *after the process was gone* and printed one line about it. A new session is not the
+same as being outside the caller's process tree; that distinction is now
+[notes/launch-methodology.md](notes/launch-methodology.md) §3, the note the CHANGELOG had been citing without
+existing.
+
+What changed, and what it measured:
+
+| | before | now |
+|---|---|---|
+| the container path | `--yes` answered Yes: a multi-GB image pull as the **default** deployment | asked, **default n**; `--docker` / `--no-docker`; `--yes` does not answer it |
+| a launch that died | noticed by the 7-minute `/health` timeout, log unread | noticed by the process (child exit code / tmux session gone) in seconds, log's last 14 lines printed with `\r` folded |
+| what supervises it | nothing (`start_new_session` only) | tmux session `r9700-native-flashnext`, env pushed with `tmux new-session -e` (tmux would otherwise run the serve in the **tmux server's** environment: `VENV=`, `GPUS=`, `R9K_*` gone, silently) |
+| what a later run knows | existence ("libr9k.so, 5164 KiB") | drift: `.r9700-state/native.json` (venv versions, `libr9k.so` hash **of both copies** — build.sh's and the one loaded via `R9K_LIB`, README's build line separates them with a `cp` — newest kernel-source mtime) and `launch.json` (recipe/log/session/`up_at`/`died_at`) |
+| what it refuses | nothing, then fails two minutes in | ranks still holding the GPUs (**5 processes** here, `refusing to launch… STOP=1`), and `OFFLOAD_GB` over `RLIMIT_MEMLOCK` (**12,010 MiB** cap against the two-card stream's **34 GB a rank** — the origin of PROGRESS.md's "11.7 GiB per process") |
+| `WEBUI=same` | Monitor printed at `PORT+1` — a wrong URL | the serve's own port, where `serve/plugin` actually puts it |
+
+Live result of the same command that failed: `up after 145 s` (cold, 120.3 GB checkpoint, TP4 MTP-2 32k), `/health`
+200, `/monitor` 200, a chat completion answering, a second `--launch` refused with the `STOP=1` line, and a later
+`--check` printing `the launch recorded 3 min ago (serve/native-flashnext.sh) is up: 5 vLLM process(es); tmux attach
+-t r9700-native-flashnext`. `tests/test_setup.py` (57 checks, no GPU/card/port) runs in step 6 beside
+`tests/test_webui.py`; it caught one real bug — the dead-launch warning never named the log it had just read — and
+then caught itself: two of its checks passed vacuously on a box that happened to have a live serve, so `left_vllm`
+is now stubbed in both directions.
+
+Still not done, deliberately: nothing **restarts** a dead four-card serve. tmux supervises in the sense of keeping
+it alive under a dying terminal, not of resurrecting it, and until the PCIe/reseat story
+(notes/incident-2026-11-03, `tools/reseat-check.py`: BadTLP growing at slot 8 with nothing running) is settled, an
+auto-restart would turn a degrading link into a restart loop. The container path is still unexercised on this box
+— no `docker` binary on it — so the `--docker` branch is tested by `tests/test_setup.py`'s decision logic, not by a
+build.

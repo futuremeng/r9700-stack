@@ -385,9 +385,11 @@ these numbers runs.
    this box's `RLIMIT_MEMLOCK` allows, it notices a launch that died instead of waiting out the 7-minute
    `/health` window, and it prints that log's last lines plus the `STOP=1` that clears the ranks. Each run
    records the native venv, the `libr9k.so` hash and the launch (recipe, log, session) under
-   `.r9700-state/`, so the next run reports drift and answers "did my launch die, and which log do I read".
-   It names the venv/pip/`hipcc` commands rather than running them: the ROCm wheels are ~20 GB and are never
-   fetched by a script, and nothing here touches `~/models`, the launch caches, or a launch that is already up.
+   `.r9700-state/`, so the next run reports drift and answers "did my launch die, and which log do I read" (the
+   whole launch method -- what supervises it, what refuses it, the `SIGTERM` fact behind the `STOP=1` -- is
+   [notes/launch-methodology.md](notes/launch-methodology.md)). It names the venv/pip/`hipcc` commands rather than
+   running them: the ROCm wheels are ~20 GB and are never fetched by a script, and nothing here touches `~/models`,
+   the launch caches, or a launch that is already up.
    The host-side BAR0/ACS/PCIe-switch setup is in neither script: that is [host/README.md](host/README.md).
 
 1a. **Native (no docker)**. One-time on the host; `./setup.sh --check` reports each missing piece with the command

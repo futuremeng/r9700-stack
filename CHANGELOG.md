@@ -50,7 +50,9 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   non-interactive setup died mid-load -- log stops at exactly 12288 bytes inside `multiproc_executor`, no error line,
   no shutdown record in the request journal, four cards back to 0.056 GiB -- and `setup.py` sat next to it for the
   full 7 minutes and then printed one line saying "not answering /health" without showing the log or saying the
-  process was gone):
+  process was gone). The method itself -- the `exec` chain, the `SIGTERM` fact, why tmux and not a new session, what
+  the state files hold, what a launch is refused for -- is now [notes/launch-methodology.md](notes/launch-methodology.md),
+  a file another entry here has been citing since 2026-11-02 and which had never been written:
   - **docker is now asked for, with a default of no.** `ask()` defaults to Yes under `--yes`, which made a multi-GB
     image pull the default deployment on a box whose own numbers came from the native path. `ask_no()` exists, is
     answered by `--docker` / `--no-docker` or by typing `y`, and every later step follows the answer: image not
