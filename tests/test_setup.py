@@ -25,6 +25,7 @@ Run: ./.venv/bin/python3 tests/test_setup.py        (stdlib only)
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -296,6 +297,41 @@ ck("--launch none --check changes nothing and names the path it took",
    and "which path this box runs: native (the default)" in p.stdout, p.stdout[-400:])
 ck("--check writes no state and rewrites none (check-only runs nothing that changes anything)",
    before == after, f"{sorted(before)} -> {sorted(after)}")
+
+# The context question, learned the hard way on 2026-11-03: a launch answered /health in 150 s and looked
+# healthy while running at a fraction of the checkpoint's declared context. Nothing compared the two numbers.
+CKPT = {"text_config": {"max_position_embeddings": 262144}}
+ST = {"meta": {"maxlen": "262144"},
+      "config": {"kv_cache_size_tokens": 540202, "block_size": "448"}}
+ck("the served context is read from the plugin's launch meta -- NOT from /api/status config, which carries no "
+   "max_model_len field at all (that is why the first version of this check reported 'not compared')",
+   S.serve_context(ST, None, CKPT)[0] == 262144, str(S.serve_context(ST, None, CKPT)))
+ck("the KV pool comes back too, because it is the number that shows the full context is not a KV cost "
+   "(README.md measures 540,202 at 262,144 against 497,588 at 32,768)",
+   S.serve_context(ST, None, CKPT)[2] == 540202, str(S.serve_context(ST, None, CKPT)))
+ck("the declared context is read from text_config, where this checkpoint keeps it (not top level)",
+   S.serve_context(ST, None, CKPT)[1] == 262144)
+ck("flat config.json also works (models that keep max_position_embeddings at the top level)",
+   S.serve_context(None, None, {"max_position_embeddings": 131072})[1] == 131072)
+ck("no launch meta: the command line in the launch log is the fallback",
+   S.serve_context({"meta": {}}, "vllm serve --max-model-len 32768 --max-num-seqs 32", CKPT)[0] == 32768)
+ck("the 32,768 default is exactly the case the check exists to catch: got < want",
+   S.serve_context({"meta": {}}, "--max-model-len 32768", CKPT)[0]
+   < S.serve_context({"meta": {}}, "--max-model-len 32768", CKPT)[1])
+ck("unknown on either side returns None rather than a made-up number",
+   S.serve_context({}, "no args here", {}) == (None, None, None), str(S.serve_context({}, "no args here", {})))
+
+# Cross-file: the launcher default and the README's "what this box runs" line must not drift apart again.
+_nativetxt = (ROOTP / "serve" / "native-flashnext.sh").read_text()
+_readme = (ROOTP / "README.md").read_text()
+_default = re.search(r": \$\{MAXLEN:=([^}]*)\}", _nativetxt)
+ck("the native launcher's own MAXLEN default is the value README.md says this box runs (262144)",
+   _default and _default.group(1) == "262144", _default.group(1) if _default else "no ${MAXLEN:=...} default")
+ck("...and the README launch line still spells it, so the two agree rather than one going stale",
+   "MAXLEN=262144 NSEQ=32 NBT=8192" in _readme)
+ck("no ${MAXLEN:-32768} is left anywhere in the launcher (the old default could not survive by shadowing)",
+   "${MAXLEN:-" not in _nativetxt)
+
 
 print("PASS" if fail == 0 else "FAIL", f"({fail} failing)")
 sys.exit(1 if fail else 0)

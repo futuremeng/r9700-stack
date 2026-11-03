@@ -1618,3 +1618,29 @@ with the sampler CSV's clock columns.
 For a **cold-cache** launch (what a first boot sees), the operator has to drop the cache after the gate and before the
 launch -- `sync; echo 3 > /proc/sys/vm/drop_caches`, check that `Cached` in `/proc/meminfo` fell to ~0.06 GiB. It needs
 root and it is safe only with no vLLM processes running, i.e. after `bench/gate.sh` has passed.
+
+## The launcher's 32,768 default was a trap (fixed 2026-11-03)
+
+`serve/native-flashnext.sh` used to default `MAXLEN` to 32,768 while README.md's own "what this box runs today"
+line spelled `MAXLEN=262144`. Both numbers are in the repo, nothing compared them, and the failure is silent: a
+launch answers `/health` in 150 s and looks healthy. It ran that way on this box through every logged launch
+(02:07, 03:04, 03:09, 06:01, 06:54 on 2026-11-03 -- `grep max_model_len ~/logs/setup-*.log`), including the one
+started by `setup.py --launch` with only `WEBUI=` given.
+
+Why 32,768 is not a conservative default on this box: the checkpoint declares
+`text_config.max_position_embeddings = 262144`, and the kept request ledger (`~/logs/requests-*.jsonl`, 1,483
+rows) says 262k-class traffic is the normal case -- max prompt 262,059 tokens, **p99 245,792**, and **1,195 of
+1,483 requests at or above 32,000 tokens**. A 32,768 cap refuses four requests in five.
+
+It does not cost KV: measured on the relaunch, `MAXLEN=262144` gives **GPU KV cache 540,202 tokens** and
+vLLM's own `Maximum concurrency for 262,144 tokens per request: 2.06x`, against 497,588 tokens at 32,768 -- the
+sizing run is bounded by `NBT`, not by `MAXLEN` (README.md measures the same pair). Verified live after the
+change: a 140,401-token prompt returns HTTP 200 (18.5 s, ~7,600 prompt tok/s), and a ~300k-token prompt is
+refused in 0.8 s with `This model's maximum context length is 262144 tokens ... at least 262145 input tokens`.
+
+`setup.py` now refuses to call a launch simply "up": after `/health` it compares the launch's own reported
+context (`/api/status meta.maxlen`, falling back to the command line in the launch log -- **not**
+`/api/status config`, which carries no `max_model_len` field at all) against the checkpoint's
+`max_position_embeddings`, and prints the KV pool it measured while it is at it. The default is now 262144.
+Older speed tables in this note that say "32k context" were measured at 32,768 and stay as they are -- they are
+records, not defaults, and anyone comparing today's numbers against them should know the context differed.

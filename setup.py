@@ -306,6 +306,55 @@ def wait_up(port, proc=None, sess=None, secs=420):
     return "timeout", time.time() - t0, None
 
 
+def serve_context_read(port, launcher_text, log=None):
+    """I/O wrapper: the running serve's own answers, plus the launcher text and its log. See serve_context."""
+    st = None
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=5) as r:
+            st = json.load(r)
+    except (urllib.error.URLError, OSError, ValueError):
+        pass
+    logtxt = None
+    if log:
+        try:
+            logtxt = Path(log).read_text(errors="replace")
+        except OSError:
+            pass
+    ckpt = None
+    m = re.search(r"MODEL:-([^}]*)\}", launcher_text)
+    if m:
+        try:
+            ckpt = json.loads((Path(os.path.expandvars(m.group(1))) / "config.json").read_text())
+        except (OSError, ValueError):
+            pass
+    return serve_context(st, logtxt, ckpt)
+
+
+def serve_context(status, log_text, ckpt_config):
+    """(what the launch actually runs at, what the checkpoint declares, what the KV pool measured) -- no I/O.
+
+    Both sides have to be read live, because the failure mode is silent: on 2026-11-03 a launch answered
+    /health in 150 s, looked healthy, and was running a fraction of the context the checkpoint declares (the
+    launcher's MAXLEN default and config.json disagreed, and nothing compared them). Not every field is in every
+    mode, hence three sources for the served number: the plugin's launch meta, then the command line in the log.
+    "/api/status config" is NOT one of them -- it carries no max_model_len at all.
+    """
+    got = None
+    if status:
+        for v in ((status.get("meta") or {}).get("maxlen"), (status.get("config") or {}).get("max_model_len")):
+            if v and str(v).isdigit():
+                got = int(v)
+                break
+    if got is None and log_text:
+        m = re.search(r"--max-model-len (\d+)", log_text)
+        got = int(m.group(1)) if m else None
+    want = None
+    if ckpt_config:
+        want = (ckpt_config.get("text_config") or ckpt_config).get("max_position_embeddings")
+    pool = (status.get("config") or {}).get("kv_cache_size_tokens") if status else None
+    return got, want, pool
+
+
 # --------------------------------------------------------------------- facts read from this repo ------
 def dockerfile_base():
     """The nightly this image is pinned to (docker/Dockerfile), so a pin change is visible."""
@@ -940,6 +989,19 @@ def launch(cfg, have="docker"):
     if what == "up":
         ok(f"up after {dt:.0f} s")
         state_update("launch.json", up_at=int(time.time()))
+        got, want, pool = serve_context_read(port, (ROOT / "serve" / pick).read_text(), log)
+        if got and want:
+            if got >= want:
+                ok(f"context: the launch runs at {got:,} tokens, the checkpoint declares {want:,}"
+                   + (f", KV pool {pool:,} tokens" if pool else ""))
+            else:
+                bad(f"the launch runs at {got:,} tokens of context but {pick}'s checkpoint declares {want:,}: "
+                    f"requests longer than {got:,} are refused -- and this box's ledger is not a short-prompt "
+                    f"ledger (README.md, notes/native-4xr9700.md)",
+                    f"{stopper}, then MAXLEN={want} bash serve/{pick}")
+        else:
+            note("context not compared: no /api/status answer, or no MODEL= default in the launcher to read "
+                 "config.json from")
         mon, about = webui_urls(cfg.webui, port)
         if mon:
             say(f"    monitor: {mon}    about: {about}"

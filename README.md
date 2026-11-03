@@ -447,7 +447,12 @@ these numbers runs.
    ```
    `serve/native-flashnext.sh` is the container-free launcher for a box with no docker (plugin and vLLM in a venv,
    `libr9k` built with the host `hipcc`, [notes/native-4xr9700.md](notes/native-4xr9700.md)); it takes the same knobs
-   as `serve/serve.sh` and defaults to `MAXLEN=32768`. The line above is what the box is running: at the full
+   as `serve/serve.sh` and, since 2026-11-03, defaults `MAXLEN` to the value of the line above. It used to default
+   to 32,768, and that default was a trap: a launch that answered `/health` in 150 s looked healthy while serving
+   a fraction of the context the checkpoint declares (`text_config.max_position_embeddings = 262144`), on a box
+   whose kept request ledger runs to 262,059-token prompts with a p99 of 245,792. `setup.py` now compares the
+   running serve's `max_model_len` against the checkpoint's declared context and says so. The line above is what
+   the box is running: at the full
    context the KV cache gets bigger rather than smaller (540,202 against 497,588 tokens) and the 32-stream
    throughput wave stays in the band quoted above.
    OpenAI-compatible API on port 8080 (`PORT=`), model name `Qwen3.8`. Every serve script carries the measured

@@ -59,8 +59,17 @@ fi
 : ${NSEQ:=$([ "${TP:-4}" = 4 ] && echo 32 || echo 8)}
 : ${NBT:=$([ "${TP:-4}" = 4 ] && echo 8192 || echo 4096)}
 
+# Context. The checkpoint itself declares text_config.max_position_embeddings = 262144, and this box's own
+# request ledger says 262144 is the traffic it carries: 1,483 kept requests, p99 prompt 245,792 tokens, 1,195 of
+# them at or above 32,000. A 32,768 default is therefore not conservative, it refuses four requests in five.
+# Raising it does not cost KV either -- README.md measures the pool getting BIGGER at the full context (540,202
+# against 497,588 tokens) because the sizing run is bounded by NBT, not by MAXLEN. Note that every launch logged
+# on this box before 2026-11-03 came up at 32,768 even though README.md's own "what this box runs" line says
+# MAXLEN=262144: the default was the trap, so it is now that line's value. MAXLEN= still overrides.
+: ${MAXLEN:=262144}
+
 ARGS=(--served-model-name "${SERVED_NAME:-Qwen3.8}" --host 0.0.0.0 --port "${PORT:-8080}"
-      --tensor-parallel-size "${TP:-4}" --max-model-len "${MAXLEN:-32768}"
+      --tensor-parallel-size "${TP:-4}" --max-model-len "${MAXLEN}"
       --max-num-seqs "$NSEQ" --max-num-batched-tokens "$NBT"
       --gpu-memory-utilization "${UTIL:-$([ "${TP:-4}" = 4 ] && echo 0.97 || echo 0.94)}"
       --reasoning-parser "${REASONING:-qwen3}" --tool-call-parser "${TOOLCALL:-qwen3_coder}" --enable-auto-tool-choice
@@ -112,7 +121,7 @@ if [ "${WEBUI:-0}" = 1 ] || [ "${WEBUI:-}" = same ]; then
   VER=$($VENV/bin/python -c "import importlib.metadata as m; print('native vllm '+m.version('vllm'))" 2>/dev/null \
         || echo "native")
   META=$META bash "$D/webmeta.sh" venv="$VENV" model="$MODEL" served_name="${SERVED_NAME:-Qwen3.8}" \
-    gpus="${GPUS:-0,1,2,3}" tp="${TP:-4}" maxlen="${MAXLEN:-32768}" nseq="$NSEQ" nbt="$NBT" \
+    gpus="${GPUS:-0,1,2,3}" tp="${TP:-4}" maxlen="$MAXLEN" nseq="$NSEQ" nbt="$NBT" \
     reasoning="${REASONING:-qwen3}" toolcall="${TOOLCALL:-qwen3_coder}" \
     util="${UTIL:-$([ "${TP:-4}" = 4 ] && echo 0.97 || echo 0.94)}" offload_gb="${OFFLOAD_GB:-0}" \
     kvdtype="${KVDTYPE:-}" mtp="$MTP" attn="${ATTN:-}" cg_sizes="${CGSIZES:-}" prefix_cache="${PREFIX_CACHE:-0}" \

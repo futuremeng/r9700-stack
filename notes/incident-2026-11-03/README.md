@@ -737,3 +737,28 @@ fatal events in 72 h (~one per 3.6 h), and this boot is ~8 minutes old, so the v
 And the window the workaround cannot cover: **the 18 s between power-on and the unit** had all 192 threads
 schedulable, and boot `-7` in the journal died 5 s after boot. A firmware/BIOS-level core disable is the durable
 form of this workaround; worth putting to ASUS/AMD along with the MCACOD 0x0108 bank-5 evidence.
+
+## A second symptom on the same chain: the slot-6 hop fell to 16.0 GT/s and stayed there
+
+Found while verifying the relaunch at the full context (07:12-07:15 UTC, boot 06:49:06). `tools/reseat-check.py
+--diff` against the 06:57 snapshot:
+
+```
+card2 0000:c0:03.1: 32.0 GT/s x16 -> 16.0 GT/s x16      (root port, max_link_speed 32.0)
+card2 0000:c4:00.0: 32.0 GT/s x16 -> 16.0 GT/s x16      (switch upstream port, same hop)
+card2 0000:c6:00.0: stays 32.0 GT/s x16                 (the card's own hop is fine)
+slot 6 chain: 132 -> 144 correctable over 15.8 min, the burst inside the 140,401-token prefill
+```
+
+Three things matter here. **(1)** The kernel logged *nothing*: `journalctl -k -b 0 | grep -iE 'link|LnkSta|
+downgraded'` is empty, so a link that drops a full generation is invisible in the journal and only sysfs polling
+sees it -- this is why `aer-watch`'s 5-minute snapshots are worth keeping. **(2)** After the downgrade,
+correctables stopped: `c4:00.0 TOTAL_ERR_COR` has been frozen at 84 across three samples 45 s apart while the
+serve stays healthy, whereas the same counter moved +129 in 3.1 min during the weight load at Gen5. That is
+correlation, not proof, but it points the same way as the BadTLP story: the hop is marginal at Gen5 and clean at
+Gen4. **(3)** It is still the *same hop* as the BadTLP/Timeout counters -- root port `c0:03.1` to switch
+upstream port `c4:00.0`, i.e. the slot-6 riser -- and it is still nothing to do with the CPU/L2 fault.
+
+Open, and worth measuring before the next reseat: prefill/decode rates at Gen4 vs Gen5 on that card. Today's
+140k-token prefill ran at ~7,600 prompt tok/s at Gen4; the note's Gen5-era numbers are in
+[native-4xr9700.md](../native-4xr9700.md). Nothing retrained the link back up in the 20 minutes observed.
