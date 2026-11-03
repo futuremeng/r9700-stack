@@ -289,3 +289,30 @@ still holds. Verified live: `12 records across the last 12 boots`, `execution un
 `fatal ×12`. `tools/journal-pcie.py` is the same questions from a terminal, per boot, with the AER counts beside
 them.
 
+## Running the discriminating test: hammer core 65, GPUs idle (`tools/core-hammer.c`)
+
+The cheapest experiment that can actually settle this is to ask **one core** for integer work and leave everything
+else alone. `tools/core-hammer.c` does exactly that: it pins the whole process to a sibling pair (default
+`17,113` = physical core 65) and runs eight independent integer chains — multiply, xor-shift, add, rotate,
+compare-select — no FP, no allocation, no syscalls in the loop. Integer-only on purpose: the SMCA bank in every
+record is `EX` (fixed-point execution), and each bank names its own block, so mixing in FP (`FP` bank) or memory
+pressure (`UMC`/LLC) would blur which unit is being asked. Verified placement on this box: `affinity list: 17,113`
+and `ps -L` shows the worker threads resident on 17 and 113.
+
+Its heartbeat is **flushed and fsynced once a second** (`--log`), because the run's success condition is the box
+resetting underneath it: the last fsynced line is then the whole record of how long it ran, on which CPUs, and how
+far the arithmetic got (`~490 M iterations per second` across the pair at `-O2`). `--stop FILE` lets it be stopped
+without `pkill`.
+
+Three outcomes, each worth knowing:
+
+| what happens | what it means |
+|---|---|
+| same machine check, `IPID ...029a00`, CPU 17 or 113 | core 65 (or its rail/CCX domain) is the fault: stop serving on this box until it is swapped or the core is disabled |
+| a machine check naming a **different** core | the platform, not the core: voltage/cooling/microcode territory, and the PSU question goes back up the list |
+| nothing after the full window | the hammer is not the trigger: what kills the box needs the load it has not been given yet (GPU + PCIe + CPU together), and the next phase is the same hammer *with* serving traffic |
+
+Preconditions asked of the operator, in order: `ipmitool sel save` and then `ipmitool sel clear` — the SEL is
+full (`0 bytes free`), so without clearing it a new fault may leave no BMC record at all. BERT still holds one
+record regardless, and the Monitor now prints it, so the test is interpretable even if the BMC side is not.
+

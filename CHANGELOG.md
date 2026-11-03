@@ -379,6 +379,16 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   note that the count grows while the statistics do not (1,400 rows: prompt p50 74,381; 1,417 rows: 74,066).
 
 
+- **`tools/core-hammer.c`: a test that can settle the CPU-vs-platform question in one sitting**
+  ([notes/incident-2026-11-03/README.md](notes/incident-2026-11-03/README.md)). Pins the whole process to a sibling
+  pair (default `17,113` = physical core 65, verified by `taskset -pc` and `ps -L`) and drives eight independent
+  integer chains — no FP, no allocation, no syscalls in the loop — because the SMCA bank in all 18 records is `EX`,
+  and each bank names its own block, so FP or memory pressure would blur which unit is being asked. Heartbeat
+  flushed and **fsynced** once a second, since the run's success condition is the box resetting underneath it: the
+  last fsynced line is then the record of how long it ran and how far the arithmetic got (~490 M iterations/s across
+  the pair). Written up with the three possible outcomes, including the one that redirects the investigation: a
+  machine check naming a *different* core moves the suspicion back to the platform.
+
 - **The deaths have a record after all, and it names one CPU core** (`serve/webui.py`, `serve/web/`,
   `tools/journal-pcie.py`; [notes/incident-2026-11-03/README.md](notes/incident-2026-11-03/README.md)). The firmware
   writes one record per crash into ACPI **BERT** and the kernel replays it at the next boot — `journalctl -k` needs
