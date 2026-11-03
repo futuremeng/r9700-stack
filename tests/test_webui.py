@@ -409,6 +409,41 @@ ck("the launch and the plugin agree on the journal's env var name",
    and "R9700_WEBUI_JOURNAL" in (Path(ROOT) / "serve/plugin/r9700_webui/__init__.py").read_text())
 
 
+# ------------------------------------------------------- (2c) shared_decode: what a decode rate means --
+# Measured off 1,400 real requests: a stream runs 158 tok/s alone, 119 at two in flight, 23 at three or four
+# (notes/context-262k.md). A decode number printed without the concurrency beside it is unreadable -- the reader
+# cannot tell a slow request from a busy box -- so the listing carries the concurrency, computed rather than
+# guessed. These are the windows that computation has to get right.
+def _rq(s, w, dec=None, first=None, q=None):
+    t = {} if dec is None and q is None else {"decode_s": dec, "queue_s": q}
+    return {"started_at": s, "wallclock_s": w, "first_token_s": first, "timings": t or None}
+
+
+ck("a request alone in the engine shares with itself only", W.shared_decode([_rq(0, 10, dec=4.0)])[0] == 1.0,
+   str(W.shared_decode([_rq(0, 10, dec=4.0)])))
+ck("two requests with identical decode spans each report x2",
+   W.shared_decode([_rq(0, 10, dec=4.0), _rq(0, 10, dec=4.0)]) == [2.0, 2.0],
+   str(W.shared_decode([_rq(0, 10, dec=4.0), _rq(0, 10, dec=4.0)])))
+_v = W.shared_decode([_rq(0, 10, dec=4.0), _rq(0, 14, dec=8.0)])
+ck("a partial overlap reports the mean across its own span, not the peak it touched", _v == [2.0, 1.5], str(_v))
+# The clock-basis trap, from a real row: an engine row's wallclock_s is vLLM's inference_time (queue NOT
+# included) while its first_token_s is queue + prefill -- first token 21.8 s against a 10.8 s wallclock, because
+# it queued 12.3 s before the engine started. A window built as [start + first_token, start + wallclock] is
+# inverted there, which is why the span is anchored at the END minus decode_s instead.
+_q = [{"started_at": 100.0, "wallclock_s": 10.8, "first_token_s": 21.8,
+       "timings": {"decode_s": 1.25, "queue_s": 12.3, "prefill_s": 9.55}},
+      {"started_at": 100.0, "wallclock_s": 11.0, "first_token_s": 5.0, "timings": {"decode_s": 10.0}}]
+_qv = W.shared_decode(_q)
+ck("a queue longer than the wallclock cannot invert an engine row's decode window",
+   abs(_qv[0] - 2.0) < 1e-9 and abs(_qv[1] - 1.12) < 0.02, str(_qv))
+# (these seven fixture rows all land within the same second, so they really do share: the check is that the
+# field is there and at least counts the row itself, not that it reads 1.0)
+ck("the listing carries the derived field, and the journal does not write it to disk",
+   isinstance(e1.listing()[0].get("shared_decode"), float) and e1.listing()[0]["shared_decode"] >= 1.0
+   and "shared_decode" not in jpath.read_text(), str(e1.listing()[0])[:160])
+ck("so does the proxy path's listing, which is the other way a row arrives",
+   r1.listing()[0].get("shared_decode") is not None, str(r1.listing()[0])[:120])
+
 # ------------------------------------------------------------------ (3) the sysfs read -----------
 fake = Path("/tmp/r9700-webui-sysfs")
 shutil.rmtree(fake, ignore_errors=True)                       # built from scratch every run
@@ -930,6 +965,45 @@ ck("every page carries a theme switch and an API key control",
    all('data-theme-toggle' in (WEB / h).read_text() and 'id="key-btn"' in (WEB / h).read_text()
        for h in ("monitor.html", "about.html")))
 monjs = (WEB / "monitor.js").read_text()
+# A request row is scanned, not read, so its order is the design: the request's own prefill and decode speeds
+# first and largest, the supporting detail after them, and the things that never carried information gone.
+_i_pre, _i_dec = monjs.find('rqSpeed("prefill"'), monjs.find('rqSpeed("decode"')
+_i_supp = monjs.find("first token ${seconds(")
+ck("a request row leads with its own prefill and decode speeds and puts the supporting detail after them",
+   0 < _i_pre < _i_dec < _i_supp and "b.append(row, sp, size, meta)" in monjs
+   and ".rq-speed b{" in (WEB / "monitor.css").read_text(), f"{_i_pre} {_i_dec} {_i_supp}")
+ck("both speeds are labelled as this request's own, with the basis in the tooltip",
+   "this request's own prompt tokens over its own prefill span" in monjs
+   and "queueing and prefill excluded" in monjs)
+# Absence claims are checked against the CODE, not the prose: the comment above the row renderer names the
+# strings it dropped, which is exactly what a naive substring check would then find and call a bug.
+moncode = "\n".join(l for l in monjs.split("\n") if not l.strip().startswith("//"))
+ck("the clutter is gone: no endpoint apology, no note about how the monitor obtained the row",
+   "no endpoint in its stats" not in moncode and '"engine record"' not in moncode
+   and moncode.count("tag tag--${") == 1, f"{moncode.count('tag tag--${')} state tags")
+ck("and an ordinary row carries no state tag -- 1,429 of 1,429 engine rows on this box read completed",
+   'if (r.state && r.state !== "completed")' in monjs
+   and "hit max_tokens" in monjs and "preempted ${t.preemptions}" in monjs)
+# The concurrency a decode rate has to be read against: derived, one decimal, and titled with the measurement
+# that makes it meaningful.
+ck("a row shows how many requests shared its decode window, and the tooltip says what the number is for",
+   "shared ×${fmt(r.shared_decode, 1)}" in monjs and "158 tok/s alone" in monjs
+   and "isnum(r.shared_decode)" in monjs)
+# The clock basis, spelled out on the page instead of assumed: an engine row's wallclock excludes the queue, so
+# a queued request used to print a first token LATER than its whole wall-clock, and the note claimed the opposite
+# of what the number held.
+ck("wall-clock is summed per path, and the note says which sum it is",
+   "of it queue" in monjs and "all in ${seconds(total)}" in monjs
+   and "plus the queue wait before them" in monjs
+   and "From the engine: queue, prefill and decode together" not in monjs
+   and "Wall-clock (queue included)" in (WEB / "monitor.html").read_text())
+# The fixture tool renders the page over real journal rows -- including while the box is down, which is when
+# those rows matter most. It observes: journal file plus a GET.
+_fx = (Path(__file__).resolve().parent.parent / "tools" / "monitor-fixture.py").read_text()
+compile(_fx, "tools/monitor-fixture.py", "exec")
+ck("tools/monitor-fixture.py reads the journal and a GET, sends nothing, and survives a dead serve",
+   "urlopen(" in _fx and "data=" not in _fx and "POST" not in _fx
+   and "no live serve" in _fx and "shared_decode" in _fx)
 # The queue line says WHY requests wait when the engine says why, and says nothing invented when it does not.
 ck("the queue line splits waiting into scheduling capacity and deferred when the engine publishes it",
    "for scheduling capacity" in monjs and "deferred" in monjs
@@ -964,8 +1038,9 @@ ck("the request list follows the newest row until you click one",
 ck("the Last decode speed card shows that request's own speed, or says it has none",
    "lt.predicted_per_second" in monjs and "1e3 / rate.itl_ms : null" not in monjs
    and "no speed for that record" in monjs, monjs[monjs.find('text("speed-note"') - 200:monjs.find('text("speed-note"')])
-ck("a row names its token counts and its own prefill",
-   "prefill ${seconds(t.prefill_s)}" in monjs and "fmt(u.prompt_tokens ?? 0, 0)} -> " in monjs)
+ck("a row names its token counts and its own prefill, in seconds and in tok/s",
+   "prefill ${seconds(t.prefill_s)}" in monjs and "fmt(u.prompt_tokens ?? 0, 0)} → " in monjs
+   and 'rqSpeed("prefill", t.prefill_tok_s' in monjs)
 ck("the wall-clock card splits that one request into queue, prefill and decode",
    'id="wall-split"' in (WEB / "monitor.html").read_text() and "queue ${seconds(lt.queue_s)}" in monjs)
 # vLLM credits prompt_tokens_total at request END: a 180,066-token prefill read 0 tok/s for its whole duration
@@ -1130,9 +1205,10 @@ ck("the sidecar polls the engine at 1 s by default, both modes",
    'os.environ.get("R9K_WEB_POLL", 1.0)' in (Path(ROOT) / "serve" / "webui.py").read_text()
    and 'os.environ.get("R9700_WEBUI_POLL", "1")'
        in (Path(ROOT) / "serve" / "plugin" / "r9700_webui" / "__init__.py").read_text())
-ck("a record shows its own prefill speed with the basis it was computed from",
+ck("a record shows its own prefill speed with the basis it was computed from, and the row leads with it",
    'id="detail-prefill-speed"' in (WEB / "monitor.html").read_text() and "t.prefill_tok_s" in monjs
-   and "t.prefill_basis" in monjs and "(${fmt(t.prefill_tok_s, 0)} tok/s)" in monjs)
+   and "t.prefill_basis" in monjs and "${fmt(t.prefill_tok_s, 0)} tok/s" in monjs
+   and 'rqSpeed("prefill", t.prefill_tok_s' in monjs)
 # About exists so a client can be configured off it. Two things made that fail before: the base URL printed was
 # the sidecar's own upstream (127.0.0.1 on the serve's box -- dead wrong pasted anywhere else, and this box is
 # reached over the network), and it had no /v1, which is what LiteLLM and the OpenAI SDK need. Both blocks are

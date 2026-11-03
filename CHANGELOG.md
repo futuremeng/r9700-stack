@@ -378,6 +378,26 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   denominators, the MTP-2-versus-MTP-3 reconciliation that keeps 158 from reading as a regression, and the snapshot
   note that the count grows while the statistics do not (1,400 rows: prompt p50 74,381; 1,417 rows: 74,066).
 
+- **Request rows reordered to lead with prefill and decode speed, with the clutter dropped** (`serve/web/monitor.js`,
+  `monitor.css`, `monitor.html`, `serve/webui.py`; [notes/webui.md](notes/webui.md) "What a request row leads with").
+  The row used to open with what the monitor knew about itself — a 29-character id, a wall-clock, `engine record` —
+  while the two speeds sat at the end of a comma run behind "no endpoint in its stats". Now: the request's own
+  **prefill and decode tok/s at 21 px**, then `242,882 → 257 tok`, then the supporting line (first token, prefill,
+  decode, total, id). Dropped: the endpoint apology (the endpoint line exists only when a row has an endpoint),
+  `engine record` / `stream` / `JSON`, and the state tag on an ordinary row — 1,429 of 1,429 engine rows here read
+  `completed`; the marks that stay are `preempted ×N` and `hit max_tokens`. Added: **`shared ×N`**, the mean number
+  of requests in flight across that row's own decode span, because the journal says 158 tok/s alone against 119 at
+  two and 23 at three — a decode rate with no concurrency beside it is a speed and a guess welded together. Three
+  rules tested: mean across the span (midpoint sampling gave 361 "alone" requests at 137 tok/s), the window anchored
+  at END minus `decode_s` (the two paths do not share a clock origin), and computed at read time so it is never
+  journalled. Same fix caught a lie the page had been telling: an engine row's `wallclock_s` is `inference_time` and
+  excludes the queue, while its `first_token_s` includes it — a real row printed `first token 21.84 s · wall 10.78 s`
+  — so the row now reads `first token 21.84 s (12.32 s of it queue) … all in 23.10 s (queue included)`, the wall card
+  and the detail fact sum the same way, the note says which sum it is, and the old wrong sentence is asserted absent.
+  New tooling: `tools/monitor-fixture.py` plus fixture mode in `tests/render-monitor.mjs`, because the rows leave the
+  live serve's memory in a minute and the journal keeps them — and it runs with the box down, which is when they
+  matter most. Suite at 240 checks.
+
 - **What one stream really decodes at, answered off the journal instead of a window** (1,400 completed real requests,
   13.8 h, 301 minutes with traffic; [notes/context-262k.md](notes/context-262k.md), "Per-stream decode"). A stream with
   the box to itself: **157.7 tok/s** median (n=274, never shared across its whole decode window). A request as a user

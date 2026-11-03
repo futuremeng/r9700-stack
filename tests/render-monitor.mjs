@@ -1,7 +1,11 @@
 // tests/render-monitor.mjs -- run the Monitor's own JS against a LIVE serve and print what its cards and
 // request rows actually render.
 //
-//   node tests/render-monitor.mjs [BASE]        # BASE defaults to http://127.0.0.1:8080
+//   node tests/render-monitor.mjs [BASE|fixture.json]   # BASE defaults to http://127.0.0.1:8080
+//
+// A .json argument switches to fixture mode: {"status": ..., "requests": ...} is fed to the page instead of a
+// live serve, which is how the request rows can be rendered from real journal rows while the box is busy (and
+// how the derived per-row fields can be tested against rows that no longer exist anywhere live).
 //
 // What that does and does not cover. It executes serve/web/common.js and serve/web/monitor.js unmodified in a
 // stub DOM, so it checks the JS and the payloads it is fed: which card says what, whether a per-request value
@@ -16,7 +20,9 @@ import vm from "node:vm";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.join(HERE, "..", "serve", "web");
-const BASE = (process.argv[2] || "http://127.0.0.1:8080").replace(/\/$/, "");
+const ARG = process.argv[2] || "http://127.0.0.1:8080";
+const FIX = ARG.endsWith(".json") ? JSON.parse(readFileSync(ARG, "utf8")) : null;
+const BASE = FIX ? "" : ARG.replace(/\/$/, "");
 
 class El {
   constructor(tag = "div", id = "") {
@@ -83,7 +89,13 @@ const ctx = {
   isNaN, parseInt, parseFloat, isFinite, encodeURIComponent, decodeURIComponent, Intl,
   localStorage: store(), sessionStorage: store(),
   navigator: { clipboard: { writeText: async () => {} }, userAgent: "render-monitor" },
-  fetch: (u, o) => globalThis.fetch(String(u).startsWith("http") ? u : BASE + u, o),
+  fetch: async (u, o) => {
+    if (!FIX) return globalThis.fetch(BASE + u, o);
+    const p = String(u).split("?")[0];
+    const body = p === "/api/status" ? FIX.status : p === "/api/requests" ? FIX.requests : null;
+    if (body === null) return { ok: false, status: 404, json: async () => ({ error: "not in fixture" }) };
+    return { ok: true, status: 200, json: async () => body };
+  },
   setTimeout: () => 0, setInterval: () => 0,          // never re-arm the page's own poll loop
   clearTimeout: () => {}, clearInterval: () => {}, requestAnimationFrame: () => 0,
 };

@@ -681,6 +681,65 @@ ROW_KEYS = ("id", "seq", "path", "model", "state", "started_at", "wallclock_s", 
             "load_s", "queue_s", "stream", "http_status", "response_format", "usage", "timings", "boot")
 
 
+def shared_decode(rows):
+    """Mean number of requests in flight across each row's OWN decode window, itself included.
+
+    Why this rides the payload: measured off 1,400 real requests, a stream's decode rate is 158 tok/s
+    alone, 119 at two in flight and 23 at three or four ([notes/context-262k.md](../notes/context-262k.md)). A
+    decode number with no concurrency beside it is therefore unreadable -- the reader cannot tell a slow
+    request from a busy box. It is derived, so it is computed at read time and never journalled: ROW_KEYS
+    decides what reaches disk, and this is not in them.
+
+    Mean over the window, not the value at its midpoint. Midpoint sampling calls a request "alone" whenever
+    nothing happened to be in flight at that instant, which on this journal reported 361 alone requests at 137
+    tok/s where never-shared gives 158.
+
+    The window is the request's decode span, anchored at its END minus `decode_s` -- see the comment in the
+    loop for why the two monitor paths do not share a clock origin.
+
+    A row with no timings yet (a proxy row still in flight) has no span to place and contributes nothing: the
+    merged path only ever reports finished requests, and guessing an end for a running one is how a live count
+    starts to lie.
+    """
+    span = []
+    for r in rows:
+        s, w = r.get("started_at"), r.get("wallclock_s")
+        if not isinstance(s, (int, float)) or not isinstance(w, (int, float)):
+            span.append(None)
+            continue
+        d1 = s + w
+        # End-anchored on purpose: the two paths do not share a clock origin. A merged (engine) row starts at
+        # the moment INFERENCE began and its wallclock_s is inference_time, while its first_token_s counts
+        # queued_time + prefill_time -- so `started_at + first_token_s` can land AFTER `started_at +
+        # wallclock_s` (a real row: first token 21.8 s, wallclock 10.8 s, because it queued 12.3 s before the
+        # engine began). decode_s is a duration, so subtracting it from the end is right on both paths; a
+        # proxy row's started_at is the arrival and its wallclock_s is the whole connection.
+        dec = (r.get("timings") or {}).get("decode_s")
+        d0 = (d1 - dec) if isinstance(dec, (int, float)) and 0 < dec <= w \
+            else s + (r.get("first_token_s") or 0)
+        span.append((min(d0, d1), d1))
+    timed = [x for x in span if x is not None]             # a row still in flight has no timings to place
+    ev = sorted([(d0, 1) for d0, _ in timed] + [(d1, -1) for _, d1 in timed])
+    out = []
+    for pair in span:
+        if pair is None:
+            out.append(None)
+            continue
+        d0, d1 = pair
+        acc, cur, prev = 0.0, 0, None
+        for t, delta in ev:
+            if prev is not None and t > prev:                 # `cur` is the count across (prev, t)
+                a, b = max(prev, d0), min(t, d1)
+                if b > a:
+                    acc += cur * (b - a)
+            cur += delta
+            prev = t
+            if t >= d1:
+                break
+        out.append(round(acc / (d1 - d0), 2) if d1 > d0 else 1.0)
+    return out
+
+
 class Journal:
     """Append-only JSONL of finished request rows, so the list survives what this box does.
 
@@ -849,7 +908,10 @@ class EngineRecords:
 
     def listing(self):
         with self.lock:
-            return [{k: r.get(k) for k in ROW_KEYS} for r in self.items]
+            rows = [{k: r.get(k) for k in ROW_KEYS} for r in self.items]
+        for r, n in zip(rows, shared_decode(rows)):          # derived, so never journalled
+            r["shared_decode"] = n
+        return rows
 
     def get(self, rid):
         with self.lock:
@@ -947,8 +1009,11 @@ class Records:
 
     def listing(self):
         with self.lock:
-            return [{k: r.get(k) for k in ROW_KEYS}
+            rows = [{k: r.get(k) for k in ROW_KEYS}
                     | {"id": r["id"] or f"req-{r['seq']}"} for r in self.items]
+        for r, n in zip(rows, shared_decode(rows)):          # derived, so never journalled
+            r["shared_decode"] = n
+        return rows
 
     def get(self, rid):
         with self.lock:

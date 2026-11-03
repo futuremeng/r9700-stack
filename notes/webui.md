@@ -633,6 +633,61 @@ first-token number the page shows a lie. It reads `res.read1()` now, and a check
 (it fails with the old call: `first bytes at 0.48s of 0.48s`).
 
 
+### What a request row leads with, and what was dropped (2026-11-03)
+
+The row used to lead with what the monitor knew about itself: a 29-character request id, a wall-clock, and
+`engine record`. The two numbers a request is actually judged by — how fast its prompt was read and how fast its
+tokens arrived — were buried at the end of a comma run, next to `POST …no endpoint in its stats`, a sentence every
+engine row said and nobody acted on. A list of 100 rows is read by scanning, so the order is the design. It now
+leads, at 21 px in tabular mono:
+
+```
+2:47:39 AM            shared ×2.1
+prefill 6,875 tok/s   decode 29.5 tok/s
+242,882 → 257 tok
+first token 35.33 s · prefill 35.33 s · decode 8.70 s · all in 44.03 s · chatcmpl-ba6da5475870446b
+```
+
+Gone: the endpoint apology (the endpoint line now only exists when a row HAS one, which is the proxy path),
+`engine record` / `stream` / `JSON` (how the monitor obtained the row is a fact about the monitor), and the state
+tag on an ordinary row — **1,429 of 1,429 engine rows on this box read `completed`**, so the tag carried no
+information until a row is NOT ordinary; the marks that remain are `preempted ×N` (with the re-prefill cost in the
+tooltip) and `hit max_tokens` (ended on the client's limit, not on the model stopping). The id moved to last,
+where it is still greppable against the server log.
+
+**`shared ×N` is the field that makes a decode rate readable, and it is derived, not measured.** The journal
+analysis in [context-262k.md](context-262k.md) says a stream runs **158 tok/s alone, 119 at two in flight and 23
+at three or four**, so a decode number printed without its concurrency is not a speed at all — it is a speed and a
+guess about the box welded together. `shared_decode(rows)` in `serve/webui.py` computes, for each row, the **mean
+number of requests in flight across that row's own decode span, itself counted**, and the tooltip carries both the
+window it was counted over ("the N rows this page holds") and the ladder to read it against. Three rules it has to
+get right, each with a test:
+
+- **Mean across the span, not the value at its midpoint.** Midpoint sampling calls a request "alone" whenever
+  nothing happened to be in flight at that instant — it reported 361 alone requests at 137 tok/s where
+  never-shared gives 158.
+- **The window is anchored at the END minus `decode_s`.** The two monitor paths do not share a clock origin: a
+  merged (engine) row's `wallclock_s` is vLLM's `inference_time`, which **excludes** `queued_time`, while its
+  `first_token_s` is `queued_time + prefill_time`. A real row: first token 21.84 s against a wall-clock of
+  10.78 s, because it queued 12.32 s before the engine started. `start + first_token` therefore lands *after*
+  `start + wallclock`, and a window built that way is inverted.
+- **It is computed at read time and never journalled.** `ROW_KEYS` decides what reaches disk; a derived number in
+  the journal would be a second copy of the truth, free to disagree with the first.
+
+**The same mixed basis had the page lying about wall-clock.** The "Last wall-clock" card read the raw
+`wallclock_s` and its note claimed *"From the engine: queue, prefill and decode together"* — for an engine row that
+sum excludes the queue, so a queued request printed a first token later than its own whole span. Both the card and
+the detail fact now add `queue_s` on the engine path (the proxy path already timed the whole connection), the note
+says which sum it is, the detail label reads `Wall-clock (queue included)`, and the old sentence is asserted absent
+in the suite.
+
+Checking it needed the rows, and the rows leave the live serve's memory within a minute — so
+`tools/monitor-fixture.py` builds `{"status": …, "requests": …}` from today's journal plus a GET of the running
+status, and `tests/render-monitor.mjs` takes that JSON instead of a URL. The fixture runs the wide journal window
+through the same `shared_decode` rather than stubbing the field, and it works with **the box down** (status falls
+back to an empty payload labelled as such), which is precisely when those rows matter most.
+`tests/test_webui.py` is at 240 checks.
+
 ## Limits, on purpose
 
 - The relay is a monitor, not a load balancer: SSE responses close the connection (`Connection: close`)

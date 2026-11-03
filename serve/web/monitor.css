@@ -44,6 +44,19 @@ section{margin:18px 0}
 .request:hover{background:var(--st-surface-2)}
 .request.selected{background:var(--st-accent-tint);box-shadow:inset 3px 0 var(--st-accent)}
 .row{display:flex;justify-content:space-between;align-items:center;gap:12px}
+/* A row is scanned, not read: the two speeds carry the weight, the rest is supporting type. Numbers set in
+   mono so a column of them lines up; labels smaller and muted so the digits are what the eye catches. */
+.rq-speeds{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 20px;margin:8px 0 4px}
+.rq-speed{font:11px var(--st-font-mono);color:var(--st-ink-muted);letter-spacing:0}
+.rq-speed b{font:700 21px/1.05 var(--st-font-mono);font-variant-numeric:tabular-nums;color:var(--st-ink);
+  margin:0 0 0 6px;letter-spacing:-.02em}
+.rq-speed s{text-decoration:none;font-size:11px;color:var(--st-ink-muted);margin-left:2px}
+.rq-size{font:12px var(--st-font-mono);font-variant-numeric:tabular-nums;color:var(--st-ink-muted);margin:0 0 5px}
+.rq-marks{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.rq-mark{font:11px var(--st-font-mono);color:var(--st-ink-muted);border:1px solid var(--st-line);
+  border-radius:999px;padding:2px 8px;white-space:nowrap}
+.rq-mark[data-tone="warn"]{color:var(--st-warn-text);border-color:currentColor;background:var(--st-warn-tint)}
+.rq-mark[data-tone="danger"]{color:var(--st-danger-text);border-color:currentColor;background:var(--st-danger-tint)}
 .endpoint{font:12px var(--st-font-mono);margin:8px 0 5px;overflow-wrap:anywhere}
 .detail{min-width:0;padding:18px}
 .empty{padding:60px 24px;text-align:center;color:var(--st-ink-muted)}

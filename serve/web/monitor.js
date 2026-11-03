@@ -75,6 +75,31 @@ function notice(message, info) {
 }
 
 // -- the request list -----------------------------------------------------------------------------
+// A request row leads with the two numbers it is judged by -- how fast its prompt was read and how fast its
+// tokens arrived -- and both are THIS request's own (vLLM's per-request stats), not the box's averages. The
+// rest is supporting: what it waited for, how long the pieces took, then what it was. Dropped on the way,
+// because a list of 100 rows is read by scanning and clutter costs throughput: the endpoint line (every
+// engine row says "no endpoint in its stats"), "engine record" / "stream" / "JSON" (how the row was obtained,
+// which is a fact about the monitor), and the state tag on an ordinary row (1,429 of 1,429 engine rows on this
+// box read "completed" -- the tag appears when a row is NOT ordinary).
+function rqSpeed(label, value, note) {
+  const el = document.createElement("span");
+  el.className = "rq-speed";
+  if (note) el.title = note;
+  const l = document.createElement("i"); l.textContent = label;
+  const n = document.createElement("b"); n.textContent = isnum(value) ? fmt(value, value >= 1000 ? 0 : 1) : "\u2014";
+  const u = document.createElement("s"); u.textContent = isnum(value) ? " tok/s" : "";
+  el.append(l, n, u);
+  return el;
+}
+function mark(text, tone, note) {
+  const el = document.createElement("span");
+  el.className = "rq-mark";
+  if (tone) el.dataset.tone = tone;
+  el.textContent = text;
+  if (note) el.title = note;
+  return el;
+}
 function visibleRows() {
   const q = $("search").value.toLowerCase(), filter = $("filter").value;
   return records.filter((r) => `${rid(r)} ${r.path} ${r.model}`.toLowerCase().includes(q)
@@ -83,7 +108,7 @@ function visibleRows() {
 
 function list() {
   const visible = visibleRows();
-  const next = JSON.stringify([visible.map((r) => [rid(r), r.state, r.wallclock_s]), selected]);
+  const next = JSON.stringify([visible.map((r) => [rid(r), r.state, r.wallclock_s, r.shared_decode]), selected]);
   if (next === stampOf) return;                      // a repaint costs selection and scroll position
   stampOf = next;
   const focusId = document.activeElement?.dataset.request;
@@ -107,24 +132,63 @@ function list() {
     b.setAttribute("aria-pressed", String(selected === rid(r)));
     const row = document.createElement("div"); row.className = "row";
     const time = document.createElement("span"); time.textContent = clock(r.started_at);
-    const tag = document.createElement("span"); tag.className = `tag tag--${r.state}`; tag.textContent = r.state;
-    row.append(time, tag);
-    const ep = document.createElement("div"); ep.className = "endpoint";
-    ep.textContent = r.path ? `POST ${r.path}` : "reported by the engine (no endpoint in its stats)";
-    const meta = document.createElement("div"); meta.className = "small";
     const u = r.usage || {}, t = r.timings || {};
-    meta.textContent = `${rid(r)} · ${seconds(r.wallclock_s)} `
-      + `${r.response_format === "engine" ? "engine record" : r.stream ? "stream" : "JSON"}`
-      + `${r.http_status ? ` · HTTP ${r.http_status}` : ""}`
-      // What the row is worth without opening it: how big the request was and where its time went. In merged
-      // mode both come straight from the engine's per-request stats; in observe mode there are no rows at all.
-      + (isnum(u.prompt_tokens) || isnum(u.completion_tokens)
-        ? ` · ${fmt(u.prompt_tokens ?? 0, 0)} -> ${fmt(u.completion_tokens ?? 0, 0)} tok` : "")
-      + (isnum(t.prefill_s) ? ` · prefill ${seconds(t.prefill_s)}`
-        + (isnum(t.prefill_tok_s) ? ` (${fmt(t.prefill_tok_s, 0)} tok/s)` : "") : "")
-      + (isnum(t.queue_s) && t.queue_s >= 0.001 ? ` · queue ${seconds(t.queue_s)}` : "")
-      + (t.preemptions ? ` · preempted ${t.preemptions}x` : "");
-    b.append(row, ep, meta);
+    // The engine's own mean per accepted token; fall back to the tokens over its own decode span.
+    const decode = isnum(t.predicted_per_second) ? t.predicted_per_second
+      : (isnum(u.completion_tokens) && isnum(t.decode_s) && t.decode_s > 0
+        ? u.completion_tokens / t.decode_s : null);
+    const marks = document.createElement("span"); marks.className = "rq-marks";
+    if (r.state && r.state !== "completed") marks.append(mark(r.state, "danger", `state: ${r.state}`));
+    if (t.preemptions) {
+      marks.append(mark(`preempted ${t.preemptions}\u00d7`, "warn",
+        "vLLM v1 re-prefills a preempted request: this one lost its KV blocks to fit another and paid for the "
+        + "same prompt twice"));
+    }
+    if (t.finish_reason === 1) {
+      marks.append(mark("hit max_tokens", "", "ended on the client's max_tokens, not on the model stopping"));
+    }
+    if (isnum(r.shared_decode)) {
+      marks.append(mark(`shared ×${fmt(r.shared_decode, 1)}`, "",
+        `mean requests in flight across this request's own decode window, itself counted, over the ${records.length}`
+        + ` rows this page holds. Decode rate is read against it: on this box a stream runs 158 tok/s alone,`
+        + " 119 at two, 23 at three or four -- so a low number here is a busy box, not a slow request"));
+    }
+    row.append(time, marks);
+    if (r.path) {
+      const ep = document.createElement("div"); ep.className = "endpoint";
+      ep.textContent = `POST ${r.path}`;
+      row.append(ep);
+    }
+    const sp = document.createElement("div"); sp.className = "rq-speeds";
+    sp.append(rqSpeed("prefill", t.prefill_tok_s,
+      "this request's own prompt tokens over its own prefill span"));
+    sp.append(rqSpeed("decode", decode,
+      "accepted tokens over this request's own decode span: queueing and prefill excluded, and shared with the "
+      + "other streams running at the time"));
+    const size = document.createElement("div"); size.className = "rq-size";
+    size.textContent = (isnum(u.prompt_tokens) || isnum(u.completion_tokens))
+      ? `${fmt(u.prompt_tokens ?? 0, 0)} → ${fmt(u.completion_tokens ?? 0, 0)} tok` : "";
+    // Supporting detail, ordered by how much it explains about the two numbers above.
+    // The clock basis differs by path and it is worth getting right here: an engine row's `wallclock_s` is
+    // vLLM's inference_time -- it does NOT include queued_time -- while its `first_token_s` is queue + prefill,
+    // which is why a queued request can print a first token LATER than its whole wallclock (a real row: first
+    // token 21.8 s, wallclock 10.8 s, queue 12.3 s). The proxy path times the whole connection instead, queue
+    // included. So the total is assembled per path rather than assumed.
+    const meta = document.createElement("div"); meta.className = "small";
+    const engineRow = r.response_format === "engine";
+    const total = engineRow ? (isnum(r.wallclock_s) ? r.wallclock_s + (t.queue_s || 0) : null) : r.wallclock_s;
+    meta.textContent = [
+      isnum(r.first_token_s) ? `first token ${seconds(r.first_token_s)}`
+        + (isnum(t.queue_s) && t.queue_s >= 0.001 ? ` (${seconds(t.queue_s)} of it queue)` : "") : "",
+      isnum(t.prefill_s) ? `prefill ${seconds(t.prefill_s)}` : "",
+      isnum(t.decode_s) ? `decode ${seconds(t.decode_s)}` : "",
+      isnum(total) ? `all in ${seconds(total)}${engineRow && isnum(t.queue_s) && t.queue_s >= 0.001
+        ? " (queue included)" : ""}` : "",
+      isnum(u.prompt_tokens_details?.cached_tokens) && u.prompt_tokens_details.cached_tokens > 0
+        ? `${fmt(u.prompt_tokens_details.cached_tokens, 0)} cached` : "",
+      r.http_status ? `HTTP ${r.http_status}` : "",
+      rid(r)].filter(Boolean).join(" \u00b7 ");
+    b.append(row, sp, size, meta);
     b.onclick = () => { follow = false; $("follow").setAttribute("aria-pressed", "false");
       selected = rid(r); detail = null; list(); showDetail().catch((e) => notice(e.message)); };
     $("requests").append(b);
@@ -171,7 +235,14 @@ async function showDetail() {
   text("detail-status", value.state);
   $("detail-status").className = `tag tag--${value.state}`;
   text("detail-time", stamp(value.started_at));
-  text("detail-wall", seconds(value.wallclock_s ?? (isnum(value.started_at) ? Date.now() / 1000 - value.started_at : null)));
+  // The whole span the request occupied, which means different sums on the two paths: an engine row's
+  // wallclock_s is vLLM's inference_time and does NOT include queued_time, while a proxy row timed the whole
+  // connection. Adding the queue here is what makes "First token" below it readable -- without it a queued
+  // request shows a first token later than its own wall-clock.
+  const dEngine = value.response_format === "engine";
+  text("detail-wall", seconds(isnum(value.wallclock_s)
+    ? value.wallclock_s + (dEngine ? ((value.timings || {}).queue_s || 0) : 0)
+    : (isnum(value.started_at) ? Date.now() / 1000 - value.started_at : null)));
   text("detail-first", seconds(value.first_token_s));
   const t = value.timings || {};
   for (const [id, k] of [["detail-queue", "queue_s"], ["detail-prefill", "prefill_s"],
@@ -271,8 +342,10 @@ function renderStatus(s) {
     : s.mode === "proxy" ? "Nothing in flight"
       : s.mode === "merged" ? "Finished requests only: the engine reports a request when it ends"
         : "Nothing routed here");
-  text("wall", last ? seconds(last.wallclock_s) : "—");
-  text("wall-note", s.mode === "merged" ? "From the engine: queue, prefill and decode together"
+  const lEngine = last && last.response_format === "engine";
+  text("wall", last && isnum(last.wallclock_s)
+    ? seconds(last.wallclock_s + (lEngine ? ((last.timings || {}).queue_s || 0) : 0)) : "—");
+  text("wall-note", lEngine ? "From the engine: its own prefill + decode, plus the queue wait before them"
     : "Through this page · queue, prefill and decode together");
   const lt = (last && last.timings) || {}, lu = (last && last.usage) || {};
   // The split of that one request, not the window mean: this is the number the long-prompt questions are
