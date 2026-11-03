@@ -352,6 +352,13 @@ def serve_context(status, log_text, ckpt_config):
     if ckpt_config:
         want = (ckpt_config.get("text_config") or ckpt_config).get("max_position_embeddings")
     pool = (status.get("config") or {}).get("kv_cache_size_tokens") if status else None
+    # the plugin reports this as a STRING ("540202") -- {pool:,} on a str is a TypeError-ish ValueError, and a
+    # crash here would kill the report of a launch that actually came up healthy (seen 2026-11-03)
+    if pool is not None:
+        try:
+            pool = int(pool)
+        except (TypeError, ValueError):
+            pool = None
     return got, want, pool
 
 

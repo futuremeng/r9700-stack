@@ -954,3 +954,37 @@ from here -- put that to the vendor too; their tooling can.
 
 That leaves the physical path (contact/depth/board/retimer) and the PHY/EQ parameters as the remaining
 explanations, which is why the swap and the seating inspection are the next steps.
+
+## The refit result, measured: seating restored Gen5, and changed nothing about the errors
+
+08:17:12 boot. The operator opened the box and found the slot-6 card not fully seated; refitted it and powered
+back on. No card swap was performed -- `tools/gpu-identity.py` confirms by `ASIC_SERIAL` that `0x51E10AFD4A21ADEE`
+is still at `c6:00.0` and `0xD9B246D580E8CD73` still at `06:00.0` (`~/aer/identity-post-swap.txt`, 08:18:56). So
+this is variant C of the plan above, and the card-vs-slot question is **still open**.
+
+What the refit demonstrably fixed:
+
+```
+slot 6 chain after the refit, cold enumeration: c0:03.1 / c4:00.0 / c5:00.0 / c6:00.0 all 32.0/32.0 GT/s
+(before: the external hop was 16.0 GT/s, and it had fallen there during the previous boot's load window)
+```
+
+What it did not fix -- the same measurement as before, the weight-load window, fresh counters, same launch shape
+(`MAXLEN=262144 NSEQ=32 NBT=8192`, 120.3 GB of weights):
+
+| boot | slot-6 external hop | load window | afterwards, idle |
+|---|---|---|---|
+| `324e273b` (before the refit) | 32 GT/s during the load, then **fell to 16 GT/s** | **+129 / 3.1 min = 41.9/min** | at Gen4: **0 events** across three 45 s samples, and counters stayed frozen for the rest of the boot |
+| 08:17 boot (after the refit) | **32 GT/s held** (no fallback in the ~10 min observed) | **+153 / 3.4 min = 45.7/min** (`c4:00.0` BadTLP 86, `c0:03.1` Timeout 68) | ~+1 event / 2 min, still at Gen5 |
+
+Other chains in the same window: slot 1 and slot 3 **+0**, slot 8 **+1**.
+
+So the seating was real (it decided whether the port could hold Gen5 at all) and it is **not the cause of the
+errors**. What the two boots now say together: that hop is **marginal specifically at Gen5** -- at 16 GT/s it was
+silent for the remainder of a boot that kept serving, including a 140,401-token prefill; at 32 GT/s it produces
+40-46 correctables per minute under DMA load and ~0.5/min idle, and it is the only chain on the machine that
+does. Remaining suspects unchanged: the board's slot-6 path, this card's Gen5 receiver (the swap would separate
+these two -- still not done), or PHY/retimer equalization for that port.
+
+Also for the record, since a boot boundary is an MCA sample: this boot came up with **no replayed fatal record**
+(second consecutive; the previous boot ended in a clean `poweroff`), with core 65 offline again automatically.

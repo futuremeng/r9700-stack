@@ -333,5 +333,15 @@ ck("no ${MAXLEN:-32768} is left anywhere in the launcher (the old default could 
    "${MAXLEN:-" not in _nativetxt)
 
 
+# The plugin answers kv_cache_size_tokens as a STRING. {pool:,} on a str raised on 2026-11-03 inside the ok
+# line of a launch that had come up healthy -- the report of a good launch must not be able to crash.
+ck("a string KV pool from /api/status is coerced to an int, not passed through to a format specifier",
+   S.serve_context({"meta": {"maxlen": "262144"}, "config": {"kv_cache_size_tokens": "540202"}}, None, CKPT)[2]
+   == 540202, str(S.serve_context({"meta": {"maxlen": "262144"},
+                                   "config": {"kv_cache_size_tokens": "540202"}}, None, CKPT)))
+ck("a garbage KV pool becomes None (the line is then simply omitted) rather than an exception",
+   S.serve_context({"meta": {"maxlen": "262144"}, "config": {"kv_cache_size_tokens": "?"}}, None, CKPT)[2] is None)
+
+
 print("PASS" if fail == 0 else "FAIL", f"({fail} failing)")
 sys.exit(1 if fail else 0)
