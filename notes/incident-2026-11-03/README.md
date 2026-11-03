@@ -536,3 +536,30 @@ per-node signature above, which is the thing the post-reseat comparison needs. W
 `~/logs/reseat-before-20261103T0505Z.json` (now including the named per-node split), plus `rasdaemon` recording
 timestamped per-device events from now on, plus the Monitor's per-poll deltas and event timestamps.
 
+## Serve stopped on purpose, 05:12 UTC — the first clean stop of this launch
+
+```text
+STOP=1 bash serve/native-flashnext.sh   ->  leftover vLLM processes after STOP: 0
+:8080/health                            ->  connection refused (as intended)
+four cards                              ->  busy 0%, VRAM 0.056 / 31.86 GiB each (released)
+journal                                 ->  1,480 rows, unchanged by the stop
+last request (seq 1480)                 ->  142,505 prompt tokens, 778 generated,
+                                            first token 18.50 s, all in 23.28 s, completed
+AER counters at the stop                ->  slot 6 chain 144 corr, slot 8 chain 63 corr,
+                                            slots 1 and 3 zero
+```
+
+Nothing was in flight when it stopped (`running 0 / waiting 0`), so no request was cut. The launch that ran from
+03:21:14 to 05:12:00 — 1 h 51 min, 1,480 requests, no death — is the longest this box has served since the
+18 machine-check deaths started on 11-01, and it also ended without a crash for the first time in that stretch.
+
+**What stayed up, and why that is the point.** The standalone Monitor on `:8099` never notices a serve death as
+a blank page: it now reads `reachable: false / Connection refused`, prints the command that would bring this
+launch back (`MAXLEN=262144 NSEQ=32 NBT=8192 PREFIX_CACHE=0 WEBUI=same bash serve/native-flashnext.sh`, taken
+from the launch's own meta file), keeps the 100 attached journal rows, keeps the death record (execution unit
+×12), and keeps reading 4 cards and 4 PCIe chains — all of it from sysfs and the kernel log.
+
+**This is the right moment for the reseat**: the box is idle, no user is connected, and the next boot zeroes the
+AER counters on its own — which is the "clear" we decided not to do by hand, so the post-reseat comparison starts
+from a clean boot with the saved signature in `~/logs/reseat-before-20261103T0505Z.json` as the reference.
+
