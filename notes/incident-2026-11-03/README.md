@@ -657,3 +657,46 @@ ASUS ESC4000A-E12 / K14PG-U12, BIOS 2501, microcode 0xa101158; SEL empty of thes
 load-independent: dies 5 s after boot and after 15 h; also dies with zero PCIe AER activity
 open question for AMD: an erratum fix in microcode/AGESA above 0xa101158 for Genoa family 19h L2 MCA
 ```
+
+---
+
+# Reboot protocol (what a reboot can and cannot answer)
+
+The core-offline intervention is only a hypothesis until the next boot reports, and a graceful reboot is also the
+cleanest AER measurement available (counters zero at enumeration). So reboot deliberately, but only with these
+steps, or the experiment invalidates itself:
+
+**Before**
+1. Install `host/r9700-offline-core.service` **first**. `online` is not persistent; rebooting without the unit
+   re-arms the sick core and the following data would be measuring the wrong thing. Verified on this box on
+   2026-11-03: `systemctl is-enabled r9700-offline-core.service` -> `not-found`, i.e. nothing was installed, and
+   a reboot at that moment would have put core 65 back in service.
+2. Install `host/r9700-mca-archive.service`, or the record of this boot's death (if any) can be the one that
+   gets overwritten: the firmware keeps ONE BERT record.
+3. `tools/reseat-check.py --save` for the AER baseline; note the boot id. Ledger (`~/logs/requests-8080.jsonl`)
+   lives in home and survives. tmux sessions do not, by definition.
+4. Nothing in flight (`/api/status`, and the ledger's `state`), and the operator at the BMC/iKVM: this box has
+   died **5 s** after a boot before, so it may not come back by itself.
+5. There is deliberately **no serve autostart unit** (confirmed: no r9700 units in /etc/systemd/system). On a box
+   that resets by itself, an auto-restarting 4-minute model load hides the failure rate and re-enters the
+   highest-risk window unattended. The serve is started by hand after the boot, from `setup.py` step [6].
+
+**After** (in this order; the first two decide whether the intervention worked at all)
+1. `cat /sys/devices/system/cpu/cpu17/online` -> must be `0` with nobody touching it. `journalctl -b -u
+   r9700-offline-core.service` should name core 65 and the pair.
+2. `tools/journal-pcie.py 2` and read the **record's own TIME**, not just its presence:
+   - no record, or a record whose TIME is an old death -> the graceful reboot produced no new machine check;
+   - a record whose TIME is within seconds of the reboot -> the shutdown/reboot path itself reached the fault.
+     Bad, but the most informative result available; capture it and stop treating the box as usable.
+   Presence alone is meaningless: the previous death's record can be re-presented. Only TIME distinguishes them,
+   and `tools/journal-pcie.py` prints both the TIME and where it was printed.
+3. `setup.sh --yes --check` (step 1 must print the failing-core line), then `--launch native-flashnext.sh
+   --webui same`.
+4. The AER half gets its own clean measurement off the fresh counters: `reseat-check.py --save` before the
+   launch, `--diff` after the weight-load window. Expected: unchanged (PCIe correctables are a different fault
+   path; an L2 machine check does not live on a PCIe link). If the correctable rate *drops* with a core offline,
+   that is a surprise worth writing down.
+
+**What it cannot answer**: whether the container path works (this box has no `docker` binary, `setup.py` says so
+in steps [2]-[4]), and it cannot prove the CPU is fine — at best it shows the fault is confined to one core.
+The box is on borrowed time either way: the fatal-MCA cadence measured from the journal is 20 deaths in 72 h.

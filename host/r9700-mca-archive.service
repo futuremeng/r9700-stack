@@ -1,0 +1,31 @@
+# One-shot at boot: archive every boot's hardware-error record into our own append-only file.
+
+# Why this exists next to r9700-offline-core.service: the firmware keeps exactly ONE BERT record
+# (`BERT: Total records found: 1`), so the record of the crash that ended a boot is overwritten by the next crash.
+# On a box that dies by itself, that means the evidence series is single-deep and lossy -- 13 of this box's 33
+# boots left no replayed record at all. The OS journal of the following boot is the only place the record ever
+# appears, and it appears for ~10 s. Archive it before anything can crash again.
+#
+# It reads only the journal and read-only sysfs (tools/journal-pcie.py); it writes one JSONL line per boot to
+# /home/jiulu/aer/mca-archive.jsonl. Running as the ordinary user keeps that file owned by the user, so the
+# series stays readable/appendable by the person doing the diagnosis.
+#
+# Install (root):
+#   sudo cp host/r9700-mca-archive.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now r9700-mca-archive.service
+# Check: journalctl -u r9700-mca-archive.service ; tail -1 /home/jiulu/aer/mca-archive.jsonl
+
+[Unit]
+Description=r9700-stack: archive this boot's replayed MCA/CPER record (firmware keeps one)
+After=r9700-offline-core.service
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+User=jiulu
+Group=jiulu
+ExecStart=/home/jiulu/r9700-stack/.venv/bin/python /home/jiulu/r9700-stack/tools/journal-pcie.py --boots 3 --json /home/jiulu/aer/mca-archive.jsonl
+
+[Install]
+WantedBy=multi-user.target
