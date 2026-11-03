@@ -366,6 +366,23 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   like an uncorrectable fault. Serving traffic does not move these counters; launches do — recorded in the incident
   note, where the takeaway is that a mid-decode event is now the out-of-pattern thing to look for.
 
+- **What one stream really decodes at, answered off the journal instead of a window** (1,400 completed real requests,
+  13.8 h, 301 minutes with traffic; [notes/context-262k.md](notes/context-262k.md), "Per-stream decode"). A stream with
+  the box to itself: **157.7 tok/s** median (n=274, never shared across its whole decode window). A request as a user
+  experiences it: **60.8 tok/s** median (mean 75.7, p10 8.7, p90 163.0). The ladder between them: 157.7 alone → 119.1 at
+  two in flight → **22.8 at 3–4** → 15.6 at 5–6, with 32.7% of active seconds spent alone and 31.8% at 3–4. Two findings
+  inside that: single-stream decode is nearly **context-independent** on this model (161.9 under 20k → 140.3 above 160k,
+  −13%, because decode here streams MoE weights and attention's KV read is not the dominant cost), and the cliff is
+  **2→3 streams, a 5× drop** — with NBT=8192 and 50–170k prompts a third long prompt turns engine steps into ~1 s
+  prefill chunks that credit each stream once per step, so it is a chunking/scheduling cost no decode kernel touches.
+  Also recorded: the definition trap that made the first answer wrong (bucketing concurrency at the decode window's
+  midpoint called 361 requests "alone" and reported 137 tok/s; requiring never-shared gives 157.7, and every sane variant
+  agrees at 155.7–156.1), the denominator question (16.6 tok/s aggregate over the wall-clock, 45.4 over active minutes
+  only, 24.8 token-weighted, 60.8 median — quote the median for "what will my request feel like"), prefill read from the
+  same rows via `timings.prefill_s` (median 7,911 tok/s, 7,238 above 160k), and the cross-check that 157 is not a
+  regression: this launch runs MTP=2 at acceptance 2.0–2.4 against the release gate's MTP-3 at ~3.1 tokens a step — if
+  single-stream decode is ever wanted back, the knob is drafter depth, not the attention path.
+
 - **"Isn't one PSU supposed to be the standby?" -- fair, and it is settled by one number we no longer have on file**
   ([notes/incident-2026-11-02/bmc-sensors-watchdog-psu.txt](notes/incident-2026-11-02/bmc-sensors-watchdog-psu.txt)
   §5e, with §5c's "this settles it" softened accordingly). Two 2600 W supplies prove the hardware is N+1-capable, not
