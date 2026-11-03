@@ -702,7 +702,7 @@ def _pci_node(path, bdf, depth):
                         **{f"{k}#ft": v for k, v in ft_named.items()}}}
 
 
-def aer_deltas(chains, last, named=None, events=None, at=None, last_err=None):
+def aer_deltas(chains, last, named=None, events=None, at=None, last_err=None, recent=None, window_s=300.0):
     """Per-poll AER deltas per chain, from counters that are cumulative since boot.
 
     A counter that went DOWN is not negative traffic: the kernel zeroes these on a link recovery or a driver
@@ -723,6 +723,14 @@ def aer_deltas(chains, last, named=None, events=None, at=None, last_err=None):
     c6 chain carried 42 correctables from a load window that ended at 09:00:03, and then sat at exactly 42 for
     the next 42 minutes with the link holding 32 GT/s -- a number that never moves should stop being painted as
     if it were happening now.
+
+    `recent` adds `rate_per_min`: counter **events per minute averaged over the trailing `window_s`** (default
+    300 s, the same span `quiet_s` uses to decide something just happened). A trailing average and not a
+    lifetime one, because a lifetime average never relaxes. It is what lets a chain adding up to one counter a
+    minute collapse to an info glyph while one adding tens a minute keeps its number: measured here a
+    weight-load window put 34 counters on the c6 chain in 3.0 min = 11.3/min (digits, coloured), while the
+    trickle this chain shows during real traffic -- one BadTLP per few minutes of large prefills -- is ~0.2/min
+    (glyph). `window_s` travels with it so a page can name the span.
     """
     out, nxt = [], {}
     for ch in chains:
@@ -743,6 +751,8 @@ def aer_deltas(chains, last, named=None, events=None, at=None, last_err=None):
                                 events.append({"at": at, "bus": ch["bus"], "card": ch.get("card"),
                                                "bdf": dev["bdf"], "role": dev["role"],
                                                "kind": nm, "n": nv - was.get(nm, 0)})
+                                if recent is not None:
+                                    recent.setdefault(ch["bus"], deque()).append((at, nv - was.get(nm, 0)))
                     named[dev["bdf"]] = dict(cur)
                 if v is None:
                     continue
@@ -763,6 +773,13 @@ def aer_deltas(chains, last, named=None, events=None, at=None, last_err=None):
             if moved or ch["bus"] not in last_err:
                 last_err[ch["bus"]] = at or time.time()
             d["quiet_s"] = round((at or time.time()) - last_err[ch["bus"]], 1)
+        if recent is not None:
+            seen = recent.setdefault(ch["bus"], deque())
+            now = at or time.time()
+            while seen and now - seen[0][0] > window_s:
+                seen.popleft()
+            d["rate_per_min"] = round(sum(n for _, n in seen) / (window_s / 60.0), 3)
+            d["window_s"] = window_s
         out.append(d)
     return out, nxt
 
@@ -1418,6 +1435,7 @@ class Hub:
         # the payload.
         self.aer_named, self.pcie_events = {}, deque(maxlen=60)
         self.aer_quiet = {}            # chain bus -> when a counter last moved (drives quiet_s)
+        self.aer_recent = {}           # chain bus -> (time, n) events in the trailing window (drives rate_per_min)
         self.health, self.engine, self.host = None, {}, read_host()
         # What ended the PREVIOUS boot (ACPI BERT, replayed by the kernel at startup) and how many such
         # records the journal still holds. Read once: neither can change while this process is alive.
@@ -1597,7 +1615,7 @@ class Hub:
                                 for ch in chains]
                 new_events = []
                 deltas, self.aer_last = aer_deltas(chains, self.aer_last, self.aer_named, new_events,
-                                                   time.time(), self.aer_quiet)
+                                                   time.time(), self.aer_quiet, self.aer_recent)
                 for e in reversed(new_events):
                     self.pcie_events.appendleft(e)
                 self.pcie = chains

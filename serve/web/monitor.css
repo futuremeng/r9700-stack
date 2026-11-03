@@ -104,6 +104,10 @@ section{margin:18px 0}
    wrapping mid-string. No browser exists on this box, so these are arithmetic, not a screenshot. */
 .p-slot{grid-area:slot}.p-drv{grid-area:drv}.p-chain{grid-area:chain}.p-link{grid-area:link}
 .p-cnt{grid-area:cnt}.p-who{grid-area:who}.p-win{grid-area:win}
+/* The sparse state: a chain that adds at most one AER counter a minute over the trailing hour shows an info
+   glyph instead of its numbers, with the numbers in the title. Small and muted, but it must still read as
+   "there is something here", so it keeps the muted ink rather than vanishing. */
+.p-info{cursor:help;font-size:var(--st-fs-sm);line-height:1;opacity:.8}
 /* The header carries the same areas, so it is a legend for the columns rather than a caption above a table
    whose widths nobody promised. */
 .pcie-head{border-top:0;padding:0 0 3px;font-size:var(--st-fs-xs);color:var(--st-ink-muted);

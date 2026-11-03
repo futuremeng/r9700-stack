@@ -58,7 +58,30 @@ function pcieRow(c, phist = [], busyNow = false) {
   // five minutes of nothing is not a slow trickle, it is the absence of one. An unknown quiet clock (an older
   // sidecar) counts as loud -- the dimming is allowed to turn itself off, never to invent calm.
   const quiet = isnum(last?.quiet_s) ? last.quiet_s : null;
-  const liveErrs = (win ?? 0) > 0 || !last || !!last.reset || quiet === null || quiet < 300;
+  // The RATE is the criterion, not the time since the last event. That was measured into: the first version of
+  // this rule dimmed a chain only after 300 s without a counter move, and under the traffic this box actually
+  // carries (a ~100k-token prompt every ~20 s, one BadTLP every ~3 min) quiet_s never got past 300 -- the row
+  // stayed coloured essentially forever, which is the same failure as colouring a number that never moves. So:
+  //   digits + colour  -- this poll saw movement (a one-poll flash that something just happened), the rate over
+  //                       the trailing span is above 1/min (a weight-load window measured 11.3/min), or the rate
+  //                       is unknown (older sidecar: never invent calm);
+  //   info glyph       -- correctables exist but the span rate is at most 1/min. Numbers move to the title.
+  // `quiet_s` still belongs to the tooltip: it says how long the calm has been, which a rate cannot.
+  const rate = isnum(last?.rate_per_min) ? last.rate_per_min : null;
+  const span = Math.max(1, Math.round((last?.window_s || 300) / 60));
+  const justNow = (win ?? 0) > 0 || !!last?.reset;
+  const liveErrs = justNow || !last || rate === null || rate > 1;
+  const sparse = !!cor && !unc && !justNow && rate !== null && rate <= 1;
+  const lastEv = (((status && status.pcie_events) || []).filter((e) => e.bus === c.bus) || [])[0] || null;
+  const ago = (s2) => (s2 >= 5400 ? `${(s2 / 3600).toFixed(1)} h` : `${Math.round(s2 / 60)} min`);
+  const info = [`${cor} correctable \u00b7 ${unc} uncorrectable since boot`,
+    cn.length ? `correctable: ${cn.join(" \u00b7 ")}` : "",
+    un.length ? `uncorrectable: ${un.join(" \u00b7 ")}` : "",
+    rate !== null ? `${rate.toFixed(2)} counters per minute over the ${span} min this sidecar has watched` : "",
+    quiet !== null ? `nothing has moved for ${ago(quiet)}` : "",
+    lastEv ? `last: ${esc(lastEv.bdf)} ${esc(lastEv.kind)} +${lastEv.n} at ${new Date(lastEv.at * 1000).toLocaleTimeString()}`
+           : "no counter moved while this page has been open",
+    "the numbers live here now -- this chain does have counters; only their prominence changed"].filter(Boolean).join("\n");
   // Colour means "look here": a link below its maximum, or an uncorrectable error, is the danger; correctable
   // errors are noted but not alarming on their own (they are correctable, and this box has them by the dozen).
   // Two idle states are measured on this box, and neither should be painted as a fault: with the GPUs
@@ -90,20 +113,21 @@ function pcieRow(c, phist = [], busyNow = false) {
                            ? ` <span class="q">(${c.parked ? "parked, max ×"
                               : sag ? "idle, max ×" : "max ×"}${maxw})</span>`
                            : "") : "—") + `</span>`
-    + `<span class="cnt p-cnt">${cor || unc
+    + `<span class="cnt p-cnt">${sparse ? `<span class="p-info q" title="${esc(info)}">\u24d8</span>`
+        : cor || unc
         ? (cor && !liveErrs
-           ? `<span class="q">${cor} corr${unc ? ` · ${unc} uncorr` : ""} since boot</span>`   // muted: not moving
+           ? `<span class="q">${cor} corr${unc ? ` · ${unc} uncorr` : ""} since boot</span>`   // muted: idle
            : `${cor} corr · ${unc} uncorr <span class="q">since boot</span>`)
         : `no errors <span class="q">since boot</span>`}</span>`
     + `<span class="who p-who" title="the non-zero AER counters on this chain: correctable ones are recovered by the
-      hardware, the others are not">${cn.length ? `<span class="q">corr</span> ${cn.join(" · ")}` : ""}`
-      + (un.length ? ` <span class="unc">${un.join(" · ")}</span>` : "") + `</span>`
+      hardware, the others are not">${sparse ? "" : cn.length ? `<span class="q">corr</span> ${cn.join(" · ")}` : ""}`
+      + (sparse ? "" : un.length ? ` <span class="unc">${un.join(" · ")}</span>` : "") + `</span>`
     + `<span class="win p-win" title="this poll's deltas; these counters are quiet unless something happens.
       'quiet' counts how long this page has watched this chain with no counter moving -- it says nothing about
       before this page opened, because counters we found already raised are not ours to date">`
       + (win === null ? "<span class=\"q\">window —</span>"
          : (cor && !liveErrs && quiet !== null)
-           ? `<span class="q">+0 · quiet ${quiet >= 5400 ? `${(quiet / 3600).toFixed(1)} h` : `${Math.round(quiet / 60)} min`}</span>`
+           ? `<span class="q">+0 · ${rate !== null && rate < 10 ? rate.toFixed(2) : rate}/min${quiet !== null ? ` · quiet ${ago(quiet)}` : ""}</span>`
            : `+${win} this window`) + `</span>`;
   return d;
 }

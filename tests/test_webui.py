@@ -1017,6 +1017,16 @@ ck("nothing moving for 42 minutes reads as 42 minutes, not as calm-by-default",
 _d, _l = W.aer_deltas([_ch(1, {"BadTLP": 1})], _l, _n, _e, 3660.0, _q)
 ck("the kernel zeroing a counter is an event, not a long quiet spell (the delta is unknowable)",
    _d[0]["reset"] and _d[0]["quiet_s"] == 0.0 and _d[0]["cor_d"] is None, str(_d[0]))
+_rq, _rr, _rn = {}, {}, {}
+_rl = {}
+_d1, _rl = W.aer_deltas([_ch(1, {"BadTLP": 1})], _rl, _rn, [], 1000.0, _rq, _rr)      # baseline poll
+_d2, _rl = W.aer_deltas([_ch(46, {"BadTLP": 46})], _rl, _rn, [], 1030.0, _rq, _rr)    # +45 in 30 s
+ck("45 counters inside the 300 s span average 9/min -- above the glyph line (a real weight-load window on this "
+   "box was 34 counters in 3.0 min, 11.3/min)",
+   _d2[0]["rate_per_min"] == 9.0 and _d2[0]["window_s"] == 300.0, str(_d2[0]))
+_d3, _rl = W.aer_deltas([_ch(46, {"BadTLP": 46})], _rl, _rn, [], 4700.0, _rq, _rr)    # one hour later, nothing new
+ck("an hour later the burst has aged out and the rate is 0 -- a trailing rate relaxes, a lifetime average never does",
+   _d3[0]["rate_per_min"] == 0.0 and _d3[0]["quiet_s"] == 3670.0, str(_d3[0]))
 ck("quiet_s is asked for by the hub, not just defined (the running serve must actually fill it in)",
    "self.aer_quiet" in open(os.path.join(ROOT, "serve", "webui.py")).read())
 _js = {p.name: p.read_text() for p in WEB.glob("*.js")}
@@ -1036,12 +1046,35 @@ ck("returning to a throttled background tab refetches at once instead of waiting
 _m2 = _js["monitor.js"]
 ck("a static correctable count no longer holds the warn tone (the tone keys off liveErrs now)",
    ': cor ? "warn"' not in _m2 and "(cor && liveErrs) ? \"warn\"" in _m2)
-ck("quiet is measured in seconds from the sidecar, and unknown counts as LOUD (an older sidecar cannot fake calm)",
-   "last?.quiet_s" in _m2 and "!last ||" in _m2 and "quiet === null" in _m2 and "quiet < 300" in _m2
-   and "c.quiet_s" not in _m2, "quiet_s must be read off the history entry: payload['pcie'] is read_pcie chains, "
-   "which have no deltas and no quiet_s")
+ck("the sidecar clocks are read off the history entry, and an unknown clock counts as LOUD (an older sidecar "
+   "cannot fake calm)",
+   "last?.quiet_s" in _m2 and "last?.rate_per_min" in _m2 and "!last ||" in _m2 and "rate === null" in _m2
+   and "c.quiet_s" not in _m2 and "c.rate_per_min" not in _m2,
+   "payload['pcie'] is read_pcie chains, which carry no deltas, no quiet_s and no rate_per_min")
+# third level: at most one counter a minute over the trailing hour collapses to an info glyph
+_sr = open(os.path.join(ROOT, "serve", "webui.py")).read()
+ck("the sidecar publishes a trailing-window per-minute rate, pruned as events age out",
+   "self.aer_recent" in _sr and 'd["rate_per_min"]' in _sr and "window_s=300.0" in _sr
+   and 'd["window_s"] = window_s' in _sr)
+ck("the row collapses to an info glyph only below ~1 counter/minute, and never while uncorrectable is nonzero",
+   "rate <= 1" in _m2 and "!unc" in _m2.split("const sparse")[1][:40] and 'class="p-info' in _m2)
+ck("the rate, not the time since the last event, decides: a one-per-few-minutes trickle gets the glyph, and a "
+   "single fresh event still flashes to digits",
+   "justNow || !last || rate === null || rate > 1" in _m2 and "!justNow && rate !== null && rate <= 1" in _m2
+   and "quiet < 300" not in _m2, "quiet_s must not gate the colour: measured 1 BadTLP per ~3 min under ~100k-token "
+   "traffic, a 300 s gate would leave the row coloured forever")
+ck("the window cell carries the rate and the calm span once it is sparse",
+   '/min${quiet !== null ? ` \u00b7 quiet' in _m2 or "/min${quiet !== null ? ` · quiet" in _m2)
+ck("the numbers survive in the glyph's title rather than being dropped",
+   r"correctable \u00b7 ${unc} uncorrectable since boot" in _m2
+   and "counters per minute over the ${span} min" in _m2
+   and "const info = [" in _m2 and 'title="${esc(info)}"' in _m2)
+ck("the sparse glyph has its own style with a defined variable",
+   ".p-info{" in open(os.path.join(ROOT, "serve", "web", "monitor.css")).read()
+   and "var(--st-fs-sm)" in open(os.path.join(ROOT, "serve", "web", "monitor.css")).read())
 ck("the quiet row says how long it has been quiet instead of pretending there is nothing there",
-   re.search(r"quiet \$\{quiet >= 5400", _m2) and re.search(r'\+0 · quiet', _m2))
+   re.search(r"\+0 · \$\{rate[^}]*\}/min", _m2) and re.search(r"quiet \$\{ago\(quiet\)\}", _m2)
+   and "const ago = (s2) =>" in _m2)
 ck("the About page loop cannot die on one bad tick either",
    bool(re.search(r"finally\s*\{.*setTimeout\(loop", _js["about.js"], re.S)))
 tokens = (WEB / "tokens.css").read_text() + "".join(p.read_text() for p in WEB.glob("*.css") if p.name != "tokens.css")

@@ -1,4 +1,21 @@
 # Changelog
+## The PCIe row's third level: at most one counter a minute collapses to an info glyph
+
+... and the criterion changed on the way there. The first pass dimmed a chain after 300 s with no counter move,
+with 300 s anchored on the weight-load windows (11.3-45.7 counters/min). Put back under this box's real traffic
+-- a ~100k-token prompt every ~20 s, twelve consecutive requests measured at 97,205 to 115,950 tokens -- that
+chain produces ~1 BadTLP every three minutes, `quiet_s` never crossed 300, and the row stayed coloured forever:
+the same failure as painting a number that never moves, reached from the opposite direction. `aer_deltas` now
+also emits `rate_per_min` (events averaged over the trailing 300 s, with `window_s` alongside), and the row
+becomes an `i`-in-a-circle glyph when the rate is at or below 1/min: measured ~0.2-0.33/min under traffic vs
+11.3/min during a weight load. Digits and colour survive for movement in this poll (a one-poll flash), for a
+rate above 1/min, and always for uncorrectable counters; the full numbers, the last event's bdf/kind/time, the
+rate and its span, and `quiet_s` go into the glyph's title. Unknown rate counts as loud.
+
+`tests/test_webui.py` pins the precedence ("the rate, not the time since the last event, decides") and says why
+in the failure detail, so the 300 s gate cannot come back as a regression. Needs a serve restart to take effect
+here -- `webui` runs inside the serve, and this box was in the middle of a 100k-token benchmark when it landed.
+
 ## A PCIe chain that stopped erroring stops wearing the colour of one that is
 
 The row tone was "any correctable since boot -> warn", so a single load window painted a chain amber for the
