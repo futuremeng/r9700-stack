@@ -366,6 +366,18 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   like an uncorrectable fault. Serving traffic does not move these counters; launches do — recorded in the incident
   note, where the takeaway is that a mid-decode event is now the out-of-pattern thing to look for.
 
+- **The README now carries real-traffic numbers next to the benchmark ones, because benchmarks alone mislead**
+  (README "Four cards, the numbers worth knowing" and Speed → "The same launch with real work on it, not a
+  benchmark"). The top block gained a fifth row — **158 tok/s with the box to yourself, 61 tok/s as a request
+  actually finishes** — labelled as not a benchmark, and the Speed intro now says what was measured how: fixed prompt
+  lengths, equal `max_tokens` waves and no arrivals while measuring is the right way to compare builds and the wrong
+  way to answer "what will my request get". The new subsection carries the concurrency ladder (157.7 / 119.1 / 22.8 /
+  15.6 / 17.3 tok/s against 32.7% / 18.6% / 31.8% / 12.4% / 4.6% of active seconds), the context-independence finding
+  (161.9 → 140.3 tok/s from under 20k to above 160k), the prefill cross-check (median 7,911 tok/s from the same rows,
+  inside the bench band, so the bench's prefill numbers hold while its decode ones do not), all four aggregate
+  denominators, the MTP-2-versus-MTP-3 reconciliation that keeps 158 from reading as a regression, and the snapshot
+  note that the count grows while the statistics do not (1,400 rows: prompt p50 74,381; 1,417 rows: 74,066).
+
 - **What one stream really decodes at, answered off the journal instead of a window** (1,400 completed real requests,
   13.8 h, 301 minutes with traffic; [notes/context-262k.md](notes/context-262k.md), "Per-stream decode"). A stream with
   the box to itself: **157.7 tok/s** median (n=274, never shared across its whole decode window). A request as a user
