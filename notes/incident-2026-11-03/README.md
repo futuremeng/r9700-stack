@@ -762,3 +762,63 @@ upstream port `c4:00.0`, i.e. the slot-6 riser -- and it is still nothing to do 
 Open, and worth measuring before the next reseat: prefill/decode rates at Gen4 vs Gen5 on that card. Today's
 140k-token prefill ran at ~7,600 prompt tok/s at Gen4; the note's Gen5-era numbers are in
 [native-4xr9700.md](../native-4xr9700.md). Nothing retrained the link back up in the 20 minutes observed.
+
+---
+
+# The PCIe scope narrows: every correctable this box has ever recorded is on ONE expansion board
+
+The operator states they did **not** reseat the GPU cards; what they pulled and refitted was the **expansion
+board that carries slot 6 and slot 8**. That reorders the PCIe half of this note, because of what the counters
+say across the whole journal history:
+
+| chain | root port | slots on the same board? | correctables, boot `5ec7e479` (06:00-06:47) | correctables, boot `324e273b` (06:49-) |
+|---|---|---|---|---|
+| card2 / **slot 6** | `c0:03.1` (AMD 0x14a5) | yes | **87** (`c4:00.0` 59, `c0:03.1` 26, card-side ports 1 each) | **144** (`c4:00.0` 84 incl. BadTLP 77, `c0:03.1` 58 Timeout) |
+| card4 / **slot 8** | `00:03.1` (AMD 0x14a5) | yes | **6** (`04:00.0` 3, `00:03.1` 1, card-side ports 1 each) | **0** |
+| card1 / slot 3 | `c0:01.1` (AMD 0x14ab) | other path | 0 on all four ports | 0 |
+| card3 / slot 1 | `00:01.1` (AMD 0x14ab) | other path | 0 on all four ports | 0 |
+
+Two chains have ever produced a PCIe error on this box, and they are exactly the two slots on that one board.
+Also worth keeping: the upstream/downstream pair in every chain is **on the GPU card** (AMD/ATI `Navi 10 XL
+Upstream/Downstream Port`, devices `0x1478`/`0x1479`), so the only external link per chain is
+root port ↔ card upstream port -- and that is the link that dropped to 16.0 GT/s.
+
+**When the reseat happened, from the journal rather than from memory** (`tools/boot-gaps.py`, added with this
+entry: it lists the gap between the last entry of one boot and the first of the next, which is how you tell
+"this reboot had time for an open-chassis job" from "this was a 100-second reboot + POST"):
+
+```
+11-03  02:48:14 -> 02:50:38    2.4 min
+11-03  05:16:17 -> 05:42:30   26.2 min   <-- the only window today long enough
+11-03  05:45:19 -> 05:47:29    2.2 min
+11-03  05:57:43 -> 06:00:23    2.7 min
+11-03  06:47:44 -> 06:49:24    1.7 min   <-- the deliberate reboot; no physical work inside it
+```
+
+So the board work belongs to the 05:16-05:42 window (pending the operator's confirmation), and it was done with
+power off: the GPU root ports `c0:03.1`/`00:03.1` have **no pciehp hot-plug controller**, so pulling that board
+live would have taken both links down without any neat Surprise-Removal message -- and there is no such trace
+anywhere: no link-down, no containment, no uncorrectable, all four cards enumerated, counters accumulating
+normally. A powered removal would not look like that.
+
+**What it did not do: fix slot 6.** The first enumeration after that window already errors (`ec0d0751`, 05:47:29:
+`c4:00.0` BadTLP 1, `c0:03.1` Timeout 3), the next one reached 87 correctables, and in the newest boot slot 6
+reached 144 **and lost its Gen5 hold** (16.0 GT/s, still there after 30+ min) while slot 8 -- same board, same
+root-port device id, same card model -- is completely clean. That is a per-slot problem on that board, not a
+board-wide one, and the trend is worse rather than better.
+
+Remaining suspects, narrowed to that link and to one slot of that board: the board's slot-6 connector / its lane
+routing / the power to that slot; card2's edge connector or its Gen5 receiver; the CPU PHY's equalization for
+that port as configured by BIOS (ESC4000A-E12, BIOS 2501 -- `sudo lspci -vvv` `LnkCtl2` target speed would
+separate "tried Gen5 and could not hold it" from "was told to run Gen4", not readable without root).
+Asymmetric refitting of a two-slot board is a classic way to get exactly this (one end not fully engaged), so a
+deliberate second refit -- both ends even, screws/standoffs, connector pins, board power connector -- is cheap
+and worth doing.
+
+**The decisive test needs no parts**: swap card2 and card4 **within that same board** (slot 6 <-> slot 8). If the
+errors follow the card, card2's PHY/edge connector is the part to replace; if they stay with slot 6, the board is.
+Swapping across boards would not answer it -- the boards differ.
+
+None of this touches the fatal-MCA half of this note: the CPU/L2 deaths happened with this board in both its
+pre- and post-refit states, on a different reporting path, and offlining core 65 changed nothing on the PCIe
+side.
