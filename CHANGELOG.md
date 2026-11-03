@@ -392,6 +392,15 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   temporal-dead-zone `ReferenceError` caught by the page's own `try/catch`, which showed up as the PCIe and request
   sections silently not rendering while string tests passed. Declaration order is now asserted, and
   `tests/render-monitor.mjs` prints the page's notice bar and exits non-zero on a page-reported error or zero rows.
+- **The first loaded PCIe test on this box: one request, sampled at 10 Hz around it** (`tools/probe-load-link.py`;
+  [notes/incident-2026-11-03/README.md](notes/incident-2026-11-03/README.md)). Sent at 03:33:54 with `running 0 /
+  waiting 0` confirmed first: **`c4:00.0` and `c0:03.1` stayed at 16.0 GT/s ×16 in 21/21 samples** while the other 14
+  nodes on all four chains held 32.0, AER moved **+0**, and card1's busy went 3 → 43% so the cards genuinely stepped.
+  So no renegotiation attempt, and the two shorted nodes do not follow the other chains' idle behaviour. Equally
+  explicit about the limit: 59 prompt tokens is a few kilobytes across the bus — the traffic that moved those counters
+  on 11-02 was long-prompt prefill — so this rules out neither a marginal hop nor a driver choice. The launch now
+  carries exactly one synthetic row (`chatcmpl-8fba340fe00c9784`), named so nobody averages it in.
+
 - **60 s of link sampling says card2's Gen4 uplink is not power management** ([notes/incident-2026-11-03/README.md](notes/incident-2026-11-03/README.md)).
   With the serve up and nothing served, `c4:00.0 ↔ c0:03.1` held **16.0 GT/s ×16 for 30 samples with one distinct
   value**, while its own endpoint, the switch downstream port, and card4's structurally identical upstream port all

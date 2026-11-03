@@ -1205,6 +1205,15 @@ _wl = open(os.path.join(ROOT, "tools", "watch-live.py")).read()
 compile(_wl, "watch-live.py", "exec")            # syntax only -- running it would sample and print
 ck("the live watcher only reads: it never builds a request or sends a body to the serve it is watching",
    "urlopen(" in _wl and "Request(" not in _wl and "data=" not in _wl and "POST" not in _wl)
+# tools/probe-load-link.py is the opposite instrument: it sends exactly one request, on purpose, to watch
+# whether a PCIe link renegotiates around real card work. Its honesty line matters as much as its action: a short
+# request cannot show whether a hop is marginal under a heavy transfer, and a reader who forgets that will
+# over-read a clean result.
+_pl = open(os.path.join(ROOT, "tools", "probe-load-link.py")).read()
+compile(_pl, "probe-load-link.py", "exec")        # syntax only -- running it would load the serving box
+ck("the link probe sends exactly one request, samples at a stated rate, and states what it cannot show",
+   _pl.count("urllib.request.Request(") == 1 and "max_tokens" in _pl and "HZ = 10.0" in _pl
+   and "what it cannot show is whether the hop is marginal under a heavy" in _pl)
 # gpu_busy_percent on this box is coarse, not finely readable: refused with nothing running, 0 stopped, 24-29
 # idle, 46-100 under load, 95-99 through long decode. The page says so, because otherwise a flat 99 reads as
 # "fully loaded" and a 0 as "healthy idle" when either could also mean "the launch let go".

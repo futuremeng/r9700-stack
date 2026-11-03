@@ -170,3 +170,29 @@ now reads *"a link is below its maximum with nothing running: parked chains alwa
 short while cards work, that is a link fault"* — a test, not a verdict. The remaining open test is the loaded one:
 whether that hop renegotiates to 32.0 GT/s when card2 actually works.
 
+## The loaded test, as far as a serving box will allow: one request, 10 Hz around it
+
+`tools/probe-load-link.py` — one chat request (59 prompt tokens, `max_tokens=1`), sysfs sampled at 10 Hz, bracketed
+by a quiet second on each side. Sent at **03:33:54**, with `running 0 / waiting 0 / preemptions 0` confirmed first so
+it did not contaminate anyone's concurrency. Engine-side wall **0.049 s**; HTTP round trip 0.09 s; the reply carried
+no content because the single allowed token went to a reasoning token (`reasoning_tokens: 1`).
+
+**This launch now contains exactly one synthetic row**, `chatcmpl-8fba340fe00c9784` (prompt 59, completion 1) at
+03:33:54. Anyone averaging this launch's numbers should know it is mine.
+
+| what | result |
+|---|---|
+| `c4:00.0` (switch upstream) | **16.0 GT/s ×16 in 21/21 samples** |
+| `c0:03.1` (root port) | **16.0 GT/s ×16 in 21/21 samples** |
+| the other 14 nodes on all four chains | 32.0 GT/s ×16 in 21/21 samples |
+| AER correctable | **+0** on every node |
+| `card1` `gpu_busy_percent` | 3 → 4 → **43** (the cards really stepped) |
+
+What that supports: the two shorted nodes **did not attempt to renegotiate around activity**, and they stayed at half
+speed while the cards demonstrably worked and while structurally identical nodes on the other chains held Gen5. What
+it does **not** support: any conclusion that the hop is not marginal. A 59-token request moves a few kilobytes
+host→device; inference streams its weights from HBM, so PCIe was barely asked for anything. The class of traffic that
+did move counters on 11-02 is a **long-prompt prefill** (`c4:00.0` and `04:00.0` were exactly where those events
+landed), and that probe costs ~20 s of box time plus one more journalled row — a decision for the operator, not for me
+unilaterally.
+
