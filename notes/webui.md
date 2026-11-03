@@ -507,19 +507,27 @@ load window painted a chain amber for the rest of the boot. Measured on this box
   is muted. The window cell then reads `+0 · 0.33/min · quiet 4 min`. The number stays on screen — de-emphasis,
   not concealment, and "no errors" would be a lie about a chain that has 44.
 
-**The rate replaced time-since-last-event as the criterion, the same day, because the traffic measured it.** The
-first version dimmed a chain only after `quiet_s > 300`, and 300 s was chosen from the weight-load windows
-(11.3–45.7 counters/min). Then the box went back to doing its actual job — a **~100k-token prompt every ~20 s**
-(twelve consecutive requests measured at 97,205 → 115,950 tokens, 10:54–10:59) — and that cadence lands about
-one BadTLP every three minutes, so `quiet_s` never crossed 300: **the row stayed coloured essentially forever**.
-The same failure as colouring a number that never moves, reached from the other direction. The rule is now a
-trailing rate (`rate_per_min`, averaged over the 300 s span the sidecar already keeps its event log in):
+**The rate replaced time-since-last-event as the criterion the same day, and the numbers say by how much.** The
+first version dimmed a chain only after `quiet_s > 300`, with 300 s chosen from the weight-load windows
+(11.3–45.7 counters/min). Then the box went back to real work, measured over the 24.6 min this sidecar has been
+up: **47 requests at a mean prompt of 104,160 tokens (max 169,294), 1.91 requests/min**, and **2 AER events on
+the slot-6 chain = 0.081/min**, with the two events 17.9 min apart (10:39:31, 10:57:23). What that implies for
+the two rules:
+
+| rule | coloured for | digits for |
+|---|--:|--:|
+| `quiet_s < 300` (first version) | 5 of those 17.9 min = **28% of the time**, and ~100% at the ~1-event-per-3-min cadence measured with 4–5 concurrent streams | always |
+| trailing rate ≤ 1/min (now) | the one poll the counter moved (~1 s) | only while the rate is above 1/min, i.e. during a weight-load window |
+
+So the time gate was not "always coloured" — with ~18 min gaps it dimmed for most of the time — but it re-lit
+the row for five minutes after every single event, which at 0.081/min is the opposite of what the event's
+rarity means. The rate says what is actually true: this chain adds a twelfth of a counter per minute.
 
 | state | rule | what the row shows |
 |---|---|---|
 | `danger` | uncorrectable counters, or a link below maximum while the card works | unchanged, whatever the rate |
 | digits + colour | movement this poll, or `rate > 1/min` (weight load measured **11.3/min**), or rate unknown | `44 corr · 0 uncorr` |
-| **info glyph** | correctables exist, nothing this poll, `rate ≤ 1/min` (real traffic measured **~0.2–0.33/min**) | `ⓘ`; window cell `+0 · 0.33/min · quiet 4 min` |
+| **info glyph** | correctables exist, nothing this poll, `rate ≤ 1/min` (measured **0.081/min** under 47 requests at mean 104,160 tokens; **~0.2/min** was the 4–5-concurrent-stream measurement) | `ⓘ`; window cell `+0 · 0.33/min · quiet 4 min` |
 
 Three guards: the glyph never applies while **uncorrectable** counters are nonzero; the numbers move into the
 `title` (totals, which counters, rate and its span, how long the calm has been, the last event's `bdf`/`kind`/
