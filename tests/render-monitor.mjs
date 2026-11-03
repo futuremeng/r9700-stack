@@ -197,6 +197,25 @@ for (const k of (byId.get("pcie") || new El()).children.slice(0, 4))
   console.log("  " + k.textContent.replace(/\s+/g, " ").trim());
 console.log(`\nrequest rows rendered: ${rows.length}`);
 for (const r of rows.slice(0, 6)) console.log("  " + r.textContent.replace(/\s+/g, " ").trim());
+// Which build this page belongs to: the header names the engine, the plugin and the commit, so a screenshot can
+// answer "is the live serve the new one?" without an ssh. The stub DOM creates #brand-line on demand, so this
+// checks the JS and the payload; the CSS around it still needs a browser.
+const brand = t("brand-line");
+const STAT = FIX ? FIX.status : await (await fetch(`${BASE}/api/status`)).json();
+const want = STAT?.stack?.plugin ? `plugin ${STAT.stack.plugin}` : null;
+console.log(`\nbrand line: ${brand}${STAT?.stack ? ` (status stack: ${JSON.stringify(STAT.stack)})` : " (no stack in the payload)"}`);
+if (!STAT?.stack) { console.log("BAD  the status payload carries no stack"); process.exitCode = 1; }
+if (!/\bvLLM\b/.test(brand || "")) { console.log("BAD  the header never named the engine"); process.exitCode = 1; }
+if (want && !(brand || "").includes(want)) { console.log(`BAD  the header does not carry ${want}`); process.exitCode = 1; }
+// The monitor repaints once a second; a header that appends its version each time would read "... vLLM 0.32 ·
+// vLLM 0.32 · ..." after a minute, so check a second render leaves it standing the same length.
+const len0 = (brand || "").length;
+if (!FIX) { await new Promise((r) => setTimeout(r, 1100)); }
+console.log(`brand line after another poll: ${t("brand-line")} (${(t("brand-line") || "").length - len0:+d} chars)`);
+if (!FIX && (t("brand-line") || "").length !== len0) {
+  console.log("BAD  the header grew on repaint -- the version is being appended, not replaced"); process.exitCode = 1;
+}
+
 // The page swallows render errors into its notice bar, so a broken section can look like an empty one.
 const bar = t("error");
 if (bar) { console.log("\nPAGE NOTICE:", bar); process.exitCode = 1; }

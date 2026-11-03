@@ -1404,9 +1404,50 @@ class Records:
 
 
 # ---------------------------------------------------------------------------------------- the sidecar
+def stack_info():
+    """Which code the serve behind these pages is running: the plugin's version and the commit of the tree it was
+    loaded from.
+
+    Read once at startup rather than on every poll: it is a fact about this process, and a header that says
+    "vLLM 0.32 - plugin 0.4.0 - b85a496" answers "is the live one the new one?" from a screenshot, which is the
+    question that otherwise costs an ssh and a look at the launch log. Fields are simply absent when the plugin is
+    not importable (a sidecar running outside the serve's venv) or the code was installed rather than checked out
+    (site-packages has no .git); the pages print what is there and drop what is not.
+    """
+    out = {}
+    try:
+        import r9700_vllm
+        out["plugin"] = getattr(r9700_vllm, "__version__", "") or ""
+        root = Path(getattr(r9700_vllm, "__file__", "")).resolve().parents[1]
+    except Exception:
+        return out
+    git = root / ".git"
+    if not git.is_dir():
+        return out
+    try:
+        head = (git / "HEAD").read_text().strip()
+        if head.startswith("ref: "):
+            out["branch"] = head[5:].split("/")[-1]         # refs/heads/master -> master: the page shows it
+            ref = git / head[5:]
+            commit = ref.read_text().strip() if ref.exists() else ""
+        else:
+            commit = head                                   # detached HEAD: the sha is in the file
+        if not commit:                                      # packed refs
+            commit = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+                                    capture_output=True, text=True, timeout=5).stdout.strip()
+        if commit:
+            out["commit"] = commit[:8]
+            out["dirty"] = bool(subprocess.run(["git", "-C", str(root), "status", "--porcelain"],
+                                               capture_output=True, text=True, timeout=10).stdout.strip())
+    except Exception as e:
+        out["commit_error"] = str(e)[:120]
+    return out
+
+
 class Hub:
     def __init__(self, cfg):
         self.cfg = cfg
+        cfg.setdefault("stack", stack_info())
         # The request journal: a JSONL file of finished rows, replayed at startup, so the list survives what
         # this box does to a process (see Journal). Off unless a path is configured.
         # A sidecar may ATTACH the merged monitor's journal read-only instead of owning one: that is what keeps
@@ -1525,6 +1566,7 @@ class Hub:
                     payload["port"] = self.cfg.get("port")
                     payload["slot_map"] = self.slotmap
                     payload["launch"] = self.launch
+                    payload["stack"] = self.cfg.get("stack") or {}
                     self.prev, self.prev_t, self.status = cur, t0, payload
                 self.hist.append({"at": t0, "gen_tok_s": payload["rate"].get("generation_tok_s"),
                                   "stream_tok_s": payload["rate"].get("stream_tok_s_live"),
@@ -1543,7 +1585,8 @@ class Hub:
                                        slot_map=self.slotmap,
                                        pcie_events=list(self.pcie_events),
                                        models=self.models, engine=self.engine,
-                                       meta=self.meta, requests_kept=self.kept())
+                                       meta=self.meta, requests_kept=self.kept(),
+                                       stack=self.cfg.get("stack") or {})
             time.sleep(self.cfg["poll"])
 
     def slow_poll(self):

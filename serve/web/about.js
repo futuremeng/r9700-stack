@@ -31,6 +31,7 @@ function render() {
   const c = s.config || {}, meta = s.meta || {}, models = s.models || [];
   const model = s.model_name || models[0]?.id || null;
   const host = s.host || {};
+  brandStack(s);
   text("mode", s.mode === "proxy" ? "recording requests"
     : s.mode === "merged" ? "inside this serve (serve/plugin)" : "observing (read-only)");
   // "this page is a sidecar" is not true of the merged page, and a page that describes itself wrongly is
@@ -42,6 +43,8 @@ function render() {
   facts($("facts-engine"), [
     ["Model", model],
     ["Engine", s.engine?.vllm_version || c.version || null],
+    ["Stack", s.stack?.plugin ? `r9700_vllm ${s.stack.plugin}`
+      + (s.stack.commit ? ` · ${s.stack.commit}${s.stack.dirty ? " (dirty)" : ""}` : "") : null],
     ["Max context", num(c.max_model_len ?? models[0]?.max_model_len) ? `${fmt(c.max_model_len ?? models[0].max_model_len)} tokens` : null],
     ["Parallelism", c.tensor_parallel_size ? `TP ${c.tensor_parallel_size}`
       + (c.pipeline_parallel_size && c.pipeline_parallel_size !== "1" ? ` · PP ${c.pipeline_parallel_size}` : "")

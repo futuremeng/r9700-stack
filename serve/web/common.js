@@ -23,6 +23,27 @@ function syncTheme(root = document) {
   root.querySelectorAll("[data-theme-toggle]").forEach((b) => b.setAttribute("aria-checked", String(dark)));
 }
 
+// which build this page belongs to: the header names the engine, the plugin and the commit, so "is the live serve
+// the new one?" is answered by the page instead of by ssh. The base text is remembered on first use because the
+// monitor repaints this element once a second, and a label that appends a version every second is a bug report
+// waiting to happen. A dirty checkout gets `*` and the reason in the title, since the commit alone would claim a
+// build the repository does not contain.
+function brandStack(s) {
+  const b = $("brand-line");
+  if (!b) return;
+  if (b.dataset.base === undefined) b.dataset.base = b.textContent;
+  const stack = (s && s.stack) || {};
+  const v = (s && s.engine && s.engine.vllm_version) || "";
+  const parts = [];
+  if (v) parts.push("vLLM " + String(v).split("+")[0]);
+  if (stack.plugin) parts.push("plugin " + stack.plugin);
+  if (stack.commit) parts.push(stack.commit + (stack.dirty ? "*" : ""));
+  b.textContent = parts.length ? `${b.dataset.base} · ${parts.join(" · ")}` : b.dataset.base;
+  if (stack.commit) b.title = stack.dirty
+    ? `checkout ${stack.branch || "(detached)"} at ${stack.commit}, with uncommitted edits in the tree`
+    : `checkout ${stack.branch || "(detached)"} at ${stack.commit}, clean`;
+}
+
 // -- fetching ----------------------------------------------------------------------
 // The key lives in sessionStorage only: it is the serve key, this page never has one of its own.
 const FETCH_MS = 4000;                       // a GET of a local sidecar answers in well under 0.1 s

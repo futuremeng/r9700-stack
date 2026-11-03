@@ -1713,5 +1713,34 @@ ck("the PCIe table has a header row on the same grid, naming each column",
 ck("slot labels and driver names are separate columns, so one can be long without shoving the other",
    '<b class="p-slot">' in _mjs2 and 'class="small p-drv"' in _mjs2)
 
+# --- which build is this page? ---------------------------------------------------------------------------
+# "Is the live serve the new one?" used to cost an ssh and a look at the launch log. The header answers it, and
+# About lists it as a fact, so the answer survives into a screenshot and into a bug report.
+st = W.stack_info()
+try:
+    import r9700_vllm
+    want = r9700_vllm.__version__
+except Exception:
+    want = None
+ck("the pages can name the plugin build they are talking to", bool(st.get("plugin")), str(st)[:140])
+ck("and it is the version this tree declares", want is None or st.get("plugin") == want,
+   f"page {st.get('plugin')!r} vs tree {want!r}")
+ck("and the commit, whenever the code came from a checkout rather than an install",
+   bool(st.get("commit")) or not (Path(ROOT) / ".git").is_dir(), str(st)[:140])
+ck("a dirty checkout is told, because a bare commit would claim a build the repository does not contain",
+   'out["dirty"]' in (Path(ROOT) / "serve" / "webui.py").read_text()
+   and 'stack.dirty' in (Path(ROOT) / "serve" / "web" / "common.js").read_text()
+   and '(dirty)' in (Path(ROOT) / "serve" / "web" / "about.js").read_text())
+for _pg in ("monitor", "about"):
+    ck(f"the {_pg} header carries the id the build line is written into",
+       'id="brand-line"' in (Path(ROOT) / "serve" / "web" / f"{_pg}.html").read_text())
+ck("and both pages call it, from one shared helper that remembers the header's base text so a per-second "
+   "repaint cannot append the version again",
+   "function brandStack" in (Path(ROOT) / "serve" / "web" / "common.js").read_text()
+   and all("brandStack(s);" in (Path(ROOT) / "serve" / "web" / f"{_pg}.js").read_text()
+           for _pg in ("monitor", "about")))
+ck("About lists the stack as a fact, not only in the header",
+   '["Stack", s.stack?.plugin' in (Path(ROOT) / "serve" / "web" / "about.js").read_text())
+
 print("PASS" if fail == 0 else "FAIL", f"({fail} failing)")
 sys.exit(1 if fail else 0)

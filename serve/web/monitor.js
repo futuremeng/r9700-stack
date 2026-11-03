@@ -788,6 +788,7 @@ async function refresh() {
   try {
     const [s, h] = await Promise.all([api("/api/status"), api("/api/requests")]);
     status = s; records = h.requests;
+    brandStack(s);
     if (selected && !records.some((r) => rid(r) === selected)) {
       selected = detail = null;
       $("selection").hidden = true; $("no-selection").hidden = false;
