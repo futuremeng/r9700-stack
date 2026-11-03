@@ -266,5 +266,32 @@ for i, b in enumerate(blocks):
        b.count("<sub>") == b.count("</sub>") and "](" not in b,
        f'{b.count("<sub>")}/{b.count("</sub>")} sub tags')
 
+# one command per block: github's copy button copies a whole fenced block, so a block holding four commands
+# copies four, along with whatever label sat between them. The five blocks this replaced did exactly that.
+DEPLOY = re.search(r"^## Deploying it\n(.*?)(?=^## )", README, re.S | re.M)
+blocks = re.findall(r"^[ ]*```bash\n(.*?)(?:\n[ ]*```$)", DEPLOY.group(1), re.S | re.M) if DEPLOY else []
+
+
+def commands_in(body):
+    n, cont = 0, False
+    for ln in body.rstrip("\n").split("\n"):
+        s = ln.strip()
+        if cont:                                   # a backslash continuation is the same command
+            cont = s.endswith("\\")
+            continue
+        if not s or s.startswith("#"):
+            continue
+        n += 1
+        cont = s.endswith("\\")
+    return n
+
+
+ck(f"all {len(blocks)} deployment command blocks hold exactly one command each",
+   bool(DEPLOY) and all(commands_in(b) == 1 for b in blocks),
+   f"{[commands_in(b) for b in blocks if commands_in(b) != 1][:4]}")
+solo = [ln.strip() for b in blocks for ln in b.split("\n") if ln.strip().startswith("#")]
+ck("and no label or note sits inside a block, where the copy button would take it with the command",
+   len(blocks) >= 5 and not solo, str(solo[:3]))
+
 print("FAIL" if fail else "PASS", f"({fail} failing)")
 sys.exit(1 if fail else 0)

@@ -389,10 +389,16 @@ these numbers runs.
    whether its nightly pin moved, the second checkout `serve.sh` mounts, every checkpoint the serve scripts name,
    and the tests that need no GPU.
    ```bash
-   ./setup.sh --check                                    # report only, changes nothing
+   ./setup.sh --check                          # report only, changes nothing
+   ```
+   ```bash
    ./setup.sh --yes --launch native-flashnext.sh --webui same   # check, then start the native launch
-   ./setup.sh --docker --launch 27b                      # the container path: asked for, default n
-   ./update.sh                                           # git pull here (refuses on tracked edits), re-check
+   ```
+   ```bash
+   ./setup.sh --docker --launch 27b            # the container path: asked for, default no
+   ```
+   ```bash
+   ./update.sh                                 # git pull here (refuses on tracked edits), re-check
    ```
    **The native path is the default, and the container path is the one thing asked for, with a default of no**
    (`--docker` takes it, `--no-docker` declines without the prompt, and `--yes` does not answer it). Every later
@@ -422,17 +428,24 @@ these numbers runs.
    to run (the exact versions and URLs live in [notes/native-4xr9700.md](notes/native-4xr9700.md)):
    ```bash
    python3 -m venv ~/venv-r9700
-   ~/venv-r9700/bin/pip install vllm==0.32.0+rocm723 --extra-index-url \
-     https://wheels.vllm.ai/rocm/<pin>/rocm723/          # torch 2.13.0+git733fca1 and triton 3.8.0 come with it
-   # that index is per-commit and old pins expire: the one this release fetched 404s as of 2026-11-02, and vLLM
-   # 0.33 renamed the flavor to `rocm72`. No 0.32-era pin is live any more (six checked), so the venv IS the
-   # artifact of record -- keep it, don't plan to rebuild it. notes/vllm-0.33.md: the 0.33.0 gate result and why
-   # we did not move.
-   pip install -e .                                      # the r9700 plugin
-   ~/venv-r9700/bin/pip install -e serve/plugin          # Monitor and About inside the serve (WEBUI=same)
-   cd kernels && HIPCFLAGS=-I$HOME/opt/rocm-dev/opt/rocm/core-10.1/include ./build.sh \
-     && cp libr9k.so ../r9700_vllm/kernels/              # host hipcc, gfx1201, all 68 export checks
    ```
+   ```bash
+   ~/venv-r9700/bin/pip install vllm==0.32.0+rocm723 --extra-index-url https://wheels.vllm.ai/rocm/<pin>/rocm723/
+   ```
+   ```bash
+   pip install -e .                            # the r9700 plugin
+   ```
+   ```bash
+   ~/venv-r9700/bin/pip install -e serve/plugin    # Monitor and About inside the serve (WEBUI=same)
+   ```
+   ```bash
+   cd kernels && HIPCFLAGS=-I$HOME/opt/rocm-dev/opt/rocm/core-10.1/include ./build.sh && cp libr9k.so ../r9700_vllm/kernels/
+   ```
+   torch 2.13.0+git733fca1 and triton 3.8.0 come with that wheel. The index is per-commit and old pins expire:
+   the one this release fetched 404s as of 2026-11-02, and vLLM 0.33 renamed the flavor to `rocm72`. No 0.32-era
+   pin is live any more (six checked), so the venv IS the artifact of record -- keep it, don't plan to rebuild it.
+   notes/vllm-0.33.md: the 0.33.0 gate result and why we did not move. The build line above is host hipcc, gfx1201,
+   all 68 export checks, and it ends in the `cp` because the launcher loads the copy under `r9700_vllm/kernels/`.
    Those ROCm wheels link OpenMPI 4 and the host does not have it: unpack the runtime with `dpkg-deb -x` under
    `~/opt/openmpi` (no root; the deb list is in the note), and the launcher's `OPENMPI=` line puts it on
    `LD_LIBRARY_PATH`. Every serve knob then works exactly as in the container: step 2's block with
@@ -457,28 +470,34 @@ these numbers runs.
    took the native path is refused with the `--docker --launch <name>` command that would take it.
 
 2. **Serve** (the same knobs either way):
+   In the image:
    ```bash
-   # in the image
-   bash serve/27b.sh                                                  # 27B-NVFP4, two cards
-   GPUS=0,1,2,3 TP=4 OFFLOAD_GB=0 NSEQ=16 bash serve/flashnext.sh     # Flash-Next, four cards
-   bash serve/flashnext.sh                                            # Flash-Next, two cards, experts in host RAM
-   MODEL=/models/GLM-5.3-Flash-NVFP4-RedHat GPUS=0,1,2,3,4,5,6,7 TP=8 OFFLOAD_GB=0 EAGER=0 MTP=3 KVDTYPE=fp8 \
-     MAXLEN=32768 NSEQ=4 NBT=8192 PREFIX_CACHE=0 VLLM_ROCM_USE_AITER=1 R9K_AG_MAX_KB=2048 \
-     'SPEC_EXTRA="use_local_argmax_reduction": true' 'R9K_FP8_LINEARS=self_attn\.(in_proj_qkvbfg_a|o_proj|f_b_proj|g_b_proj)$' \
-     bash serve/serve.sh                                               # GLM-5.3-Flash, eight cards (notes/glm53.md)
-   # native, no container: what this box runs today
-   MAXLEN=262144 NSEQ=32 NBT=8192 PREFIX_CACHE=0 WEBUI=same \
-     bash serve/native-flashnext.sh      # Flash-Next, four cards, the full 262k context,
-                                         # Monitor and About on the serve's own port
-   bash serve/ds41-exl3.sh                                            # DeepSeek-V4.1-Flash EXL3, eight cards (notes/exl3-plan.md)
+   bash serve/27b.sh                                # 27B-NVFP4, two cards
+   ```
+   ```bash
+   GPUS=0,1,2,3 TP=4 OFFLOAD_GB=0 NSEQ=16 bash serve/flashnext.sh    # Flash-Next, four cards
+   ```
+   ```bash
+   bash serve/flashnext.sh                          # Flash-Next, two cards, experts in host RAM
+   ```
+   ```bash
+   MODEL=/models/GLM-5.3-Flash-NVFP4-RedHat GPUS=0,1,2,3,4,5,6,7 TP=8 OFFLOAD_GB=0 EAGER=0 MTP=3 KVDTYPE=fp8 MAXLEN=32768 NSEQ=4 NBT=8192 PREFIX_CACHE=0 VLLM_ROCM_USE_AITER=1 R9K_AG_MAX_KB=2048 'SPEC_EXTRA="use_local_argmax_reduction": true' 'R9K_FP8_LINEARS=self_attn\.(in_proj_qkvbfg_a|o_proj|f_b_proj|g_b_proj)$' bash serve/serve.sh
+   ```
+   ```bash
+   bash serve/ds41-exl3.sh                          # DeepSeek-V4.1-Flash EXL3, eight cards (notes/exl3-plan.md)
+   ```
+   Native, no container -- what this box runs today: four cards, the checkpoint's full 262k context, and the
+   fp8 main KV the launcher now defaults, with Monitor and About on the serve's own port.
+   ```bash
+   MAXLEN=262144 NSEQ=32 NBT=8192 PREFIX_CACHE=0 WEBUI=same bash serve/native-flashnext.sh
    ```
    `serve/native-flashnext.sh` is the container-free launcher for a box with no docker (plugin and vLLM in a venv,
    `libr9k` built with the host `hipcc`, [notes/native-4xr9700.md](notes/native-4xr9700.md)); it takes the same knobs
-   as `serve/serve.sh` and, since 2026-11-03, defaults `MAXLEN` to the value of the line above. It used to default
+   as `serve/serve.sh` and, since 2026-11-03, defaults `MAXLEN` to the value in the command above. It used to default
    to 32,768, and that default was a trap: a launch that answered `/health` in 150 s looked healthy while serving
    a fraction of the context the checkpoint declares (`text_config.max_position_embeddings = 262144`), on a box
    whose kept request ledger runs to 262,059-token prompts with a p99 of 245,792. `setup.py` now compares the
-   running serve's `max_model_len` against the checkpoint's declared context and says so. The line above is what
+   running serve's `max_model_len` against the checkpoint's declared context and says so. That native command is what
    the box is running: at the full
    context the KV cache gets bigger rather than smaller (540,202 against 497,588 tokens) and the 32-stream
    throughput wave stays in the band quoted above.
@@ -487,18 +506,31 @@ these numbers runs.
    `WEBUI=1` on any of them, or `WEBUI=same` to put the pages on the launch's own port: "Watching it" above.
 3. **Check it** (what each one proves is next to it; run them in this order):
    ```bash
-   ~/venv-r9700/bin/python3 bench/warmup.py        # the launch answers; the lazily-JIT'd kernels are compiled in
-   ~/venv-r9700/bin/python3 bench/quality.py 100 8 # the standing gate: GSM8K + the needle ladder
-   ~/venv-r9700/bin/python3 bench/sanity_stress.py # strict 8-way sanity above max_num_seqs, under load
-   ~/venv-r9700/bin/python3 bench/soak.py          # mixed-length soak, prompts of a random length
-   ~/venv-r9700/bin/python3 bench/eval.py selftest # reproducibility first; then `run NAME` / `compare A B`
-   ~/venv-r9700/bin/python3 bench/humaneval.py     # HumanEval
-   ~/venv-r9700/bin/python3 bench/needle_long.py   # retrieval to the checkpoint's own 262k: token counts measured
-                                                   # against the checkpoint's tokenizer, a nonce every ~40 sentences
-                                                   # so a prefix cache cannot carry the haystack, per-card VRAM
-                                                   # high-water per tier
-   ~/venv-r9700/bin/python3 bench/webui_ab.py      # what the Monitor's relay costs a request (2-3 ms, measured)
+   ~/venv-r9700/bin/python3 bench/warmup.py         # the launch answers; the lazily-JIT'd kernels are compiled in
    ```
+   ```bash
+   ~/venv-r9700/bin/python3 bench/quality.py 100 8  # the standing gate: GSM8K + the needle ladder
+   ```
+   ```bash
+   ~/venv-r9700/bin/python3 bench/sanity_stress.py  # strict 8-way sanity above max_num_seqs, under load
+   ```
+   ```bash
+   ~/venv-r9700/bin/python3 bench/soak.py           # mixed-length soak, prompts of a random length
+   ```
+   ```bash
+   ~/venv-r9700/bin/python3 bench/eval.py selftest  # reproducibility first; then `run NAME` / `compare A B`
+   ```
+   ```bash
+   ~/venv-r9700/bin/python3 bench/humaneval.py      # HumanEval
+   ```
+   ```bash
+   ~/venv-r9700/bin/python3 bench/needle_long.py    # retrieval to the checkpoint's own 262k
+   ```
+   ```bash
+   ~/venv-r9700/bin/python3 bench/webui_ab.py       # what the Monitor's relay costs a request (2-3 ms, measured)
+   ```
+   `needle_long.py` measures its token counts against the checkpoint's tokenizer and plants a nonce every ~40
+   sentences, so a prefix cache cannot carry the haystack; it reports per-card VRAM high-water per tier.
    Inside the image, drop the `~/venv-r9700/bin/`. Kernel unit tests are in `tests/`, and
    `bench/bringup-tests.sh` runs the single-GPU set of them.
 
