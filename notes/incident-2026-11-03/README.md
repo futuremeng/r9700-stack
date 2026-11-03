@@ -855,3 +855,48 @@ Declared in advance, so the result cannot be fitted afterwards:
 Secondary readings that come free with the same power cycle: whether slot 6 enumerates at 32.0 GT/s cold (it did
 at the 06:49 boot and fell during the 07:07-07:12 load window), and one more fatal-MCA data point with core 65
 kept offline by the boot unit (the units are installed and were verified running: 18 s into boot 06:49:06).
+
+### Constraint that changes the plan: the two GPUs on that board are joined, so the board must come out with them
+
+The operator reports the two cards are bound together, so "swap the cards, leave the board alone" is not
+executable. Recorded because it changes what each outcome means, and because it suggests a mechanism:
+**two cards locked into one assembly share their seating depth.** If that assembly is even slightly bowed or the
+bracket alignment is off by a fraction of a millimetre, screwing the board down can seat one card fully and leave
+the other shallow -- a shallow edge connector at Gen5 is exactly a marginal channel (BadTLP, then a fallback to
+Gen4), and it would be *the same slot every time*, which is what the record shows: slot 6 sick across boots,
+slot 8 clean across boots, on one board.
+
+Two things that make the swap worth doing even though the board has to move:
+
+1. **The refit variable has already been exercised and did not fix it.** The board was pulled and refitted in the
+   05:16-05:42 window; the very next boot (`5ec7e479`) counted 87 correctables on the slot-6 chain, and the
+   newest boot counted 144 and lost the Gen5 hold. Refitting it again for the swap repeats a known-ineffective
+   action rather than adding a new confound.
+2. The ambiguous branch is only "everything clean", and it has a cheap tie-breaker (below).
+
+**Feasible variants, in order of how much they answer:**
+
+- **A. Separate the pair if it can be separated** (cable tie / shared bracket unbolted): do the card swap
+  described above. Best answer: card vs slot-6 path.
+- **B. If the pair cannot be separated: swap the whole assemblies.** Move the joined pair+board to the other
+  dual-slot position and the other pair+board into this one. Reading: the fault follows the **board** (the sick
+  chain travels with it) -> replace the board; the fault stays with the **slot 6/8 positions on the
+  motherboard** regardless of which board sits there -> the problem is motherboard-side (root port / PHY / BIOS
+  equalization for those ports), which is a different RMA target. Note the two positions are not electrically
+  identical: slot 6/8 hang off AMD root ports device `0x14a5`, slot 1/3 off device `0x14ab`, so a board swap also
+  changes the port -- say which reading applies if the errors move, and do not claim more than it shows.
+- **C. Neither is possible: refit as-is and re-measure.** Interpretation is then limited to "still sick / no
+  longer sick", and the answer comes from the tie-breaker instead.
+
+**Tie-breaker for a clean result** (this is what keeps "everything got better" from being read as a fix): after a
+clean post-swap measurement, put the original arrangement back (one more cycle). If the fault returns to the
+chain holding serial `0x51E10AFD4A21ADEE`, the fault follows the card; if it returns to slot 6 with a different
+card, it is the slot/board/mechanical path; if it does not come back at all, the box got better for a reason
+this sequence cannot identify -- record it as unresolved, keep measuring, and do not close the RMA request.
+
+**While it is open, look and photograph** (these are measurements, not tidying): the two cards' bracket screws
+against the chassis (flush and tight, or one side taking the screw at an angle); the insertion depth / scratch
+pattern on each edge connector (a shallow card leaves a different wear line); the board's own mounting screws and
+standoffs; and the slot-6 connector for debris or a bent contact. The bow/depth hypothesis predicts a visible
+difference between the two cards' seating -- that is a checkable prediction, and if the two connectors look
+identical it is weakened.
