@@ -316,3 +316,88 @@ Preconditions asked of the operator, in order: `ipmitool sel save` and then `ipm
 full (`0 bytes free`), so without clearing it a new fault may leave no BMC record at all. BERT still holds one
 record regardless, and the Monitor now prints it, so the test is interpretable even if the BMC side is not.
 
+## Is the operator's forced power cycle what wrote those records? (asked 2026-11-03 04:16)
+
+A fair question, and it deserves the register-level answer rather than my inference. Two things had to be sorted:
+what a forced power operation can and cannot write, and why the BMC shows nothing.
+
+### The 18 records, field by field — this is the discriminator
+
+Pulled per boot with the Monitor's own parser (`parse_death` over `journalctl -k -b <id>`):
+
+| boot | death (UTC) | CPU / APIC | MCi_STATUS | ADDR |
+|---|---|---|---|---|
+| -18 | 11-01 20:36:21 | 113 / 83 | `aea0000001000108` | `1ffffffa2c9ce8b` |
+| -17 | 11-01 21:03:39 | 17 / 82 | `aea0000000000108` | `7034db7a1efa` |
+| -16 | 11-01 23:52:18 | 17 / 82 | `aea0000001000108` | `1ffffffa249ce8b` |
+| -14 | 11-02 00:04:37 | 17 / 82 | `aea0000001000108` | `142d5d3` |
+| -13 | 11-02 00:16:55 | 113 / 83 | `aea0000001000108` | `1ffffff8b09ce8b` |
+| -12 | 11-02 00:27:11 | 17 / 82 | `aea0000000000108` | `7e46a5fa1efa` |
+| -11 | 11-02 01:07:19 | 17 / 82 | `aea0000000000108` | — |
+| -10 | 11-02 01:18:29 | 17 / 82 | `aea0000000000108` | — |
+| -9 | 11-02 01:30:09 | 17 / 82 | `aea0000001000108` | `1ffffffb6a9ce8b` |
+| -8 | 11-02 03:00:24 | 113 / 83 | `aea0000001000108` | — |
+| -7 | 11-02 06:34:49 | 17 / 82 | `aea0000000000108` | — |
+| -6 | 11-02 09:11:14 | 17 / 82 | `aea0000000000108` | — |
+| -5 | 11-02 09:41:07 | 17 / 82 | `aea0000000000108` | — |
+| -4 | 11-02 10:30:57 | 17 / 82 | `aea0000000000108` | — |
+| -3 | 11-02 10:36:54 | 17 / 82 | `aea0000000000108` | `1654624` |
+| -2 | 11-02 11:00:29 | 113 / 83 | `aea0000000000108` | `78d332da1efa` |
+| -1 | 11-02 11:07:20 | 17 / 82 | `aea0000000000108` | `76961eba1efa` |
+| 0 | 11-03 02:50:20 | 17 / 82 | `aea0000001000108` | `142d6f3` |
+
+Constant across all 18: `MISC d0140ff600000000`, `PPIN 2b61290dcb2002b`, `SYND 4d000000`, bank 5,
+`severity: fatal`, `fru_text: ProcessorError`, core 65. Alternating with the thread: IPID `...29a00` on CPU 17
+(14 records) and `...29b00` on CPU 113 (4 records).
+
+- **What a forced power operation cannot write.** A hard power cut clears the MCA MSRs at power-on reset, and the
+  BIOS is not executing at the instant the button is held, so nothing is around to compose a CPER carrying valid
+  `MCi_STATUS` (VAL=1, UC=1), `MCA_IPID`, `SYND` and `ADDR`. What a forced operation *does* leave is a different
+  SEL event: chassis control / power button / reset.
+- **The one mechanism that is genuinely possible** — and the honest half of the answer: a **warm** reset (BMC
+  "reset", not a power cycle) leaves MCA MSRs intact, so banks left unconsumed by a previous fault *can* be logged
+  by the next POST as "Error records from previous boot". If that were what we are seeing, the records would be
+  **re-loggings of one fault** — therefore byte-identical.
+- **They are not identical.** Every ADDR is different (`1ffffffa2c9ce8b`, `7034db7a1efa`, `142d5d3`, `1654624`,
+  `142d6f3`, …), the failing **thread alternates** (IPID/APIC pair flips), and MCi_STATUS comes in two variants.
+  A stale bank re-logged 18 times cannot change its own address 18 times. So the register content says 18 distinct
+  faults on one core, whatever the power button was doing.
+- **And a correction to my own reasoning:** I wrote that the record `TIME` sitting 17–18 s before the kernel's first
+  line ties each record to its own death. That is too strong — a record written at the crash and a record written by
+  POST of the next boot both land there. The `TIME` field is not the discriminator; the register content above is.
+
+What would settle it outright is running anyway: `tools/core-hammer.c` loading **only** core 65 with the GPUs idle
+and nobody touching the box. Started 04:00:56, so if a fatal record appears it can only be a fresh one.
+
+### Why the BMC shows no hardware error events
+
+Two measured facts, and together they are enough:
+
+1. **The SEL is full.** The 11-02 capture read `0 bytes free` and the oldest entries already rolled. A full SEL
+   cannot record new events, so "I see nothing" is expected.
+2. **The firmware-first path to the OS is demonstrably alive right now.** This boot carries **42** APEI GHES
+   records — all `severity: corrected`, `fru_text: PcieError` — timestamped 02:50:38, 02:50:47, 03:01:12, 03:01:19,
+   03:01:24, 03:23:12, 03:23:29, 03:53:04, 04:06:07 …, naming `04:00.0` (AMD `1002:1478`, the on-card switch
+   upstream port) and `00:03.1` (AMD `1022:14a5` root port). Whether those mirror into IPMI SEL is
+   BIOS/vendor-dependent, and many AMD server BIOSes report to GHES/WHEA without adding SEL events at all.
+
+Two of my own earlier statements are corrected by this: I had said the sysfs AER counters "did not move while idle".
+Over a 1.4 h boot they move constantly — **42 corrected records**, including **03:53 and 04:06 with no request in
+flight** — and the Monitor's own 1 Hz differ saw the 04:06:08 one (`04:00.0 BadTLP +1`, card4's chain 28 → 30).
+My 45 s windows just happened to fall in the quiet parts. The PCIe error stream is continuous and idle-capable,
+which strengthens the marginal-link reading and removes "traffic causes it" from the table as the whole story.
+
+### What to ask the operator for, now that we know what to look for
+
+```bash
+sudo ipmitool sel info                       # "Use"/percent and overflow: is it still full?
+sudo ipmitool sel elist | tail -40           # what it does hold
+sudo ipmitool sel elist | grep -iE "chassis|power|reset"   # the times YOU touched it
+sudo ipmitool sel save /root/sel-$(date -u +%F-T%H%MZ).txt && sudo ipmitool sel clear
+sudo ipmitool sdr elist | grep -iE "psu|power|cpu|overflow"
+sudo apt-get install -y rasdaemon && sudo systemctl enable --now rasdaemon   # decoded, kept: ras-mc-ctl --summary
+```
+
+The `grep -iE "chassis|power|reset"` line is the direct test of the hypothesis: those SEL records mark forced power
+operations, and lining them up against the 18 death times above answers it without any interpretation from me.
+
