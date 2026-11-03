@@ -658,6 +658,24 @@ load-independent: dies 5 s after boot and after 15 h; also dies with zero PCIe A
 open question for AMD: an erratum fix in microcode/AGESA above 0xa101158 for Genoa family 19h L2 MCA
 ```
 
+Separate vendor block for the PCIe half (same machine, different fault -- keep the two requests apart, because a
+CPU replacement fixes neither and a board replacement fixes neither):
+
+```
+ASUS ESC4000A-E12 / K14PG-U12, BIOS 2501, 4x Radeon AI PRO R9700 (device 0x7551, subsystem 1efe:1478)
+slot 6 chain: root port 0000:c0:03.1 (AMD 0x14a5) <-> card upstream port 0000:c4:00.0 negotiates 16GT/s while
+  both report LnkCtl2 Target Link Speed 32GT/s and LnkCap2 Supported Link Speeds 2.5-32GT/s (Retimer+ 2Retimers+);
+  lspci marks the card-side port "Speed 16GT/s (downgraded)". The card-internal hop (c5:00.0 -> c6:00.0) is 32GT/s.
+  Same boot, same board: slot 8 (00:03.1 <-> 04:00.0, also AMD 0x14a5) is 32GT/s with zero correctables.
+per-boot AER on the slot-6 hop: c4:00.0 BadTLP up to 84 (+ Timeout 7), root port c0:03.1 Timeout up to 58,
+  endpoint and card-internal ports 1 each; all uncorrectable counters zero; CEMsk/UEMsk unmasked; ECRC on both
+  directions; ASPM disabled on every root port; kernel logs nothing when the speed falls.
+requests: (a) Lane Margining at the Receiver on c0:03.1 and c4:00.0 -- the capability is present and this is the
+  measurement that quantifies "marginal"; (b) the Gen5 equalization parameters for this port (not readable from
+  Linux on these parts: no 32.0 GT/s extended capability is exposed) and whether BIOS 2501 sets per-port EQ or
+  retimer settings for slots 6/8; (c) whether the slot-6/8 expansion board is revised (SI issue on that path).
+```
+
 ---
 
 # Reboot protocol (what a reboot can and cannot answer)
@@ -900,3 +918,39 @@ pattern on each edge connector (a shallow card leaves a different wear line); th
 standoffs; and the slot-6 connector for debris or a bent contact. The bow/depth hypothesis predicts a visible
 difference between the two cards' seating -- that is a checkable prediction, and if the two connectors look
 identical it is weakened.
+
+## Settled by the `lspci -vvv` dump: nothing was configured down -- the link tried Gen5 and settled at Gen4
+
+Read out of `~/lspci-vvv-1103-0740.txt` with `tools/lspci-links.py` (added with this entry -- the reason it
+exists is that `lspci` puts a **TAB** after `LnkSta:`, so a grep written as `'LnkSta: '` matches nothing and the
+one decisive line disappears from the output while looking perfectly reasonable).
+
+| port | role | `LnkCtl2: Target Link Speed` | `LnkCap2: Supported Link Speeds` | `LnkSta` actual |
+|---|---|---|---|---|
+| `c0:03.1` | root port, slot 6 | **32GT/s** | 2.5-32GT/s, Retimer+ 2Retimers+ | **16GT/s** x16 |
+| `c4:00.0` | card upstream port, slot 6 | **32GT/s** | 2.5-32GT/s, Retimer+ 2Retimers+ | **16GT/s (downgraded)** x16 |
+| `c5:00.0` | card downstream port (the card-internal hop) | 32GT/s | 2.5-32GT/s | **32GT/s** x16 |
+| `00:03.1` / `04:00.0` | the same two roles, slot 8 (control) | 32GT/s | 2.5-32GT/s | 32GT/s x16 |
+
+Three conclusions, each of which kills a hypothesis:
+
+1. **Not a configuration change.** Slot 6's root port asks for 32GT/s and advertises 2.5-32GT/s exactly like the
+   three healthy chains. There is no "BIOS/OS set it to Gen4" story left to tell.
+2. **Not a power-management artifact.** `LnkCtl: ASPM Disabled` on all four root ports, so this is not L1 exit or
+   an autonomous power state; and the very next hop inside the same card negotiated 32GT/s -- the failure is
+   **per hop**, not per device.
+3. **The counters are a full account, not a survivor.** `DevCtl: CorrErr+ NonFatalErr+`, `CEMsk`/`UEMsk` every
+   bit unmasked, `AERCap: ECRCGenEn+ ECRCChkEn+`, and `CESta`/`UESta` all clear at dump time. So correctables
+   are reported and none are being hidden, ECRC is on in both directions, and "no uncorrectable on any link" is
+   a real measurement rather than a masked one.
+
+What the box *does* have that nobody has used: **`Lane Margining at the Receiver`** on both root ports and on the
+card's upstream port, plus retimer presence detection (`Retimer+ 2Retimers+`) -- i.e. the standardized
+per-lane eye-margin procedure exists exactly on the ports in question. It is invasive on a live link (it moves
+the receiver's sampling point), so it is something to have AMD/ASUS run, or to run on a box that is not serving,
+not something to drive with `setpci` mid-traffic. The Gen5 equalization extended-capability fields are **not**
+exposed by these AMD parts (only `Physical Layer 16.0 GT/s` appears), so the EQ phase parameters cannot be read
+from here -- put that to the vendor too; their tooling can.
+
+That leaves the physical path (contact/depth/board/retimer) and the PHY/EQ parameters as the remaining
+explanations, which is why the swap and the seating inspection are the next steps.
