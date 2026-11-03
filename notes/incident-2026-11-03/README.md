@@ -988,3 +988,56 @@ these two -- still not done), or PHY/retimer equalization for that port.
 
 Also for the record, since a boot boundary is an MCA sample: this boot came up with **no replayed fatal record**
 (second consecutive; the previous boot ended in a clean `poweroff`), with core 65 offline again automatically.
+
+## The swap: the fault stayed with slot 6 -- and the card turned out to set the magnitude, not the existence
+
+08:45:42 boot. The operator swapped cards. Which cards, read from `ASIC_SERIAL` rather than from memory
+(`~/aer/identity-post-swap-0847.txt`, `tools/gpu-identity.py`):
+
+```
+0x51E10AFD4A21ADEE   was slot 6 (c6:00.0)  ->  now slot 3 (c3:00.0)      <- the card that had been sick
+0x179155577B336A5A   was slot 3 (c3:00.0)  ->  now slot 6 (c6:00.0)      <- a card that had never errored
+0xD9B246D580E8CD73   slot 8, unchanged      0x2DCB548B0D0A5DFC  slot 1, unchanged
+```
+
+Not the pair I had pre-registered (slot 6 <-> slot 8, same board), and that matters for one of the two readings
+below, so it is stated where it can be misread later: slot 3 hangs off a **different** root port (device `0x14ab`,
+not `0x14a5`) and a different board. Slot 8 would have been the tighter control.
+
+Against the branches declared before the swap, the outcome is the second one -- **errors stay with slot 6**:
+
+| measurement, same boot, same launch shape (`MAXLEN=262144 NSEQ=32 NBT=8192`, 120.3 GB of weights) | slot 6 chain | slot 3 chain (with the formerly-sick card) | slot 8 | slot 1 |
+|---|---|---|---|---|
+| enumeration (~2 min after power-on) | `c4:00.0` **BadTLP 1** | 0 | 0 | 0 |
+| weight-load window (+3.0 min) | **+34 = 11.5/min** (BadTLP 23, root-port Timeout 13) | **0** | 0 | 0 |
+| afterwards, 2.7 min idle at Gen5 | **0 new events** (23/13 frozen) | 0 | 0 | 0 |
+| link | **32 GT/s held** | 32 GT/s | 32 | 32 |
+
+A different card now sits in slot 6 and slot 6 still produces PCIe correctables that no other chain on the
+machine produces. **That is the branch that says: the part to replace is the slot-6 path** -- the board's slot-6
+connector/lanes/power for that slot, or the motherboard side for that port (`c0:03.1` PHY / equalization); the
+card that had been sitting there is not the origin.
+
+And the comparison across the two boots says something the plan had not anticipated -- **which card sits in slot 6
+changes the magnitude**, with everything else held:
+
+| boot 08:17 (card `0x51E1…ADEE` in slot 6) | boot 08:45 (card `0x1791…6A5A` in slot 6) |
+|---|---|
+| load window **+153 / 3.4 min = 45.7/min** | load window **+34 / 3.0 min = 11.5/min** |
+| idle ~+1 event / 2 min at Gen5 | **0 events** over 2.7 min at Gen5 |
+| Gen5 **fell to 16 GT/s** during the first load window | **Gen5 held** through load and 10+ min |
+
+Two-factor reading, stated at the strength the data supports: the fault **requires** the slot-6 path (it appears
+there with either card), and the card sitting there **modulates** it hard (4x the error rate, and whether the
+link can hold Gen5 at all). A receiver at one end that is merely adequate plus a channel that is marginal at
+Gen5 produces exactly that. So: RMA target = the slot-6 board path (and the motherboard-side alternative), with
+card `0x51E10AFD4A21ADEE` noted as the weaker end rather than the culprit.
+
+Cheap confirmation available if it is ever wanted: put the two cards back. If the rate returns to ~45/min and
+Gen5 falls back to 16 GT/s again, the two-factor reading is confirmed; if it comes back at ~11/min, the
+magnitude difference was not the card and this section over-reads a single sample each side.
+
+Separately, and because a boot boundary is also an MCA sample: this boot again came with **no replayed fatal
+record**, third in a row, with core 65 taken offline automatically. Total uptime observed with the core offline
+so far is ~90 minutes across three boots, against a pre-change fatal cadence of about one per 3.6 h -- a
+positive trend, not yet a verdict.
