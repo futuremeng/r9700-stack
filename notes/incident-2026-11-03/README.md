@@ -960,6 +960,7 @@ card, same slot, same launch line, same `MAXLEN=262144`, ~120 GB across the same
 | 08:45 boot, first load after enumeration | slot 6 | +34 in 3.0 min | 11.5/min | 32.0 GT/s held |
 | 10:33 serve restart, second load | slot 6 | **+0 in 3.9 min** | **0.00/min** | 32.0 GT/s held |
 | 09:42 → 10:33, mostly idle with a few real requests | slot 6 | +1 | ~0.02/min | 32.0 GT/s held |
+| 10:39:31, inside a **117,060-token prefill** | slot 6 | +1 (`c4:00.0 BadTLP`) | — | 32.0 GT/s held |
 | same windows | slots 1, 3, 8 | 0 | 0 | 32.0 GT/s |
 
 What that does and does not change. It does not move the attribution: every correctable this boot is on the
@@ -968,6 +969,13 @@ quantitative reading of "load causes them": the load-window rate is **not reprod
 then 0/min for an identical transfer — while a single ~47k-token request at 09:39 did produce one event. So the
 honest statement is the weak one: the errors are sporadic, confined to that one hop, and *some* high-DMA
 windows trigger them and others do not. Any rate quoted from one window is a sample, not a property.
+
+What did get stronger is the *per-event* correlation: the 10:39:31 event has a timestamp, and the request ledger
+has a **117,060-token prompt in flight at 10:39:21** (21.3 s wallclock, i.e. its prefill spans 10:39:21-10:39:3x),
+followed by 128,153- and 136,887-token prompts at 10:39:43 and 10:40:06. That is the same shape measured on
+2026-11-03 morning and recorded in `notes/webui.md`: a handful of concurrent 60k-170k-token streams give roughly
+one event every few minutes, mostly during a large prefill. So: not proportional to total bytes moved (a 120 GB
+weight load can do 0), but not random in time either (events land inside large prefills).
 
 It also means the monitor's quiet state is the expected normal, not a suspicious one: after a restart the chain
 sits quiet until something happens again.
