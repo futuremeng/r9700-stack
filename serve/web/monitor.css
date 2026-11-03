@@ -87,7 +87,7 @@ section{margin:18px 0}
    panel that gained a "slot" label ended up with its window delta wrapping under the row instead of beside it. */
 .pcie-row{display:grid;gap:4px 10px;align-items:baseline;padding:3px 0;
   border-top:1px solid var(--st-line-soft);
-  grid-template-columns:5.2em 7.4em minmax(16em,1.7fr) minmax(14.5em,auto) minmax(15em,auto) minmax(12em,1.5fr) 8.4em;
+  grid-template-columns:5.2em 7.4em minmax(16em,1.7fr) minmax(14.5em,auto) minmax(9.5em,auto) minmax(11.5em,1.5fr) 14.5em;
   grid-template-areas:"slot drv chain link cnt who win"}
 /* The fixed tracks are sized from the longest string each column actually carries on this box, at the theme's
    own sizes (--st-fs-base 16px is what the em tracks resolve against; chain/who are 11px mono, link/cnt/win
@@ -128,7 +128,7 @@ section{margin:18px 0}
 /* Two lines before anything gets squeezed into an unreadable column, and the split follows the reading order:
    identity and the chain on the first, then what the link is doing and what the counters say. All seven areas
    survive at every width -- a column that disappears is information that disappeared. */
-@media(max-width:1360px){.pcie-row{grid-template-columns:5.2em 7.4em minmax(15em,1.2fr) minmax(13em,1fr);
+@media(max-width:1360px){.pcie-row{grid-template-columns:5.2em 7.4em minmax(14em,1.2fr) minmax(14.5em,1fr);
   grid-template-areas:"slot drv chain link" "cnt cnt who win"}}
 @media(max-width:900px){.pcie-row{grid-template-columns:5.2em minmax(0,1fr) auto;
   grid-template-areas:"slot drv win" "chain chain chain" "link cnt who"}

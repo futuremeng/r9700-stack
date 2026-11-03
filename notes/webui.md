@@ -901,17 +901,25 @@ grid-template-areas:"slot drv chain link cnt who win"
 **Track widths, sized from the longest live strings at the theme's own sizes** (`em` tracks resolve against the
 row's 16px; `chain`/`who` are 11px mono, `link`/`cnt`/`win` 13px mono, ~0.6em per glyph):
 
-| column | longest string on this box | px needed | track |
+| column | longest string the page now renders | px needed | track |
 |---|---|---|---|
 | `chain` | `c6:00.0 → c5:00.0 → c4:00.0 → c0:03.1` (37) | 244 | `minmax(16em,1.7fr)` = 256 |
 | `link` | `16.0 GT/s ×16 (idle, max ×16)` (29) | 226 | `minmax(14.5em,auto)` = 232 |
-| `cnt` | `144 corr · 0 uncorr since boot` (30) | 234 | `minmax(15em,auto)` = 240 |
-| `win` | `+0 this window` (14) | 109 | `8.4em` = 134 |
-| `drv` | `unnamed · #12` (13) | 85 | `7.4em` = 118 |
-| `slot` | `slot 6` (16px regular) | 48 | `5.2em` = 83 |
-| `who` | `corr NonFatalErr 3 · BadTLP 77 · Timeout 65` (43) | 284 | `minmax(12em,1.5fr)` — **wraps on purpose** |
+| `cnt` | `144 corr · 0 uncorr` (19) | 148 | `minmax(9.5em,auto)` = 152 |
+| `win` | `+12 · 45.00/min · quiet 4.2 h` (29) | 226 | `14.5em` = 232 |
+| `who` | `corr BadTLP 30 · Timeout 13` (27) | 178 | `minmax(11.5em,1.5fr)` — **wraps on purpose** |
+| `drv` | `unnamed · #12` (13) | 86 | `7.4em` = 118 |
+| `slot` | `slot 6` (16px regular) | 58 | `5.2em` = 83 |
 
-Minimum single-line row ≈ 1255px + 60px of gaps, so the single-line layout is only claimed above ~1360px:
+Those strings are what `node tests/render-monitor.mjs` printed against the live serve, and the arithmetic is now
+asserted rather than written down: `tests/test_webui.py` parses the tracks out of `monitor.css`, computes
+`glyphs x 0.6 x font-size` with the sizes that file itself assigns (chain/who 11px mono, link/cnt/win 13px, slot
+at 16px), and fails if any track is narrower than its string or if the seven minimums plus the gaps exceed the
+breakpoint. **The widths moved because the content moved:** `cnt` shrank from 15em to 9.5em (a quiet chain is now a
+`ⓘ` or a `—`, and the redundant per-row "since boot" — the header says it — left the cell), and `win` grew from
+8.4em to 14.5em because it now carries the rate and the calm span (`+0 · 0.00/min · quiet 7 min`).
+
+Minimum single-line row ≈ 1258px + 60px of gaps = **1318px**, so the single-line layout is claimed above 1360px:
 two-line (`slot drv chain link` / `cnt cnt who win`) below that, and a three-line form below 900px. Only
 `chain` and `who` flex, because a counter list may wrap and a BDF path or a link speed may not.
 

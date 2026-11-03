@@ -1622,6 +1622,43 @@ ck("the PCIe row grid declares as many tracks as areas, and every area has a cla
    len(_ptk) == 7 and len(_par) == 7 and _par == ["slot", "drv", "chain", "link", "cnt", "who", "win"]
    and all(f".p-{a}{{grid-area:{a}}}" in _css for a in _par)
    and all(f'p-{a}' in _mjs2 for a in _par), f"{len(_ptk)} tracks / {len(_par)} areas")
+
+# Track widths are arithmetic, not taste. The strings below are what the page actually renders -- run
+# `node tests/render-monitor.mjs` and read the rows -- and the px-per-glyph comes from the sizes monitor.css
+# itself sets for each cell (chain/who are 11px mono, link/cnt/win 13px mono, the slot label at the row's 16px).
+# A track narrower than the longest string it must hold is not a narrow column, it is a wrapped row.
+_MONO_ADV = 0.6          # a mono advance, as a fraction of the font size
+_needs = {"slot": ("slot 6", 16.0), "drv": ("unnamed \u00b7 #12", 11.0),
+          "chain": ("c6:00.0 \u2192 c5:00.0 \u2192 c4:00.0 \u2192 c0:03.1", 11.0),
+          "link": ("16.0 GT/s \u00d716 (idle, max \u00d716)", 13.0),
+          "cnt": ("144 corr \u00b7 0 uncorr", 13.0),
+          "who": ("corr BadTLP 30 \u00b7 Timeout 13", 11.0),
+          "win": ("+12 \u00b7 45.00/min \u00b7 quiet 4.2 h", 13.0)}
+
+
+def _minem(track):
+    """minmax(16em,1.7fr) or 5.2em -> the fixed lower bound in em: the width the layout is promised."""
+    return float(track.split("(")[1].split("em")[0] if track.startswith("minmax(")
+                 else track.split("em")[0])
+
+
+for _a in _par:
+    _s, _fs = _needs[_a]
+    _need = len(_s) * _MONO_ADV * _fs
+    ck("the %s track holds its longest live string (%d glyphs, %.0fpx)" % (_a, len(_s), _need),
+       _minem(_ptk[_par.index(_a)]) * 16 >= _need,
+       "track %s = %.0fpx vs %.0fpx needed" % (_ptk[_par.index(_a)],
+                                               _minem(_ptk[_par.index(_a)]) * 16, _need))
+ck("seven minimums plus the column gaps still fit below the 1360px breakpoint, so the single-line claim holds",
+   sum(_minem(t) for t in _ptk) * 16 + 6 * 10 <= 1360,
+   "%.0fpx at the narrowest" % (sum(_minem(t) for t in _ptk) * 16 + 60))
+# The count cell's own text, with title attributes removed: a tooltip may spell the span out, rendered text may
+# not repeat what the column header already says (11 glyphs, in a track sized for 19).
+_cnt = re.sub(r'title="[^"]*"', "", _mjs2.split('class="cnt p-cnt"')[1].split('class="who p-who"')[0])
+ck("no per-cell 'since boot' is repeated when the column header already says it",
+   "since boot" not in _cnt and "errors since boot</span>" in _mjs2, _cnt.strip()[:160])
+ck("the render harness stubs the globals the page has started to use (a missing one silences every row)",
+   "AbortController" in open(os.path.join(ROOT, "tests", "render-monitor.mjs")).read())
 _narrow = [x for x in _css.split("@media")[1:] if "pcie-row" in x and "grid-template-areas" in x]
 ck("both narrow layouts keep all seven areas, spread over more lines (a dropped column is dropped information)",
    len(_narrow) >= 2 and all(sorted(set(x.split("grid-template-areas:")[1].split("}")[0]

@@ -85,7 +85,12 @@ const store = () => { const m = new Map(); return { getItem: (k) => (m.has(k) ? 
   setItem: (k, v) => m.set(k, v), removeItem: (k) => m.delete(k) }; };
 
 const ctx = {
+  // The host's AbortController/AbortSignal, deliberately: api() passes ctl.signal to fetch, and in live mode that
+  // fetch is the real Node one -- a signal built from a class defined inside the vm would be rejected as the
+  // wrong type. Same objects the page gets in a browser. (This global was missing, which is how the harness found
+  // out that api() now puts a deadline on every request: the stub DOM has to grow as the page grows.)
   document, console, Promise, JSON, Math, Date, Number, String, Object, Array, RegExp, Set, Map, Error,
+  AbortController, AbortSignal,
   isNaN, parseInt, parseFloat, isFinite, encodeURIComponent, decodeURIComponent, Intl,
   localStorage: store(), sessionStorage: store(),
   navigator: { clipboard: { writeText: async () => {} }, userAgent: "render-monitor" },

@@ -1,4 +1,15 @@
 # Changelog
+## The PCIe row's column widths got re-derived, because the content they were sized for changed
+
+`cnt` went from 15em to 9.5em (a quiet chain renders a glyph or a dash, and the per-row "since boot" left the
+cell -- the column header already says it, and it cost 11 glyphs in a track sized for 19), and `win` went from
+8.4em to 14.5em (it now carries `+0 . 0.00/min . quiet 7 min`). The strings are what `node
+tests/render-monitor.mjs` actually printed against the live serve; `tests/test_webui.py` now parses the tracks
+out of the CSS, computes glyphs x 0.6 x font-size from the sizes that file itself assigns, and fails if any track
+is narrower than its longest live string or if the seven minimums plus the gaps exceed the 1360px breakpoint
+(now 1318px). Also fixed: the render harness had no `AbortController` in its stub DOM, so the moment `api()`
+gained a deadline every fetch threw inside the vm and the harness printed **0 rows** instead of failing loudly.
+
 ## A clean PCIe chain is a dash, not the sentence "no errors since boot"
 
 Four words spent on a fact nobody needed reminded of, next to chains that do have numbers. It is now a bare

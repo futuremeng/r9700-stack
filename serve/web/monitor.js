@@ -116,8 +116,8 @@ function pcieRow(c, phist = [], busyNow = false) {
     + `<span class="cnt p-cnt">${sparse ? `<span class="p-info q" title="${esc(info)}">\u24d8</span>`
         : cor || unc
         ? (cor && !liveErrs
-           ? `<span class="q">${cor} corr${unc ? ` · ${unc} uncorr` : ""} since boot</span>`   // muted: idle
-           : `${cor} corr · ${unc} uncorr <span class="q">since boot</span>`)
+           ? `<span class="q">${cor} corr${unc ? ` · ${unc} uncorr` : ""}</span>`   // muted: idle
+           : `${cor} corr · ${unc} uncorr`)      // the header above already names the span this column counts
         : `<span class="q" title="no AER counter on this chain has moved since boot">\u2014</span>`}</span>`
     + `<span class="who p-who" title="the non-zero AER counters on this chain: correctable ones are recovered by the
       hardware, the others are not">${sparse ? "" : cn.length ? `<span class="q">corr</span> ${cn.join(" · ")}` : ""}`
