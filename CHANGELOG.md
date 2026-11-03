@@ -378,6 +378,16 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   denominators, the MTP-2-versus-MTP-3 reconciliation that keeps 158 from reading as a regression, and the snapshot
   note that the count grows while the statistics do not (1,400 rows: prompt p50 74,381; 1,417 rows: 74,066).
 
+- **Another death at 02:50 UTC on 11-03, under two minutes after the largest prompt this box has ever completed**
+  ([notes/incident-2026-11-03/README.md](notes/incident-2026-11-03/README.md)). Boot at 02:50 ending a 15.7 h
+  uptime; serve not restarted since. The journal carried the last minute: five completed requests with prompts of
+  60k–**242,882** tokens (previous record 240,067), four in flight at once, last fsynced write 02:48:2x. Same shape
+  as 11-02's corrected PCIe story — long-context traffic, then a death with no kernel message — and stated as that
+  coincidence and no more, because what would decide it is unreadable from here: no BMC access, so no SEL for this
+  boot, no fresh AER counters, and the two-2600 W-supplies-on-one-PDU-with-one-outputting-0-W question still open.
+  Worth noting what did work: the 1,435 rows survived, and they are what the new row layout was verified against —
+  rendered offline while the box was down.
+
 - **Request rows reordered to lead with prefill and decode speed, with the clutter dropped** (`serve/web/monitor.js`,
   `monitor.css`, `monitor.html`, `serve/webui.py`; [notes/webui.md](notes/webui.md) "What a request row leads with").
   The row used to open with what the monitor knew about itself — a 29-character id, a wall-clock, `engine record` —

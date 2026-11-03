@@ -261,3 +261,10 @@ Two consequences stand:
   matter is an **uncorrectable** counter, a link that renegotiates, a counter being **zeroed** under us, or an
   event with **no request in flight** while the cards are idle (the box has done all four of those things at a
   reset, and has never done them during serving).
+
+## Continued: [incident-2026-11-03](../incident-2026-11-03/README.md)
+
+The box died again at **02:50 UTC on 11-03**, under two minutes after its last journalled request — a
+**242,882-token prompt**, the largest this box has ever completed — with five long requests in flight. No BMC read
+for that death yet; the PSU and PDU questions left open above (§5c, §5d) are still the cheapest things to look at.
+
