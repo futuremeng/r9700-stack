@@ -46,13 +46,75 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   and the tests that need no GPU. `--check` runs nothing that changes anything; `--launch flashnext` starts one and
   waits for `/health`. `update.sh` pulls with the guard Strata's has (it refuses while tracked files are edited and
   prints what `git status` says) and touches no weights, no launch caches, no running launch.
+  **Then it was used on a real box, and five things it did were wrong** (2026-11-03: a `--launch` started from a
+  non-interactive setup died mid-load -- log stops at exactly 12288 bytes inside `multiproc_executor`, no error line,
+  no shutdown record in the request journal, four cards back to 0.056 GiB -- and `setup.py` sat next to it for the
+  full 7 minutes and then printed one line saying "not answering /health" without showing the log or saying the
+  process was gone):
+  - **docker is now asked for, with a default of no.** `ask()` defaults to Yes under `--yes`, which made a multi-GB
+    image pull the default deployment on a box whose own numbers came from the native path. `ask_no()` exists, is
+    answered by `--docker` / `--no-docker` or by typing `y`, and every later step follows the answer: image not
+    inspected or built, the build checkout not cloned, container recipes labelled in the launch list, `--launch 27b`
+    on a native run refused with the `--docker --launch 27b` that would take it, and a checkpoint only container
+    recipes want demoted from `warn` to `note` (two warnings a run can never act on is how you train someone to
+    skip the report).
+  - **A dead launch is noticed by the process, not by the timeout.** `wait_up()` polls `/health` *and* the launch:
+    a child that exits (`Popen`) or a tmux session that closed is reported in seconds with the exit reason, the
+    last 14 lines of the log with `\r` folded -- vLLM's progress bars rewrite a line with carriage returns, so a
+    raw `tail` of a dead engine is one 12 KB line -- and the `STOP=1 bash serve/<name>` that actually clears ranks
+    which ignore `SIGTERM`.
+  - **A native launch starts inside tmux** (`--no-tmux` for the old detached start). `start_new_session=True` puts
+    it in a new session, which is not the same as being outside the caller's process tree: that is what killed the
+    launch above. The environment is handed over with `tmux new-session -e`, built from the `${NAME:-...}` uses in
+    the launch script itself, because tmux starts its session in the *tmux server's* environment -- `VENV=`, `GPUS=`,
+    `TP=`, `OFFLOAD_GB=` and every `R9K_*` would otherwise have vanished at the boundary, silently.
+  - **State, so the next run reports drift instead of existence.** `.r9700-state/native.json` keeps the venv's
+    vllm/torch/hip and the `libr9k.so` hash; `.r9700-state/launch.json` keeps the recipe, port, log and session of
+    the launch last started, and gets `died_at` when it stops. Step 8 now answers "did my launch die, and which log
+    do I read" on the next run. `libr9k.so` is checked as freshness rather than presence: the hash and size, whether
+    the copy `kernels/build.sh` wrote and the copy the launcher loads through `R9K_LIB` agree (README's own build
+    line ends in a `cp`), and whether the loaded one is older than the newest `.hip`/header it is built from.
+  - **Pre-flight in the launcher's own shape**: `pgrep -cf 'VLLM[::]'` before starting (the ranks hold 27-31 GiB a
+    card after a stopped launch, so the second launch dies two minutes in -- refuse in one line instead), and
+    `OFFLOAD_GB` against `RLIMIT_MEMLOCK` (34 GB/rank against this box's 11.7 GiB cap cannot pin, and that is what
+    PROGRESS.md's per-process figure is). Also fixed: `WEBUI=same` printed the Monitor at `PORT+1`; its pages are on
+    the serve's own port. `tests/test_setup.py` (55 checks, no GPU, no card, no port) covers the path decision, the
+    recipe/weights classification, the offload refusal, log tails, staleness, the record, `wait_up`'s fast failure
+    and the tmux environment; `--yes` now runs it and `tests/test_webui.py` in step 6.
+- **`setup.py` on a native box: the path it takes, and what it notices when a launch dies.** The container
+  path is now a question with a default of **no** (`--docker` takes it, `--no-docker` declines without the
+  prompt, and `--yes` deliberately does not answer it -- `ask_no` exists because `ask` defaults to Yes under
+  `--yes`, which is right for building an image somebody asked for and wrong for choosing a deployment nobody
+  asked for). Every later step follows that answer: the image is not inspected or built, the second checkout is
+  not cloned, container recipes are labelled in the launch list instead of offered (asking for one on a native
+  run is refused with the exact `--docker --launch <name>` that would take it), and a checkpoint only they want
+  drops from `warn` to `note` -- `deploy.sh` fetches the 27B pair but nothing on this box can run them, so two
+  warnings in every report described a hole that did not exist. `libr9k.so` is reported as freshness, not
+  existence: its hash, whether `kernels/build.sh`'s output and the copy the launcher loads through `R9K_LIB`
+  agree (step 1a's build line ends in a `cp`, and a build that skipped it is a build that never reached the
+  serve), and whether it is older than the newest `.hip` in build.sh's `SRCS`.
+  A launch is now **watched, not waited on**: `start_tmux` runs the native launch in a `tmux` session with the
+  launcher's own `${VAR}` environment passed through `-e` (tmux starts its session in the tmux server's
+  environment, so `VENV=`, `GPUS=`, `TP=` and every `R9K_*` would otherwise vanish at that boundary);
+  `wait_up` checks the process on every `/health` pass; and a launch that died reports why, the log's last
+  lines (`tail_log` folds the `\r` the weight bars rewrite into lines) and the `STOP=1` that clears the ranks.
+  Measured against the launch lost on 2026-11-03, killed at 12,288 bytes mid `multiproc_executor` with no error
+  line and the cards back to 0.056 GiB: the old loop sat next to it for the full 7 minutes and printed one
+  sentence, and nothing said the box was idle. Pre-flight now mirrors the launcher's own refusals (GPUs still
+  held by a stopped launch; `OFFLOAD_GB` over this box's 11.7 GiB `RLIMIT_MEMLOCK`, which is where that
+  PROGRESS.md number comes from), and the page address printed for `WEBUI=same` was `PORT+1`, which is not
+  where those pages are. Each run records what it measured under `.r9700-state/` (venv versions, the
+  `libr9k.so` hash, and the launch's recipe/log/session), so the next run reports drift and answers "did my
+  launch die, and which log do I read"; `--check` still writes nothing. 55 checks in `tests/test_setup.py`,
+  and both host tests now run in step 6.
 - **`WEBUI=1` on the native path too** (`serve/native-flashnext.sh`), and the recipe file it writes moved out of
   `serve/serve.sh` into `serve/webmeta.sh` so both launchers write the same JSON the About page reads. The sidecar
   starts **before** the engine: it has to answer `/health` for a serve that takes four minutes to load 120 GB, and
-  it shows the cards while it does. `setup.py --launch native-flashnext.sh` now starts one (in its own process
-  group, logging to `~/logs/setup-<time>.log` — the native launcher `exec`s vLLM in the foreground, and
+  it shows the cards while it does. `setup.py --launch native-flashnext.sh` now starts one (in a `tmux` session
+  since 2026-11-03, logging to `~/logs/setup-<time>.log` — the native launcher `exec`s vLLM in the foreground, and
   `notes/launch-methodology.md` records that vLLM's ranks can ignore `SIGTERM` in the model-load phase, so a
-  child of a TTY-interrupted setup is how you get two launches on four cards).
+  child of a TTY-interrupted setup is how you get two launches on four cards; a new session was not enough either,
+  see the setup entry above).
 - **The Monitor and About pages can now run on the serve's OWN port** (`WEBUI=same`, `serve/plugin`,
   `./setup.sh --webui same`; [notes/webui.md](notes/webui.md)). One package, two entry points: a
   `vllm.endpoint_plugins` plugin for the routes (`/`, `/monitor`, `/about`, `/web/*`, `/api/*` — vLLM's

@@ -366,14 +366,29 @@ these numbers runs.
    ```
    ./setup.sh --check                                    # report only, changes nothing
    ./setup.sh --yes --launch native-flashnext.sh --webui same   # check, then start the native launch
+   ./setup.sh --docker --launch 27b                      # the container path: asked for, default n
    ./update.sh                                           # git pull here (refuses on tracked edits), re-check
    ```
-   On a box with no docker it says so and checks the native path instead: the venv importing vLLM/torch/hip with
-   the same `LD_LIBRARY_PATH` `serve/native-flashnext.sh` sets (the ROCm wheels need a locally unpacked OpenMPI
-   runtime, no root), the host-built `libr9k.so`, and `pip install -e serve/plugin` for `WEBUI=same`. It names the
-   venv/pip/`hipcc` commands rather than running them: the ROCm wheels are ~20 GB and are never fetched by a
-   script, and nothing here touches `~/models`, the launch caches, or a launch that is already up. The host-side
-   BAR0/ACS/PCIe-switch setup is in neither script: that is [host/README.md](host/README.md).
+   **The native path is the default, and the container path is the one thing asked for, with a default of no**
+   (`--docker` takes it, `--no-docker` declines without the prompt, and `--yes` does not answer it). Every later
+   step follows that answer: with the container path off the image is not inspected or built, the second checkout
+   `serve.sh` mounts is not cloned, the container recipes are labelled in the launch list rather than offered,
+   and a checkpoint only they want is a note instead of a warning. The native checks it runs instead: the venv
+   importing vLLM/torch/hip with the same `LD_LIBRARY_PATH` `serve/native-flashnext.sh` sets (the ROCm wheels
+   need a locally unpacked OpenMPI runtime, no root), and the host-built `libr9k.so` **as freshness, not
+   existence** -- its hash, whether the copy `kernels/build.sh` wrote and the copy the launcher loads through
+   `R9K_LIB` agree, and whether either is older than the newest `.hip` it is built from (step 1a's build line
+   ends in a `cp`, and a build that skipped it is a build that never reached the serve). What it does with a
+   launch: a native launch starts inside a `tmux` session so it survives the terminal that ran setup (a plain
+   detached start died with it once, mid-load, with no error line -- see the `--no-tmux` help text), it refuses
+   up front when the GPUs are still held by a stopped launch or when `OFFLOAD_GB` wants more pinned memory than
+   this box's `RLIMIT_MEMLOCK` allows, it notices a launch that died instead of waiting out the 7-minute
+   `/health` window, and it prints that log's last lines plus the `STOP=1` that clears the ranks. Each run
+   records the native venv, the `libr9k.so` hash and the launch (recipe, log, session) under
+   `.r9700-state/`, so the next run reports drift and answers "did my launch die, and which log do I read".
+   It names the venv/pip/`hipcc` commands rather than running them: the ROCm wheels are ~20 GB and are never
+   fetched by a script, and nothing here touches `~/models`, the launch caches, or a launch that is already up.
+   The host-side BAR0/ACS/PCIe-switch setup is in neither script: that is [host/README.md](host/README.md).
 
 1a. **Native (no docker)**. One-time on the host; `./setup.sh --check` reports each missing piece with the command
    to run (the exact versions and URLs live in [notes/native-4xr9700.md](notes/native-4xr9700.md)):
@@ -409,7 +424,8 @@ these numbers runs.
    The pinned nightly (2026-10-25, vLLM 0.32.1rc1, torch 2.13) is in `docker/Dockerfile` (`--build-arg BASE=` for another).
    `serve.sh` runs the image against the second checkout of this repo (default `~/r9700-build/repo`, mounted at
    `/opt/r9700`) so the running plugin is code you can change without rebuilding; `./setup.sh` names it and offers
-   to clone it. Container-only recipes are labelled in `setup.py`'s launch list.
+   to clone it. Container-only recipes are labelled in `setup.py`'s launch list, and asking for one on a run that
+   took the native path is refused with the `--docker --launch <name>` command that would take it.
 
 2. **Serve** (the same knobs either way):
    ```

@@ -7,13 +7,25 @@ weights in ~/models. So "install" here is not a pip install: docker/Dockerfile p
 the image, and the venv this script makes holds no torch at all -- the host Python is for the tests that need
 no GPU, for bench/, for serve/webui.py (stdlib only) and for this file.
 
+The default path is the native one (no docker, no root: stock vLLM wheels in a venv plus a host-built
+libr9k.so), because that is what the box behind this repo's numbers runs. The container path is the one thing
+that is ASKED for, with a default of no, and every later step follows that answer: with it off the image is
+not inspected or built, the second checkout serve.sh mounts is not cloned, the container recipes are labelled
+in the launch list rather than offered, and a checkpoint only they want is a note instead of a warning.
+
   ./setup.sh                    check every step, make what is ours to make, then offer a launch
   ./setup.sh --check            report only: nothing runs that changes anything, no launch offered
-  ./setup.sh --yes              no prompts (build the image, clone the build repo, no launch)
+  ./setup.sh --yes              no prompts (builds the image and clones the build repo when the container
+                                path was asked for; still no launch, and still no docker unless --docker)
   ./setup.sh --update           what update.sh runs after a git pull: pin, build repo, tests
   ./setup.sh --rebuild          build the image again even though the pin says it is current
   ./setup.sh --launch 27b       start that recipe instead of asking (none = stop after the checks)
   ./setup.sh --no-webui         launch without the Monitor/About sidecar
+  ./setup.sh --docker           deploy with the pinned image. This is the ONE question asked with a default of
+                                no: the native path is the default, and every later step follows that answer.
+                                --yes does not answer it; --docker (or typing y) does.
+  ./setup.sh --no-docker        keep the container path off without asking
+  ./setup.sh --no-tmux          start a native launch detached the old way, without tmux (see launch())
   --img NAME --repo PATH        the image tag (r9700/vllm:dev) and the build repo serve.sh mounts
 
 Every number and requirement below is read from this repository or measured on the box, with the file it came
@@ -21,10 +33,12 @@ from named. Nothing here invents a driver version: the host-side BAR/ACS/switch 
 this script only checks what a running container would need from the guest.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
 import resource
+import shlex
 import shutil
 import subprocess
 import sys
@@ -102,6 +116,194 @@ def ask(cfg, question):
     if not sys.stdin.isatty():
         return False
     return input(f"    {question} [y/N] ").strip().lower() in ("y", "yes")
+
+
+def ask_no(cfg, question):
+    """A question whose default is NO, and which --yes does NOT answer.
+
+    `ask` defaults to Yes under --yes, which is right for building an image somebody asked for and wrong for
+    choosing a deployment nobody asked for: the image is a multi-GB pull whose kernels compile inside, while
+    the native path is what notes/native-4xr9700.md measures and what the box behind the README's numbers
+    runs. So the container path is only taken when it is asked for out loud (--docker) or typed y."""
+    if cfg.yes or not sys.stdin.isatty():
+        return False
+    return input(f"    {question} [y/N] ").strip().lower() in ("y", "yes")
+
+
+# ------------------------------------------------------------------------------------ state on this box ---
+def state_read(name):
+    try:
+        return json.loads((STATE / name).read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def state_update(name, **kw):
+    rec = state_read(name) or {}
+    rec.update(kw)
+    state_write(name, rec)
+
+
+def state_write(name, data):
+    """Record what was measured, so the NEXT run can report drift instead of existence. Never called under
+    --check: a check-only run changes nothing (the directory itself is in .gitignore)."""
+    STATE.mkdir(exist_ok=True)
+    (STATE / name).write_text(json.dumps(data, sort_keys=True) + "\n")
+
+
+def sha256(p):
+    """A short hash of a file, for 'did this change since the last run'. 5 MB libr9k.so, so it is cheap."""
+    try:
+        h = hashlib.sha256()
+        with open(p, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()[:16]
+    except OSError:
+        return None
+
+
+def newest_source(d):
+    """(mtime, path) of the newest source libr9k.so is built from -- the .hip files build.sh lists in SRCS
+    plus the headers under kernels/ and its third_party tree."""
+    best = (0, None)
+    if not d.is_dir():
+        return best
+    pats = ["*.hip", "*.h", "*.hpp", "*.cc", "third_party/**/*.h", "third_party/**/*.hpp"]
+    for pat in pats:
+        for p in d.glob(pat):
+            try:
+                m = p.stat().st_mtime
+            except OSError:
+                continue
+            if m > best[0]:
+                best = (m, p)
+    return best
+
+
+def stale_since(so, src):
+    """The source newer than the .so, or None: a .so older than its own input is a .so that keeps serving the
+    old kernels, which is the failure a rebuild-and-forgot-the-copy leaves behind."""
+    if src is None:
+        return None
+    try:
+        return src if so.stat().st_mtime < src.stat().st_mtime else None
+    except OSError:
+        return None
+
+
+def tail_log(path, n=14):
+    """The last lines of a launch log with \\r folded: vLLM's progress bars rewrite a line with carriage
+    returns, so a raw tail of a dead launch is one enormous line of bar. Never raises -- a launcher that
+    refused early leaves no log at all, and that is worth saying."""
+    if not path:
+        return ["(no log was written)"]
+    try:
+        data = Path(path).read_text(errors="replace").replace("\r", "\n")
+    except OSError:
+        return [f"(no log at {path})"]
+    lines = [ln.strip() for ln in data.splitlines() if ln.strip()]
+    return lines[-n:] or [f"(empty log: {path})"]
+
+
+def launcher_env(text, webui=None, log=None):
+    """The environment a launch script actually reads, taken from its own ${NAME:-...} uses.
+
+    tmux starts its new session in the tmux SERVER's environment, not ours: without this, VENV=, GPUS=, TP=,
+    OFFLOAD_GB= and every R9K_* would silently vanish at the tmux boundary. Reading the names out of the
+    script is the point -- a knob added to the script is a knob this file cannot forget."""
+    names = set(re.findall(r"\$\{([A-Z][A-Z0-9_]+)", text)) | set(re.findall(r"\$([A-Z][A-Z0-9_]{2,})", text))
+    env = {k: v for k, v in os.environ.items() if k in names}
+    if webui is not None:
+        env["WEBUI"] = webui
+    if log is not None:
+        env["LOG"] = log
+    return env
+
+
+def container_recipe(name):
+    """Container-only is a property of the script. Grepping for the word "docker" got this backwards: the
+    NATIVE launcher explains in a comment that it exists because "sudo docker run is not available", so it
+    matched, and the container recipes -- which end by exec'ing serve.sh -- did not. Match the delegation."""
+    try:
+        return bool(re.search(r'/serve\.sh"', (ROOT / "serve" / name).read_text(errors="replace")))
+    except OSError:
+        return False
+
+
+def left_vllm():
+    """How many vLLM processes hold the GPUs. SIGTERM does not stop the ranks, so a launch can be dead while
+    27-31 GiB a card stays allocated (serve/native-flashnext.sh's own pre-flight, measured 2026-10-31).
+    pgrep -c prints 0 and exits 1 when there are none, so the number is what is parsed, not the return code."""
+    txt = out(["pgrep", "-cf", "VLLM[::]"])[1].strip()
+    return int(txt) if txt.isdigit() else 0
+
+
+def offload_gb(cfg):
+    """The --cpu-offload-gb the launch will get. The scripts take it as OFFLOAD_GB= in the environment rather
+    than as an argument, so both spellings are read."""
+    v = os.environ.get("OFFLOAD_GB", "0")
+    for a in getattr(cfg, "rest", []):
+        m = re.match(r"^OFFLOAD_GB=(\S+)$", a)
+        if m:
+            v = m.group(1)
+    try:
+        return float(v)
+    except ValueError:
+        return 0.0
+
+
+def offload_refuses(gb, memlock_bytes):
+    """A reason not to start an offload launch on a box that cannot pin it, or None. This box's RLIMIT_MEMLOCK
+    is where PROGRESS.md's '11.7 GiB per process' comes from, which is why the 34 GB/rank expert stream there
+    is a container --ulimit question: starting it anyway costs two minutes and a dead engine to find out."""
+    if gb <= 0 or memlock_bytes == resource.RLIM_INFINITY or gb * 1e9 <= memlock_bytes:
+        return None
+    return (f"OFFLOAD_GB={gb:g} pins about {gb:g} GB of host memory per rank, and this box's "
+            f"RLIMIT_MEMLOCK is {memlock_bytes // 2 ** 20} MiB")
+
+
+def webui_urls(mode, port):
+    """Where the Monitor/About pages are, in the spelling the launcher itself prints. Printing PORT+1
+    unconditionally was wrong for WEBUI=same, whose pages sit on the serve's own port (serve/plugin)."""
+    if mode == "same":
+        return f"http://127.0.0.1:{port}/monitor", f"http://127.0.0.1:{port}/about"
+    if mode == "side":
+        return f"http://127.0.0.1:{port + 1}/monitor", f"http://127.0.0.1:{port + 1}/about"
+    return None, None
+
+
+def dead_reason(proc, sess):
+    """None while the launch is still running, otherwise why it stopped. With tmux the session IS the launch:
+    the pane closes when the pipeline ends, so has-session going false means the engine exited."""
+    if proc is not None:
+        rc = proc.poll()
+        return None if rc is None else f"the launcher exited (code {rc})"
+    if sess:
+        if out(["tmux", "has-session", "-t", sess])[0] == 0:
+            return None
+        return f"the tmux session {sess} holding it is gone"
+    return None
+
+
+def wait_up(port, proc=None, sess=None, secs=420):
+    """Poll /health, watching the process at the same time.
+
+    The old loop sat for the full 7 minutes after the launch had already died and then printed one line about
+    it; the box then looked healthy because nothing said otherwise. Returns (state, seconds, reason)."""
+    t0 = time.time()
+    while time.time() - t0 < secs:
+        d = dead_reason(proc, sess)
+        if d:
+            return "dead", time.time() - t0, d
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=5) as r:
+                if r.status == 200:
+                    return "up", time.time() - t0, None
+        except (urllib.error.URLError, OSError):
+            pass
+        time.sleep(5)
+    return "timeout", time.time() - t0, None
 
 
 # --------------------------------------------------------------------- facts read from this repo ------
@@ -192,7 +394,7 @@ def switches():
 
 
 def host(cfg):
-    step(1, "the guest the container will run in (host-side BAR/ACS work is host/README.md, not this file)")
+    step(1, "the guest the launch will run in (host-side BAR/ACS work is host/README.md, not this file)")
     cs = cards()
     if not cs:
         bad("no amdgpu card visible in /sys/class/drm", "pass the cards through and load amdgpu; "
@@ -254,13 +456,38 @@ def host(cfg):
 def resource_limits():
     return resource.getrlimit(resource.RLIMIT_MEMLOCK)
 
-def docker(cfg):
-    step(2, "docker (serve.sh calls `sudo docker run`: daemon up, and the device/group flags it needs)")
-    if not shutil_which("docker"):
-        note("no docker on PATH: this box is a native-path box (serve/native-flashnext.sh runs vLLM out of a "
-             "venv instead of the pinned image). Its own pre-flight checks are the thing to read.")
+def want_docker(cfg, have_docker):
+    """Step 2's decision, kept apart from its printing so it can be tested: does this box take the container
+    path? Default no. --no-docker says no without asking; --docker says yes and fails loudly if there is no
+    docker to say yes to."""
+    if cfg.docker == "no":
+        return False, "the container path is off (--no-docker)"
+    if cfg.docker == "yes":
+        if not have_docker:
+            return False, ("--docker asked for the container path, but docker is not on PATH: the native path "
+                           "is the only one this box has")
+        return True, "asked for with --docker"
+    if not have_docker:
+        return False, ("no docker on PATH: this box is a native-path box (serve/native-flashnext.sh runs vLLM "
+                       "out of a venv instead of the pinned image)")
+    return (ask_no(cfg, "deploy with docker (the pinned stock-vLLM image; serve/serve.sh and the container "
+                        "recipes)?"),
+            "asked for at this prompt")
+
+
+def deployment(cfg):
+    """Step 2: which path this box takes -- native (the default) or the pinned image (docker) -- and the
+    checks belonging to the one taken. serve.sh calls `sudo docker run`, so the container path also needs the
+    daemon reachable: that is checked only when the container path was actually chosen."""
+    step(2, "which path this box runs: native (the default) or the pinned image (docker)")
+    want, why = want_docker(cfg, bool(shutil_which("docker")))
+    if not want:
+        note(why)
+        note("native path: serve/native-flashnext.sh (stock vLLM wheels in a venv plus a host-built "
+             "libr9k.so). --docker turns the container path on, --no-docker keeps it off without asking")
         native(cfg)
         return "native"
+    ok(f"container path, {why}")
     rc, txt = out(["docker", "info", "--format", "{{.ServerVersion}}"])
     if rc != 0:
         rc2, txt2 = out(["sudo", "-n", "docker", "info", "--format", "{{.ServerVersion}}"])
@@ -313,13 +540,61 @@ def native(cfg):
         bad(f"native venv cannot import vllm: {(tail or txt.splitlines())[-1]}",
             "the LD_LIBRARY_PATH and OPENMPI= lines of serve/native-flashnext.sh are the answer for "
             "libmpi/libhipblas errors; a GPU is not needed for this import")
-    so = Path(os.environ.get("REPO", str(ROOT))) / "r9700_vllm" / "kernels" / "libr9k.so"
-    if so.exists():
-        ok(f"libr9k.so built for the native path: {so} ({so.stat().st_size // 1024} KiB)")
-    else:
-        warn(f"{so} missing -- serve/native-flashnext.sh refuses without it",
-             "cd kernels && HIPCFLAGS=-I$HOME/opt/rocm-dev/opt/rocm/core-10.1/include ./build.sh "
-             "($HOME/opt/rocm-dev is where this box's hipcc headers live)")
+    rec = libr9k(cfg)
+    versions = txt if rc == 0 else None
+    prev = state_read("native.json")
+    if prev:
+        if prev.get("versions") and versions and prev["versions"] != versions:
+            note(f"the native venv changed since the last run: vllm/torch/hip {prev['versions']} -> {versions}")
+        was = (prev.get("libr9k") or {}).get("loaded", {}).get("sha")
+        now = rec.get("loaded", {}).get("sha")
+        if was and now and was != now:
+            note(f"libr9k.so changed since the last run ({was} -> {now}): the kernels a serve loaded are "
+                 f"recorded in .r9700-state/native.json, which is how a regression gets attributed to a build")
+    if not cfg.check:
+        state_write("native.json", {"venv": str(venv), "versions": versions, "libr9k": rec,
+                                    "pin": dockerfile_base(), "at": int(time.time())})
+
+
+def libr9k_paths(cfg):
+    """The two places libr9k.so can be. kernels/build.sh writes kernels/libr9k.so; the launchers load
+    r9700_vllm/kernels/libr9k.so through R9K_LIB, and README's own line is `./build.sh && cp libr9k.so
+    ../r9700_vllm/kernels/` -- so a rebuild that skipped the cp is a rebuild that never reached the serve,
+    and both copies have to be reported, not just the one that happens to exist."""
+    repo = Path(os.environ.get("REPO", str(ROOT)))
+    return repo / "r9700_vllm" / "kernels" / "libr9k.so", ROOT / "kernels" / "libr9k.so"
+
+
+def libr9k(cfg):
+    """Report libr9k.so as freshness, not existence: which of the two copies is where, whether they agree,
+    whether the one being loaded is older than the newest source that builds it. Returns what was measured,
+    for the state file."""
+    load, built = libr9k_paths(cfg)
+    rec = {}
+    for key, p in (("loaded", load), ("built", built)):
+        if p.exists():
+            rec[key] = {"path": str(p), "sha": sha256(p), "size": p.stat().st_size,
+                        "mtime": int(p.stat().st_mtime)}
+    if not load.exists():
+        warn(f"{load} missing -- serve/native-flashnext.sh refuses without it",
+             "cd kernels && HIPCFLAGS=-I$HOME/opt/rocm-dev/opt/rocm/core-10.1/include ./build.sh && "
+             "cp libr9k.so ../r9700_vllm/kernels/ ($HOME/opt/rocm-dev is where this box's hipcc headers live)")
+        return rec
+    ok(f"libr9k.so built for the native path: {load} ({load.stat().st_size // 1024} KiB, sha "
+       f"{rec['loaded']['sha']})")
+    if "built" in rec and rec["built"]["sha"] != rec["loaded"]["sha"]:
+        warn("the two copies of libr9k.so disagree: kernels/build.sh wrote one, the launcher loads the other",
+             f"cp {built} {load} -- the serve runs the copy it loads, not the one build.sh just wrote")
+    elif "built" not in rec:
+        note(f"{built} is not here (that is build.sh's own output); only the copy the launchers load exists")
+    src_mtime, src_file = newest_source(ROOT / "kernels")
+    st = stale_since(load, src_file)
+    if st:
+        warn(f"libr9k.so is older than {st.relative_to(ROOT)} -- a stale .so keeps serving the old kernels "
+             f"no matter what was edited since",
+             "cd kernels && HIPCFLAGS=-I$HOME/opt/rocm-dev/opt/rocm/core-10.1/include ./build.sh && "
+             "cp libr9k.so ../r9700_vllm/kernels/ (build.sh checks all 68 exports before it claims success)")
+    return rec
 
 
 def image(cfg, have="docker"):
@@ -327,8 +602,9 @@ def image(cfg, have="docker"):
     pin = dockerfile_base()
     note(f"docker/Dockerfile is pinned to {pin}")
     if have == "native":
-        note("nothing to check or build here without docker: the container path (serve/serve.sh, serve/27b.sh, "
-             "serve/flashnext.sh) needs it, the native path (serve/native-flashnext.sh) does not")
+        note("not checked and not built: this run takes the native path, which needs no image. The container "
+             "recipes (serve/serve.sh, serve/27b.sh, serve/flashnext.sh) do: setup.sh --docker takes that path "
+             "and this step becomes a build/inspect of the pin")
         return
     if have is None:
         warn("image not checked: docker is not usable (step 2)")
@@ -374,7 +650,7 @@ def buildrepo(cfg, have="docker"):
             return
         if have != "docker":
             note(f"{p} missing: only the container path needs it (serve.sh mounts it). The native path runs the "
-                 f"plugin from this checkout (REPO={ROOT})")
+                 f"plugin from this checkout (REPO={ROOT}); setup.sh --docker is what would need this one")
             return
         if cfg.check:
             note(f"would clone {url} into {p}")
@@ -406,7 +682,21 @@ def buildrepo(cfg, have="docker"):
         note(f"{p} has its own edits ({len(dirty.splitlines())} file(s)); untouched by this script")
 
 
-def models(cfg):
+def model_visibility(who, have):
+    """warn or note for a missing checkpoint. A model that only the container-only recipes want is not a hole
+    on a box that took the native path -- it is noise, and noise in a 40-line report trains people to skip
+    the report. The weights are still listed, just at their real priority.
+
+    `who` names every serve script that mentions the path, including helpers: deploy.sh FETCHES weights and
+    27b.sh would run them, and only the second is a hole on this box. So the set is intersected with the
+    launch recipes recipes() offers, exactly the list step 8 prints."""
+    if have == "docker":
+        return "warn"
+    launchable = {n for n, _ in recipes()}
+    return "warn" if any(not container_recipe(s) for s in who if s in launchable) else "note"
+
+
+def models(cfg, have="docker"):
     step(5, f"checkpoints in {Path.home() / 'models'} (mounted at /models; third-party weights, not fetched here)")
     names, repos = wanted_models()
     d = Path.home() / "models"
@@ -419,10 +709,15 @@ def models(cfg):
         who = ", ".join(sorted(f"serve/{s}" for s in names[n]))
         if not p.is_dir():
             src = repos.get(n)
-            warn(f"/models/{n} missing (needed by {who})"
-                 + (f"; serve/deploy.sh fetches it from {src}" if src else ""),
-                 "bash serve/deploy.sh (~25 GB through the image)" if src else "see CREDITS.md for where the "
-                 "weights come from; they are third-party and are not part of this repository")
+            line = (f"/models/{n} missing (wanted by {who})"
+                    + (f"; serve/deploy.sh fetches it from {src}" if src else ""))
+            if model_visibility(names[n], have) == "warn":
+                warn(line, "bash serve/deploy.sh (~25 GB through the image)" if src
+                     else "see CREDITS.md for where the "
+                     "weights come from; they are third-party and are not part of this repository")
+            else:
+                note(line + " -- no recipe this box can run wants it: container-only recipes, and this run "
+                            "takes the native path")
             continue
         rc, txt = out(["du", "-s", "-b", str(p)])
         size = int(txt.split()[0]) if rc == 0 else 0
@@ -442,17 +737,20 @@ def tests(cfg):
     py = str(ROOT / ".venv" / "bin" / "python") if (ROOT / ".venv" / "bin" / "python").exists() else sys.executable
     if not (ROOT / ".venv" / "bin" / "python").exists():
         note("no .venv here (setup.sh makes one); falling back to " + py)
-    t = ROOT / "tests" / "test_webui.py"
-    if cfg.check:
-        note(f"would run: {py} tests/test_webui.py (and bench/bringup-tests.sh inside the image, on free GPUs)")
-    elif t.exists():
-        if ask(cfg, "run tests/test_webui.py (the Monitor/About sidecar, fake vLLM, fake sysfs)?"):
-            rc = run([py, str(t)], cfg, timeout=600)
-            (ok if rc == 0 else bad)(f"tests/test_webui.py {'passed' if rc == 0 else 'FAILED'}")
+    # test_setup.py checks setup.py's own decisions (which path, what to offer, when to refuse, how fast a
+    # dead launch is noticed), so it runs before the launch it would otherwise gate
+    for t in ("tests/test_setup.py", "tests/test_webui.py"):
+        p = ROOT / t
+        if cfg.check:
+            note(f"would run: {py} {t}")
+        elif p.exists():
+            if ask(cfg, f"run {t}?"):
+                rc = run([py, str(p)], cfg, timeout=900)
+                (ok if rc == 0 else bad)(f"{t} {'passed' if rc == 0 else 'FAILED'}")
+            else:
+                note(f"skipped: {py} {t}")
         else:
-            note(f"skipped: {py} tests/test_webui.py")
-    else:
-        warn("tests/test_webui.py missing")
+            warn(f"{t} missing")
     note("the kernel and plugin unit tests need free GPUs and run inside the image: bench/bringup-tests.sh")
 
 
@@ -478,16 +776,57 @@ def sidecar(cfg):
              f"Install with:  {py} -m pip install --no-build-isolation -e {ROOT / 'serve' / 'plugin'}")
 
 
+def start_tmux(sess, script, env, rest, log):
+    """The native launch inside a tmux session.
+
+    Why not just Popen(start_new_session=True): measured 2026-11-03, a launch started that way still died with
+    the terminal (here, the tool call) that ran setup -- the log stops mid multiproc_executor at exactly
+    12288 bytes, no error line, no shutdown record in the request journal, four cards back to 0.056 GiB. A
+    tmux session is outside that process tree, and it leaves a pane to attach to while the engine loads.
+    The environment is passed with -e because the tmux server has its own (see launcher_env)."""
+    cmd = f'bash {shlex.quote(str(script))} {" ".join(shlex.quote(a) for a in rest)} 2>&1 | tee -a {shlex.quote(log)}'
+    args = ["tmux", "new-session", "-d", "-s", sess]
+    for k in sorted(env):
+        args += ["-e", f"{k}={env[k]}"]
+    return out(args + [cmd], timeout=60)
+
+
+def launch_status():
+    """Report the launch this script last started and whether it is still up.
+
+    A launch that dies during the load leaves no shutdown record, no /metrics and no process anyone told us
+    about, so without this record the only way to find out is reading a log by hand -- which is how the dead
+    2026-11-03 launch was found. The record is written at the start of a launch, so a death is visible even
+    when setup.py itself never saw it."""
+    prev = state_read("launch.json")
+    if not prev:
+        note("no launch recorded here yet (.r9700-state/launch.json): the record is what makes 'did it die, "
+             "and which log do I read' answerable on the next run")
+        return None
+    n = left_vllm()
+    age = (time.time() - prev.get("started", 0)) / 60
+    recipe, log = prev.get("recipe"), prev.get("log")
+    if n:
+        where = f"tmux attach -t {prev['session']}" if prev.get("session") else f"tail -f {log}"
+        ok(f"the launch recorded {age:.0f} min ago (serve/{recipe}) is up: {n} vLLM process(es); {where}")
+    else:
+        warn(f"the launch this script started {age:.0f} min ago (serve/{recipe}, log {log}) is not running: "
+             f"no VLLM process left"
+             f"{'' if prev.get('died_at') is None else ', recorded dead ' + time.strftime('%H:%M:%S', time.localtime(prev['died_at']))}",
+             f"its log's last lines are below; relaunch: WEBUI={prev.get('webui')} bash serve/{recipe}")
+        for ln in tail_log(log, 8):
+            say(f"         | {ln}")
+    return prev
+
+
 def launch(cfg, have="docker"):
     step(8, "a launch")
     rs = recipes()
     for name, head in rs:
-        # Container-only is a property of the script. Grepping for the word "docker" got this backwards: the
-        # NATIVE launcher explains in a comment that it exists because "sudo docker run is not available", so it
-        # matched, and the container recipes -- which end by exec'ing serve.sh -- did not. Match the delegation.
-        container = bool(re.search(r'/serve\.sh"', (ROOT / "serve" / name).read_text(errors="replace")))
-        needs = "" if not container or have == "docker" else "   [needs docker: this box is a native-path box]"
+        container = container_recipe(name)
+        needs = "" if not container or have == "docker" else "   [container recipe: setup.sh --docker turns that path on]"
         say(f"    serve/{name}   {head[:90]}{needs}")
+    launch_status()
     if cfg.check:
         return
     pick = cfg.launch
@@ -504,37 +843,82 @@ def launch(cfg, have="docker"):
         if pick not in names:
             bad(f"no serve/{pick}")
             return
+    if container_recipe(pick) and have != "docker":
+        bad(f"serve/{pick} runs through serve.sh, and this run takes the native path",
+            "./setup.sh --docker --launch " + pick + "   (or run a native recipe: serve/native-flashnext.sh)")
+        return
     env = dict(os.environ, WEBUI=WEBUI_ENV[cfg.webui])
-    say(f"    $ WEBUI={WEBUI_ENV[cfg.webui]} bash serve/{pick}")
+    port = int(os.environ.get("PORT", 8080))
+    log = os.environ.get("LOG") or str(Path.home() / "logs" / f"setup-{time.strftime('%H%M%S')}.log")
+    Path(log).parent.mkdir(parents=True, exist_ok=True)
+    # pre-flight in the launcher's own shape: refuse here rather than start a launch that refuses two minutes
+    # in (its LEFT check and the pinned-memory ceiling are the two ways a native launch fails outright)
+    if pick.startswith("native"):
+        n = left_vllm()
+        if n and os.environ.get("FORCE", "0") != "1":
+            bad(f"refusing to launch: {n} vLLM process(es) still holding the GPUs -- the ranks ignore SIGTERM, "
+                f"so a stopped launch still owns 27-31 GiB a card",
+                f"STOP=1 bash serve/{pick}   (stops them and exits); FORCE=1 launches anyway")
+            return
+        why = offload_refuses(offload_gb(cfg), resource_limits()[1])
+        if why:
+            bad(why, "this is what a container's --ulimit memlock=-1 buys (./setup.sh --docker), or raise the "
+                     "cap for the launching shell, or lower OFFLOAD_GB "
+                     "(notes/tcclaviger-fork-analysis.md, PROGRESS.md's '11.7 GiB per process')")
+            return
+    say(f"    $ WEBUI={WEBUI_ENV[cfg.webui]} LOG={log} bash serve/{pick}")
     if not cfg.yes and not ask(cfg, f"start serve/{pick} now (GPUs go busy for ~75 s)?"):
         return
+    proc, sess = None, None
     if pick.startswith("native"):
-        # the native launcher execs vllm in the foreground (its LOG= names the file); the container path is
-        # backgrounded by its own `docker run -d`. Same shape here: new session, log to file, then poll.
-        log = os.environ.get("LOG") or str(Path.home() / "logs" / f"setup-{time.strftime('%H%M%S')}.log")
-        Path(log).parent.mkdir(parents=True, exist_ok=True)
-        with open(log, "ab") as fh:
-            subprocess.Popen(["bash", str(ROOT / "serve" / pick), *cfg.rest], stdout=fh, stderr=subprocess.STDOUT,
-                             env=env, start_new_session=True)
-        say(f"    log: {log}   (tail -f it; the ranks ignore SIGTERM -- stop with "
-            f"STOP=1 bash serve/{pick})")
+        script = ROOT / "serve" / pick
+        if not cfg.no_tmux and shutil_which("tmux"):
+            sess = "r9700-" + pick[:-3]
+            if out(["tmux", "has-session", "-t", sess])[0] == 0:
+                bad(f"a tmux session named {sess} is already up -- not starting a second launch into it",
+                    f"tmux attach -t {sess}   (or ./setup.sh --no-tmux for a plain detached start)")
+                return
+            rc, txt = start_tmux(sess, script, launcher_env(script.read_text(errors="replace"),
+                                                            WEBUI_ENV[cfg.webui], log), cfg.rest, log)
+            if rc != 0:
+                bad(f"tmux new-session failed: {txt}", "./setup.sh --no-tmux falls back to a plain detached start")
+                return
+            say(f"    tmux session {sess} -- watch it with: tmux attach -t {sess}   (detach: Ctrl-b d)")
+        else:
+            with open(log, "ab") as fh:
+                proc = subprocess.Popen(["bash", str(script), *cfg.rest], stdout=fh, stderr=subprocess.STDOUT,
+                                        env=env, start_new_session=True)
+            note("no tmux here (or --no-tmux): detached, but still inside this machine's session tree, so a "
+                 "hard-killed terminal takes the launch with it -- that is what killed the 2026-11-03 launch")
     else:
         subprocess.call(["bash", str(ROOT / "serve" / pick), *cfg.rest], env=env)
-    port = int(os.environ.get("PORT", 8080))
+    state_write("launch.json", {"recipe": pick, "webui": WEBUI_ENV[cfg.webui], "port": port, "path": have,
+                                "started": int(time.time()), "log": log, "session": sess,
+                                "pid": proc.pid if proc else None, "up_at": None, "died_at": None})
     say(f"    waiting for http://127.0.0.1:{port}/health ...")
-    t0 = time.time()
-    while time.time() - t0 < 420:
-        try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=5) as r:
-                if r.status == 200:
-                    ok(f"up after {time.time() - t0:.0f} s")
-                    break
-        except (urllib.error.URLError, OSError):
-            time.sleep(5)
+    what, dt, why = wait_up(port, proc, sess)
+    stopper = f"STOP=1 bash serve/{pick}"
+    if what == "up":
+        ok(f"up after {dt:.0f} s")
+        state_update("launch.json", up_at=int(time.time()))
+        mon, about = webui_urls(cfg.webui, port)
+        if mon:
+            say(f"    monitor: {mon}    about: {about}"
+                + ("   (inside the serve itself: serve/plugin)" if cfg.webui == "same" else ""))
+    elif what == "dead":
+        bad(f"{why} after {dt:.0f} s without ever answering /health. {log}, last lines:")
+        for ln in tail_log(log, 14):
+            say(f"         | {ln}")
+        state_update("launch.json", died_at=int(time.time()), reason=why)
+        say(f"    the ranks ignore SIGTERM: clear anything left with  {stopper}")
+        say(f"    then relaunch:  WEBUI={WEBUI_ENV[cfg.webui]} bash serve/{pick}")
+        return
     else:
-        warn("not answering /health within 7 min: the launch log is the place to look")
-    if not cfg.no_webui:
-        say(f"    monitor: http://127.0.0.1:{port + 1}/monitor    about: http://127.0.0.1:{port + 1}/about")
+        warn(f"not answering /health within {dt / 60:.0f} min: {log}, last lines:")
+        for ln in tail_log(log, 10):
+            say(f"         | {ln}")
+        say(f"    it may still be coming up: the log is the place to look, and {stopper} stops it")
+        return
     note("the first launch of a NEW configuration compiles and keeps ~0.45 GiB that the next one hands to the "
          "KV pool (serve/flashnext.sh): restart once, then measure")
 
@@ -542,7 +926,8 @@ def launch(cfg, have="docker"):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--check", action="store_true", help="report only; run nothing that changes anything")
-    ap.add_argument("--yes", action="store_true", help="no prompts")
+    ap.add_argument("--yes", action="store_true", help="no prompts -- except the docker question, whose "
+                                                      "default is no and which only --docker answers")
     ap.add_argument("--update", action="store_true", help="what update.sh runs after a git pull")
     ap.add_argument("--rebuild", action="store_true", help="build the image even if the pin matches")
     ap.add_argument("--launch", default=None, help="serve/<name>.sh to start, or none")
@@ -552,19 +937,31 @@ def main():
                          "own port, via serve/plugin (needs: pip install -e serve/plugin). off: neither.")
     ap.add_argument("--img", default=os.environ.get("IMG", "r9700/vllm:dev"))
     ap.add_argument("--repo", default=os.environ.get("REPO", str(Path.home() / "r9700-build" / "repo")))
+    grp = ap.add_mutually_exclusive_group()
+    grp.add_argument("--docker", dest="docker", action="store_const", const="yes", default="auto",
+                     help="deploy with the pinned image (the container path). Asked for, never assumed: the "
+                          "native path is the default and --yes does not answer this one.")
+    grp.add_argument("--no-docker", dest="docker", action="store_const", const="no",
+                     help="keep the container path off without asking (the default answer, said out loud)")
+    ap.add_argument("--no-tmux", action="store_true",
+                    help="start a native launch detached without tmux: it then dies with the session that ran "
+                         "setup, which is how the 2026-11-03 launch was lost")
     cfg, extra = ap.parse_known_args()
     cfg.rest = extra
     cfg.webui = cfg.webui or ("off" if cfg.no_webui else "side")
     say(f"r9700-stack bring-up -- {ROOT}")
     say(f"check-only: {cfg.check}   (every requirement below names the file it came from)")
     host(cfg)
-    have = docker(cfg)
+    have = deployment(cfg)
     if cfg.rebuild and have == "docker" and not cfg.check:
         out(["docker", "rmi", cfg.img])
         note(f"removed {cfg.img}: the image step will build it again")
+    elif cfg.rebuild and have != "docker":
+        note("--rebuild asked for, but this run takes the native path: nothing was removed or built "
+             "(./setup.sh --docker --rebuild is the image)")
     image(cfg, have)
     buildrepo(cfg, have)
-    models(cfg)
+    models(cfg, have)
     tests(cfg)
     sidecar(cfg)
     if cfg.update:
