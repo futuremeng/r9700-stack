@@ -2524,3 +2524,18 @@ it alive under a dying terminal, not of resurrecting it, and until the PCIe/rese
 auto-restart would turn a degrading link into a restart loop. The container path is still unexercised on this box
 — no `docker` binary on it — so the `--docker` branch is tested by `tests/test_setup.py`'s decision logic, not by a
 build.
+
+## 2026-11-03: the Monitor and About headers say which build is answering
+
+Asked from the box: "is what is live the version I just merged?" That answer used to be an ssh, the tmux session's
+launch log, and a hash against `git log`. `stack_info()` (`serve/webui.py`) reads the plugin's `__version__` plus the
+branch, short commit and dirtiness of the tree that plugin was imported from, once at Hub start, and `/api/status`
+ships it as `stack` — `{"plugin": "0.4.0", "branch": "master", "commit": "953a3901", "dirty": false}` — so both
+headers read `vLLM 0.32.0 · plugin 0.4.0 · 953a3901` (`*` on a dirty tree) and About carries the same as a fact row.
+
+What it took was the second draft, not the first: the Monitor repaints the header every poll, and the first version
+appended, so the line would have read `vLLM 0.32.0 · vLLM 0.32.0 · …` a minute after anyone looked at the page. The
+helper now keeps the element's base text and rebuilds from it, and `tests/render-monitor.mjs` — which already runs the
+page's JS in a stub DOM — waits past the 2 s poll and fails if the line grew at all. Details (why the fields are
+absent rather than guessed, why it rides the engine-unreachable payload, and what the line deliberately does not
+track) are in notes/webui.md.

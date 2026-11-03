@@ -35,10 +35,14 @@ function brandStack(s) {
   const stack = (s && s.stack) || {};
   const v = (s && s.engine && s.engine.vllm_version) || "";
   const parts = [];
-  if (v) parts.push("vLLM " + String(v).split("+")[0]);
+  // The engine version arrives as whatever this process reports -- "vllm 0.32.0+rocm723", or "vllm 0.32.0
+  // (this process)" from the merged page's own registry -- and the header has room for the number, not the
+  // sentence. Take the version token and label it once.
+  const vm = String(v).match(/\d[\w.]*/);
+  if (vm) parts.push("vLLM " + vm[0]);
   if (stack.plugin) parts.push("plugin " + stack.plugin);
   if (stack.commit) parts.push(stack.commit + (stack.dirty ? "*" : ""));
-  b.textContent = parts.length ? `${b.dataset.base} · ${parts.join(" · ")}` : b.dataset.base;
+  b.textContent = [b.dataset.base, ...parts].filter(Boolean).join(" · ");
   if (stack.commit) b.title = stack.dirty
     ? `checkout ${stack.branch || "(detached)"} at ${stack.commit}, with uncommitted edits in the tree`
     : `checkout ${stack.branch || "(detached)"} at ${stack.commit}, clean`;

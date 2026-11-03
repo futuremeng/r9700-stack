@@ -234,14 +234,15 @@ serves (`/v1/*`, `/metrics`) is untouched apart from `GET /`, which the plugin r
 
 ## Tests
 
-`tests/test_webui.py` (135 checks, no GPU and no network needed) and `tests/test_webui_plugin.py`
+`tests/test_webui.py` (325 checks, no GPU and no network needed) and `tests/test_webui_plugin.py`
 (32 checks; the record store and the stat logger run anywhere, the routes need FastAPI, and vLLM's own
 route-replacement tier runs only where vLLM imports — `LD_LIBRARY_PATH=~/opt/openmpi/usr/lib/x86_64-linux-gnu
 ~/venv-r9700/bin/python tests/test_webui_plugin.py`). Three more cover the parts that are not the sidecar:
-`tests/test_readme.py` (36 checks, stdlib alone: the README's card figure re-draws from the committed `/api/status`
+`tests/test_readme.py` (42 checks, stdlib alone: the README's card figure re-draws from the committed `/api/status`
 poll string for string, no line runs off the canvas and none runs past the bottom of the card that drew it, no
 wrapped line ends on a connector, the caption cannot state a number the figure does not show, the title lockup and
-the release page sit where they belong and link to a picture big enough to read), `tests/test_lockup.py` (14 checks
+the release page sit where they belong and link to a picture big enough to read, and every block under Deploying it
+holds one command so the copy button copies one command), `tests/test_lockup.py` (14 checks
 on the same lockup rendered, which needs an SVG renderer — `rsvg-convert` or cairosvg — and skips saying so without
 one), and `tests/render-monitor.mjs`, which runs the page's own JavaScript unmodified in a stub DOM against a live
 serve and prints what its cards and rows actually render — the JS and its payloads, not CSS or layout.
@@ -973,3 +974,38 @@ are arithmetic against the theme's font sizes, not a screenshot. What *is* check
 7 areas, both narrow layouts keep all 7 areas, the header row exists on the same grid, and the live render fills
 all 7 areas in every row (`tests/render-monitor.mjs`, exits non-zero otherwise).
 
+
+## The header says which build is answering (2026-11-03)
+
+The question came from the box: "is what is live right now the version I just merged?" Answering it meant an ssh, the
+tmux session's launch log, and a hash compared against `git log`. `stack_info()` in `serve/webui.py` reads it once at
+Hub start — the plugin's `__version__`, and from the tree that plugin was imported from: branch, short commit, and
+whether `git status --porcelain` says anything — and `/api/status` carries it as `stack`:
+
+```
+{"plugin": "0.4.0", "branch": "master", "commit": "953a3901", "dirty": false}
+```
+
+`brandStack()` in `serve/web/common.js` puts it in the header of both pages — `4× Radeon AI PRO R9700 · vLLM 0.32.0 ·
+plugin 0.4.0 · 953a3901`, with `*` on a dirty tree and the branch/sha/clean-or-dirty in the `title` — and About
+repeats it as a row of its own. The parts that are not obvious:
+
+- The Monitor repaints the header every poll, so the helper remembers the element's base text and rebuilds from that.
+  The first draft appended, which would have read `vLLM 0.32.0 · vLLM 0.32.0 · …` a minute after anyone looked; the
+  harness now waits past the 2 s poll and fails if the line grew at all.
+- The engine version arrives as a sentence: `vllm 0.32.0 (this process)` from the merged page's own registry, or
+  `vllm 0.32.0+rocm723` when the build carries a local tag. The header takes the version token and labels it once;
+  About keeps the sentence, because there "(this process)" is the point.
+- Fields are absent rather than guessed. No importable plugin (a sidecar running outside the serve's venv) or no
+  `.git` next to the code (an installed wheel, not a checkout) drops that part, and the pages print what is there.
+- It rides the engine-unreachable payload as well. "Which build is this?" is most useful when the engine is not there
+  to answer it, and the merged page is the one that stays up through a stopped launch.
+- What it does not track: the static files are read per request, so an edited CSS/JS reaches the browser before the
+  header moves. `stack` names the tree the process IMPORTED at start; a watcher of the tree as of now would be a
+  livelier and less useful fact — it would describe files, not the running build.
+
+Checked: `tests/test_webui.py` asserts `stack_info()` names the plugin version this tree declares and the checkout's
+commit, that both headers carry the id the line is written into, that both pages call the one helper, and that About
+has the row; `node tests/render-monitor.mjs` reads the status the live page is fed and fails if the rendered header
+does not carry `vLLM <version>` and `plugin <version>`, then waits a poll and fails if it grew. About's row is checked
+at text level only — there is no render harness for `about.js`, and no browser on this box.

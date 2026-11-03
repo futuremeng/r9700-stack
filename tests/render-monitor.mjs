@@ -210,8 +210,8 @@ if (want && !(brand || "").includes(want)) { console.log(`BAD  the header does n
 // The monitor repaints once a second; a header that appends its version each time would read "... vLLM 0.32 ·
 // vLLM 0.32 · ..." after a minute, so check a second render leaves it standing the same length.
 const len0 = (brand || "").length;
-if (!FIX) { await new Promise((r) => setTimeout(r, 1100)); }
-console.log(`brand line after another poll: ${t("brand-line")} (${(t("brand-line") || "").length - len0:+d} chars)`);
+if (!FIX) { await new Promise((r) => setTimeout(r, 2500)); }   // longer than the 2 s poll: a repaint really happened
+console.log(`brand line after another poll: ${t("brand-line")} (${(t("brand-line") || "").length - len0} chars changed)`);
 if (!FIX && (t("brand-line") || "").length !== len0) {
   console.log("BAD  the header grew on repaint -- the version is being appended, not replaced"); process.exitCode = 1;
 }

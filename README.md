@@ -345,6 +345,11 @@ the page (`/v1` for the OpenAI SDK and LiteLLM, the root for curl), `openai/<ser
 checkpoint path, the API key never printed, and the reasoning parser accounted for (`--reasoning-parser qwen3`
 makes reasoning tokens count against `max_tokens`, so a small budget returns `content = None`).
 
+Both pages' headers name the build that is answering: the plugin's version, and the branch, commit and dirtiness of
+the tree that plugin was loaded from - today `vLLM 0.32.0 · plugin 0.4.0 · 953a3901`, with a `*` on the commit when
+the tree has uncommitted edits, and the same facts as a row in About. "Is the live serve the new one?" used to cost
+an ssh and a look at the launch log; now it is a glance, and the string survives into the screenshot someone sends.
+
 The Requests card splits the waiting queue the way the engine labels it: `N waiting · M for scheduling capacity ·
 K deferred`, and the split is the whole point on this model. Eight ~30,000-token prompts measured holding
 `running 2 · waiting 6 · capacity 6 · deferred 0` with the KV pool at 8.8-10.2%: the queue is long prefills taking

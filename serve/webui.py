@@ -1413,6 +1413,10 @@ def stack_info():
     question that otherwise costs an ssh and a look at the launch log. Fields are simply absent when the plugin is
     not importable (a sidecar running outside the serve's venv) or the code was installed rather than checked out
     (site-packages has no .git); the pages print what is there and drop what is not.
+
+    One wrinkle worth naming: the static files are read per request, so a CSS or JS edit lands in the page before
+    this line moves. `stack` describes the tree the process IMPORTED when it started -- a watcher of the tree would
+    be a different fact, and a cheaper but less useful one.
     """
     out = {}
     try:
