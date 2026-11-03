@@ -393,6 +393,14 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   operations up against the 18 death times without any interpretation from me.
 
 - **The Monitor now names where each card physically is, and what to do when the serve is gone**
+- **The core-65 hammer finished clean: 45 min, 1.32 trillion integer iterations, no new kernel record.**
+  `tools/core-hammer.c` ran its full 2,700 s pinned to CPU 17/113 (physical core 65) and exited normally at
+  04:45:50; `journalctl -k -b 0 --since 04:00` contains no fatal record and no machine check. Stated narrowly:
+  CPU-only integer load on the suspected core does not reproduce the death in that window. It does not clear the
+  core either — every real death happened under GPU work (long-context prefill, four cards at their power cap,
+  PCIe traffic), and the cards idled at a few percent throughout. The next discriminator has to carry the
+  platform load: the same hammer while the serve is taking real long-prefill traffic.
+
   ([notes/webui.md](notes/webui.md), [notes/incident-2026-11-03/README.md](notes/incident-2026-11-03/README.md)).
   `card2` is a driver-assigned name for this boot; `/sys/bus/pci/slots/` gives the chassis fact, and the join has
   to run against the chain because the firmware names the slot at the card's **switch upstream port**, not at the

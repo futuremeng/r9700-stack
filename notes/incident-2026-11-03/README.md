@@ -479,3 +479,21 @@ Reseat target, from the firmware's slot table: **card2 = `0000:c6:00.0` = physic
 and 8. This is the chronic PCIe side condition, *not* the machine-check deaths (those name CPU core 65), and it
 is worth fixing on its own merits: `tools/reseat-check.py --save` before power-down, `--diff` after boot.
 
+## The core-65 hammer finished: 45 minutes, 1.32 trillion integer iterations, nothing logged
+
+```text
+1793681150 alive pid=13290 cpus=17,113 seconds_left=0 iters=1319559700000 check=bfb368dff735153a
+```
+
+`tools/core-hammer.c` ran the full 2,700 s pinned to **CPU 17/113 = physical core 65**, the core all 18
+machine-check records name, and ended normally at 04:45:50. `journalctl -k -b 0 --since 04:00` holds **zero**
+fatal records and zero machine-check lines; the box and the serve are fine.
+
+What that buys, stated narrowly: **CPU-only integer load on the suspected core does not reproduce the fault in
+45 minutes.** It does **not** clear the core. Every real death happened while the box was doing GPU work —
+long-context prefill, four cards at their power cap, PCIe traffic — and during the hammer the cards idled at
+a few percent. So the surviving discriminator still needs the platform load in it: the same hammer **while the
+serve is carrying real long-prefill traffic** (or a combined CPU+GPU+PCIe load). Also worth remembering: the
+heartbeat log is fsynced every second, so if a future run ends in a reset, the last line is the run record —
+that is the whole reason the tool writes it.
+
