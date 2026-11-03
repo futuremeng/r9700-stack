@@ -18,12 +18,14 @@
 set -u
 D="$(cd "$(dirname "$0")" && pwd)"; REPO="$(cd "$D/.." && pwd)"
 CONF="$D/offline-core.cpus"
+DRY=0
+if [ "${1:-}" = "--dry-run" ]; then DRY=1; shift; fi
 CPUS=("$@")
 if [ ${#CPUS[@]} -eq 0 ] && [ -f "$CONF" ]; then
   read -r -a CPUS < <(grep -v '^#' "$CONF" | grep -v '=' | head -1)
 fi
 [ ${#CPUS[@]} -ge 1 ] || { echo "no cpus given and $CONF has none" >&2; exit 1; }
-[ "$(id -u)" = 0 ] || { echo "needs root: sudo host/r9700-offline-core.sh ${CPUS[*]}" >&2; exit 1; }
+if [ $DRY = 0 ] && [ "$(id -u)" != 0 ]; then echo "needs root: sudo host/r9700-offline-core.sh ${CPUS[*]}" >&2; exit 1; fi
 
 # 1. snapshot while still online
 "$REPO/.venv/bin/python" - "$REPO/.r9700-state/cpu-topology.json" <<'PY' 2>/dev/null || true
@@ -62,6 +64,10 @@ CORE=$(cat /sys/devices/system/cpu/cpu${CPUS[0]}/topology/core_id 2>/dev/null)
 PKG=$(cat /sys/devices/system/cpu/cpu${CPUS[0]}/topology/physical_package_id 2>/dev/null)
 L2=$(cat /sys/devices/system/cpu/cpu${CPUS[0]}/cache/index2/size 2>/dev/null)
 echo "cpu ${CPUS[*]} = core $CORE of package $PKG (siblings $SIB, L2 ${L2:-?})"
+if [ $DRY = 1 ]; then
+  echo "DRY RUN: would offline $SIB (the whole sibling set of core $CORE); nothing written"
+  exit 0
+fi
 
 # 3. offline the whole sibling set, so the scheduler has no thread of that core left to land on
 CHANGED=0
