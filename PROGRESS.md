@@ -1,3 +1,39 @@
+## 2026-11-03 (14:34-14:55): merge upstream v0.4.0 (187 commits) and make the fp8 QSA main KV this box's default
+
+* Saved the fp8 work as `b13d63d` first, then `git fetch upstream` + merge: **187 upstream commits, 54 local, and only
+  two conflicts** -- `kernels/build.sh` and `README.md`. Upstream had touched neither `r9k_qsa.hip` nor
+  `r9700_vllm/attn/qsa.py`, and `PROGRESS.md` is fork-only, which is why the merge was small where it mattered.
+  Upstream brings DeepSeek-V4.1-Flash EXL3 (loader, moe/linear/mhc kernels, `serve/ds41-exl3.sh`), the ar8 8-rank
+  collective, dsv41 decode attention, and the v0.4.0 tag.
+* `build.sh`: upstream's export list (the `r9k_mhc_*`, `r9k_moe_exl3_*`, `r9k_exl3_dq_tiles` and ar8/two-shot extras)
+  with `r9k_qsa_attn_f8` inserted after `r9k_qsa_attn`, kept on this fork's single-`nm`-pass form because the pipe
+  form is the pipefail flake recorded below. Merged build: 7,033,544 bytes, 96 `r9k_` exports, all checks pass, and
+  `tests/test_qsa_fp8.py` still passes on the merged .so (rel 3.1e-3-3.9e-3, fp8/bf16 0.92-0.99).
+* `README.md`: composed rather than picked -- upstream's v0.4.0 hero, graphic, four-model list, DeepSeek speed table,
+  `ds41-exl3.sh` line and EXL3 checkpoint recipe, this fork's nav + setup.sh callout + "Four cards, the numbers worth
+  knowing" + the reading guide + the uncapped-32k / full-262k / real-traffic subsections + the Monitor pages + the
+  docker-free launcher path. The four release tables got their H3 back ("four, two and eight cards") so the release
+  config and the three native-box subsections sit at one depth.
+* `tests/test_readme.py` was pinned to the v0.3.8 heading and figure and failed the merge (2 checks). It now checks
+  what is true: the README's release figure is the current release's and used once, the hand-drawn v0.4.0 page names
+  v0.4.0 and its 3 numeric texts all appear in the README, and its smallest type is **measured, 11.0 px on a
+  1200-unit canvas = 9.0 px in github's ~980 px column** -- the reason `docs/summary-page.py` exists. The generated
+  page and its PNG stay in the tree and still have to re-draw clean text-for-text, but they are not back in the
+  README until the generator carries v0.4.0's numbers (the DeepSeek row). That is the open step, written in the test.
+* **fp8 main KV is now the launcher's default** (`serve/native-flashnext.sh`, fork-local: upstream has no
+  native-flashnext.sh). `R9K_QSA_KVF8=1` + `KVDTYPE=fp8_e4m3` with the measurement next to the knob, and the launcher
+  refuses `R9K_QSA_KVF8=0` with an fp8 `KVDTYPE` because stock QSA raises on it -- verified: exit 1 with the bf16
+  rollback line (`R9K_QSA_KVF8=0 KVDTYPE= bash serve/native-flashnext.sh`), no process started. The README's context
+  row and the 262k table now carry both numbers (1,009,899 fp8 / 540,202 bf16).
+* First launch on the merged tree with the default: registers `patch:qsa_kvfp8` next to upstream's `quant:exl3` and
+  `patch:dsv41_rdna4`, fp8_e4m3 on four ranks, block 880, **1,009,899 tokens / 3.85x**, init 21.8 s (0.52 s compile).
+  Gates (`~/logs/merged-gate.log`): `quality.py 300 8` 95.0% (285/300 -- inside the 95.0-96.0% instance band both
+  configs showed today), needle 3/3 and cold+warm 8/8 to 250,078 tokens, `probe32` @32x300 1,511-1,563,
+  @32x1200 1,789/1,796, @16x300 1,090-1,114, 300 W a card, and **accepted per draft 1.548 against 1.549 pre-merge**:
+  upstream's 187 commits did not move this model's numerics or its throughput. Box left running this launch.
+* Not done: nothing pushed (origin/master is still where it was; the merge and the fp8 work are 2 commits + this one
+  on local `master`), and the generated release page still awaits v0.4.0's numbers.
+
 ## 2026-11-03 (afternoon): fp8 QSA main KV -- the writer was already fp8, so the whole ask is three guards and one read path
 
 * Reopened `PROGRESS.md:896` ("fp8 KV is refused by stock QSA"). Reading `vllm models/qwen4_exp/amd/`: the **write**
@@ -45,7 +81,7 @@
 * Net: **+87% KV (2.06x -> 3.85x at 262k) for no measurable quality cost and 1.5-4% of decode**, plus one 32 s recompile
   on the first fp8 launch (the second hit the AOT cache: 20.9 s init, 0.52 s compile). For this box's ledger -- p99
   prompt 245,792, KV usage seen at 82% under three streams -- that trade is worth taking; flip with
-  `R9K_QSA_KVF8=1 KVDTYPE=fp8_e4m3`. **Box left on bf16** pending that call. Scales are still the 1.0 defaults, and a
+  `R9K_QSA_KVF8=1 KVDTYPE=fp8_e4m3`. **Box left on bf16** pending that call (the call was taken at 14:41, entry above). Scales are still the 1.0 defaults, and a
   calibration pass for the 12 main layers is the obvious place to claw the -2.3% acceptance back.
 * A build.sh landmine, fixed on the way: the export check's `nm -D "$OUT" | grep -q` under `set -o pipefail` fails a
   **clean** build at random (`grep -q` closes the pipe -> nm SIGPIPE 141 -> reads as MISSING EXPORT); it killed two

@@ -38,7 +38,7 @@ Qwen3.8-Flash-Next (MoE, MXFP4 experts plus fp8 dense) on four Radeon AI PRO R97
 | **decoding, one stream** | **225 tok/s** (best sample 228) | 14.3-14.4 ms a step; release configuration, 210 W cap, 32k |
 | **decoding, 32 streams** | **1,823 tok/s** aggregate (best sample 1,836.3) | 1,200-token waves, `bench/probe32.sh`; the native box, uncapped |
 | **reading a prompt** | **9,633 tok/s** | 7,789-token prompt, the native box uncapped (7,141 at the 210 W gate) |
-| **context** | **262,144 tokens**, needle found at 250,078 | the checkpoint's own ceiling, running on this box today; KV pool 540,202 tokens |
+| **context** | **262,144 tokens**, needle found at 250,078 | the checkpoint's own ceiling, running on this box today; KV pool 1,009,899 tokens with the fp8 main KV the launcher now defaults to, 540,202 at bf16 |
 | **decoding, in real work** (not a benchmark) | **158 tok/s** with the box to yourself, **61 tok/s** as a request actually finishes | 1,400 real requests off the request journal, prompts p50 74k; the benchmark rows above describe a machine nobody sits on |
 
 <sub>Two different machines, so the rows are not comparable with each other; each one names its own. The last row is
@@ -209,6 +209,7 @@ TP4, MTP-3. Except where a row names another launch, this is the launch that run
 | | |
 |---|---:|
 | KV cache at MAXLEN=262,144 | **540,202 tokens**; vLLM: `Maximum concurrency for 262,144 tokens per request: 2.06x` |
+| the same launch with an **fp8 e4m3 main KV** (the default since 2026-11-03: 12 full-attention layers quantized, the QSA side caches left bf16) | **1,009,899-1,021,931 tokens**, `3.85-3.90x`; attention block size 880 instead of 448; GSM8K 800 @8 96.0 against 95.6, HumanEval 164 98.17 against 96.95 (McNemar b=2, c=0, p=0.50), needle intact cold and warm to 250,078, prefill flat to +-0.5% to 77,811 tokens, aggregate decode 1.5-4% lower and that is MTP acceptance (2.55 against 2.61 tokens a step) rather than the kernel, which measures 7-11% faster -- [notes/kv-fp8-qsa.md](notes/kv-fp8-qsa.md) |
 | KV cache at MAXLEN=32,768 (same launch shape) | 497,588 tokens: raising context 8x made the pool **bigger**, because the sizing run is bounded by `NBT`, not by MAXLEN |
 | prompt processing at 60k / 120k / 180k | 8,672-8,742 / 8,062-8,064 / 7,416-7,436 tok/s, each tier sent twice back to back with no prefix cache to help it |
 | time to first token at 60k / 120k / 180k | 6.87-6.93 / 14.89 / 24.22-24.28 s, needle found at 60,061 / 120,066 / 180,070 tokens |

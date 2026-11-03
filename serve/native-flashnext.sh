@@ -68,6 +68,29 @@ fi
 # MAXLEN=262144: the default was the trap, so it is now that line's value. MAXLEN= still overrides.
 : ${MAXLEN:=262144}
 
+# Main KV in e4m3. Twelve of the 48 layers do full attention, and their K/V is 12,288 of the 14,348 bytes a token
+# costs a card, so quantizing exactly those -- the side/indexer caches QSA selects with stay bf16, so top-k selection
+# does not move -- is a capacity change. Measured on this box 2026-11-03 with two paired fresh instances
+# (notes/kv-fp8-qsa.md): pool 540,202 -> 1,021,931 tokens, 262,144-token concurrency 2.06x -> 3.90x, GSM8K no-think
+# 800 @8 95.6% -> 96.0%, HumanEval 164 96.95% -> 98.17% (McNemar b=2, c=0, p=0.50), needle intact cold and warm out
+# to 250,078-token prompts, prefill flat to +-0.5% at every size to 77,811 tokens. The price: 1.5-4% of aggregate
+# decode, and it is MTP acceptance (2.61 -> 2.55 tokens a step), not the kernel, which measures 7-11% FASTER by
+# itself; one 32 s AOT recompile on the first fp8 launch (the next one is 0.5 s); and an attention block size of
+# 880 instead of 448, so a freed block is twice as coarse. With this box's ledger (p99 prompt 245,792, KV usage seen
+# at 82% under three streams) that trade is worth taking, so it is the default. It is also two settings that travel
+# together: stock vLLM's AMD QSA raises on a non-bf16 main cache unless the plugin's reader is installed, so the
+# launcher refuses the combination that cannot start. bf16 rollback:
+# R9K_QSA_KVF8=0 KVDTYPE= bash serve/native-flashnext.sh
+: ${R9K_QSA_KVF8:=1}
+if [ "${R9K_QSA_KVF8}" = 1 ]; then
+  : ${KVDTYPE:=fp8_e4m3}
+elif [ -n "${KVDTYPE:-}" ]; then
+  echo "R9K_QSA_KVF8=0 with KVDTYPE=$KVDTYPE: stock QSA refuses a non-bf16 main KV cache." >&2
+  echo "  bf16: R9K_QSA_KVF8=0 KVDTYPE= bash serve/native-flashnext.sh" >&2
+  exit 1
+fi
+export R9K_QSA_KVF8
+
 ARGS=(--served-model-name "${SERVED_NAME:-Qwen3.8}" --host 0.0.0.0 --port "${PORT:-8080}"
       --tensor-parallel-size "${TP:-4}" --max-model-len "${MAXLEN}"
       --max-num-seqs "$NSEQ" --max-num-batched-tokens "$NBT"

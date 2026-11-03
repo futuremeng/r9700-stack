@@ -171,12 +171,30 @@ over the mixed workload each instance served before the read, not over the probe
 fresh instances per config, 6 `probe32` samples per config, but not order-randomized, and both arms of a pair were
 adjacent in time.
 
-## Recommendation this data supports (not yet applied)
+## Applied on this box at 14:41 on 2026-11-03: it is the launcher's default now
+
+`serve/native-flashnext.sh` defaults `R9K_QSA_KVF8=1` and `KVDTYPE=fp8_e4m3`, with the measurement next to the knob
+and the reason the two settings travel together (stock QSA raises on a non-bf16 main cache unless the plugin's reader
+is in, so `R9K_QSA_KVF8=0` with an fp8 `KVDTYPE` is refused at launch rather than eaten as a 2-minute failure).
+The bf16 rollback is `R9K_QSA_KVF8=0 KVDTYPE= bash serve/native-flashnext.sh`.
+
+First launch on the merged v0.4.0 tree (`~/logs/kvf8default-144136.log`): plugin registers
+`patch:qsa_kvfp8` alongside upstream's `quant:exl3` and `patch:dsv41_rdna4`, main KV fp8_e4m3 on all four ranks,
+block size 880 / mamba pad 0.16%, `GPU KV cache size: 1,009,899 tokens`, `3.85x` at 262,144, init 21.8 s with 0.52 s
+compile. Gates on that launch (`~/logs/merged-gate.log`): `quality.py 300 8` 95.0% (285/300), needle 3/3 and
+cold+warm 8/8 to 250,078 tokens (prefill 6,784-7,629/s), `probe32` @32x300 1,562.5/1,511.0/1,555.3, @32x1200
+1,789.3/1,795.6, @16x300 1,113.8/1,090.3/1,100.7, power median 300 W, accepted tokens per draft **1.548** against
+1.549 pre-merge: upstream's 187 commits did not move this model's numerics or throughput.
+The 300-question GSM8K reading sits in the band the same instance-to-instance spread showed on both configs
+(95.0-96.0%), which is why the decision was taken on the 800-question pair and HumanEval, not on 300.
+
+## Recommendation this data supports (not yet applied elsewhere)
 
 Turn it on for this box's traffic: the ledger's p99 prompt is 245,792 tokens, KV usage hit 82% with three streams
 under it, and fp8 takes 2.06x to 3.85x at 262k with no measurable quality cost (800-question GSM8K +3, HumanEval +2,
 needle perfect to 250k). The price is a one-time 32 s recompile at first launch, 1.5-4% of aggregate decode, and a
-block size of 880 that makes each freed block 2x coarser. Flip: `R9K_QSA_KVF8=1 KVDTYPE=fp8_e4m3`. Box left on bf16.
+block size of 880 that makes each freed block 2x coarser. Applied on this box (section above); not applied to
+`serve/flashnext.sh` or the container recipes, where nothing has been measured.
 
 ## Still open (honest list)
 
