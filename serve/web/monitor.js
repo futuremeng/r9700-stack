@@ -394,7 +394,9 @@ function renderStatus(s) {
   const win = rateWin === "live" ? "live" : (spans.includes(rateWin) ? rateWin : (widest || "live"));
   const A = win === "live" ? null : (s.avg || {})[win];
   const noSpans = Object.keys(s.avg || {}).length === 0;
-  slot("win-note", noSpans ? "poll - this payload has no spans"
+  // The bar this sits in is wider than a card, but the harness budgets every slot against the tightest card in
+  // the page, so the sentence has to be short: the explanation is the title's job.
+  slot("win-note", noSpans ? "poll - no spans here"
     : win === rateWin ? `${WIN_NAME[win]} (${Math.round(A ? A.span_s : (rate.window_s || 0))} s)`
                       : `${WIN_NAME[win]} - ${WIN_NAME[rateWin]} not full`, TT.win);
   ["live", "1m", "15m", "1h"].forEach((k) =>
@@ -478,8 +480,18 @@ function renderStatus(s) {
                          : exact !== null ? "exact \u00b7 credits at end"
                            : kvr !== null ? "\u2248 from KV growth" : "no prefill in window", TT.prefill);
   slot("spans-prefill", spanList("prefill_tok_s"), TT.spans);
-  slot("poll-prefill", `poll ${knum(exact ?? kvr)}`
-       + (kvr !== null && exact !== null ? ` \u00b7 KV ${knum(kvr)}` : ""), TT.poll);
+  // Three different states, and "poll 0.0" was lying about which one it was: nothing credited in the window is
+  // not the same measurement as a prefill running at zero tokens a second. prompt_tokens_total credits when a
+  // request ENDS, so a 90 k-token prompt in flight has credited nothing, and the only number that moves while
+  // it runs is the KV gauge's growth - labelled as the estimate it is.
+  slot("poll-prefill",
+       exact !== null ? `poll ${knum(exact)}` + (kvr !== null && kvr > 0 ? ` \u00b7 KV ${knum(kvr)}` : "")
+     : kvr !== null && kvr > 0 ? `poll \u2248${knum(kvr)}`
+     : (rate.window_s || 0) < 3 ? `poll ${Math.round((rate.window_s || 0) * 10) / 10}s`
+     : "poll \u00b7 nothing credited",
+       TT.poll + (exact !== null || (kvr !== null && kvr > 0) ? ""
+       : " prompt_tokens_total credits when a request ends, so a long prefill still in flight has credited "
+         + "nothing here. The number under the headline is the one that moves while it runs."));
 
   big("rate-step", stepV, "ms");
   const ttftV = A ? A.ttft_ms : (rate.ttft_ms ?? sn.ttft_ms);

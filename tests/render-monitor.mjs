@@ -253,8 +253,11 @@ for (const [id, avgKey, rateKey] of [["rate-stream", "stream_tok_s", "stream_tok
   // The prefill card's live number is the KV-growth ESTIMATE whenever the counter has not credited yet (it
   // lands at request end), so both are legitimate live values -- they differ by the ~6% the notes measured.
   const want = winShown === "live" ? STAT?.rate?.[rateKey] : STAT?.avg?.[winShown]?.[avgKey];
-  const wants = id === "rate-prefill" && winShown === "live"
-    ? [want, STAT?.rate?.kv_tok_s].filter((v) => typeof v === "number" && isFinite(v)) : [want];
+  // The prefill card's live number is the KV-growth estimate whenever the counter has not credited yet, so both
+  // are legitimate live values. A gauge the engine omits entirely (nothing ran in the window) is not a value to
+  // compare against, so it drops out of the list rather than turning the comparison into NaN.
+  const wants = (id === "rate-prefill" && winShown === "live"
+    ? [want, STAT?.rate?.kv_tok_s] : [want]).filter((v) => typeof v === "number" && isFinite(v));
   const got = firstNum(html(id));
   console.log(`  ${(id + "            ").slice(0, 14)} ${String(html(id)).replace(/<[^>]*>/g, "").trim()}`
               + `   [${winShown} wants ${want === undefined ? "-" : want}]`);
