@@ -40,7 +40,7 @@ re-draw cannot drift from them. Its canvas is 1000 px against github.com's ~980 
 it lands at 14 px; the tag's own hand-drawn <code>docs/r9700-stack-v0.4.1.svg</code> carries the same claims at
 11 px on a 1200-unit canvas, which measures out at 9.0 px in that column -- clicked-to-read, so the generated page
 is what this README carries. The picture links to <code>docs/r9700-stack-page.png</code>, the same drawing at
-2000 × 2604, for zooming. Rows tagged "210 W gate" are the release configuration, "the native box" is one uncapped
+2000 × 2620, for zooming. Rows tagged "210 W gate" are the release configuration, "the native box" is one uncapped
 4x R9700 box, and "-500 MHz" is upstream's eight-card gate; the three are not comparable across.</sub>
 </p>
 
@@ -68,7 +68,7 @@ Qwen3.8-Flash-Next (MoE, MXFP4 experts plus fp8 dense) on four Radeon AI PRO R97
 | **decoding, 32 streams** | **1,823 tok/s** aggregate (best sample 1,836.3) | 1,200-token waves, `bench/probe32.sh`; the native box, uncapped. The fp8 main-KV launch this box now defaults to reads **1,792** (1,789 / 1,796) at the same protocol |
 | **reading a prompt** | **9,633 tok/s** | 7,789-token prompt, the native box uncapped (7,141 at the 210 W gate); **9,702** on the fp8 launch, 7,792 tokens |
 | **context** | **262,144 tokens**, needle found at 250,078 | the checkpoint's own ceiling, running on this box today; KV pool 1,009,899 tokens with the fp8 main KV the launcher now defaults to, 540,202 at bf16 |
-| **decoding, in real work** (not a benchmark) | **158 tok/s** with the box to yourself, **61 tok/s** as a request actually finishes | 1,400 real requests off the request journal, prompts p50 74k; the benchmark rows above describe a machine nobody sits on |
+| **decoding, in real work** (not a benchmark) | **162 tok/s** with the box to yourself, **115 tok/s** as a request actually finishes | 1,568 real requests off the fp8 launch's journal over 10.25 h, prompts p50 52,083; the benchmark rows above describe a machine nobody sits on |
 
 <sub>Two different machines, so the rows are not comparable with each other; each one names its own. The last row is
 not a benchmark at all — it is what the running serve reported about other people's requests, and it is the row to
@@ -250,49 +250,100 @@ traps: [notes/context-262k.md](notes/context-262k.md).
 
 Everything above this line was measured by sending requests on purpose: same prompt lengths, same `max_tokens`, and
 nothing else arriving while the meter runs. That is the right way to compare builds, and the wrong way to answer
-"what will my request get". The launch running today also kept a **request journal** (`~/logs/requests-8080.jsonl`,
-one fsynced row per finished request, added to survive hard resets — timings and token counts only, no request
-bodies), and by late afternoon it held **1,400 completed requests**: 13.8 h of wall clock, 301 minutes with traffic
-in them, prompts p50 **74,381** tokens (p95 173,099, max 240,067), generated p50 348 tokens (p95 1,904). The count
-keeps growing and the statistics do not: recomputed an hour later on 1,417 rows, prompt p50 is 74,066 and generated
-p50 346. Nothing was sent to make this table; `tools/watch-live.py` only samples.
+"what will my request get". The launch that runs today — the fp8 e4m3 main-KV one, `MAXLEN=262144 NSEQ=32 NBT=8192 PREFIX_CACHE=0 MTP=2`,
+started 2026-11-03 15:29 — keeps a **request journal** (`~/logs/requests-8080.jsonl`, one fsynced row per finished
+request, added to survive hard resets; timings and token counts only, no request bodies). At the ten-hour mark it
+held **1,568 completed requests**: 10.25 h of wall clock, of which **29%** had traffic in them. Prompts p50
+**52,083** tokens (p90 149,572, p95 163,513, max **198,073**), generated p50 322 (p95 1,853). Nothing was sent to
+make these tables; `tools/watch-live.py` only samples, and the Monitor only reads `/metrics`.
+
+The engine's own counters agree with the journal, which is the cross-check that makes the rest usable: over the same
+launch `prompt_tokens_total` is 106,686,448 against the journal's 106,214,313, and `generation_tokens_total`
+877,747 against 874,128 — under 0.5%, the gap being requests the journal had not yet flushed.
 
 Each request's own decode rate is `completion_tokens / timings.decode_s` — the engine's own decode span, with
 queueing and prefill excluded. Concurrency is rebuilt from the rows' own start and end stamps at 1 Hz, taking the
 **maximum** over the request's decode window, not the value at its midpoint:
 
-| how many requests shared the engine during its decode | share of active seconds | own decode, median |
+| how many requests shared the engine during its decode | share of the 10,818 busy seconds | own decode, median |
 |---|---:|---:|
-| one — the stream had the box to itself | 32.7% | **157.7 tok/s** (p10 124, p90 181) |
-| two | 18.6% | 119.1 tok/s |
-| three to four | 31.8% | **22.8 tok/s** |
-| five to six | 12.4% | 15.6 tok/s |
-| seven to nine | 4.6% | 17.3 tok/s |
-| **all 1,400 requests** | — | **60.8 tok/s** (mean 75.7, p10 8.7, p90 163.0) |
+| one — the stream had the box to itself | 47.5% | **162.0 tok/s** (585 requests) |
+| two | 25.1% | 114.5 tok/s (294) |
+| three to four | 24.8% | **41.0 tok/s** (423) |
+| five to six | 2.4% | 23.9 tok/s (127) |
+| seven to nine | 0.06% | 47.0 tok/s (23) |
+| **all 1,525 requests generating ≥40 tokens** | — | **115.4 tok/s** (mean 100.9, p10 17.1, p90 171.1) |
 
-So the honest answer to "how fast does one stream decode" is **two numbers: 158 tok/s alone, 61 tok/s as a request
+So the honest answer to "how fast does one stream decode" is **two numbers: 162 tok/s alone, 115 tok/s as a request
 actually finishes**, and the difference is not decode speed — it is what sharing a prefill-bound engine costs.
-Concurrency during traffic ran p50 2, p90 6, max 9.
+Concurrency during traffic ran p50 2, p90 4, max 8; the per-second histogram is 1 → 47.5%, 2 → 25.1%, 3 → 17.1%,
+4 → 7.7%, 5 → 2.2%, 6+ → 0.4%.
+
+**The denominator decides any aggregate**, so all four are recorded: **23.7 tok/s** over the whole wall clock (71%
+of it an idle box), **80.8 tok/s** over active seconds only, **42.1 tok/s** token-weighted
+(`Σgenerated / Σdecode_s`, dragged down because long decodes are the ones that ran while busy), and **115.4 tok/s**
+as the median of per-request rates — the last is the shape that answers "what will my request feel like". From the
+counters rather than the journal the same two come out at **23.6** and **42.0**.
+
+**Prefill and time-to-first-token in real use**, from the same rows (`prompt_tokens / timings.prefill_s`), bucketed
+by prompt size — which is the shape a fixed-length bench cannot show:
+
+| prompt size | requests | prefill, median | p10 | p90 |
+|---|---:|---:|---:|---:|
+| under 20k | 179 | 8,158 tok/s | 1,102 | 9,909 |
+| 20k–80k | 882 | **8,937 tok/s** | 6,891 | 9,382 |
+| 80k–160k | 376 | 7,970 tok/s | 7,216 | 8,470 |
+| above 160k | 101 | **7,542 tok/s** | 7,048 | 7,690 |
+
+Time to first token over all 1,563: **p50 6.50 s, p95 24.52 s, max 56.1 s** at prompt p50 52,083. The longest
+prompt this launch served, **198,073 tokens**, took 27.0 s to its first token at 7,330 tok/s of prefill and then
+generated 1,242 tokens. Aggregating the counters the other way — `prompt_tokens_total / request_prefill_time_sum`
+— gives **7,949 tok/s while prefilling**, and `generation_tokens_total / request_decode_time_sum` gives **42.0
+tok/s** in aggregate: both within 1% of what the journal rows say.
+
+**What the drafter did over the launch:** 376,433 drafts of 2 tokens (MTP=2 is this launcher's default at TP4),
+752,866 draft tokens, **501,271 accepted** — 1.33 accepted per draft, a mean acceptance length of **2.33 tokens a
+step**, 66.6% of drafted tokens accepted.
+
+**And the level right now**, as three spans of the engine's cumulative counters (the Monitor's own numbers, taken
+2026-11-04 01:49; the spans are deltas, not means of 1 s samples):
+
+| span | generation | prefill while prefilling | per stream | req/min | a step | accepted / draft | KV pool |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 1 min | 45.8 tok/s | 4,214 tok/s | 17.2 | 4.7 | 90.7 ms | 1.29 | 28.4% |
+| 15 min | 23.7 tok/s | 7,713 tok/s | 12.8 | 2.7 | 100.6 ms | 1.45 | 18.5% |
+| 1 h | 26.4 tok/s | 7,737 tok/s | 17.9 | 3.5 | 65.4 ms | 1.48 | 12.6% |
+
+The 1 min prefill figure is low **because of the metric, not the box**: `prompt_tokens_total` credits a prompt when
+its request finishes, so a 60-second span that has long prefills running but not finished credits only what happened
+to land inside it. Over spans longer than a request's wall time the same quantity sits at 7,700 — which is what the
+counters say too. It is kept here, labelled, rather than dropped.
 
 - **The cliff is between two and three streams, and it is scheduling, not kernels.** Two to three in flight drops a
-  stream from 119 to 23 tok/s. With `NBT=8192` and prompts of 50-170k, a third long prompt turns engine steps into
-  ~1 s prefill chunks (measured: step p50 951 ms), and every stream is credited its accepted tokens once per step.
-  The knob that addresses it is `--long-prefill-token-threshold`, not anything in the decode path — see
-  [notes/context-262k.md](notes/context-262k.md).
-- **Single-stream decode barely cares about context on this model.** Alone, generating ≥200 tokens: **161.9 tok/s**
-  under 20k prompt, **158.2** at 20-80k, **149.7** at 80-160k, **140.3** above 160k — a 262k context costs one stream
-  ~13%, because decode here streams MoE weights and attention's KV read is not the dominant term.
-- **Prefill from real traffic matches the benchmark**, which is the useful cross-check: the same rows carry
-  `timings.prefill_s`, and the rate is **median 7,911 tok/s** — 8,593 under 20k, 8,641 at 20-80k, 7,867 at 80-160k,
-  **7,238 above 160k** — inside the 6.8-9.1k band the ladder measures, with a size falloff fixed-length benches
-  cannot show.
-- **The denominator decides any aggregate**, so all four are recorded: **16.6 tok/s** over the whole wall clock
-  (63% of it an idle box), **45.4 tok/s** over active minutes only, **24.8 tok/s** token-weighted
-  (`Σgenerated / Σdecode_s`, dragged down because long decodes are the ones that ran while busy), **60.8 tok/s** as
-  the median of per-request rates — the last is the shape that answers "what will my request feel like".
-- **158 is not a regression against the 225 above.** That figure is MTP-3 with ~3.1 accepted tokens a step; this
-  launch runs **MTP=2** at 2.0-2.4 accepted a step, on contexts of 50-170k rather than 32k. If single-stream decode
-  is ever wanted back, the knob is drafter depth, not the attention path.
+  stream from 115 to 41 tok/s. With `NBT=8192` and prompts of 50–170k, a third long prompt turns engine steps into
+  ~1 s prefill chunks (measured on the earlier launch: step p50 951 ms), and every stream is credited its accepted
+  tokens once per step. The knob that addresses it is `--long-prefill-token-threshold`, not anything in the decode
+  path — see [notes/context-262k.md](notes/context-262k.md).
+- **Single-stream decode barely cares about context on this model.** Alone (nothing else sharing the box during its
+  decode), generating ≥200 tokens: **182.6 tok/s** under 20k prompt, **164.6** at 20–80k, **150.0** at 80–160k,
+  **156.5** above 160k — a 262k context costs one stream ~13%, because decode here streams MoE weights and
+  attention's KV read is not the dominant term. (n = 10 / 258 / 99 / 30; the above-160k bucket is the thinnest.)
+- **Prefill from real traffic matches the benchmark**, which is the useful cross-check: the ladder measures
+  8,672–8,742 tok/s at 60k and 8,062 at 120k on purpose-sent prompts, and real traffic medians are 8,937 at 20–80k
+  and 7,970 at 80–160k. Real traffic adds the falloff fixed-length benches cannot show.
+- **162 is not a regression against the 225 above.** That figure is MTP-3 with ~3.1 accepted tokens a step; this
+  launch runs **MTP=2** at 2.33 a step, on contexts of 20–200k rather than 32k. If single-stream decode is ever
+  wanted back, the knob is drafter depth (`MTP=3`), not the attention path.
+
+**The same launch before the fp8 switch**, for comparison — same recipe with a bf16 main KV, 1,400 requests over
+13.8 h, prompts p50 **74,381** (p95 173,099, max 240,067), concurrency p50 2, p90 6, max 9: one 32.7% of active
+seconds at **157.7 tok/s**, two 18.6% at 119.1, three-four 31.8% at **22.8**, five-six 12.4% at 15.6, seven-nine
+4.6% at 17.3, all of it **60.8 tok/s** median (mean 75.7, p10 8.7, p90 163.0); aggregates 16.6 / 45.4 / 24.8 / 60.8.
+The two windows are **not** an fp8-vs-bf16 comparison and should not be read as one: the traffic differs
+(prompts p50 52,083 against 74,381, and p90 concurrency 4 against 6), and that traffic mix is exactly the variable
+the cliff is made of. The controlled fp8 comparison is the paired one in
+[notes/kv-fp8-qsa.md](notes/kv-fp8-qsa.md): 1,792 against 1,823 tok/s of 32-stream aggregate, prefill flat to
+±0.5%, acceptance 1.55 against 1.60 per draft.
 
 Method, the preemption rows this window produced, and the trap that made the first version of this table wrong
 (midpoint concurrency sampled 361 requests as "alone" and reported 137 tok/s): [notes/context-262k.md](notes/context-262k.md).

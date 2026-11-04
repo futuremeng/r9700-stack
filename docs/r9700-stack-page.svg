@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1302" viewBox="0 0 1000 1302" font-family="Outfit, 'DejaVu Sans', system-ui, sans-serif" role="img">
-<rect x="0" y="0" width="1000" height="1302" rx="0" fill="#0e1113" stroke="none"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1310" viewBox="0 0 1000 1310" font-family="Outfit, 'DejaVu Sans', system-ui, sans-serif" role="img">
+<rect x="0" y="0" width="1000" height="1310" rx="0" fill="#0e1113" stroke="none"/>
 <rect x="38.0" y="26.0" width="22.0" height="7.0" rx="3.5" fill="#34d399" stroke="none"/>
 <rect x="30.0" y="36.0" width="30.0" height="7.0" rx="3.5" fill="#34d399" stroke="none"/>
 <rect x="22.0" y="46.0" width="38.0" height="7.0" rx="3.5" fill="#34d399" stroke="none"/>
@@ -14,7 +14,7 @@
 <rect x="16" y="214" width="968" height="510" rx="12" fill="#161a1d" stroke="#2a3036"/>
 <text x="32" y="244" font-size="14" font-weight="700" fill="#34d399">02</text>
 <text x="32" y="262" font-size="14" font-weight="700" fill="#8e979f">WHAT RUNS</text>
-<rect x="16" y="738" width="968" height="416" rx="12" fill="#161a1d" stroke="#2a3036"/>
+<rect x="16" y="738" width="968" height="424" rx="12" fill="#161a1d" stroke="#2a3036"/>
 <text x="32" y="768" font-size="14" font-weight="700" fill="#34d399">03</text>
 <text x="32" y="786" font-size="14" font-weight="700" fill="#8e979f">HOW FAST</text>
 <text x="128" y="124" font-size="19" font-weight="600" fill="#eef1f3">a vLLM plugin plus HIP and Triton kernels for gfx1201 (RDNA4)</text>
@@ -120,11 +120,16 @@
 <text x="644" y="974" font-size="14" fill="#c7cdd3">KV pool at MAXLEN 262,144 with fp8 e4m3</text>
 <text x="644" y="992" font-size="14" fill="#c7cdd3">main KV, 540,202 at bf16; a needle found</text>
 <text x="644" y="1010" font-size="14" fill="#c7cdd3">at 250,078</text>
-<text x="16" y="1178" font-size="14" fill="#8e979f">Each number names its machine: "210 W gate" is the release configuration (210 W a card, -42 mV, 32k); "the native</text>
-<text x="16" y="1196" font-size="14" fill="#8e979f">box" is one 4x R9700 box, uncapped. They are not comparable across.</text>
-<text x="16" y="1214" font-size="14" fill="#8e979f">The Flash-Next column is the fp8 e4m3 main-KV launch this box runs by default: the pool doubles (1,009,899 against</text>
-<text x="16" y="1232" font-size="14" fill="#8e979f">540,202 tokens) and GSM8K 800 reads 96.0 against 95.6 %, HumanEval 164 98.17 against 96.95.</text>
-<text x="16" y="1250" font-size="14" fill="#8e979f">v0.4.1 is the DeepSeek step: one-kernel eight-rank all-gather and all-reduce, decode glue, an EXL3 GEMV to 48 rows.</text>
-<text x="16" y="1268" font-size="14" fill="#8e979f">The 48-token expert tier that came with it was held back - in the server it left the drafter accepting nothing.</text>
-<text x="16" y="1286" font-size="14" fill="#8e979f">github.com/bkvargyas/r9700-stack</text>
+<text x="644" y="1044" font-size="15" font-weight="700" fill="#eef1f3">115 tok/s</text>
+<text x="644" y="1062" font-size="14" fill="#c7cdd3">what a real request actually finishes</text>
+<text x="644" y="1080" font-size="14" fill="#c7cdd3">at, median over 1,525 of them on this</text>
+<text x="644" y="1098" font-size="14" fill="#c7cdd3">launch (162 tok/s with the box to</text>
+<text x="644" y="1116" font-size="14" fill="#c7cdd3">itself)</text>
+<text x="16" y="1186" font-size="14" fill="#8e979f">Each number names its machine: "210 W gate" is the release configuration (210 W a card, -42 mV, 32k); "the native</text>
+<text x="16" y="1204" font-size="14" fill="#8e979f">box" is one 4x R9700 box, uncapped. They are not comparable across.</text>
+<text x="16" y="1222" font-size="14" fill="#8e979f">The Flash-Next column is the fp8 e4m3 main-KV launch this box runs by default: the pool doubles (1,009,899 against</text>
+<text x="16" y="1240" font-size="14" fill="#8e979f">540,202 tokens) and GSM8K 800 reads 96.0 against 95.6 %, HumanEval 164 98.17 against 96.95.</text>
+<text x="16" y="1258" font-size="14" fill="#8e979f">v0.4.1 is the DeepSeek step: one-kernel eight-rank all-gather and all-reduce, decode glue, an EXL3 GEMV to 48 rows.</text>
+<text x="16" y="1276" font-size="14" fill="#8e979f">The 48-token expert tier that came with it was held back - in the server it left the drafter accepting nothing.</text>
+<text x="16" y="1294" font-size="14" fill="#8e979f">github.com/bkvargyas/r9700-stack</text>
 </svg>

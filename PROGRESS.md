@@ -2697,3 +2697,42 @@ double it; 115 exports including `r9k_qsa_attn_f8`; no `hidden_hostcall_buffer`)
   this pin**, and serving DeepSeek here needs the image (or exllamav3 in the venv), not this tree alone.
 
 Rollback for the merge is `git revert -m 1 <merge>`; for the library alone, the `.pre-v041` copies.
+
+## 2026-11-04: the README carries the speed the box actually runs at, not only the speed it is benched at
+
+**Ask:** 把实际使用的速度测量数据也放到 README 中 — the README had benchmark ladders and one real-traffic
+subsection from the bf16 launch; the fp8 launch that has been serving since 15:29 had nothing.
+
+Ten hours of real traffic on the fp8 launch (journal boot `1793719607-24497`, 1,568 completed rows, 29% of the
+span with traffic in it) now sits in the README, computed twice from two sources and cross-checked:
+
+- journal: 1,568 rows, prompts p50 52,083 (p90 149,572, p95 163,513, max 198,073), generated p50 322.
+- counters: `prompt_tokens_total` 106,686,448 against the journal's 106,214,313; `generation_tokens_total` 877,747
+  against 874,128 -- **under 0.5% apart**, which is what makes the per-request numbers trustworthy.
+- own decode by max concurrency during its own decode window: one **162.0** tok/s (n=585), two 114.5 (294),
+  three-four **41.0** (423), five-six 23.9 (127), all 1,525 requests generating >=40 tokens median **115.4**
+  (mean 100.9, p10 17.1, p90 171.1). Per-second concurrency: 1 -> 47.5% of busy seconds, 2 -> 25.1, 3 -> 17.1,
+  4 -> 7.7, 5 -> 2.2, 6+ -> 0.4; p50 2, p90 4, max 8.
+- aggregates, four denominators: 23.7 over the span, 80.8 over busy seconds, 42.1 token-weighted, 115.4 median of
+  rates. From the counters alone: 23.6 and 42.0.
+- prefill by prompt size: 8,158 (<20k, n=179), **8,937** (20-80k, n=882), 7,970 (80-160k, n=376), **7,542**
+  (>160k, n=101) tok/s medians; and `prompt_tokens_total / request_prefill_time_seconds_sum` = **7,949 tok/s while
+  prefilling**, within 1% of the journal's buckets. TTFT p50 **6.50 s**, p95 **24.52 s**, max 56.1 s; the longest
+  prompt served, 198,073 tokens, first token at 27.0 s at 7,330 tok/s.
+- drafter over the whole launch: 376,433 drafts x 2 tokens, 752,866 draft tokens, 501,271 accepted -> 1.33 per
+  draft, **2.33 tokens a step**, 66.6%.
+- the Monitor's own three spans (1 min / 15 min / 1 h) put in as a table, including the 1 min prefill figure of
+  4,214 tok/s kept **labelled as the metric artefact it is** (`prompt_tokens_total` credits at request end).
+
+The top four-card row changed from `158 alone / 61 as a request finishes` to **`162 alone / 115 as a request
+actually finishes`**, because the launch running today is the fp8 one.
+
+**What this is not, said in the README itself.** The bf16 window (1,400 requests, prompts p50 74,381, p90
+concurrency 6, median 60.8) and this one differ in traffic mix as well as KV dtype, and the mix is the dominant
+term -- so the two are printed side by side as *windows*, not as an fp8-vs-bf16 result. The controlled fp8 numbers
+stay the paired arms (pool 540,202 -> 1,009,899, 32-stream aggregate 1,823 -> 1,792, acceptance 1.60 -> 1.55).
+The comparison table even says "should not be read as one".
+
+`docs/summary-page.py` gained the fourth fact ("115 tok/s ... median over 1,525 of them"), so the generated release
+page carries the in-use number next to the benchmark ones; canvas 1000x1310, PNG 2000x2620, and the README caption
+follows. Full method, the concurrency histogram and the thin-bucket caveats: notes/context-262k.md.

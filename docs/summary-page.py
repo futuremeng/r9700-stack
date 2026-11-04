@@ -87,6 +87,8 @@ FACTS = [
     ("1,792 tok/s", "aggregate decode, 32 in flight, 1,200-token waves, fp8 main KV"),
     ("9,702 tok/s", "reading a 7,792-token prompt on that same fp8 launch"),
     ("1,009,899 tokens", "KV pool at MAXLEN 262,144 with fp8 e4m3 main KV, 540,202 at bf16; a needle found at 250,078"),
+    ("115 tok/s", "what a real request actually finishes at, median over 1,525 of them on this launch "
+     "(162 tok/s with the box to itself)"),
 ]
 
 FOOT = ["Each number names its machine: \"210 W gate\" is the release configuration (210 W a card, -42 mV, 32k); "

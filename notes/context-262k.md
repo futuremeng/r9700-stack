@@ -318,6 +318,62 @@ carry 50–170k of context. 156–158 tok/s is what acceptance-limited decode at
 like; it is not evidence of anything broken. If single-stream decode ever wants to come back, the knob is the
 drafter depth, not the attention path.
 
+## The fp8 launch under real traffic: same method, a new launch (2026-11-04, 01:50)
+
+The launch that runs today is the fp8 e4m3 main-KV one (`R9K_QSA_KVF8=1 KVDTYPE=fp8_e4m3`,
+`MAXLEN=262144 NSEQ=32 NBT=8192 PREFIX_CACHE=0 MTP=2`, started 2026-11-03 15:29, journal boot
+`1793719607-24497`, plugin 0.4.0 at 953a3901). Ten hours of real traffic, same method as the 2026-11-02 window
+above: journal rows for the per-request view, `/metrics` counters for the aggregate view, and the two computed
+independently.
+
+**Totals, both sources.** Journal: 1,568 completed rows, 10.25 h span, 10,818 busy seconds (29% of the span),
+prompts p50 52,083 / p90 149,572 / p95 163,513 / max 198,073, 106,214,313 prompt tokens, generated p50 322 /
+p95 1,853 / total 874,128. Counters: `prompt_tokens_total` 106,686,448, `generation_tokens_total` 877,747,
+`request_success_total` 1,526 stop + 39 length = 1,565. The two agree to under 0.5% (the journal flushes per
+request, so the counter is ahead by whatever is in flight).
+
+**Concurrency, per second, from the rows' own stamps:** 1 → 5,141 s (47.5%), 2 → 2,717 (25.1%), 3 → 1,852 (17.1%),
+4 → 836 (7.7%), 5 → 235 (2.2%), 6 → 30, 7 → 3, 8 → 4 (0.4% together); p50 2, p90 4, max 8. The earlier (bf16)
+window measured p50 2, p90 6, max 9 — the same box seeing lighter fan-out, which is why its bands were worse.
+
+**Own decode by max concurrency over its decode window** (n = requests generating ≥40 tokens, 1,525 of them):
+one 162.0 (585), two 114.5 (294), three-four **41.0** (423), five-six 23.9 (127), seven-nine 47.0 (23); overall
+median **115.4**, mean 100.9, p10 17.1, p90 171.1. Alone with ≥200 tokens generated: 182.6 (<20k, n=10), 164.6
+(20–80k, n=258), 150.0 (80–160k, n=99), 156.5 (>160k, n=30) — the context cost curve reproduces, and the >160k
+bucket is thin, so read it as "flat to 160k and no evidence past it".
+
+**Aggregates, all four denominators:** 23.7 tok/s over the span, 80.8 over busy seconds, 42.1 token-weighted
+(`Σgenerated / Σdecode_s`), 115.4 as the median of rates. From the counters: 877,747 / 37,200 s = **23.6** and
+877,747 / 20,909.3 s (`request_decode_time_seconds_sum`) = **42.0**. Prefill: 106,686,448 / 13,420.7 s
+(`request_prefill_time_seconds_sum`) = **7,949 tok/s while prefilling**, against journal medians of 7,542–8,937 by
+prompt bucket.
+
+**Prefill and TTFT by prompt size** (journal, `prompt_tokens / prefill_s`, `first_token_s`): <20k n=179 median
+8,158 (p10 1,102 — a request whose prompt was mostly cached-shaped or short-credit noise); 20–80k n=882 median
+**8,937**; 80–160k n=376 median 7,970; >160k n=101 median **7,542**. TTFT over 1,563 rows: p50 **6.50 s**, p95
+**24.52 s**, max **56.1 s**. Longest single prompt served: 198,073 tokens, TTFT 27.0 s at 7,330 tok/s of prefill,
+then 1,242 tokens generated.
+
+**Speculation over the whole launch** (counters): 376,433 drafts, 752,866 draft tokens (depth 2, MTP=2 is the
+launcher default at TP4), 501,271 accepted → **1.33 accepted per draft**, mean acceptance length **2.33**, 66.6%
+of drafted tokens accepted. Compare the paired benchmark arms in notes/kv-fp8-qsa.md: 1.549 (fp8) against
+1.604/1.620 (bf16) accepted per draft at 32 in flight. Real traffic sits lower than that because the prompts are
+50–200k and the answers are shorter.
+
+**The three spans, as the Monitor computes them** (counter deltas, taken 2026-11-04 01:49, from the observe-mode
+sidecar on :8099 watching this engine — see notes/webui.md for how the spans are built): 1 min 45.8 tok/s
+generation, 4,214 prefill, 17.2 per stream, 4.7 req/min, 90.7 ms a step, 1.29 accepted/draft, KV 28.4%; 15 min
+23.7, 7,713, 12.8, 2.7, 100.6 ms, 1.45, 18.5%; 1 h 26.4, 7,737, 17.9, 3.5, 65.4 ms, 1.48, 12.6%. The 1 min
+prefill number is a metric artefact — `prompt_tokens_total` credits at request END, so a 60 s span misses long
+prefills still in flight — which is the bias notes/webui.md documents and the Monitor's second line exists to
+show; over spans longer than a request's wall time it converges on the counters' 7,949.
+
+**Not a controlled fp8 comparison.** The bf16 window above (1,400 requests, prompts p50 74,381, p90 concurrency
+6, bands 157.7 / 119.1 / 22.8 / 15.6 / 17.3, overall median 60.8) and this one differ in traffic mix as well as
+in KV dtype, and the mix is the dominant term. Saying "real traffic got faster" from these two windows would be
+wrong. The controlled comparison is the paired arms: pool 540,202 → 1,009,899 tokens, 32-stream aggregate 1,823 →
+1,792, prefill flat to ±0.5%, acceptance 1.60 → 1.55 per draft.
+
 ## Why the GLM-5.3-Flash 262k failure did not repeat here
 
 [release-v0.3.7.md](release-v0.3.7.md) records GLM-5.3-Flash TP8 coming up at 262k and then dying inside

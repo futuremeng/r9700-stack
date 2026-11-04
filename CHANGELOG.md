@@ -1,4 +1,29 @@
 # Changelog
+## the README now carries the speed this box runs at, not only the speed it is benched at
+
+- **Ten hours of real traffic on the fp8 launch** (1,568 completed requests, 29% of the wall clock busy, prompts p50
+  52,083 / p95 163,513 / max 198,073) in a rewritten *real work* subsection: own decode by max concurrency during
+  its own decode window — **162 tok/s alone (n=585), 114.5 at two, 41.0 at three-four, 23.9 at five-six, 115.4 the
+  median of all 1,525** — per-second concurrency histogram (47.5% of busy seconds alone, p90 4, max 8), aggregates
+  under all four denominators (23.7 span / 80.8 busy / 42.1 token-weighted / 115.4 median), prefill by prompt size
+  (8,158 / **8,937** / 7,970 / **7,542** tok/s medians) and TTFT (p50 **6.50 s**, p95 **24.52 s**, max 56.1 s; the
+  198,073-token prompt served here answered its first token at 27.0 s).
+- **Cross-checked against the engine's own counters**, because a journal nobody reconciles is a story: 106,686,448
+  `prompt_tokens_total` against 106,214,313 journaled, 877,747 `generation_tokens_total` against 874,128 — under
+  0.5% apart — and `prompt_tokens / request_prefill_time_seconds_sum` = **7,949 tok/s while prefilling**, within 1%
+  of the journal's buckets. Drafter over the launch: 376,433 drafts of 2, 501,271 accepted — **1.33 per draft,
+  2.33 tokens a step, 66.6%**.
+- **The Monitor's 1 min / 15 min / 1 h spans, printed with their artefact visible**: the 1 min prefill reading of
+  4,214 tok/s is kept and labelled as what it is (`prompt_tokens_total` credits when a request ends), rather than
+  dropped because it looks wrong next to 7,713.
+- The first table a reader sees changes with it: `158 alone / 61 as it finishes` (the bf16 launch) becomes
+  **`162 alone / 115 as it finishes`** (the launch that runs today). The old window stays, labelled as a different
+  window rather than a comparison — the two differ in traffic mix (p50 52,083 against 74,381, p90 concurrency 4
+  against 6), and the mix is the dominant term. The controlled fp8 numbers remain the paired arms.
+- `docs/summary-page.py` gained the fourth fact row (**115 tok/s**, median over 1,525 real requests), so the
+  generated release page carries an in-use number beside the benchmark ones; canvas 1000x1310, PNG 2000x2620, and
+  the README caption follows the new size. Method and caveats: `notes/context-262k.md`.
+
 ## upstream v0.4.1 merged: the DeepSeek step, and what its gates cannot run on this box
 
 - **v0.4.1** (25 commits over v0.4.0, tag + the `v041`/`v042` branch pointers): one-kernel eight-rank all-gather
