@@ -80,11 +80,11 @@ sidecar has only been up a few minutes - the label says what was averaged.">1 h<
        tightest 4-up width and 44 at the widest. The copy is written to fit the tight one. -->
   <section class="grid grid--4 grid--rates">
     <div class="card">
-      <div class="label">Decode · one stream</div>
-      <div class="value value--xl" id="rate-stream">—<span class="unit">tok/s</span></div>
-      <div class="small slot slot--lead" id="note-stream">aggregate ÷ running</div>
-      <div class="small slot" id="spans-stream">—</div>
-      <div class="small slot" id="poll-stream">—</div>
+      <div class="label">Decode · total this launch</div>
+      <div class="value value--xl" id="rate-gentot">—<span class="unit">tok</span></div>
+      <div class="small slot slot--lead" id="note-gentot">vs prompt tokens in</div>
+      <div class="small slot" id="spans-gentot">—</div>
+      <div class="small slot" id="poll-gentot">—</div>
     </div>
     <div class="card">
       <div class="label">Decode · all streams</div>
@@ -126,10 +126,10 @@ the box looked like this hour"; it cannot show a single stuck step.">1 h</button
   </div>
   <section class="grid grid--4 grid--trends">
     <div class="card">
-      <div class="label">Decode · one stream</div>
-      <div class="sparkline sparkline--lg" id="stream-spark"></div>
-      <div class="small slot" id="stream-note1">—</div>
-      <div class="small slot" id="stream-note2">—</div>
+      <div class="label">Decode · per step</div>
+      <div class="sparkline sparkline--lg" id="perstep-spark"></div>
+      <div class="small slot" id="perstep-note1">—</div>
+      <div class="small slot" id="perstep-note2">—</div>
     </div>
     <div class="card">
       <div class="label">Decode · all streams</div>
@@ -259,8 +259,11 @@ number above it means the two counters are not the pair this line thinks they ar
       "Engine step" is one engine iteration
       (<code>inter_token_latency_seconds</code>) — what a client feels as one delta; "per accepted token"
       (<code>request_time_per_output_token_seconds</code>) divides it by the drafts MTP gets accepted, so with MTP=2
-      it reads far smaller (15.6 ms a step against 3.19 ms per token, measured 2026-11-02). A stream's tok/s is
-      1 / step, never 1 / per-token.</p>
+      it reads far smaller (15.6 ms a step against 3.19 ms per token, measured 2026-11-02). A stream's own tok/s
+      therefore follows the <em>per accepted token</em> family, not the step one: measured on one stream on this
+      launch, 12.84 ms a step against 6.27 ms per accepted token while <code>generation_tokens_total</code> moved
+      155 a second — 1/6.27 ms is the rate, 1/12.84 ms is the step rate and undercounts by the tokens a step
+      produces (2.05 of them).</p>
   </section>
 
   <!-- the request list: only filled while the client is pointed at this page (--proxy) -->

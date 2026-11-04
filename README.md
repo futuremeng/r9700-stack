@@ -322,10 +322,10 @@ counters say too. It is kept here, labelled, rather than dropped.
 **Why this collapses at three or four streams while the benchmark holds 57.6 tok/s at thirty-two.** It is not fan-out
 and not attention depth — it is that under real traffic most of the engine's seconds sit inside steps that carry a
 **prefill chunk**, and a decoding stream advances exactly one acceptance per step no matter what that step costs.
-The engine counts its own steps: `vllm:iteration_tokens_total` held 229,625 records over this launch summing to
+The engine counts its own work: `vllm:iteration_tokens_total` held 229,625 records over this launch summing to
 110,983,408 tokens, which is `prompt_tokens_total` plus `generation_tokens_total` to the last token — so **99.2% of
 the tokens this box processed were prompt tokens**, one generated token costing 123 prompt tokens. In 8,192-token
-units that is 13,439 chunks, **5.9% of steps**, and the two unit prices that fall out of the journal's interval
+units that is 13,439 chunks, **5.9% of records**, and the two unit prices that fall out of the journal's interval
 unions (4.97 h with something in flight) are **~1.0 s for a step carrying a chunk and 20.6 ms for one that does
 not** — 75% of the box's busy seconds are prefill steps, and one chunk is worth **49 decode steps** (27 of the fat
 32-row ones).
@@ -545,6 +545,17 @@ poll, or an hour at one point per 15 s, each of those points the rate over its i
 poll. Every one of those lines is a **slot**: one line high whatever the engine reports, so a number growing from
 `2.0` to `8,481` changes the value and never moves the page. The copy is written to fit the tightest card the layout
 can produce (24 characters at 12 px) and the full sentences ride in the element's title.
+
+The decode cards in that row are **counts, not per-stream averages**: the first shows `generation_tokens_total` summed
+since the engine started against `prompt_tokens_total` over the same span (today 1.00M out against 129.6M in), and the
+waveform next to it plots generated tokens **per iteration record** (2.6–2.8 on the current window), never a per-stream
+tok/s. What used to sit in that first slot was the aggregate divided by the running gauge, and it was the most misread
+number on the page: the gauge counts a request in the middle of a chunked prefill as running, so the divisor includes
+streams that cannot produce a token yet, and readers reasonably asked why "all streams" came out below what one stream
+gets alone. It comes out below for reasons the step census in [notes/context-262k.md](notes/context-262k.md) measures
+(47.6% of wall seconds hold no request, 5.9% of records carry a ~1 s prefill chunk, 1.62 streams decode per record), and
+a count cannot be misread that way. The per-stream rate is still in the payload — the request rows use it, and
+`webui.py` documents which of the two histogram families is the honest one — it just no longer gets a headline.
 
 The Requests card splits the waiting queue the way the engine labels it: `N waiting · M for scheduling capacity ·
 K deferred`, and the split is the whole point on this model. Eight ~30,000-token prompts measured holding

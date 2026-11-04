@@ -338,9 +338,12 @@ function renderStatus(s) {
   const live = s.live || {}, rate = s.rate || {};
   const inflight = (live.running || 0) + (live.waiting || 0);
   // -- the headline row ---------------------------------------------------------------------------
-  // Big numbers, and only from what moves per engine step. stream_tok_s_live is aggregate over running:
-  // the rate of the stream you are watching, available while it runs -- 1/itl (stream_tok_s) is not, because
-  // vLLM observes that histogram when the request FINISHES. The two agree once a request ends.
+  // Big numbers, and only from what moves per engine step. What does NOT get a headline here is a per-stream
+  // rate: the payload still carries stream_tok_s / stream_tok_s_live (webui.py documents which of the two
+  // histogram families is the honest one, and the request rows still use them), but the headline row shows a
+  // count and a per-record total instead, because a per-stream average over a span divides by a gauge that
+  // counts prefilling requests as running, and invites the comparison "aggregate is smaller than one stream"
+  // that the step census in notes/context-262k.md answers.
   // -- fixed slots, so a number that changes width cannot move the page ---------------------------
   // Every line in these cards is a SLOT: fixed position, never wraps, ellipsizes, and carries its full text in
   // the title. The reason is arithmetic, not taste. A 4-up card is 177-322 px of text depending on page width
@@ -360,12 +363,17 @@ function renderStatus(s) {
     fresh: "How old these numbers are: the sidecar polls the engine every poll window, the page refetches on the "
          + "same beat, and this is how long the snapshot has been sitting. When it grows, this tab has stopped "
          + "getting answers.",
-    stream: "Tokens a second for one stream: generated tokens across the span divided by the MEAN number of "
-          + "running streams in it. The window's version divides by the running count of that one poll. The "
-          + "engine's own decode seconds give a second opinion on the same quantity.",
+    gentot: "generation_tokens_total, cumulative since this engine started -- summed over streams, no division "
+          + "anywhere. Next to it: prompt_tokens_total over the same span, which is the ratio that explains this "
+          + "page's decode numbers (99.2% of the tokens this box processed were prompt tokens, and the summed "
+          + "rate is 1.62 streams a record x 2.33 tokens a step x 6.3 records a second). Per-span counts in the "
+          + "title because only two fit the slot: ",
     gen: "All streams together: generation_tokens_total across the span divided by the span. The engine's counters "
        + "are cumulative, so a span mean is an exact delta of two reads, not an average of the 1 s samples (which "
-       + "would weight an idle second the same as a second with six streams running).",
+       + "would weight an idle second the same as a second with six streams running). It is lower than one stream "
+       + "alone by three factors, and none of them is the stream slowing down: 47.6% of wall seconds hold no "
+       + "request at all, 5.9% of engine records carry a prefill chunk and take ~1 s against 20 ms, and only 1.62 "
+       + "streams decode per record. notes/context-262k.md.",
     prefill: "Prompt tokens per second of the engine's own prefill time - how fast it chews when it is chewing. "
            + "The wall-clock figure is lower by the duty cycle: this launch runs ~7,900 while prefilling and "
            + "~2,200 across the wall. Over a span the histogram-backed figures count only requests that finished "
@@ -443,6 +451,25 @@ function renderStatus(s) {
     return parts.join(" \u00b7 ") || "\u2014";
   };
 
+  // The spans, with counts instead of rates: "15m +31k \u00b7 1h +89k". Two, not three -- at a 5-character number
+  // cap three spans is 29 characters and the tightest 4-up slot holds 24, and the rule this page follows is that
+  // a slot is cut to the budget and the full sentence goes in the title, never that the line is allowed to wrap.
+  const spanSigned = (key, skip = ["1m"]) => {
+    const parts = [], said = new Set();
+    for (const [label, wide] of Object.entries(AVG_WIDE)) {
+      if (skip.includes(label)) continue;
+      const b = (s.avg || {})[label];
+      if (!b || b.reset) continue;
+      const v = b[key];
+      if (!isnum(v)) continue;
+      const name = spanName(label, wide, isnum(b.span_s) ? b.span_s : wide);
+      if (said.has(name)) continue;
+      said.add(name);
+      parts.push(`${name} +${knum(v)}`);
+    }
+    return parts.join(" \u00b7 ") || "\u2014";
+  };
+
   const sn = s.since || {};
   const stepV = A ? A.itl_ms : (isnum(rate.itl_ms) ? rate.itl_ms : sn.itl_ms);
   // How many tokens a step turns into: step / per-output-token. The window usually holds no histogram
@@ -451,13 +478,25 @@ function renderStatus(s) {
   const tpsW = A ? A.tokens_per_step : rate.tokens_per_step;
   const tpsS = isnum(sn.itl_ms) && isnum(sn.tpot_ms) ? sn.itl_ms / sn.tpot_ms : null;
   const tps = isnum(tpsW) ? tpsW : tpsS;
-  const streamV = A ? A.stream_tok_s : rate.stream_tok_s_live;
-  big("rate-stream", streamV, "tok/s");
-  slot("note-stream", A ? `${WIN_NAME[win]} \u00b7 \u00f7 ${knum(A.running_mean || 0, 1)} run`
-                        : `poll \u00b7 \u00f7 ${Math.round(live.running || 0)} running`, TT.stream);
-  slot("spans-stream", spanList("stream_tok_s"), TT.spans);
-  slot("poll-stream", `poll ${knum(rate.stream_tok_s_live)}`
-       + (isnum(rate.itl_ms) ? ` \u00b7 step ${knum(rate.itl_ms)}` : ""), TT.poll);
+  // Decode, as a COUNT. What used to sit in this first card was the per-stream mean -- aggregate divided by the
+  // running gauge -- and it was the most misread number on the page, for two reasons. The gauge counts a request
+  // in the middle of a chunked prefill as running, so the divisor includes streams that cannot produce a token
+  // yet; and a reader compares the result with the ~162 tok/s a stream gets with the box to itself and concludes
+  // that "aggregate" is somehow smaller than a single stream. It is smaller, and the reason is the denominator:
+  // wall seconds. Over this launch 47.6% of wall seconds hold no request at all, 5.9% of engine records carry a
+  // prefill chunk at ~1 s each (75% of busy seconds), and 1.62 streams decode per record at 2.33 tokens a step --
+  // 1.62 x 2.33 x 6.3 records/s = 24 tok/s summed. So the headline row shows a count, which cannot be misread as
+  // an average, and the fan-out that does the explaining is the per-step waveform in the trends row.
+  // "tok out", because on this launch the pool's 1.01M tokens and this launch's 1.00M generated tokens sit two
+  // cards apart and differ by 1%. The unit has to say which million it is.
+  big("rate-gentot", sn.generation_tokens_total, "tok out");
+  slot("note-gentot", isnum(sn.prompt_tokens_total) ? `vs ${knum(sn.prompt_tokens_total)} in` : "\u2014",
+       TT.gentot + spanAll("generation_tokens").replace(/(\w+) (\S+)/g, "$1 +$2"));
+  slot("spans-gentot", spanSigned("generation_tokens"), TT.spans);
+  // "none credited", not "+0.0": in this window the counter moved nothing, which for a count is a fact about the
+  // window (the engine was prefilling), not a measurement of zero tokens a second.
+  slot("poll-gentot", isnum(rate.generation_tokens) && rate.generation_tokens > 0
+       ? `poll +${knum(rate.generation_tokens)} tok` : `poll \u00b7 none credited`, TT.poll);
 
   const genV = A ? A.generation_tok_s : rate.generation_tok_s;
   big("rate-gen", genV, "tok/s");
@@ -694,8 +733,10 @@ function renderStatus(s) {
          title + (lo !== null && top > lo ? ` The waveform is drawn on a ${knum(lo)}..${knum(top)} axis.` : ""));
   };
   const TREND_T = {
-    stream: "Tokens a second for one stream, per poll (fast ring) or per 15 s interval (hour ring). A gap in the "
-          + "line is a poll with no stream running: a per-stream rate has no denominator then.",
+    perstep: "Generated tokens per engine record, summed over streams -- never a per-stream mean. It is the "
+           + "fan-out times the acceptance length: ~1.6 streams a record x 2.33 tokens a step on this launch, "
+           + "against the 2.33 a stream gets of its own. At 0.32 a whole chunked prefill lands in one record, so "
+           + "the line dips exactly where the engine was prefilling; a gap is an interval with no record in it.",
     gen: "All streams together. Flat stretches are the engine prefilling rather than decoding, which is why the "
        + "peak and the average of this line differ by an order of magnitude on a prefill-heavy launch.",
     prefill: "Prefill estimated from how fast the KV pool is growing (the counter credits at request end, so the "
@@ -716,8 +757,8 @@ function renderStatus(s) {
          : `One point per engine poll (${isnum(s.poll_s) ? s.poll_s.toFixed(1) : "?"} s), 90 points. This is `
            + "where a stuck step, a restart or one huge prefill shows up as a shape.");
 
-  trend("stream-spark", "stream-note1", "stream-note2", hist.map((h) => h.stream_tok_s), 1,
-        { lo: 0, hi: "peak", empty: "no stream, no denominator", title: TREND_T.stream });
+  trend("perstep-spark", "perstep-note1", "perstep-note2", hist.map((h) => h.gen_per_step), 2,
+        { lo: 0, hi: "peak", empty: "no records this window", title: TREND_T.perstep });
   trend("gen-spark", "gen-note1", "gen-note2", hist.map((h) => h.gen_tok_s), 0,
         { lo: 0, hi: "peak", empty: "nothing generated", title: TREND_T.gen });
   // The prefill waveform is the live estimate (KV growth), not the counter rate: over a long prefill the

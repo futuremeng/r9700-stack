@@ -181,6 +181,12 @@ def since(s, g):
             # scaling was applied to a token count (it is 2,028).
             "prompt_tokens_mean": ac("request_prompt_tokens"),
             "generation_tokens_mean": ac("request_generation_tokens"),
+            # Cumulative counts, not means: the Monitor's decode total card shows these, because a count cannot be
+            # misread as an average. This launch is at ~124 million prompt tokens against ~1 million generated,
+            # which is the single most useful fact about its decode rate (notes/context-262k.md).
+            "generation_tokens_total": g("generation_tokens_total"),
+            "prompt_tokens_total": g("prompt_tokens_total"),
+            "iterations": g("iteration_tokens_total_count"),
             # iteration_tokens_total is labelled "tokens per engine_step" and is not one: at 0.32.0 the observation
             # is computed prompt tokens + generation tokens (v1/metrics/loggers.py:1273), and a chunked prefill is
             # credited in a single record holding the whole prompt -- measured: a 4,893-token prompt produced
@@ -231,7 +237,10 @@ AVG_COUNTERS = ("generation_tokens_total", "prompt_tokens_total", "e2e_request_l
                 "request_queue_time_seconds_sum", "request_queue_time_seconds_count",
                 "e2e_request_latency_seconds_sum",
                 "spec_decode_num_drafts_total", "spec_decode_num_accepted_tokens_total",
-                "spec_decode_num_draft_tokens_total", "prefix_cache_queries_total", "prefix_cache_hits_total")
+                "spec_decode_num_draft_tokens_total", "prefix_cache_queries_total", "prefix_cache_hits_total",
+                # the record counter: what the decode cards divide by to say "tokens a step" over a span instead
+                # of a second. Records, not steps, at 0.32 -- see the note in since() -- which the titles say.
+                "iteration_tokens_total_count", "iteration_tokens_total_sum")
 
 
 def avg_sample(cur, t0):
@@ -286,15 +295,23 @@ def trailing(snaps, cur, t0, spans=AVG_SPANS):
         wait = [x["wait"] for x in snaps if x["at"] > base["at"]]
         kvv = [x["kv"] for x in snaps if x["at"] > base["at"] and x["kv"] is not None]
         drafts, acc = dn("spec_decode_num_drafts_total"), dn("spec_decode_num_accepted_tokens_total")
+        iters = dn("iteration_tokens_total_count")
         dgrams = dn("spec_decode_num_draft_tokens_total")
         hitq, hits = dn("prefix_cache_queries_total"), dn("prefix_cache_hits_total")
-        reset = any(v is not None and v < 0 for v in (gen, pre, drafts))
+        reset = any(v is not None and v < 0 for v in (gen, pre, drafts, iters))
         itl, tpot = first(ITL_STEP), first(TPOT)
         genps = gen / span_s if gen is not None else None
         runmean = (sum(run) / len(run)) if run else None
         out[label] = {
             "span_s": span_s, "reset": reset, "samples": len(run),
             "generation_tok_s": None if reset else genps,
+            # The same span answered with COUNTS instead of rates: what actually went in and out of the box in
+            # it, and how many of its records were decode work. A count cannot be mistaken for an average.
+            "generation_tokens": None if reset else gen,
+            "prompt_tokens": None if reset else pre,
+            "records": None if reset else iters,
+            "gen_per_step": (gen / iters) if (gen is not None and iters) else None,
+            "drafts_per_step": (drafts / iters) if (drafts is not None and iters) else None,
             "prompt_tok_s": None if reset or pre is None else pre / span_s,
             "requests_per_min": None if reset or dn("e2e_request_latency_seconds_count") is None
                                  else 60.0 * dn("e2e_request_latency_seconds_count") / span_s,
@@ -395,6 +412,12 @@ def derive(cur, prev, dt, cap, info, mode, kept, hist):
             "prefill_ms": mean("request_prefill_time_seconds"), "decode_ms": mean("request_decode_time_seconds"),
             "prompt_tokens_mean": meanc("request_prompt_tokens"),
             "generation_tokens_mean": meanc("request_generation_tokens"),
+            # generated tokens per iteration RECORD in this window -- a total across streams, deliberately not a
+            # per-stream mean: on a prefill-heavy launch this is ~2-4 while a lone stream reaches ~2.3 tokens a
+            # step of its own, and the difference is fan-out and step time, not a per-stream average (the census
+            # is in notes/context-262k.md). Records, not steps, at 0.32: a whole chunked prefill lands in one.
+            "gen_per_step": (d("generation_tokens_total") / d("iteration_tokens_total_count"))
+                            if d("iteration_tokens_total_count") > 0 else None,
             "iters_per_req": (d("iteration_tokens_total_count") / nrec) if nrec else None,
             "tokens_per_iter": (d("iteration_tokens_total_sum") / d("iteration_tokens_total_count"))
                                if d("iteration_tokens_total_count") > 0 else None,
@@ -1681,6 +1704,7 @@ class Hub:
         gnow = (cur.get("generation_tokens_total") or [0.0, 0.0, 0])[0]
         pnow = (cur.get("prompt_tokens_total") or [0.0, 0.0, 0])[0]
         kvnow = (cap * cur[kvn][1]) if (cap and kvn) else None
+        inow = (cur.get("iteration_tokens_total_count") or [0.0, 0.0, 0])[0]
         runs = [h.get("running") for h in self.hist if h.get("at", 0) > (base["at"] if base else 0)]
         runs = [r for r in runs if isinstance(r, (int, float))]
         runm = (sum(runs) / len(runs)) if runs else (cur.get("num_requests_running") or [0, 0.0, 0])[1]
@@ -1699,9 +1723,14 @@ class Hub:
                 "prompt_tok_s": prompt,
                 "stream_tok_s": (gen / runm) if (gen is not None and runm) else None,
                 "kv_tok_s": kvrate,
+                # generated tokens per iteration record over the interval -- a count ratio, so it survives a
+                # restart-free interval the way the rates do not, and it is a total, not a per-stream mean
+                "gen_per_step": ((gnow - base["c"]["gen"]) / (inow - base["c"]["iter"]))
+                                if (base and base["c"].get("iter") is not None
+                                    and (inow - base["c"]["iter"]) > 0) else None,
                 "kv_used_pct": (100.0 * cur[kvn][1]) if kvn else None,
                 "running": runm,
-                "c": {"gen": gnow, "prompt": pnow, "kv": kvnow}}
+                "c": {"gen": gnow, "prompt": pnow, "kv": kvnow, "iter": inow}}
 
     def poll(self):
         while True:
@@ -1754,6 +1783,7 @@ class Hub:
                     payload["stack"] = self.cfg.get("stack") or {}
                     self.prev, self.prev_t, self.status = cur, t0, payload
                 self.hist.append({"at": t0, "gen_tok_s": payload["rate"].get("generation_tok_s"),
+                          "gen_per_step": payload["rate"].get("gen_per_step"),
                                   "stream_tok_s": payload["rate"].get("stream_tok_s_live"),
                                   "kv_tok_s": payload["rate"].get("kv_tok_s"),
                                   "kv_used_pct": payload["live"].get("kv_used_pct"),

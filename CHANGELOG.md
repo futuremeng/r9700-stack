@@ -1,4 +1,26 @@
 # Changelog
+## the Monitor's decode row shows counts, not per-stream averages
+
+Asked why the Monitor's aggregate decode reads below one stream, and the page was part of the problem: the biggest
+number in the decode row was `aggregate / running`, whose divisor counts requests stuck in chunked prefill as
+running, and whose position next to "all streams" made a denominator question look like the engine slowing down.
+
+- **Headline row now sums, never averages per stream**: `Decode · total this launch` prints
+  `generation_tokens_total` (1.00M tok) against `prompt_tokens_total` over the same span (129.6M in), with the counts
+  credited inside each span underneath (`100s +2,374`) and `poll +N tok` / `poll · none credited`.
+- **The waveform beside it plots tokens per iteration record** (2.6-2.8 live), the quantity the step census is about,
+  instead of a per-stream rate.
+- **Why the summed number is lower than one stream, in the card's own title**: 47.6% of wall seconds hold no request
+  (x0.476), records are 5.4x slower when prefill shares them (x0.191), 1.62 streams decode per record (x1.615) --
+  0.147 of a lone stream's 162 tok/s = 23.8.
+- **New payload fields**: `since.generation_tokens_total|prompt_tokens_total|iterations`, per-span
+  `generation_tokens|prompt_tokens|records|gen_per_step|drafts_per_step`, and `gen_per_step` on both ring kinds.
+  `stream_tok_s` stays in the payload for the request rows; it just no longer gets a headline.
+- **A record is not a step** (one record per chunked prefill, however many chunks): the waveforms say "per record",
+  and notes/context-262k.md carries the ~5% error bar this puts on the record count.
+- **Slot budget honoured**: three counts (29 characters) do not fit the 24-character tightest slot, so two spans show
+  and the title carries three -- a cut, not a wrap.
+
 ## why real traffic decodes slower at three streams than the bench does at thirty-two, measured a step at a time
 
 - **A step census from the engine's own counter** (`vllm:iteration_tokens_total` is one record per step, and its sum

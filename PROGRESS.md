@@ -2784,3 +2784,32 @@ README's real-traffic subsection gained the mechanism block (with the bench-vs-r
 closures, the exclusions and the knobs (`--long-prefill-token-threshold` measured as fairness-not-throughput:
 40.3-55.8 s -> 7.8-27.7 s at unchanged wall clock, but +22% and a 99.1% pool when three 250k prefills run together)
 are in notes/context-262k.md.
+
+## 2026-11-04: the Monitor's decode row stops averaging per stream -- the question "why is aggregate lower than one stream" was partly the page's fault
+
+**The question.** 为什么 monitor 看到的聚合 decode 比 one stream 更低? Measured on the live launch: 23.9-24.9 tok/s
+summed over 15 min / 1 h against 162 tok/s for a stream with the box to itself. The decomposition is exact -- 0.476
+(wall seconds holding no request) x 0.191 (steps 5.4x slower when prefill shares them) x 1.615 (streams decoding per
+record) = 0.147, and 0.147 x 162 = 23.8.
+
+**And the page was making it worse.** The biggest number in the decode row was `generation_tok_s / running_mean`. Its
+divisor is the `num_requests_running` gauge, which counts a request in the middle of a chunked prefill as running --
+streams that cannot produce a token yet -- and putting "one stream" next to "all streams" with the second smaller made
+a denominator question read as the engine getting slower with concurrency. So the row now **sums**: `Decode · total
+this launch` prints `generation_tokens_total` (1.00M tok today) with `vs 129.6M in` beside it, the spans line shows
+the counts credited inside each window, and the first waveform plots **generated tokens per iteration record** (2.6-2.8
+live) rather than a per-stream rate. Per-stream fields stay in the payload (the request rows use them) and get no
+headline.
+
+**Two things recorded rather than smoothed over.** `iteration_tokens_total_count` is one record per decode step but
+ONE record per chunked prefill regardless of how many chunks that prompt needed -- so the new series is "per record",
+the waveform's title says so, and notes/context-262k.md gained the resulting error bar (~5% on the record count; the
+75%-of-seconds finding is untouched, and its unit prices are now written as 1.0 s and 20 +/- 1 ms instead of four
+significant figures). And the slot budget forced a cut: three spans of counts is 29 characters against a 24-character
+tightest slot, so the page shows two spans and the title carries three.
+
+Tests: `tests/test_webui.py` asserts the new fields, that no per-stream rate reaches a headline or waveform, and the
+unchanged slot shape; `tests/render-monitor.mjs` checks the count card equals the engine's counter (within knum's
+rounding), carries a token unit not a per-second one, and allows an absolute 1 tok/s on live comparisons (2.0 vs 3.0
+tok/s is one second of traffic apart on a box that idles between requests). Both pass against the sidecar and against
+production, where the payload predates the fields and the card shows a dash instead of inventing a total.

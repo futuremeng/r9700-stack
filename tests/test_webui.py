@@ -1257,9 +1257,23 @@ ck("they are rendered at display size",
    'class="value value--xl"' in monhtml and ".value--xl{font-size:var(--st-fs-display)}" in (WEB / "web.css").read_text())
 ck("all four rate slots exist and are written",
    all(f'id="{i}"' in monhtml and f'("{i}"' in monjs
-       for i in ("rate-stream", "rate-gen", "rate-prefill", "rate-step")))
-ck("the headline decode rate is the live aggregate-over-running one",
-   "rate.stream_tok_s_live" in monjs and 'id="rate-stream"' in monhtml)
+       for i in ("rate-gentot", "rate-gen", "rate-prefill", "rate-step")))
+# The per-stream mean used to be the first headline on this page. It is not any more, and the reason is on the
+# record rather than in a design note: it divides the summed rate by the running gauge, which counts a request
+# in the middle of a chunked prefill as running, and it invited the comparison "why is the aggregate smaller
+# than one stream" that the step census in notes/context-262k.md answers (47.6% of wall seconds hold no request,
+# 5.9% of records carry a ~1 s prefill chunk, 1.62 streams decode per record). A count cannot be misread that way.
+ck("the decode headline row shows COUNTS, not a per-stream average",
+   'big("rate-gentot", sn.generation_tokens_total, "tok out")' in monjs
+   and "generation_tokens_total" in (monhtml + monjs) and 'id="rate-gentot"' in monhtml
+   and 'id="rate-stream"' not in monhtml)
+ck("and no per-stream rate reaches a headline or a waveform any more (the payload still carries them, for the "
+   "request rows)",
+   "A.stream_tok_s" not in monjs and "rate.stream_tok_s_live" not in monjs
+   and "h.stream_tok_s" not in monjs and '"stream_tok_s"' not in monjs)
+ck("the payload keeps the per-record figures the new card and its waveform read",
+   "hist.map((h) => h.gen_per_step)" in monjs
+   and open(os.path.join(ROOT, "serve/webui.py")).read().count("gen_per_step") >= 4)
 ck("the step card reconciles the step rate with the token rate (xN tokens a step, five characters in a slot)",
    "rate.tokens_per_step" in monjs and "\\u00d7${tps.toFixed(2)}" in monjs and "tokens a step" in monjs)
 ck("the prefill rate names which of its two numbers is showing",
@@ -1273,7 +1287,7 @@ ck("the page refetches on the engine's beat", "setTimeout(poll, 1000)" in monjs)
 _trend = monhtml.split('grid--trends')[1].split("</section>")[0]
 _rates = monhtml.split('grid--rates')[1].split("</section>")[0]
 ck("every activity waveform is in the one trends row",
-   all(f'id="{i}"' in _trend for i in ("stream-spark", "gen-spark", "prefill-spark", "running-spark")))
+   all(f'id="{i}"' in _trend for i in ("perstep-spark", "gen-spark", "prefill-spark", "running-spark")))
 ck("no waveform is left behind in the value cards",
    'class="sparkline' not in _rates
    and monhtml.split('class="grid grid--4 engine"')[1].split("</section>")[0]
@@ -1299,7 +1313,8 @@ ck("a series with no samples keeps its axis line instead of an empty box",
 # says which, in its own words, and names the axis the flat line sits on.
 ck("an empty waveform says why in the series' own terms, not 'no series yet'",
    '"no series yet"' not in monjs
-   and "no denominator" in monjs and "0 streams" in monjs and "did not grow" in monjs
+   and "no records this window" in monjs and "0 streams" in monjs and "did not grow" in monjs
+   and "nothing generated" in monjs
    and "drawn on a ${knum(lo)}..${knum(top)} axis" in monjs)
 ck("a peak axis is never computed as Math.max() of nothing (which is -Infinity)",
    'Math.max(...xs, 0)' in monjs and "isFinite(lo) || !isFinite(hi)" in (WEB / "common.js").read_text())
@@ -1422,7 +1437,7 @@ ck("the cards line says busy % is coarse here, with the observed spread",
    "busy % is coarse here" in monjs and "amdgpu sysfs" in monjs)
 ck("each waveform carries the level and the spread, in two slots that never wrap",
    'avg ${knum' in monjs and 'peak ${knum' in monjs
-   and all(f'id="{i}"' in monhtml for i in ("stream-note1", "stream-note2", "gen-note1", "gen-note2",
+   and all(f'id="{i}"' in monhtml for i in ("perstep-note1", "perstep-note2", "gen-note1", "gen-note2",
                                              "prefill-note1", "prefill-note2", "running-note1", "running-note2",
                                              "kv-note1", "kv-note2")))
 # A null is "no sample in this window", not "the series was at zero": the line has to break, and the filled
@@ -1770,6 +1785,9 @@ def _cur(t, run=6):
             "spec_decode_num_accepted_tokens_total": ser(150.0 * t),
             "spec_decode_num_draft_tokens_total": ser(200.0 * t),
             "prefix_cache_queries_total": ser(0.0), "prefix_cache_hits_total": ser(0.0),
+            # the iteration RECORD counter: 50 records a second, each carrying 28 tokens (7,000 prompt + 40
+            # generated over 50 records) -- the fixture's own version of a prefill-heavy launch
+            "iteration_tokens_total_count": ser(50.0 * t), "iteration_tokens_total_sum": ser(1400.0 * t),
             "num_requests_running": ser(float(run)), "num_requests_waiting": ser(0.0),
             "gpu_cache_usage_perc": [0.4, 0.4, 4]}
 
@@ -1789,6 +1807,11 @@ ck("span latencies are delta(sum)/delta(count) of the histogram families",
    abs(_avg["itl_ms"] - 30.0) < 1e-9 and abs(_avg["ttft_ms"] - 3000.0) < 1e-9
    and abs(_avg["queue_ms"] - 800.0) < 1e-9 and abs(_avg["prompt_tokens_mean"] - 90000.0) < 1e-6
    and abs(_avg["accepted_per_draft"] - 1.5) < 1e-9, str(_avg)[:240])
+ck("a span can answer in COUNTS as well as rates, and per record as well as per second -- the decode headline "
+   "row shows these because a count cannot be misread as an average",
+   abs(_avg["generation_tokens"] - 2560.0) < 1e-6 and abs(_avg["prompt_tokens"] - 448000.0) < 1e-3
+   and abs(_avg["records"] - 3200.0) < 1e-6 and abs(_avg["gen_per_step"] - 0.8) < 1e-9
+   and abs(_avg["drafts_per_step"] - 2.0) < 1e-9, str(_avg)[:300])
 ck("and the pool's mean over the span comes from the same gauge the sparkline draws",
    abs(_avg["kv_used_pct_mean"] - 40.0) < 1e-9 and abs(_avg["requests_per_min"] - 3.0) < 1e-9, str(_avg)[:240])
 ck("every field the span is asked to report is fed by a name the ring actually stores",
@@ -1796,7 +1819,8 @@ ck("every field the span is asked to report is fed by a name the ring actually s
        ("generation_tok_s", "prompt_tok_s", "prefill_tok_s", "decode_tok_s", "stream_tok_s", "requests_per_min",
         "itl_ms", "tpot_ms", "stream_tok_s_hist", "ttft_ms", "queue_ms", "e2e_ms", "prefill_ms", "decode_ms",
         "prompt_tokens_mean", "generation_tokens_mean", "tokens_per_step", "accept_pct", "accepted_per_draft",
-        "running_mean", "waiting_mean", "kv_used_pct_mean")),
+        "running_mean", "waiting_mean", "kv_used_pct_mean", "generation_tokens", "prompt_tokens", "records",
+        "gen_per_step", "drafts_per_step")),
    str({k: _avg.get(k) for k in _avg if _avg.get(k) is None})[:220])
 
 _bad = _cur(124.0); _bad["generation_tokens_total"] = [10.0, 10.0, 1]      # the engine restarted inside the span
@@ -1847,6 +1871,8 @@ ck("and its per-stream rate divides by the mean running ACROSS the interval (4 a
    f"running {_p2['running']} stream {_p2['stream_tok_s']}")
 ck("the KV-growth series is the same interval difference of the gauge",
    abs(_p2["kv_tok_s"] - 0.0) < 1e-6 and abs(_p2["kv_used_pct"] - 40.0) < 1e-9, str(_p2)[:200])
+ck("the per-record series is a ratio of two deltas (600 generated over 750 records), not a rate",
+   abs(_p2["gen_per_step"] - 0.8) < 1e-9 and _p2["c"]["iter"] == 10750.0, str(_p2)[:220])
 _sh.slowhist.clear()
 _sh.slowhist.append({"at": 300.0, "gen_tok_s": 1.0, "prompt_tok_s": 1.0, "kv_tok_s": 1.0, "kv_used_pct": 1.0,
                      "running": 1.0, "c": {"gen": 9e9, "prompt": 9e9, "kv": 9e9}})   # a counter ahead of now
@@ -1856,6 +1882,8 @@ ck("counters that went backwards (an engine restart inside the interval) read No
    str(_back)[:200])
 ck("but the KV-growth series is not guarded that way: a negative there is the pool draining, which is its use",
    _back["kv_tok_s"] is not None and _back["kv_tok_s"] < 0, str(_back["kv_tok_s"]))
+ck("a slow point taken before the record counter existed reports no ratio rather than dividing by nothing",
+   _back["gen_per_step"] is None, str(_back)[:160])
 ck("the payload carries the slow ring and says how far apart its points are, capped like every other ring",
    len(s.get("history_slow", [])) <= W.SLOW_KEEP and s.get("slow_step_s") == W.SLOW_STEP,
    f"{len(s.get('history_slow', []))} pts, step {s.get('slow_step_s')}")
@@ -1884,7 +1912,7 @@ ck("a slot is one line: nowrap, ellipsis, tabular digits",
 ck("the rate row is three slots per card and the trend row two, so the two rows are the same shape",
    len(re.findall(r'id="note-[a-z]+"', _wh)) == 4 and len(re.findall(r'id="spans-[a-z]+"', _wh)) == 4
    and len(re.findall(r'id="poll-[a-z]+"', _wh)) == 4
-   and len(re.findall(r'id="(stream|gen|prefill|running)-note[12]"', _wh)) == 8,
+   and len(re.findall(r'id="(perstep|gen|prefill|running)-note[12]"', _wh)) == 8,
    f"{len(re.findall(chr(34) + 'id=' + chr(34) + 'note-', _wh))} note slots")
 ck("numbers in those slots go through knum(), which caps their width (5 characters: 999.9 / 16.2k / 1.01M)",
    "const knum = " in (open(os.path.join(ROOT, "serve/web/common.js")).read())

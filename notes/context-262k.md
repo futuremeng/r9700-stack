@@ -382,13 +382,18 @@ five-to-six**. Lower fan-out, worse per-stream rate. The explanation is not row 
 it is that under real traffic most of the engine's time sits inside steps that carry a prefill chunk, and a
 decoding stream advances exactly one acceptance per step whatever that step costs.
 
-**The step census (counters, this launch at 10.6 h).** `vllm:iteration_tokens_total` is one record per engine step
-and its sum is exactly the tokens the engine handled: count 229,625 records, sum 110,983,408 tokens, which is
+**The step census (counters, this launch at 10.6 h).** `vllm:iteration_tokens_total` sums to exactly the tokens the
+engine handled, and it records a decode step individually -- but a whole chunked prefill lands in ONE record
+(measured on 0.32.0 by the Monitor's own work, and recorded in README: a 29,969-token prompt produced records 29,969,
+4 and 1 against NBT 8,192). So the record count below is a few percent below the true step count, which is said where
+it matters.
 `prompt_tokens_total` 110,091,658 + `generation_tokens_total` 891,750 to the last token. So:
 
 - **99.2% of the tokens this box processed were prompt tokens.** One generated token cost 123 prompt tokens.
-- Prompt work in 8,192-token units: 110,091,658 / 8,192 = **13,439 chunk-equivalents**, i.e. **5.9% of step
-  records** carry prefill work.
+- Prompt work in 8,192-token units: 110,091,658 / 8,192 = **13,439 chunk-equivalents**, i.e. **5.9% of records**
+  are prefill work -- and that share is a floor, because one record can hold a multi-chunk prompt. True steps are
+  nearer 241,000, which moves the share to ~5.6%; nothing else below depends on the distinction, because the unit
+  prices are fixed by decode records (whose length two independent rates pin down) and by 8,192-token time units.
 - Time, from the journal's interval unions (not the per-request sums, which overlap): 4.97 h with something in
   flight out of a 10.62 h span (47%), of which queue+prefill spans cover 4.05 h and decode spans 3.18 h --
   overlapping, because one request's prefill runs inside another's decode.
@@ -400,6 +405,8 @@ and its sum is exactly the tokens the engine handled: count 229,625 records, sum
 |---|---:|---:|---:|
 | carries an 8,192-token prefill chunk | 13,439 | 1.0 s | 13,439 s |
 | no prefill in it | 216,186 | 20.6 ms | 4,453 s |
+(the second row is `records - chunks`; taking records as steps makes it 227,925 and moves the unit price to 19.5 ms,
+so the pair should be read as 1.0 s and 20 +/- 1 ms, not as four significant figures)
 | | 229,625 | mean 78 ms | **17,892 s = 4.97 h** -- the journal's union |
 
 75% of the box's busy seconds are prefill steps, and one chunk step is worth **49 ordinary decode steps**

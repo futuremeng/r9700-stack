@@ -246,8 +246,7 @@ const firstNum = (h) => {                       // reads "12.2k" and "1.01M" as 
 // span values, which are stable across that gap, stay tight.
 const near = (a, b, tol = 0.011) => (a === null || b === null ? a === b
   : Math.abs(a - b) <= Math.max(0.02, Math.abs(b) * tol));
-for (const [id, avgKey, rateKey] of [["rate-stream", "stream_tok_s", "stream_tok_s_live"],
-                                     ["rate-gen", "generation_tok_s", "generation_tok_s"],
+for (const [id, avgKey, rateKey] of [["rate-gen", "generation_tok_s", "generation_tok_s"],
                                      ["rate-prefill", "prefill_tok_s", "prompt_tok_s"],
                                      ["rate-step", "itl_ms", "itl_ms"]]) {
   // The prefill card's live number is the KV-growth ESTIMATE whenever the counter has not credited yet (it
@@ -258,11 +257,16 @@ for (const [id, avgKey, rateKey] of [["rate-stream", "stream_tok_s", "stream_tok
   // compare against, so it drops out of the list rather than turning the comparison into NaN.
   const wants = (id === "rate-prefill" && winShown === "live"
     ? [want, STAT?.rate?.kv_tok_s] : [want]).filter((v) => typeof v === "number" && isFinite(v));
+  // A live rate sampled a second apart is not the same number: on a box that idles between requests, 2.0 tok/s
+  // and 3.0 tok/s are one second of traffic apart, and a ratio test at three significant figures fails on it.
+  // Span values stay tight (0.02) because a span delta is stable across that gap; a live one gets an absolute
+  // floor of one token a second as well, which is the resolution of "is it decoding at all".
   const got = firstNum(html(id));
   console.log(`  ${(id + "            ").slice(0, 14)} ${String(html(id)).replace(/<[^>]*>/g, "").trim()}`
               + `   [${winShown} wants ${want === undefined ? "-" : want}]`);
   const tol = winShown === "live" ? 0.30 : 0.02;
-  if (wants.length && !wants.some((w) => near(got, w, tol))) {
+  const okLive = (w) => near(got, w, tol) || (winShown === "live" && Math.abs(got - w) <= 1.0);
+  if (wants.length && !wants.some(okLive)) {
     console.log(`BAD  ${id} shows ${got} for a ${winShown} window whose values are ${wants.join(" / ")}`);
     process.exitCode = 1;
   }
@@ -271,14 +275,32 @@ for (const [id, avgKey, rateKey] of [["rate-stream", "stream_tok_s", "stream_tok
       console.log(`BAD  ${id} is printing this poll (${STAT.rate[rateKey]}) under a ${winShown} label`); process.exitCode = 1;
     }
 }
+// The decode card that shows a COUNT: the whole claim of that card is that it is the engine's own cumulative
+// counter, summed over streams, with no division anywhere -- so the number on screen has to BE that counter.
+// knum() caps the width (1.01M for 1,012,345), which is a third-of-a-percent rounding, so the tolerance is 0.5%.
+{
+  const want = STAT?.since?.generation_tokens_total;
+  const got = firstNum(html("rate-gentot"));
+  console.log(`  rate-gentot      ${String(html("rate-gentot")).replace(/<[^>]*>/g, "").trim()}`
+              + `   [generation_tokens_total is ${want === undefined ? "-" : want}]`);
+  if (typeof want === "number" && !near(got, want, 0.005)) {
+    console.log(`BAD  rate-gentot shows ${got} but the engine's counter is ${want}`); process.exitCode = 1;
+  }
+  if (typeof want === "number" && /tok\/s/.test(html("rate-gentot"))) {
+    console.log("BAD  the count card carries a per-second unit; it is a count, not a rate"); process.exitCode = 1;
+  }
+}
 // The spans the headline is not, plus this poll.
 console.log("\nthe other spans, and this poll, under each card");
-for (const [id, key, rateKey] of [["spans-stream", "stream_tok_s", "stream_tok_s_live"],
+for (const [id, key, rateKey] of [["spans-gentot", "generation_tokens", "generation_tokens"],
                                   ["spans-gen", "generation_tok_s", "generation_tok_s"],
                                   ["spans-prefill", "prefill_tok_s", "prompt_tok_s"],
                                   ["spans-step", "itl_ms", "itl_ms"]]) {
   const line = t(id) || "";
-  const shown = Object.entries((STAT?.avg || {})).filter(([l, b]) => isnum(b?.[key]) && l !== winShown);
+  // spans-gentot shows two spans, not three: at knum's five-character cap three counts are 29 characters and the
+  // tightest 4-up slot holds 24 (the arithmetic is in notes/webui.md), so 1m lives in the title instead.
+  const shown = Object.entries((STAT?.avg || {})).filter(([l, b]) => isnum(b?.[key]) && l !== winShown
+              && !(id === "spans-gentot" && l === "1m"));
   console.log(`  ${(id + "            ").slice(0, 15)} ${line}`
               + (shown.length ? `   [${shown.map(([l, b]) => `${l}=${b[key].toFixed(1)}/${Math.round(b.span_s)}s`).join(" ")}]`
                               : "   [no other span has this field]"));

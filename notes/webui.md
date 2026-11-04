@@ -1210,3 +1210,60 @@ axis range went to the title with it.
   nowrap + ellipsis + tabular-nums; the rate row is three slots per card and the trend row two, so the two rows
   stay the same shape; `small--avg` is gone.
 - `tests/render-monitor.mjs`: the per-slot character budget above, against a live payload.
+
+## The decode headline row becomes counts: the per-stream average leaves the headlines (2026-11-04)
+
+Asked in Chinese, and the question was the one the page kept inviting: **why does the Monitor's aggregate decode come
+out below one stream?** 24 tok/s summed against 162 tok/s for a stream alone. The answer is arithmetic, and it is in
+notes/context-262k.md: the summed number is per **wall** second (47.6% of this launch's wall seconds hold no request
+at all), the engine runs 1.62 streams per record at 2.33 tokens a step, and 5.9% of its records carry a ~1 s prefill
+chunk against 20 ms for the rest. 0.476 x 0.191 x 1.615 = 0.147, and 0.147 x 162 = 23.8 -- the number on the screen.
+
+**But the page was making the question harder than it needed to be, and that part is fixable.** The first card in the
+headline row was the per-stream mean: `generation_tok_s / running_mean`. Two things were wrong with giving it the
+biggest type on the page.
+
+- **Its divisor is not the number of decoding streams.** `num_requests_running` counts a request in the middle of a
+  chunked prefill as running -- true in vLLM v1, and the reason the prefill card has to estimate from the KV gauge in
+  the first place. So the divisor contains streams that cannot produce a token yet, and the quotient is neither a
+  per-stream rate nor an aggregate one. The honest fan-out is `spec_decode_num_drafts_total / iteration_tokens_total`
+  = 1.62 streams a step, and nothing on the page said so.
+- **Its position invited the comparison that reads as a contradiction.** "Decode · one stream" next to "Decode · all
+  streams", with the second smaller than the first, looks like the engine getting slower when more streams run. It is
+  not: it is a denominator question, and the honest per-request figure for this launch is a median of 115 tok/s.
+
+**What the row shows now.** A count and a per-record total, both summed over streams, with no division that can be
+misread:
+
+| card | before | after |
+|---|---|---|
+| headline 1 | `Decode · one stream` -- aggregate / running | `Decode · total this launch` -- `generation_tokens_total` (1.00M tok), note line `vs 129.6M in` |
+| its slots | spans + poll of the same quotient | the counts credited inside each span (`100s +2,374`), and `poll +N tok` / `poll · none credited` |
+| waveform 1 | `Decode · one stream` (a rate per stream) | `Decode · per step` -- generated tokens per iteration record, 2.6-2.8 live |
+| waveform 2-4 | unchanged | unchanged: all-streams rate, prefill from KV growth, streams running |
+
+`webui.py` gained the fields for that: `since.generation_tokens_total` / `prompt_tokens_total` / `iterations`, per-span
+`generation_tokens` / `prompt_tokens` / `records` / `gen_per_step` / `drafts_per_step` (`iteration_tokens_total_count`
+and `_sum` joined the ring's counter list), and `gen_per_step` on both rings' points. The per-stream fields stay in the
+payload -- the request rows and `stream_tok_s_hist` still use them, and the long comment at the top of the file about
+which histogram family is the honest one is still true -- they simply do not get headlines.
+
+**Two details worth the ink.**
+
+- *A record is not a step.* `iteration_tokens_total_count` counts one record per decode step and one record per
+  chunked **prefill**, however many chunks that prompt ran over (measured on 0.32.0: a 29,969-token prompt produced
+  records 29,969, 4 and 1). So `gen_per_step` is really "per record", the waveforms' title says so, and the census in
+  notes/context-262k.md now carries the resulting error bar (~5% on the record count, nothing on the 75% of seconds).
+- *The slot budget cut a number, and that is a decision.* Three spans of counts is `1m +4.1k · 15m +31k · 1h +89k` =
+  29 characters, and the tightest 4-up slot holds 24 at 12 px, so the visible line shows the two widest spans and the
+  title carries all three. The alternative -- letting the line wrap -- is exactly the bug the previous section was
+  about: a wrapping note line changes the card's height, which changes the grid row, which moves every card below it.
+
+**Harness.** `tests/test_webui.py` asserts the new fields are fed by names the ring stores, that no per-stream rate
+reaches a headline or a waveform (`A.stream_tok_s`, `h.stream_tok_s`, `rate.stream_tok_s_live` are all absent from
+`monitor.js`), and that the trend/rate rows still have the same slot shape with the new names.
+`tests/render-monitor.mjs` checks the count card against the engine's own counter (within knum's 0.5% rounding) and
+that it carries a token unit, not a per-second one -- and its live comparison now allows an absolute 1 token/s as
+well as a ratio, because on a box that idles between requests 2.0 and 3.0 tok/s are one second of traffic apart.
+Both pass against the sidecar (`:8099`, new payload) and against the production serve (`:8080`, whose payload predates
+these fields: the card shows a dash rather than inventing a total).
