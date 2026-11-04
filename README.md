@@ -549,7 +549,12 @@ can produce (24 characters at 12 px) and the full sentences ride in the element'
 The decode cards in that row are **counts, not per-stream averages**: the first shows `generation_tokens_total` summed
 since the engine started against `prompt_tokens_total` over the same span (today 1.00M out against 129.6M in), and the
 waveform next to it plots generated tokens **per iteration record** (2.6–2.8 on the current window), never a per-stream
-tok/s. What used to sit in that first slot was the aggregate divided by the running gauge, and it was the most misread
+tok/s. The second decode card divides by **decode time, not wall time**: prompt chewing is not in the denominator, and
+the seconds it counts come from `inter_token_latency_seconds_sum` (430,954 observations summing to within 0.08% of
+`request_decode_time_seconds_sum`, which is what licenses calling either one decode seconds; the step family is
+preferred because it grows every decode step instead of only when a request finishes). It reads **166 tok/s** against
+`wall 24.4 · 14.7% dec` on its note line — and 24.4 / 166 = 0.147, the share of the span that held a stream in its
+decode phase, is printed beside it so the pair reads as a ratio instead of a contradiction. What used to sit in that first slot was the aggregate divided by the running gauge, and it was the most misread
 number on the page: the gauge counts a request in the middle of a chunked prefill as running, so the divisor includes
 streams that cannot produce a token yet, and readers reasonably asked why "all streams" came out below what one stream
 gets alone. It comes out below for reasons the step census in [notes/context-262k.md](notes/context-262k.md) measures

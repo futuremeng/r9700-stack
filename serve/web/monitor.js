@@ -368,12 +368,16 @@ function renderStatus(s) {
           + "page's decode numbers (99.2% of the tokens this box processed were prompt tokens, and the summed "
           + "rate is 1.62 streams a record x 2.33 tokens a step x 6.3 records a second). Per-span counts in the "
           + "title because only two fit the slot: ",
-    gen: "All streams together: generation_tokens_total across the span divided by the span. The engine's counters "
-       + "are cumulative, so a span mean is an exact delta of two reads, not an average of the 1 s samples (which "
-       + "would weight an idle second the same as a second with six streams running). It is lower than one stream "
-       + "alone by three factors, and none of them is the stream slowing down: 47.6% of wall seconds hold no "
-       + "request at all, 5.9% of engine records carry a prefill chunk and take ~1 s against 20 ms, and only 1.62 "
-       + "streams decode per record. notes/context-262k.md.",
+    gen: "All streams summed, per second of DECODE time: generated tokens divided by seconds the engine spent in "
+       + "the decode phase (delta of inter_token_latency_seconds_sum -- 430,954 observations this launch summing "
+       + "to within 0.08% of request_decode_time_seconds_sum, which is why either family can be called decode "
+       + "seconds; the step family is preferred because it grows every decode step instead of at request end, so a "
+       + "span with no finished request still has a denominator). Prefill chewing is NOT in the divisor, and "
+       + "neither is idle time. `wall N` beside it is the same tokens over the span's wall seconds, and `N% dec` "
+       + "is what share of the span was decode time -- the ratio of the two rates IS that share. Live example "
+       + "(2026-11-04): 68.8 tok/s of decode time against 20.1 over wall, with 29% decode seconds and 83% of the "
+       + "span holding somebody's prefill. The waveform next to it is drawn on the wall basis, because a "
+       + "decode-time waveform has no denominator in a window that was all prefill.",
     prefill: "Prompt tokens per second of the engine's own prefill time - how fast it chews when it is chewing. "
            + "The wall-clock figure is lower by the duty cycle: this launch runs ~7,900 while prefilling and "
            + "~2,200 across the wall. Over a span the histogram-backed figures count only requests that finished "
@@ -498,14 +502,22 @@ function renderStatus(s) {
   slot("poll-gentot", isnum(rate.generation_tokens) && rate.generation_tokens > 0
        ? `poll +${knum(rate.generation_tokens)} tok` : `poll \u00b7 none credited`, TT.poll);
 
-  const genV = A ? A.generation_tok_s : rate.generation_tok_s;
-  big("rate-gen", genV, "tok/s");
-  slot("note-gen", A ? `${WIN_NAME[win]} \u00b7 ${knum(A.requests_per_min || 0, 1)} req/min`
-                     : `${knum(rate.generation_tokens || 0)} tok / ${fmt(rate.window_s || 0, 1)} s`, TT.gen);
-  slot("spans-gen", spanList("generation_tok_s"), TT.spans);
-  slot("poll-gen", `poll ${knum(rate.generation_tok_s)}`
-       + (isnum((s.since || {}).generation_tokens_mean)
-          ? ` \u00b7 ${knum((s.since || {}).generation_tokens_mean)}/req` : ""), TT.poll);
+  // Decode, summed over streams, on a DECODE-TIME denominator: prompt chewing is not in the divisor.
+  // The two rates differ by 3.4x on the live launch (68.8 tok/s of decode time against 20.1 summed over the
+  // span's wall seconds) and both are honest, because the window was 83% prefill and only 29% decode-phase
+  // seconds (notes/context-262k.md). The headline answers "how fast does it decode when it decodes"; the note
+  // line keeps the summed-over-wall figure where the "how much decode does this traffic produce per second"
+  // question is answered, plus the share of the span that was decode time -- without that share the two
+  // numbers look like a contradiction instead of a ratio.
+  const wallV = A ? A.generation_tok_s : rate.generation_tok_s;
+  const decV = A ? A.decode_tok_s : rate.decode_tok_s;
+  big("rate-gen", decV, "tok/s");
+  slot("note-gen", isnum(wallV)
+       ? `wall ${knum(wallV)}` + (A && isnum(A.decode_time_pct) ? ` \u00b7 ${knum(A.decode_time_pct, 0)}% dec` : "")
+       : "\u2014", TT.gen);
+  slot("spans-gen", spanList("decode_tok_s"), TT.spans);
+  slot("poll-gen", (isnum(rate.decode_tok_s) ? `poll ${knum(rate.decode_tok_s)}` : `poll \u00b7 no decode step`)
+       + (A && isnum(A.requests_per_min) ? ` \u00b7 ${knum(A.requests_per_min, 1)} req/m` : ""), TT.poll);
 
   // Prefill, both honest speeds. Prompt tokens per second of the engine's PREFILL time (how fast it chews when
   // it is chewing) and per second of WALL time (how much chewing an hour contains); this launch runs ~7,900 and
@@ -737,7 +749,9 @@ function renderStatus(s) {
            + "fan-out times the acceptance length: ~1.6 streams a record x 2.33 tokens a step on this launch, "
            + "against the 2.33 a stream gets of its own. At 0.32 a whole chunked prefill lands in one record, so "
            + "the line dips exactly where the engine was prefilling; a gap is an interval with no record in it.",
-    gen: "All streams together. Flat stretches are the engine prefilling rather than decoding, which is why the "
+    gen: "All streams summed over WALL seconds -- the summed figure, not the decode-time one the card above "
+       + "leads with, because a decode-time waveform has no denominator in a window that was all prefill. "
+       + "Flat stretches are the engine prefilling rather than decoding, which is why the "
        + "peak and the average of this line differ by an order of magnitude on a prefill-heavy launch.",
     prefill: "Prefill estimated from how fast the KV pool is growing (the counter credits at request end, so the "
            + "counter series would be a flat line with one spike). It goes NEGATIVE when finishing requests free "

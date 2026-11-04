@@ -1,4 +1,27 @@
 # Changelog
+## the decode rate's denominator stops counting prompt chewing
+
+Follow-up to the counts change: the summed decode card still read 15-20 tok/s, and the question was what its time basis
+was -- and whether seconds spent chewing prefill belong in it. They don't.
+
+- **Headline is now generated tokens per second of DECODE time**: the divisor is `inter_token_latency_seconds_sum`,
+  measured against `request_decode_time_seconds_sum` on this launch (430,954 observations / 24,236.14 s against 1,812 /
+  24,216.27 s -- 0.08% apart). The step family wins because it grows every decode step; the request family only moves
+  at request end, so a span of pure decode can have no denominator at all. Neither family -> `None`, not a rate of 0.
+- **The summed-over-wall figure stays on the same card** (`wall 24.4`) with the share of the span that was decode time
+  (`14.7% dec`): the ratio of the two rates IS that share (24.4/166 = 0.147), so the pair reads as a ratio, not a
+  contradiction. `poll 190 · 6.9 req/m`, or `poll · no decode step`.
+- **Field names carry their denominator**: `decode_tok_s`, `decode_time_s`, `decode_time_req_s` (the request-family
+  version, kept for reconciliation), `decode_time_pct`; `generation_tok_s` stays the wall figure. The
+  `Decode · summed, wall` waveform stays on the wall basis -- a decode-time waveform has no denominator in an
+  all-prefill window and a line of gaps would read as an idle box.
+- **What the bases answer**: decode when it decodes = 166 tok/s now, 68.8 over a 661 s window, 41.8 across the launch,
+  158 tok/s median per request in that window. Per wall second = 24.4 now, 23.7 across the launch. The gap is traffic
+  mix: that window was 4,234,830 prompt tokens against 13,139 generated, 83% prefill seconds, 29% decode-phase seconds.
+- **Tests**: the ring fixture is now self-consistent (20 steps/s at 30 ms with 40 tok/s = 2 tokens a step), step-family
+  preference and request-family fallback are both pinned, flat counters give None, and the harness requires the `wall N`
+  figure and the share suffix to be present.
+
 ## the Monitor's decode row shows counts, not per-stream averages
 
 Asked why the Monitor's aggregate decode reads below one stream, and the page was part of the problem: the biggest

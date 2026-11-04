@@ -1778,7 +1778,10 @@ def _cur(t, run=6):
             "request_generation_tokens_sum": ser(30.0 * t), "request_generation_tokens_count": ser(0.05 * t),
             "request_time_per_output_token_seconds_sum": ser(0.08 * 1.5 * t),
             "request_time_per_output_token_seconds_count": ser(1.5 * t),
-            "inter_token_latency_seconds_sum": ser(0.03 * 1.5 * t), "inter_token_latency_seconds_count": ser(1.5 * t),
+            # one observation per engine STEP: 20 steps a second at 30 ms each = 0.6 s of decode time a second,
+            # which with 40 generated tokens a second is 2.0 tokens a step -- the family the decode-time
+            # denominator comes from, so it has to be consistent with the token rate, not just present
+            "inter_token_latency_seconds_sum": ser(0.03 * 20.0 * t), "inter_token_latency_seconds_count": ser(20.0 * t),
             "time_to_first_token_seconds_sum": ser(0.05 * 3 * t), "time_to_first_token_seconds_count": ser(0.05 * t),
             "request_queue_time_seconds_sum": ser(0.05 * 0.8 * t), "request_queue_time_seconds_count": ser(0.05 * t),
             "spec_decode_num_drafts_total": ser(100.0 * t),
@@ -1798,8 +1801,30 @@ _avg = W.trailing(_snaps, _cur(124.0), 124.0)["1m"]
 ck("a span rate is the delta of the cumulative counter over the span",
    abs(_avg["generation_tok_s"] - 40.0) < 1e-9 and abs(_avg["prompt_tok_s"] - 7000.0) < 1e-6, str(_avg)[:200])
 ck("the two speeds the box is judged on, token-weighted from the engine's own seconds",
-   abs(_avg["prefill_tok_s"] - 7000.0) < 1e-6 and abs(_avg["decode_tok_s"] - 80.0) < 1e-9,
-   f"prefill {_avg['prefill_tok_s']} decode {_avg['decode_tok_s']}")
+   abs(_avg["prefill_tok_s"] - 7000.0) < 1e-6 and abs(_avg["decode_tok_s"] - 40.0 / 0.6) < 1e-9,
+   f"prefill {_avg['prefill_tok_s']} decode-time {_avg['decode_tok_s']}")
+# The decode rate's divisor is DECODE time, so prefill chewing cannot drag it down; the wall rate above is the
+# figure that does, and the share line is the ratio between them. Both families are reported so the reader can
+# see which seconds were counted.
+ck("decode time comes from the per-STEP family (0.6 s a second), and the share of the span is its ratio to the span",
+   abs(_avg["decode_time_s"] - 0.6 * 64.0) < 1e-9 and abs(_avg["decode_time_pct"] - 60.0) < 1e-9,
+   f"{_avg['decode_time_s']} s, {_avg['decode_time_pct']}% of {_avg['span_s']} s")
+ck("the request-end family stays reported alongside it (gen over request_decode_time_seconds_sum = 80)",
+   abs(_avg["decode_time_req_s"] - 80.0) < 1e-9, str(_avg["decode_time_req_s"]))
+# One poll, same rule: the divisor is decode seconds, and a window with no decode step in it has no denominator.
+# A rate of 0 there would claim a measured throughput of nothing when the truth is "this second was prefill, or
+# idle" -- which is a fact about the window, not a number to average with the others.
+ck("a poll's decode-time rate is its tokens over its decode seconds, from the per-step family",
+   abs(W.derive(_cur(200.0), _cur(199.0), 1.0, 1_000_000, {}, "observe", 0, [])["rate"]["decode_tok_s"]
+       - 40.0 / 0.6) < 1e-9,
+   str(W.derive(_cur(200.0), _cur(199.0), 1.0, 1_000_000, {}, "observe", 0, [])["rate"]["decode_tok_s"]))
+ck("counters that did not move give no decode-time rate rather than a rate of zero",
+   W.derive(_cur(200.0), _cur(200.0), 1.0, 1_000_000, {}, "observe", 0, [])["rate"]["decode_tok_s"] is None)
+_nostep = dict(_cur(200.0)); _nostep.pop("inter_token_latency_seconds_sum")
+_nostep_b = dict(_cur(199.0)); _nostep_b.pop("inter_token_latency_seconds_sum")
+ck("without the per-step family the request family stands in (0.5 s of decode seconds -> 80 tok/s)",
+   abs(W.derive(_nostep, _nostep_b, 1.0, 1_000_000, {}, "observe", 0, [])["rate"]["decode_tok_s"] - 80.0) < 1e-9,
+   str(W.derive(_nostep, _nostep_b, 1.0, 1_000_000, {}, "observe", 0, [])["rate"]["decode_tok_s"]))
 ck("a per-stream average over a span divides by the MEAN concurrency of the span, not by this poll's running",
    abs(_avg["running_mean"] - 4.0) < 1e-9 and abs(_avg["stream_tok_s"] - 10.0) < 1e-9,
    f"running_mean {_avg['running_mean']} stream {_avg['stream_tok_s']}")
@@ -1820,7 +1845,7 @@ ck("every field the span is asked to report is fed by a name the ring actually s
         "itl_ms", "tpot_ms", "stream_tok_s_hist", "ttft_ms", "queue_ms", "e2e_ms", "prefill_ms", "decode_ms",
         "prompt_tokens_mean", "generation_tokens_mean", "tokens_per_step", "accept_pct", "accepted_per_draft",
         "running_mean", "waiting_mean", "kv_used_pct_mean", "generation_tokens", "prompt_tokens", "records",
-        "gen_per_step", "drafts_per_step")),
+        "gen_per_step", "drafts_per_step", "decode_time_s", "decode_time_pct", "decode_time_req_s")),
    str({k: _avg.get(k) for k in _avg if _avg.get(k) is None})[:220])
 
 _bad = _cur(124.0); _bad["generation_tokens_total"] = [10.0, 10.0, 1]      # the engine restarted inside the span

@@ -466,6 +466,28 @@ single-stream latency (197.6 against 179.8) and costs 18% of aggregate at 32 in 
 back on is the one lever that removes prompt work rather than redistributing it, and it is off on purpose for the
 262k recipe (notes/kv-fp8-qsa.md and the 262k tables above).
 
+**"Shouldn't the seconds spent chewing prompts be out of the decode denominator?" -- yes, and the two families the
+engine offers agree (2026-11-04, same launch).** vLLM publishes two ways to count decode seconds, and they cross-check
+to 0.08%: `inter_token_latency_seconds` carries 430,954 observations summing to **24,236.14 s**, and
+`request_decode_time_seconds` carries 1,812 observations summing to **24,216.27 s**. Both are *stream*-seconds: a step
+with two streams decoding accrues twice. The step family is the one to divide by, because it moves on every decode step
+while the request family moves only when a request finishes -- over a 60 s span of pure decode with long generations the
+request family can have no denominator at all. Dividing the same generated tokens by them gives the two figures people
+actually mean:
+
+| basis for the summed decode rate | denominator | this launch | the 661 s window measured |
+|---|---|---:|---:|
+| wall seconds (what a day of traffic produces) | span | 23.7 tok/s | 20.1 tok/s |
+| seconds with something in flight | journal union | 80.8 | 21.3 |
+| **decode seconds (prompt chewing excluded)** | ITL / request-decode sums | **41.8** | **68.8** |
+| one request's own decode window | per request | 115 (median) | 158 (median, p10 24.4 / p90 176.8) |
+
+The window's shape is why the first and third differ by 3.4x: 35 requests, **4,234,830 prompt tokens against 13,139
+generated** (322:1), 94% of the span holding a request, 83% holding somebody's prefill, and **29% holding a stream in
+its decode phase** -- at 1 Hz, 0 streams decoding for 71% of seconds, 1 stream for 28%, 2 for 1%. 20.1 / 68.8 = 0.29,
+which is that same share: the ratio of the two rates IS the decode-time share, so the Monitor prints both and the share
+next to them (notes/webui.md).
+
 ## Why the GLM-5.3-Flash 262k failure did not repeat here
 
 [release-v0.3.7.md](release-v0.3.7.md) records GLM-5.3-Flash TP8 coming up at 262k and then dying inside

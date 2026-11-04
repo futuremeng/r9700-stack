@@ -246,7 +246,7 @@ const firstNum = (h) => {                       // reads "12.2k" and "1.01M" as 
 // span values, which are stable across that gap, stay tight.
 const near = (a, b, tol = 0.011) => (a === null || b === null ? a === b
   : Math.abs(a - b) <= Math.max(0.02, Math.abs(b) * tol));
-for (const [id, avgKey, rateKey] of [["rate-gen", "generation_tok_s", "generation_tok_s"],
+for (const [id, avgKey, rateKey] of [["rate-gen", "decode_tok_s", "decode_tok_s"],
                                      ["rate-prefill", "prefill_tok_s", "prompt_tok_s"],
                                      ["rate-step", "itl_ms", "itl_ms"]]) {
   // The prefill card's live number is the KV-growth ESTIMATE whenever the counter has not credited yet (it
@@ -290,10 +290,28 @@ for (const [id, avgKey, rateKey] of [["rate-gen", "generation_tok_s", "generatio
     console.log("BAD  the count card carries a per-second unit; it is a count, not a rate"); process.exitCode = 1;
   }
 }
+// The summed-over-wall figure has to stay visible next to the decode-time headline: the card's note line carries
+// `wall N` (and the share of the span that was decode time). Without it the two bases are not comparable on the
+// page, and "why is this 69 when the other one was 20" becomes a guess.
+{
+  const line = t("note-gen") || "";
+  const b = STAT?.avg?.[winShown] || {};
+  const wallWant = winShown === "live" ? STAT?.rate?.generation_tok_s : b.generation_tok_s;
+  const gotWall = firstNum(line.replace(/^.*wall /, "").match(/^[\d.,kKM]+/) ? line.replace(/^.*wall /, "").match(/^[\d.,kKM]+/)[0] : "");
+  console.log(`  note-gen         ${line}` + (wallWant == null ? "   [no wall rate in this payload]"
+              : `   [wall wants ${wallWant}]`));
+  if (typeof wallWant === "number" && !near(gotWall, wallWant, 0.02)) {
+    console.log(`BAD  note-gen carries ${gotWall} for a wall figure of ${wallWant} -- the summed rate is missing`);
+    process.exitCode = 1;
+  }
+  if (isnum(b.decode_time_pct) && !/% dec/.test(line)) {
+    console.log("BAD  the card gives a decode-time rate without the share of the span it covers"); process.exitCode = 1;
+  }
+}
 // The spans the headline is not, plus this poll.
 console.log("\nthe other spans, and this poll, under each card");
 for (const [id, key, rateKey] of [["spans-gentot", "generation_tokens", "generation_tokens"],
-                                  ["spans-gen", "generation_tok_s", "generation_tok_s"],
+                                  ["spans-gen", "decode_tok_s", "decode_tok_s"],
                                   ["spans-prefill", "prefill_tok_s", "prompt_tok_s"],
                                   ["spans-step", "itl_ms", "itl_ms"]]) {
   const line = t(id) || "";

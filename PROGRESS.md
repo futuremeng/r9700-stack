@@ -2813,3 +2813,31 @@ unchanged slot shape; `tests/render-monitor.mjs` checks the count card equals th
 rounding), carries a token unit not a per-second one, and allows an absolute 1 tok/s on live comparisons (2.0 vs 3.0
 tok/s is one second of traffic apart on a box that idles between requests). Both pass against the sidecar and against
 production, where the payload predates the fields and the card shows a dash instead of inventing a total.
+
+## 2026-11-04: the decode rate's denominator stops counting prefill -- and the two families vLLM offers agree to 0.08%
+
+**The follow-up question.** 吃 prompt 的时间是不是不应该算在里面? 综合 decode 速度可以另外体现. Right on both counts:
+the summed card's 15-20 tok/s was per **wall** second, and prefill chewing has no business in a decode denominator.
+
+**What the engine actually offers.** `inter_token_latency_seconds` = 430,954 observations summing to 24,236.14 s;
+`request_decode_time_seconds` = 1,812 observations summing to 24,216.27 s -- **0.08% apart**, both being *stream*-seconds
+(a step with two decoding streams accrues twice). The step family is now the divisor, because it grows on every decode
+step while the request family moves only at request end: a 60 s span of pure decode with long generations can have no
+request finish inside it, and then the request family reports no denominator at all. If a build publishes neither, the
+field is `None`.
+
+**The card, live:** `166 tok/s` with `wall 24.4 · 14.7% dec` under it. The summed-over-wall figure is kept (the
+`Decode · summed, wall` waveform stays on the wall basis too, since a decode-time waveform has no denominator in an
+all-prefill window), and the **share of the span that was decode time** is printed because the ratio of the two rates
+*is* that share: 24.4 / 166 = 0.147.
+
+**Measured on one 661 s window** (journal + counters, both computed): 35 requests, **4,234,830 prompt tokens against
+13,139 generated** (322:1); 94% of the span with something in flight, 83% with a prefill running, **29% with a stream in
+its decode phase** (1 Hz: 0 streams 71% of seconds, 1 stream 28%, 2 streams 1%); per-request own decode median **158
+tok/s** (p10 24.4, p90 176.8); token-weighted over decode seconds **68.8 tok/s** against **20.1** over wall. That ratio
+0.29 is the decode-time share exactly -- the difference between the two bases is nothing but traffic mix.
+
+Tests: the ring fixture is now self-consistent (20 steps a second at 30 ms with 40 tokens a second = 2 tokens a step, so
+the denominator can't be satisfied by an arbitrary sum), step-family preference and request-family fallback are pinned,
+flat counters yield None, and `tests/render-monitor.mjs` fails if the `wall N` figure or the share suffix goes missing.
+Both harness runs (:8099 sidecar, :8080 production) pass.

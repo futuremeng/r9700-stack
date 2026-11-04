@@ -291,6 +291,13 @@ def trailing(snaps, cur, t0, spans=AVG_SPANS):
         first = lambda fams: next((msk(h) for h in fams if dn(h + "_count")), None)
         gen, pre = dn("generation_tokens_total"), dn("prompt_tokens_total")
         pt, dtm = dn("request_prefill_time_seconds_sum"), dn("request_decode_time_seconds_sum")
+        # Decode time, from the family that grows EVERY decode step rather than at request end. Measured on this
+        # launch (2026-11-04): inter_token_latency_seconds carries 430,954 observations summing to 24,236.14 s
+        # and request_decode_time_seconds carries 1,812 observations summing to 24,216.27 s -- 0.08% apart, which
+        # is what licenses using either as "seconds the box spent in the decode phase". The step family is
+        # preferred because a short span in which no request finished still has a denominator; at request-end
+        # granularity a 60 s span of pure decode would report none. Both are reported so a reader can reconcile.
+        dtl = dn("inter_token_latency_seconds_sum")
         run = [x["run"] for x in snaps if x["at"] > base["at"]]
         wait = [x["wait"] for x in snaps if x["at"] > base["at"]]
         kvv = [x["kv"] for x in snaps if x["at"] > base["at"] and x["kv"] is not None]
@@ -298,7 +305,7 @@ def trailing(snaps, cur, t0, spans=AVG_SPANS):
         iters = dn("iteration_tokens_total_count")
         dgrams = dn("spec_decode_num_draft_tokens_total")
         hitq, hits = dn("prefix_cache_queries_total"), dn("prefix_cache_hits_total")
-        reset = any(v is not None and v < 0 for v in (gen, pre, drafts, iters))
+        reset = any(v is not None and v < 0 for v in (gen, pre, drafts, iters, dtm, dtl))
         itl, tpot = first(ITL_STEP), first(TPOT)
         genps = gen / span_s if gen is not None else None
         runmean = (sum(run) / len(run)) if run else None
@@ -323,7 +330,16 @@ def trailing(snaps, cur, t0, spans=AVG_SPANS):
             # per second of prefill time, and generated tokens per second of decode time. The engine's own
             # prefill/decode seconds, not wall time -- which is why they stay readable while the queue moves.
             "prefill_tok_s": (pre / pt) if (pre is not None and pt) else None,
-            "decode_tok_s": (gen / dtm) if (gen is not None and dtm) else None,
+            # Generated tokens per second of DECODE time: prompt chewing is not in the denominator, so this is
+            # "how fast it decodes when it is decoding". Measured on the live launch, 68.8 tok/s against 20.1
+            # summed over the span's wall seconds -- the gap is that only 29% of those seconds held a stream in
+            # its decode phase while 83% held somebody's prefill. The wall figure stays visible (generation_tok_s
+            # above) because that is what the traffic produces per wall second; the two answer different
+            # questions and the page shows both.
+            "decode_tok_s": (gen / dtl) if (gen is not None and dtl) else None,
+            "decode_time_s": None if reset else dtl,
+            "decode_time_req_s": (gen / dtm) if (gen is not None and dtm) else None,
+            "decode_time_pct": (100.0 * dtl / span_s) if (dtl is not None and span_s) else None,
             "itl_ms": itl, "tpot_ms": tpot,
             "stream_tok_s_hist": (1e3 / tpot) if tpot else ((1e3 / itl) if itl else None),
             "ttft_ms": msk("time_to_first_token_seconds"), "queue_ms": msk("request_queue_time_seconds"),
@@ -395,6 +411,15 @@ def derive(cur, prev, dt, cap, info, mode, kept, hist):
     rate = {"window_s": dt, "requests": nrec if have else None, "requests_per_min": per(nrec),
             "generation_tokens": d("generation_tokens_total") if have else None,
             "generation_tok_s": gen_rate, "prompt_tok_s": per(d("prompt_tokens_total")),
+            # Per poll: generated tokens per second of DECODE time in this window. d(ITL_sum) is 0 when no decode
+            # step ran (a window that was all prefill, or idle) -- then there is no denominator, which is a fact
+            # about the window rather than a rate of 0.
+            "decode_tok_s": ((d("generation_tokens_total") / (d("inter_token_latency_seconds_sum")
+                                                              or d("request_decode_time_seconds_sum")))
+                             if (d("inter_token_latency_seconds_sum") or d("request_decode_time_seconds_sum")) > 0
+                             else None),
+            "decode_time_s": (d("inter_token_latency_seconds_sum")
+                              or d("request_decode_time_seconds_sum")) or None,
             # aggregate / running: a rate for the stream you are watching, available while it runs (1/itl
             # is not -- see the block above). Exact only when the streams run at the same rate.
             "stream_tok_s_live": (gen_rate / run_now) if (gen_rate is not None and run_now >= 1) else None,

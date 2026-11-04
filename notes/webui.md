@@ -1267,3 +1267,50 @@ that it carries a token unit, not a per-second one -- and its live comparison no
 well as a ratio, because on a box that idles between requests 2.0 and 3.0 tok/s are one second of traffic apart.
 Both pass against the sidecar (`:8099`, new payload) and against the production serve (`:8080`, whose payload predates
 these fields: the card shows a dash rather than inventing a total).
+
+### ...and then the denominator: prefill time comes out of the decode rate (same day)
+
+The summed card still read ~15-20 tok/s, and the follow-up question was the right one: **what is the time basis, and
+shouldn't the seconds spent chewing prompts not count?** It shouldn't, and now they don't -- with the summed figure kept
+beside it rather than replaced.
+
+**What the engine offers as "decode seconds".** Two families, and they agree: `inter_token_latency_seconds` carries
+430,954 observations summing to 24,236.14 s over this launch; `request_decode_time_seconds` carries 1,812 observations
+summing to 24,216.27 s -- **0.08% apart**. The first is one observation per decode STEP (per stream, so two streams
+deciding together accrue twice: it is stream-seconds, not wall seconds), the second is one per finished request. The
+step family is used because it grows **every decode step**, while the request family only moves when a request finishes
+-- over a 60 s span of pure decode with long generations, the request family can report no denominator at all. When a
+build publishes neither, `None`, not a division.
+
+**The card now:**
+```
+Decode · summed, decode time     166 tok/s
+                                 wall 24.4 · 14.7% dec
+                                 100s 164
+                                 poll 190 · 6.9 req/m
+```
+Headline = generated tokens ÷ decode seconds. The note line keeps the summed-over-wall figure (`wall 24.4`) and adds the
+**share of the span that was decode time** (`14.7% dec`) -- because the ratio of the two rates *is* that share
+(24.4 / 166 = 0.147), and without it the pair reads as a contradiction. The spans line is the same quantity over the
+other spans; the poll line is the poll's own decode-time rate plus the span's arrival rate, and it reads
+`poll · no decode step` when the window held no decode step (no denominator is not a rate of zero).
+
+**Field names say which seconds were counted**, because the last thing this page needs is a rate whose denominator is
+guesswork: `decode_tok_s` (÷ decode seconds, step family preferred), `decode_time_s` (those seconds), `decode_time_req_s`
+(the request-family version, reported so the two can be reconciled), `decode_time_pct` (share of span), and
+`generation_tok_s` unchanged as the wall figure. The `Decode · summed, wall` waveform deliberately stays on the wall
+basis: a decode-time waveform has no denominator in a window that was all prefill, and a line full of gaps would be
+read as an idle box.
+
+**What the two bases are for.** The headline answers "how fast does this engine decode when it is decoding" (166 tok/s
+now; 158 tok/s median per request over the launch; 41.8 tok/s summed across the whole launch's decode seconds, against
+68.8 for the current window). `wall N` answers "how much decode does this traffic produce per second of the day"
+(24.4 now, 23.7 over the launch). The gap between them is entirely the traffic mix: for the 661 s window measured, 83%
+of the span held somebody's prefill, 94% held a request, and only 29% held a stream in its decode phase.
+
+**Harness.** `tests/test_webui.py` checks the fixture's ring is self-consistent (20 steps a second at 30 ms with 40
+tokens a second = 2 tokens a step, so the decode-time denominator cannot be satisfied by an arbitrary sum), that the
+step family wins when present, that the request family stands in when it is not, that flat counters give `None` rather
+than 0, and that `decode_time_s` / `decode_time_req_s` / `decode_time_pct` are fed. `tests/render-monitor.mjs` requires
+the `wall N` figure to still be on the page against `avg[win].generation_tok_s`, and requires the share suffix whenever
+a decode-time rate is shown.
