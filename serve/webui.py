@@ -94,7 +94,12 @@ WANT = ("model_name", "model_compiler", "tensor_parallel_size", "pipeline_parall
 # the card answers is "which settings change the numbers on this page, and how is the box reached", and a full
 # dump buries those under PYTHONPATH, VIRTUAL_ENV and whatever the last shell exported -- and it is exactly the
 # shape of thing that leaks a credential into a page that is served on every interface here.
-ENV_PREFIX = ("VLLM_", "R9K_WEB_", "R9700_WEBUI_", "R9700_", "WEBUI_")
+ENV_PREFIX = ("VLLM_", "R9K_", "R9700_", "WEBUI_")
+# `R9K_` is listed as a whole namespace rather than name by name because it is ours, and half of the switches in
+# it decide WHICH KERNEL RUNS -- so they change what a measured number means while staying invisible to a gate
+# that reads only the engine's measured config. On 2026-11-04 that blind spot was not hypothetical: two launches
+# died inside r9k_router_gemm_kernel and the follow-up experiment was one env name (R9K_ROUTER_MAX_M=4), which
+# recipe-check reported nothing about. tools/recipe-check.py now compares this block against the launcher's own.
 ENV_NAMES = ("LOCAL_ENV", "HOST", "PORT", "MODEL", "DEVICES", "GPUS", "TP", "MAXLEN", "NSEQ", "NBT", "UTIL",
              "KVDTYPE", "MTP", "PREFIX_CACHE", "CG_SIZES", "EAGER", "OFFLOAD_GB", "ATTN", "REASONING",
              "TOOLCALL", "FOLD", "AR_QUANT", "HC_FP8", "HC_FP8_DECODE", "FP8_BLOCK", "FP8_QA",

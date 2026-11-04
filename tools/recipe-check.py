@@ -43,6 +43,32 @@ TRUTH = {
 BOOLS = {"enable_prefix_caching": ("--no-enable-prefix-caching", "prefix_cache")}
 JSON_FLAGS = ("--speculative-config", "--compilation-config")
 
+# The environment is part of the recipe too. Half of this stack's switches are `R9K_*` names that decide WHICH
+# KERNEL RUNS -- they change what a measured number means without appearing anywhere in the engine's measured
+# config. Measured on 2026-11-04: this tool answered "PRODUCTION recipe" for a launch whose gate kernel was
+# switched by `R9K_ROUTER_MAX_M=4`, correctly and uselessly. So the launcher prints its env block
+# (`ENVRECIPE=1`), records it in the recipe file as `env`, the serve publishes its own (whitelisted) environment
+# in `/api/status`, and the three are compared here.
+ENV_NS = re.compile(r"^(R9K_|R9700_)")
+# ... except the Monitor's own plumbing. R9K_WEB_* and R9700_WEBUI_* decide where a page listens and which journal
+# it appends to; they do not change what the engine measures, and the launcher exports them for the page after the
+# recipe file is written, so comparing them would report a difference that is only the order of the script.
+ENV_PAGE = re.compile(r"^(R9K_WEB_|R9700_WEBUI_)")
+# Same rule the page uses: a name that looks like a credential is compared for presence only, and its value never
+# reaches this tool's output.
+SECRET = re.compile(r"KEY|TOKEN|SECRET|PASS|CRED|AUTH", re.I)
+# Names the launcher either defaults or reads from the operator's shell. Asking for the PRODUCTION truth with any
+# of them still set would make "production" depend on who typed the command -- the same reason this file keeps no
+# copied defaults.
+OPERATOR_KNOBS = ("MAXLEN", "NSEQ", "NBT", "UTIL", "KVDTYPE", "MTP", "PREFIX_CACHE", "CGSIZES", "EXTRA",
+                  "EAGER", "AITER", "HWQ", "MWAITX", "OFFLOAD_GB", "ATTN", "REASONING", "TOOLCALL", "FORCE")
+
+
+def clean_env(extra=None):
+    env = {k: v for k, v in os.environ.items() if not ENV_NS.match(k) and k not in OPERATOR_KNOBS}
+    env.update(extra or {})
+    return env
+
 
 def production_args():
     """The command the launcher in THIS checkout would run, with no test env set.
@@ -51,7 +77,7 @@ def production_args():
     environment supplies HOME (the launcher derives $VENV and $LOG from it), so the printed line is the real one.
     """
     r = subprocess.run(["bash", str(LAUNCHER)],
-                       env={**os.environ, "DRY": "1", "FORCE": "1"},
+                       env=clean_env({"DRY": "1", "FORCE": "1"}),
                        capture_output=True, text=True, timeout=60)
     line = next((l for l in (r.stdout + r.stderr).splitlines() if l.startswith("launch:")), "")
     return line[len("launch:"):].strip()
@@ -122,6 +148,83 @@ def compare(cmd, config, meta):
     return dev
 
 
+def production_env():
+    """The environment the launcher in THIS checkout exports, as a dict -- operator shell knobs stripped."""
+    r = subprocess.run(["bash", str(LAUNCHER)], env=clean_env({"DRY": "1", "FORCE": "1", "ENVRECIPE": "1"}),
+                       capture_output=True, text=True, timeout=60)
+    line = next((l for l in (r.stdout + r.stderr).splitlines() if l.startswith("env recipe:")), "")
+    try:
+        return json.loads(line[len("env recipe:"):])
+    except ValueError:
+        return None
+
+
+def live_env(st):
+    """The environment of the process that answered, as ({name: value, "~name": ""}, source).
+
+    /proc first when this tool can read it -- the payload names the pid, and /proc shows every name, while the
+    page's block is a whitelist and a whitelist can hide exactly the knob being looked for. The payload's own
+    block is the fallback (a serve on another machine), and the source is printed either way so the reader knows
+    how complete the answer is."""
+    pid = (st.get("env") or {}).get("pid")
+    if pid:
+        try:
+            raw = Path(f"/proc/{int(pid)}/environ").read_bytes()
+        except (OSError, ValueError):
+            raw = b""
+        out = {}
+        for kv in raw.split(b"\0"):
+            if not kv:
+                continue
+            k, _, v = kv.decode("utf-8", "replace").partition("=")
+            if not ENV_NS.match(k) or ENV_PAGE.match(k):
+                continue
+            if SECRET.search(k):
+                out["~" + k] = ""
+            else:
+                out[k] = v
+        if out:
+            return out, f"/proc/{pid}/environ"
+    vars_ = (st.get("env") or {}).get("vars")
+    return (vars_, "the payload's whitelisted env block") if vars_ else (None, "nothing readable")
+
+
+def compare_env(prod, live, meta):
+    """Environment deviations: {key, production, engine, meta} per name that disagrees.
+
+    `live` is the environment the SERVE publishes about itself (already whitelisted by the page; a name it treats
+    as a credential arrives as `~NAME` with an empty value, and such a name is compared for presence only -- a
+    gate that compared secret values would be a gate that leaks them into its own output). Anything in our own
+    namespace that the recipe does not record is a deviation: an unrecorded knob is how a test config survives.
+    """
+    if prod is None:
+        return [{"key": "env", "production": None, "engine": None, "meta": None}]
+    if live is None:
+        return [{"key": "environment", "production": f"{len(prod)} R9K_/R9700_ names",
+                 "engine": "not published (this build's payload has no env block)", "meta": None}]
+    masked = {k[1:] for k in live if k.startswith("~") and not ENV_PAGE.match(k[1:])}
+    live = {k: v for k, v in live.items() if not k.startswith("~") and not ENV_PAGE.match(k)}
+    meta = meta if isinstance(meta, dict) else {}
+    # A credential is never printed from either side: the launcher's environment can hold one, and a report that
+    # names its value would be a leak through the very tool that is supposed to be safe to run in front of others.
+    prod = {k: ("set, value withheld" if SECRET.search(k) else v)
+            for k, v in prod.items() if not ENV_PAGE.match(k)}
+    dev = []
+    for name in sorted(set(prod) | {k for k in live if ENV_NS.match(k)} | {k for k in masked if ENV_NS.match(k)}):
+        want, got, m = prod.get(name), live.get(name), meta.get(name)
+        if name not in prod:
+            dev.append({"key": f"env:{name}", "production": None,
+                        "engine": "set, value withheld" if name in masked else got,
+                        "meta": "set" if name in meta else m})
+        elif name not in live and name not in masked:
+            dev.append({"key": f"env:{name}", "production": want, "engine": None, "meta": m})
+        elif name in prod and name not in masked and str(prod[name]) != str(live[name]):
+            dev.append({"key": f"env:{name}", "production": want, "engine": got, "meta": m})
+        elif isinstance(meta, dict) and meta and name in meta and str(meta[name]) != str(live.get(name)):
+            dev.append({"key": f"env:{name}", "production": want, "engine": got, "meta": m})
+    return dev
+
+
 def main(argv):
     as_json = "--json" in argv
     # A URL, or a saved /api/status JSON -- the file mode is what the test suite drives, so the comparison can be
@@ -143,22 +246,34 @@ def main(argv):
         return 2
     url = url or arg
     dev = compare(cmd, st.get("config") or {}, st.get("meta") or {})
+    livev, env_src = live_env(st)
+    env_dev = compare_env(production_env(), livev, (st.get("meta") or {}).get("env"))
     if as_json:
-        print(json.dumps({"production_launch": cmd, "live_launch": st.get("launch"), "deviations": dev}))
-    elif not dev:
-        print(f"PRODUCTION recipe ({url}): every measured knob matches this tree's launcher.")
+        print(json.dumps({"production_launch": cmd, "live_launch": st.get("launch"), "deviations": dev,
+                          "env_deviations": env_dev}))
+    elif not dev and not env_dev:
+        print(f"PRODUCTION recipe ({url}): every measured knob and every R9K_/R9700_ env name matches this "
+              f"tree's launcher.")
         print(f"  {cmd}")
+        print(f"  env read from {env_src}")
     else:
-        print(f"NOT the production recipe ({url}) -- {len(dev)} measured knob(s) differ:")
-        for d in dev:
-            print(f"  {d['key']}: this tree says {d['production']}, the live serve says engine={d['engine']} "
-                  f"meta={d['meta']}")
+        if dev:
+            print(f"NOT the production recipe ({url}) -- {len(dev)} measured knob(s) differ:")
+            for d in dev:
+                print(f"  {d['key']}: this tree says {d['production']}, the live serve says engine={d['engine']} "
+                      f"meta={d['meta']}")
+        if env_dev:
+            print(f"\n{len(env_dev)} environment knob(s) differ -- these change which kernel runs, and the engine's "
+                  f"config does not show them (env read from {env_src}):")
+            for d in env_dev:
+                print(f"  {d['key']}: this tree says {d['production']}, the live serve says engine={d['engine']} "
+                      f"meta={d['meta']}")
         print(f"\nrestore with:")
         print(f"  STOP=1 bash serve/native-flashnext.sh")
         print(f"  tmux new-session -d -s r9700-native-flashnext 'WEBUI=same LOG=<the launch's log> "
               f"bash $PWD/serve/native-flashnext.sh 2>&1 | tee -a <log>'")
         print(f"the live box was started as: {st.get('launch')}")
-    return 1 if dev else 0
+    return 1 if (dev or env_dev) else 0
 
 
 if __name__ == "__main__":

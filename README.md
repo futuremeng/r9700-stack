@@ -377,9 +377,12 @@ are the same 119.1 s there).
 **About lists the configuration, as three sources that are allowed to disagree.** The recipe file (what the launcher
 asked for), the engine's own labels (what it resolved: **46 published against the 15 the cards read**, so
 `mamba_cache_mode`, `prefix_match_unit`, `prefix_caching_hash_algo` and the rest are at least visible), and the
-environment: a **whitelist** of `VLLM_*`/`R9K_WEB_*`/`R9700_*`/`WEBUI_*`/launcher names -- not `os.environ`, because
-this page is served on every interface of the box -- plus the machine-local `~/.config/r9700-stack/native.env`
-parsed each poll, so the page agrees with the file an operator just edited. A name that looks like a credential is
+environment: a **whitelist** of `VLLM_*`/`R9K_*`/`R9700_*`/`WEBUI_*`/launcher names -- not `os.environ`, because
+this page is served on every interface of the box. `R9K_` is listed as a whole namespace because those names pick
+**which kernel runs**, so they change what a measured number means while staying absent from the engine's config;
+`tools/recipe-check.py` compares the same block against the launcher (`ENVRECIPE=1`), which is how the running
+test config `R9K_ROUTER_MAX_M=4` got named. Plus the machine-local
+`~/.config/r9700-stack/native.env` parsed each poll, so the page agrees with the file an operator just edited. A name that looks like a credential is
 listed as `set · value withheld`, in the env block and in the printed command line alike (`--api-key <withheld>`,
 flag kept, because a restart line that drops the flag starts a serve nobody can reach). The card says which process
 it is describing: a sidecar's `MAXLEN` proves nothing about the engine.

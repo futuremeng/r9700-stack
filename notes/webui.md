@@ -1607,7 +1607,10 @@ gets asked again. The new card prints all three, each labelled with where it cam
 
 Two rules the card keeps. **A whitelist, not `os.environ`**: a running serve's environment is hundreds of names,
 and this page is served on every interface of the box -- the card lists what changes the page's numbers or how the
-box is reached (`VLLM_*`, `R9K_WEB_*`, `R9700_*`, `WEBUI_*`, and the launcher's named knobs), and nothing else. **A
+box is reached (`VLLM_*`, `R9K_*`, `R9700_*`, `WEBUI_*`, and the launcher's named knobs), and nothing else. `R9K_`
+is a whole namespace rather than a list of names because those variables pick **which kernel runs**: they change
+what a measured number means without appearing anywhere in the engine's measured config, which is exactly the blind
+spot `tools/recipe-check.py` had on 2026-11-04 (notes/launch-methodology.md section 12). **A
 credential is named, never printed**: a name matching `KEY|TOKEN|SECRET|PASS|CRED|AUTH` shows as
 `set · value withheld`, so "not printed" cannot be misread as "not set"; the same rule applies to the process's own
 command line, which the card also prints (it is the restart line) with `--api-key`/`--key` values replaced by

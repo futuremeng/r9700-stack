@@ -58,7 +58,9 @@ if [ "${STOP:-0}" = 1 ]; then
   exit 0
 fi
 LEFT=$(pgrep -cf 'VLLM[::]' || true)
-if [ "${FORCE:-0}" != 1 ] && [ "${LEFT:-0}" -gt 0 ]; then
+# Reading the recipe is not a launch, so GPU occupancy is not its business: making ENVRECIPE need FORCE=1 would
+# mean the gate could not be run while a serve is up, which is exactly the moment it gets asked.
+if [ "${ENVRECIPE:-0}" != 1 ] && [ "${FORCE:-0}" != 1 ] && [ "${LEFT:-0}" -gt 0 ]; then
   echo "refusing to launch: $LEFT vLLM process(es) still holding the GPUs (SIGTERM does not stop the ranks)." >&2
   echo "  clear them: STOP=1 bash serve/native-flashnext.sh    (FORCE=1 to launch anyway)" >&2
   exit 1
@@ -105,6 +107,23 @@ elif [ -n "${KVDTYPE:-}" ]; then
   exit 1
 fi
 export R9K_QSA_KVF8
+
+# The recipe includes the ENVIRONMENT, not only the flags. Half of this stack's switches are env names (R9K_*),
+# they decide which kernel runs and therefore what a measured number means, and a gate that reads only the
+# engine's measured config cannot see any of them: on 2026-11-04 two launches died inside r9k_router_gemm_kernel
+# and the experiment that followed was a single env name (R9K_ROUTER_MAX_M=4) that recipe-check said nothing
+# about. ENVRECIPE=1 prints the block as JSON and touches nothing -- the same no-write rule as DRY, because a
+# preview that writes the recipe of a running serve is a page that lies (see the DRY note further down).
+# The snapshot sits after the last default this script sets: taken earlier it missed R9K_QSA_KVF8, and the gate
+# then blamed the live serve for a name the launcher itself exports.
+r9k_env_json() { env | sed -n 's/^\(R9K_[A-Z0-9_]*\|R9700_[A-Z0-9_]*\)=\(.*\)$/\1\t\2/p' \
+  | python3 -c 'import json, sys
+d = {}
+for ln in sys.stdin:
+    k, _, v = ln.rstrip("\n").partition("\t")
+    d[k] = v
+print(json.dumps(d, sort_keys=True))'; }
+if [ "${ENVRECIPE:-0}" = 1 ]; then echo "env recipe: $(r9k_env_json)"; exit 0; fi
 
 # The prefix cache, ON -- which is upstream's default (`config/cache.py`: `enable_prefix_caching: bool = True`).
 # This launcher has been passing --no-enable-prefix-caching since it was written, inherited from
@@ -200,7 +219,7 @@ if [ "${WEBUI:-0}" = 1 ] || [ "${WEBUI:-}" = same ]; then
       eager="${EAGER:-0}" log="$LOG" fold="${R9K_FOLD:-1}" ar_quant="${R9K_AR_QUANT:-1}" hc_fp8="${R9K_HC_FP8:-r9k}" \
       hc_fp8_decode="${R9K_HC_FP8_DECODE:-1}" fp8_block="${R9K_FP8_BLOCK:-block}" fp8_qa="${R9K_FP8_QA:-1}" \
       target_lmhead="${R9K_TARGET_LMHEAD:-mxfp4}" draft_lmhead="${R9K_DRAFT_LMHEAD:-mxfp4}" \
-      mtp_quant_rows="${R9K_MTP_QUANT_ROWS:-}" extra="${EXTRA:-}"
+      mtp_quant_rows="${R9K_MTP_QUANT_ROWS:-}" env="$(r9k_env_json)" extra="${EXTRA:-}"
   fi
   if [ "${DRY:-0}" = 1 ] || [ "${METAONLY:-0}" = 1 ]; then
     [ "${DRY:-0}" = 1 ] && echo "  recipe file NOT written (preview): $META"

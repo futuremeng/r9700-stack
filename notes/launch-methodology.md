@@ -302,10 +302,40 @@ crashed launch's `(M <= 8, split 2)`. The engine's own config is unchanged by it
 and it is proved the same way: the new log must say `(M <= 8, split 2)` and `/proc/<pid>/environ` must have no
 `R9K_ROUTER_MAX_M`.
 
-**The gap this exposed in the gate.** `tools/recipe-check.py` compares knobs the *engine measures* -- `max_model_len`,
-`max_num_seqs`, `max_num_batched_tokens`, `kv_cache_dtype`, `enable_prefix_caching`, `num_speculative_tokens`. It
-answers "PRODUCTION recipe" for this test launch, correctly and uselessly: an env var that changes which kernel runs
-is invisible to it, and env is exactly where most of this stack's experiments live (`R9K_*`, and the two crashes
-happened with `R9K_ROUTER_MAX_M` unset, i.e. the default 8). So §8's rule -- a test config is named, logged, and
-reverted by relaunching the untouched command -- is what protects us today, and closing that gap means making the
-recipe record the R9K_ names it actually exported and having recipe-check compare them too.
+**The gap this exposed in the gate -- and closing it.** `tools/recipe-check.py` compares knobs the *engine
+measures* -- `max_model_len`, `max_num_seqs`, `max_num_batched_tokens`, `kv_cache_dtype`, `enable_prefix_caching`,
+`num_speculative_tokens`. It answered "PRODUCTION recipe" for this test launch, correctly and uselessly: an env var
+that changes which kernel runs is invisible to it, and env is exactly where most of this stack's experiments live
+(`R9K_*`, and the two crashes happened with `R9K_ROUTER_MAX_M` unset, i.e. the default 8). So §8's rule (a test
+config named, logged, and reverted by relaunching the untouched command) was what protected us that evening.
+
+It is closed now, in three places that have to agree:
+
+- the launcher prints its own environment (`ENVRECIPE=1` -> `env recipe: {json}`) and records it in the recipe file
+  as an `env` object. The snapshot is taken **after the last default the script sets** -- taken earlier it missed
+  `R9K_QSA_KVF8`, and the gate then blamed the live serve for a name the launcher itself exports -- and reading it
+  no longer requires `FORCE=1`, because reading a recipe is not a launch and the gate is asked precisely while a
+  serve is up;
+- the gate reads the live environment from `/proc/<pid>/environ` when it can (the payload names the pid) and falls
+  back to the environment the serve publishes about itself, printing which source it used -- a whitelist can hide
+  the very name being looked for, `/proc` cannot;
+- `R9K_`/`R9700_` names are compared by value, with two deliberate exceptions: the Monitor's own plumbing
+  (`R9K_WEB_*`, `R9700_WEBUI_*`) configures a page and not a measurement, and a name that looks like a credential
+  is compared for presence only -- from either side, so the report cannot leak a key the launcher happens to export.
+
+And the *production* side of the comparison is asked with a stripped environment (`OPERATOR_KNOBS` plus the
+namespace): run from a shell that exports `MAXLEN=999 R9K_ROUTER_MAX_M=7`, the launcher still answers with this
+tree's line and no router knob, because otherwise "production" would depend on who typed the command.
+
+The proof it works is the box itself, run minutes after the experiment started:
+
+    tools/recipe-check.py
+      1 environment knob(s) differ -- these change which kernel runs, and the engine's config does not show them
+      (env read from /proc/92955/environ):
+        env:R9K_ROUTER_MAX_M: this tree says None, the live serve says engine=4 meta=None
+      exit=1
+
+which is the correct verdict: **the box is running a test config**, and now the gate says so unprompted. Note the
+`meta=None`: the recipe file on disk predates this change and has no `env` block, and it is deliberately not
+refreshed with `METAONLY=1` here -- `METAONLY` records the environment of the shell that runs it, and re-recording
+a launch I did not start would write a recipe that never happened.

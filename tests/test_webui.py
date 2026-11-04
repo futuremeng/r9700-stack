@@ -1707,6 +1707,77 @@ ck("a launch line's JSON-valued flags survive parsing (the launcher echoes ARGS 
    rc.parse_args(_PROD_CMD)[0]["--speculative-config"].startswith('{"method"')
    and "num_speculative_tokens" in rc.parse_args(_PROD_CMD)[0]["--speculative-config"]
    and rc.parse_args(_PROD_CMD)[1] == {"--no-enable-prefix-caching"})
+# ... and it now reads the ENVIRONMENT as well. Measured on 2026-11-04: this tool said "PRODUCTION recipe" about a
+# launch whose gate kernel had been switched by R9K_ROUTER_MAX_M=4. Correct -- a flag the engine's config never
+# publishes is invisible to a config-only comparison -- and useless, because half of this stack's switches are env
+# names that decide which kernel runs, so they change what every number on the Monitor means.
+_PE = {"R9K_FOLD": "1", "R9K_HC_FP8": "r9k", "R9K_QSA_KVF8": "1", "R9K_LIB": "/x/libr9k.so"}
+ck("an env knob that picks the kernel is caught and named, because the engine's measured config never shows it",
+   [d["key"] for d in rc.compare_env(_PE, {**_PE, "R9K_ROUTER_MAX_M": "4"}, {})] == ["env:R9K_ROUTER_MAX_M"],
+   str(rc.compare_env(_PE, {**_PE, "R9K_ROUTER_MAX_M": "4"}, {})))
+ck("a name the launcher exports that the process does not have is caught as well (a different tree, or a wrapper "
+   "that dropped the environment)",
+   [d["key"] for d in rc.compare_env(_PE, {k: v for k, v in _PE.items() if k != "R9K_QSA_KVF8"}, {})]
+   == ["env:R9K_QSA_KVF8"])
+ck("the Monitor's own plumbing is not a measurement knob: R9K_WEB_* / R9700_WEBUI_* are excluded on both sides",
+   rc.compare_env({**_PE, "R9K_WEB_BIND": "0.0.0.0"}, {**_PE, "R9700_WEBUI_JOURNAL": "/x.jsonl"}, {}) == [],
+   str(rc.compare_env({**_PE, "R9K_WEB_BIND": "0.0.0.0"}, {**_PE, "R9700_WEBUI_JOURNAL": "/x.jsonl"}, {})))
+ck("a credential is compared for presence only and its value never reaches the report",
+   rc.compare_env({**_PE, "R9K_TOKEN": "s3cr3t"}, {**_PE, "~R9K_TOKEN": ""}, {}) == []
+   and "s3cr3t" not in json.dumps(rc.compare_env({**_PE, "R9K_TOKEN": "s3cr3t"},
+                                                 {k: v for k, v in _PE.items() if k != "R9K_LIB"}, {})))
+ck("a recipe file that disagrees with the running process is named, even when the launcher agrees with the process",
+   [d["key"] for d in rc.compare_env(_PE, _PE, {**_PE, "R9K_FOLD": "0"})] == ["env:R9K_FOLD"])
+ck("a serve that publishes no environment block is reported as unprovable, never as matching",
+   [d["key"] for d in rc.compare_env(_PE, None, {})] == ["environment"]
+   and [d["key"] for d in rc.compare_env(None, _PE, {})] == ["env"])
+ck("the production answer does not depend on the shell that asked it: an exported MAXLEN or R9K_ name is stripped",
+   "MAXLEN" in rc.OPERATOR_KNOBS and bool(rc.ENV_NS.match("R9K_ROUTER_MAX_M")))
+for _k, _v in (("MAXLEN", "999"), ("NBT", "1"), ("R9K_FOLD", "zzz"), ("R9K_ROUTER_MAX_M", "7")):
+    os.environ[_k] = _v
+try:
+    _ce = rc.clean_env({"ENVRECIPE": "1"})
+    _pe_polluted, _cmd_polluted = rc.production_env(), rc.production_args()
+finally:
+    for _k in ("MAXLEN", "NBT", "R9K_FOLD", "R9K_ROUTER_MAX_M"):
+        del os.environ[_k]
+ck("an exported knob cannot move the PRODUCTION answer: the launcher is asked with a stripped environment, so the "
+   "line and the env block come back as the tree has them",
+   "MAXLEN" not in _ce and "R9K_ROUTER_MAX_M" not in _ce and "R9K_FOLD" not in _ce
+   and _pe_polluted.get("R9K_FOLD") != "zzz" and "R9K_ROUTER_MAX_M" not in _pe_polluted
+   and f"--max-model-len 999" not in _cmd_polluted and "--max-num-batched-tokens 1 " not in _cmd_polluted,
+   f"{sorted(_ce)[:4]} / {sorted(_pe_polluted)[:6]} / {len(_cmd_polluted)}")
+_LAU = os.path.join(ROOT, "serve", "native-flashnext.sh")
+_metabefore = os.stat(os.path.expanduser("~/r9700-web-meta-8080.json")).st_mtime if \
+    os.path.exists(os.path.expanduser("~/r9700-web-meta-8080.json")) else 0
+_er = subprocess.run(["bash", _LAU], env=rc.clean_env({"ENVRECIPE": "1"}), capture_output=True, text=True,
+                     timeout=120)
+_envmap = json.loads(next(l for l in (_er.stdout + _er.stderr).splitlines()
+                          if l.startswith("env recipe:"))[len("env recipe:"):])
+ck("the launcher prints its own env block (ENVRECIPE=1) after every default it sets, writing and starting nothing",
+   _er.returncode == 0 and _envmap.get("R9K_FOLD") == "1" and _envmap.get("R9K_QSA_KVF8") == "1"
+   and "R9K_ROUTER_MAX_M" not in _envmap
+   and os.stat(os.path.expanduser("~/r9700-web-meta-8080.json")).st_mtime == _metabefore
+   and "launch:" not in _er.stdout,
+   _er.stdout[:200])
+ck("a knob the operator sets on the launch line shows up in that block (that is how a test config is visible)",
+   json.loads(next(l for l in subprocess.run(["bash", _LAU], env=rc.clean_env({"ENVRECIPE": "1",
+                                                                              "R9K_ROUTER_MAX_M": "4"}),
+                                                capture_output=True, text=True, timeout=120).stdout.splitlines()
+                   if l.startswith("env recipe:"))[len("env recipe:"):])["R9K_ROUTER_MAX_M"] == "4")
+_mj = "/tmp/r9700-recipe-env-test.json"
+Path(_mj).unlink(missing_ok=True)
+subprocess.run(["bash", _LAU], env=rc.clean_env({"METAONLY": "1", "FORCE": "1", "WEBUI": "same",
+                                                 "WEBUI_META": _mj}), capture_output=True, text=True, timeout=120)
+_mjv = json.loads(Path(_mj).read_text()) if Path(_mj).exists() else {}
+ck("the recipe file records that block as an object, so the About page shows the switches and the gate can diff them",
+   isinstance(_mjv.get("env"), dict) and _mjv["env"].get("R9K_FOLD") == "1"
+   and "R9K_ROUTER_MAX_M" not in _mjv["env"], str(_mjv.get("env"))[:200])
+Path(_mj).unlink(missing_ok=True)
+ck("the page publishes its own R9K_ namespace so a stale serve cannot hide the switch (the gate falls back to it "
+   "when /proc is not its own process)",
+   '"R9K_"' in open(os.path.join(ROOT, "serve/webui.py")).read()
+   and 'ENV_PREFIX = ("VLLM_", "R9K_", "R9700_", "WEBUI_")' in open(os.path.join(ROOT, "serve/webui.py")).read())
 # tools/journal-pcie.py asks the page's questions from a terminal, per boot: AER by port and name, and the
 # crash record the firmware kept. Read-only, and it must stay that way -- a tool that pokes the box while
 # diagnosing it changes what it diagnoses.
