@@ -1721,8 +1721,8 @@ ck("the hint reproduces the standing recipe from the launch's own parameters",
    and W.launch_hint({"maxlen": "262144", "nseq": "32", "nbt": "8192", "prefix_cache": "0"})
    == "MAXLEN=262144 NSEQ=32 NBT=8192 PREFIX_CACHE=0 WEBUI=same bash serve/native-flashnext.sh")
 cjs = open(os.path.join(ROOT, "serve/web/common.js")).read()
-ck("card rows carry the identity a person at the machine needs (BDF and slot)",
-   "PCI ${g.bus}" in cjs and "slot ${g.slot}" in cjs and "[g.card, where]" in cjs
+ck("card rows carry the identity a person at the machine needs (BDF and slot), and every one of them is escaped",
+   "PCI ${esc(g.bus)}" in cjs and "slot ${esc(g.slot)}" in cjs and "[g.card && esc(g.card), where]" in cjs
    and "const at = (s) =>" in cjs)                    # history alignment still by bus/card id
 sh = open(os.path.join(ROOT, "tools/restart-sidecar.sh")).read()
 ck("the sidecar -- the page that survives the serve -- gets the meta file and the journal attached",
@@ -1761,7 +1761,7 @@ ck("the page leads with the slot and says which numbering it is using",
    all(k in mjs for k in ("slot-map", "chassis order", "firmware slot numbers, not driver names",
                           "slot ${esc(c.slot)}"))
    and all(k in open(os.path.join(ROOT, "serve/web/common.js")).read()
-           for k in ("slot ${g.slot}", "#${g.pos} in slot order")))
+           for k in ("slot ${esc(g.slot)}", "#${g.pos} in slot order")))
 
 # ---- the PCIe grid: seven columns, and the widths are a promise the rows have to keep
 _css = open(os.path.join(ROOT, "serve/web/monitor.css")).read()
@@ -2189,6 +2189,22 @@ ck("a poll window with nothing credited says so in words, not as a bare duration
    'nothing in ${Math.round((rate.window_s || 0) * 10) / 10}s' in monjs)
 ck("and the old always-wraps note class is gone, so nothing outside the slot mechanism re-wraps",
    "small--avg" not in _wc and "small--avg" not in _wh)
+
+# -- the socket and the key: what the pages promise, the server keeps ------------------------------------
+# The audit of 2026-11-04: the sidecar listened on every interface while every URL it prints says
+# 127.0.0.1, and both guards compared the key with ==. The socket address is checked on the live
+# sidecar of this run, not on the source text: a promise the source makes and the socket breaks is
+# exactly the bug being pinned.
+ck("the sidecar binds the loopback every URL it prints promises; 0.0.0.0 stays an operator's choice",
+   srv.server_address[0] == "127.0.0.1"
+   and 'cfg.get("bind", "127.0.0.1")' in wsrc and "--bind" in wsrc and "R9K_WEB_BIND" in wsrc,
+   str(srv.server_address))
+ck("both guards compare the key in constant time: a plain == answers with the first differing byte",
+   "hmac.compare_digest" in wsrc and 'got == self.hub.cfg["key"]' not in wsrc
+   and "hmac.compare_digest" in (Path(ROOT) / "serve/plugin/r9700_webui/__init__.py").read_text())
+ck("the card head escapes what it interpolates, like the file's own rule says (sysfs labels are not markup)",
+   "slot ${esc(g.slot)}" in (_web / "common.js").read_text()
+   and "esc(g.name || g.card)" in (_web / "common.js").read_text())
 
 print("PASS" if fail == 0 else "FAIL", f"({fail} failing)")
 sys.exit(1 if fail else 0)

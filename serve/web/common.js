@@ -220,12 +220,12 @@ function gpuCard(g, ghist = [], i = 0) {
   // standing at the machine can point at. `cardN` is kept underneath: it is the name the driver assigned this
   // boot, and it is also the key the sensor history and the PCIe rows are aligned by, so it is never dropped --
   // and `#N in slot order` says where this card sits in the order the panel is showing them.
-  const where = [g.pos && `#${g.pos} in slot order`, g.bus && `PCI ${g.bus}`].filter(Boolean).join(" \u00b7 ");
+  const where = [g.pos && `#${g.pos} in slot order`, g.bus && `PCI ${esc(g.bus)}`].filter(Boolean).join(" \u00b7 ");
 
   const unread = (g.unread || []).length
-    ? `<div class="muted small">not readable from sysfs: ${(g.unread || []).join(", ")}</div>` : "";
+    ? `<div class="muted small">not readable from sysfs: ${esc((g.unread || []).join(", "))}</div>` : "";
   const smi = (g.from_smi || []).length
-    ? `<div class="muted small">from rocm-smi: ${(g.from_smi || []).join(", ")}</div>` : "";
+    ? `<div class="muted small">from rocm-smi: ${esc((g.from_smi || []).join(", "))}</div>` : "";
   const busy = isnum(g.busy_pct) ? `${fmt(g.busy_pct, 0)}<span class="unit">busy</span>` : `<span class="q">—</span>`;
   // One labelled row per sensor wave. They are stacked, not overlaid: power in watts, temperature in degrees
   // and the SM clock in MHz have no shared axis, and drawing three autoscaled series in one box is exactly the
@@ -254,8 +254,8 @@ function gpuCard(g, ghist = [], i = 0) {
       + "It is the sensor that separates these four cards, so read it both ways: against its limit and against "
       + "its neighbours"]);
   }
-  d.innerHTML = `<b>${g.slot ? `slot ${g.slot}` : (g.name || g.card)}</b>`
-    + `<span class="small">${[g.card, where].filter(Boolean).join(" \u00b7 ")}</span>`
+  d.innerHTML = `<b>${g.slot ? `slot ${esc(g.slot)}` : esc(g.name || g.card)}</b>`
+    + `<span class="small">${[g.card && esc(g.card), where].filter(Boolean).join(" \u00b7 ")}</span>`
     + `<div class="pct">${busy}</div>`
     + rows.map(([lab, title]) => `<div class="sparkrow"><span title="${title}">${lab}</span>`
         + `<div class="sparkline spark--gpu"></div></div>`).join("")

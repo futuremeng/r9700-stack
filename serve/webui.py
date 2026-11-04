@@ -20,11 +20,13 @@ engine-wide mean from /metrics instead, and the page says so. For the per-reques
 those use bench/ttft_breakdown.py.
 
 usage: python3 serve/webui.py [--port 8081] [--upstream http://127.0.0.1:8080] [--proxy] [--key K]
-                              [--poll 1.0] [--keep 100] [--meta launch.json] [--gpus /sys/class/drm]
-env:   R9K_WEB_PORT R9K_WEB_UPSTREAM R9K_WEB_PROXY R9K_WEB_KEY R9K_WEB_POLL R9K_WEB_KEEP
+                              [--bind 127.0.0.1] [--poll 1.0] [--keep 100] [--meta launch.json]
+                              [--gpus /sys/class/drm]
+env:   R9K_WEB_PORT R9K_WEB_UPSTREAM R9K_WEB_PROXY R9K_WEB_KEY R9K_WEB_BIND R9K_WEB_POLL R9K_WEB_KEEP
        R9K_WEB_META R9K_WEB_GPUS  (flags win; serve/webui.sh is the usual entry point)
 """
 import argparse
+import hmac
 import http.client
 import json
 import os
@@ -2099,7 +2101,11 @@ class H(BaseHTTPRequestHandler):
         if not self.hub.cfg["key"]:
             return True
         got = (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
-        if got and got == self.hub.cfg["key"]:
+        # compare_digest, not ==: a plain == returns at the first differing byte, which across
+        # attempts is a per-byte oracle on the key. encode() because compare_digest wants equal
+        # types and a header can carry bytes the key does not.
+        if got and hmac.compare_digest(got.encode("utf-8", "surrogateescape"),
+                                       self.hub.cfg["key"].encode("utf-8", "surrogateescape")):
             return True
         self.json(401, {"error": {"message": "this monitor needs its API key", "type": "auth"}})
         return False
@@ -2308,13 +2314,20 @@ def build(cfg):
     H.hub = hub
     ThreadingHTTPServer.allow_reuse_address = True
     ThreadingHTTPServer.daemon_threads = True
-    return hub, ThreadingHTTPServer(("", cfg["port"]), H)
+    # Loopback by default: every URL this tool prints says 127.0.0.1, and a socket on "" answers on
+    # every interface -- which would hand /api/* (the engine's config, the request records, the
+    # kernel-log summary) to anyone who can route to the box. --bind 0.0.0.0 stays for the operator
+    # who means that, and says so on the line it prints.
+    return hub, ThreadingHTTPServer((cfg.get("bind", "127.0.0.1"), cfg["port"]), H)
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="the r9700 serve monitor and about pages")
     ap.add_argument("--port", type=int, default=int(os.environ.get("R9K_WEB_PORT", 8081)))
     ap.add_argument("--upstream", default=os.environ.get("R9K_WEB_UPSTREAM", "http://127.0.0.1:8080"))
+    ap.add_argument("--bind", default=os.environ.get("R9K_WEB_BIND", "127.0.0.1"),
+                    help="interface to listen on. Default loopback: the API carries the engine's config "
+                         "and the request records. Pass 0.0.0.0 to answer on every interface on purpose.")
     ap.add_argument("--proxy", action="store_true",
                     default=os.environ.get("R9K_WEB_PROXY", "0") == "1",
                     help="relay API traffic through here, which is what fills the request list")
@@ -2338,12 +2351,13 @@ def main(argv=None):
     ap.add_argument("--version", default=os.environ.get("R9K_WEB_VERSION", ""), help="engine version to show")
     ap.add_argument("--verbose", action="store_true")
     a = ap.parse_args(argv)
-    cfg = {"port": a.port, "upstream": a.upstream.rstrip("/"), "mode": "proxy" if a.proxy else "observe",
+    cfg = {"port": a.port, "bind": a.bind, "upstream": a.upstream.rstrip("/"),
+           "mode": "proxy" if a.proxy else "observe",
            "key": a.key, "poll": a.poll, "keep": a.keep, "meta": a.meta,
            "gpus": a.gpus, "pci": a.pci, "journal": a.journal, "journal_attach": a.journal_attach, "smi": (SMI_DEFAULT if a.smi == "1" else a.smi.split()) if a.smi else None,
            "timeout": 600.0, "verbose": a.verbose, "version": a.version}
     _, srv = build(cfg)
-    print(f"webui: http://127.0.0.1:{cfg['port']}/monitor  upstream {cfg['upstream']}  "
+    print(f"webui: http://127.0.0.1:{cfg['port']}/monitor  bind {cfg['bind']}  upstream {cfg['upstream']}  "
           f"mode {cfg['mode']}  keep {cfg['keep']}  poll {cfg['poll']}s", flush=True)
     try:
         srv.serve_forever()

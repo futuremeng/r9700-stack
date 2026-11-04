@@ -34,6 +34,7 @@ FastAPI runs it on its threadpool rather than on the event loop. Nothing here ma
 produces the numbers the page displays.
 """
 
+import hmac
 import os
 import sys
 import threading
@@ -136,7 +137,9 @@ class WebMonitor:
             if not KEY[0]:
                 return None
             got = (request.headers.get("authorization") or "").removeprefix("Bearer ").strip()
-            return None if got and got == KEY[0] else JSONResponse(
+            # compare_digest, not ==: see the sidecar's want_key -- a plain == is a per-byte oracle.
+            return None if got and hmac.compare_digest(got.encode("utf-8", "surrogateescape"),
+                                                       KEY[0].encode("utf-8", "surrogateescape")) else JSONResponse(
                 {"error": {"message": "this monitor needs the serve's API key", "type": "auth"}}, status_code=401)
 
         @rt.get("/")

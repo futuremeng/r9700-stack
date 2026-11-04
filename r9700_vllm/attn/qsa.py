@@ -15,6 +15,7 @@ import ctypes
 import math
 import os
 import types
+import weakref
 
 import torch
 
@@ -24,7 +25,9 @@ logger = init_logger("vllm." + __name__)
 
 _L = None
 _SCRATCH: dict = {}
-_DESCALE: dict = {}
+_DESCALE = weakref.WeakKeyDictionary()   # keyed on the layer itself, weakly: an id() key would hand a
+                                         # recycled id the previous layer's descale, and would pin every
+                                         # layer for the life of the process
 _GS = 4                  # indexer_compress_ratio (the kernel's group size)
 
 
@@ -64,11 +67,16 @@ def kv_descale(layer) -> tuple:
     ``layer._k_scale_float`` / ``._v_scale_float`` (vllm models/qwen4_exp/amd/indexer_qsa.py:325-326), so the reader
     must use exactly those. Read once per layer: no per-call host sync (same rule as models/glm5next.py for the GLM
     fp8 pool)."""
-    key = id(layer)
-    got = _DESCALE.get(key)
+    try:
+        got = _DESCALE.get(layer)
+    except TypeError:                                   # unhashable layer: compute it, don't cache it
+        got = None
     if got is None:
         got = (float(getattr(layer, "_k_scale_float", 1.0) or 1.0), float(getattr(layer, "_v_scale_float", 1.0) or 1.0))
-        _DESCALE[key] = got
+        try:
+            _DESCALE[layer] = got
+        except TypeError:
+            pass
     return got
 
 

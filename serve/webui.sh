@@ -12,6 +12,8 @@
 #   META=~/launch.json bash serve/webui.sh   # show that recipe on the About page
 #   STOP=1 bash serve/webui.sh               # stop the sidecar for this port
 # Knobs: PORT (the vLLM port), WEBUI_PORT, UPSTREAM (full URL, wins over both), WEBUI_MODE=observe|proxy,
+#        WEBUI_BIND (default 127.0.0.1: the API carries the engine's config and the request records, so
+#        the sidecar binds loopback like every URL it prints; 0.0.0.0 answers on every interface),
 #        POLL_S, KEEP, GPUS (sysfs root), SMI=1 (fill the sysfs gaps from rocm-smi: it opens /dev/kfd, so
 #        leave it off while measuring; SMI="<command>" overrides the default invocation),
 #        VERSION (string to show as the engine version), FORE=1 (no nohup).
@@ -28,6 +30,7 @@ if [ "${STOP:-0}" = 1 ]; then
 fi
 
 ARGS=(--port "$WPORT" --upstream "$UP")
+[ -n "$WEBUI_BIND" ] && ARGS+=(--bind "$WEBUI_BIND")
 [ -n "$WEBUI_KEY" ]  && ARGS+=(--key "$WEBUI_KEY")
 [ -n "$META" ]       && ARGS+=(--meta "$META")
 [ -n "$VERSION" ]    && ARGS+=(--version "$VERSION")

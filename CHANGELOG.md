@@ -1,4 +1,21 @@
 # Changelog
+## the Monitor binds the loopback it advertises, and the key is compared in constant time
+
+Audit of the commits since v0.4.1 (2026-11-04), findings implemented:
+
+- **`--bind` / `R9K_WEB_BIND` / `WEBUI_BIND` (serve/webui.py, serve/webui.sh)**: the sidecar listened on
+  every interface (`ThreadingHTTPServer(("", port))`) while every URL it prints says 127.0.0.1. The default
+  is now the loopback the pages promise; `--bind 0.0.0.0` stays for the operator who means to answer on the
+  network, because `/api/*` carries the engine's config, the request records and the kernel-log summary.
+- **`hmac.compare_digest`** in both guards -- the sidecar's `want_key` and the in-serve plugin's `gated`:
+  a plain `==` returns at the first differing byte, which across attempts is a per-byte oracle on the key.
+- **common.js escapes what it interpolates** into the card head (slot, driver name, bus, the unread and
+  rocm-smi lists), the way monitor.js and the file's own stated rule already required.
+- **qsa `kv_descale` caches weakly** (`WeakKeyDictionary` keyed on the layer, not on `id(layer)`): a
+  recycled id could have read the previous layer's descale, and the dict never let a freed layer go.
+- **Tests**: the live sidecar's socket address, both guards' comparison, and the escaped card head are
+  pinned in tests/test_webui.py.
+
 ## the prefill rate counts tokens the engine actually read (a rule borrowed from Strata)
 
 - **Numerator: `prompt_tokens_total - prefix_cache_hits_total`**, everywhere the prefill speed is computed -- span
