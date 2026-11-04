@@ -2603,3 +2603,37 @@ when the two differ by more than 25%, fails if an averaged headline does not car
 trend buttons to make sure the source ring actually changed. Handlers are attached by id, not by a `querySelectorAll`
 sweep, so the stub DOM can press them. Details in notes/webui.md; the production serve was left running and picks the
 whole thing up at its next restart -- the standalone sidecar on :8099 is where it is live today.
+
+## 2026-11-04 (later still): a number changing width must not move the page
+
+**The report:** 数字长度变化时可能造成换行变化 - when a number's length changes, the wrapping changes. Real, and
+worse than it looks: the note under a stream headline went from one line to two when its number went from `2.0` to
+`95.7`; the card grew; the rate row grew; and with `grid-auto-flow: dense` on that row the cards have room to change
+columns. The theme already kept the *headline* digits fixed-width (`.value` carries the mono stack and
+`tabular-nums`), but it had no rule at all for the note lines - and those 12 px lines carried no font-family, so they
+rendered in Inter while the headline above them rendered in mono.
+
+**The fix: fixed slots.** `.slot{white-space:nowrap; text-overflow:ellipsis; font-variant-numeric:tabular-nums}` and
+every number-bearing note line in the rate row, the trend row and the pool card became one: rate card = headline +
+three slots (why/which, the other spans, this poll), trend card = wave + two (level, spread), pool = headline + two.
+The always-wrapping classes were deleted rather than tuned. Overflow ellipsizes and the sentence moves to the
+element's `title`. `knum()` caps the width of every number that changes inside a sentence - `999.9`, `16.2k`,
+`1.01M`, five characters - so digit counts cannot change the length of the text around them.
+
+**The budget is arithmetic, not taste.** Same grid maths the release page figures use: 0.60 em per glyph, inner card
+177 px at the narrowest viewport where a 4-up row still exists (981 px) and 354 px at the 1560 px cap, 12 px text -
+so **24 characters** is the tight case, 44 the loose one. `tests/render-monitor.mjs` reads the slot list out of
+`monitor.html` (it cannot drift from the markup), prints what the live page writes into each, fails above 44 and
+flags above 24. Everything renders at 24 or under.
+
+**What it cost, stated.** Shortening to fit is not free: `x 1.30 tokens a step` - the bridge between the decode rate
+and the step rate - left the visible line and came back as `poll 890 ms · x2.33` with its explanation, and the
+since-launch fallback, in the title. `pts`, the axis range and the sampling interval moved the same way. And
+`· 90s back` was dropped from the wave caption: it reads as "90 seconds ago" when it means "this window spans 90 s",
+which is the window bar's job.
+
+**What the check is not.** No browser on this box, so nothing lays the page out and measures pixels. The guarantee
+rests on the arithmetic above plus the fact that a slot cannot wrap by construction - the worst a wrong budget can
+produce is a clipped word, never a moved card. `tests/test_webui.py`: 349 checks (six new). Clean against the :8099
+sidecar (which has `avg` and the hour ring) and against the merged `:8080` page (whose payload has neither, and says
+so in the slots rather than throwing).

@@ -92,6 +92,16 @@ const isnum = (n) => typeof n === "number" && isFinite(n);
 const fmt = (n, d = 0) => (isnum(n) ? n.toLocaleString("en-US", {minimumFractionDigits: d, maximumFractionDigits: d}) : "—");
 const seconds = (n) => (isnum(n) ? (n >= 100 ? `${(n / 60).toFixed(1)} min` : `${n.toFixed(2)} s`) : "—");
 const ms = (n) => (isnum(n) ? (n >= 1000 ? `${(n / 1000).toFixed(2)} s` : `${n.toFixed(n < 10 ? 2 : 1)} ms`) : "—");
+
+// A number whose WIDTH changes moves the layout, so the slot lines use this instead of fmt(): at most five
+// characters whatever the value is - no decimals past 100, thousands as "k" past 10,000. "13" to "13,570" is a
+// 40x swing in value and one character in width, which is the difference between a number that changed and a
+// page that re-wrapped. Values where the digits matter (token counts in the detail panel, request rows) still
+// use fmt(): this is for the lines that repaint every poll, not for the ones a reader quotes into a report.
+const knum = (n, d = 1) => !isnum(n) ? "—"
+  : Math.abs(n) >= 1e6 ? `${(n / 1e6).toFixed(2)}M`
+  : Math.abs(n) >= 10000 ? `${(n / 1000).toFixed(1)}k`
+  : fmt(n, Math.abs(n) >= 100 ? 0 : Math.max(1, Math.min(d, 1)));
 const pct = (n, d = 1) => (isnum(n) ? `${n.toFixed(d)}%` : "—");
 const gb = (bytes, d = 1) => (isnum(bytes) ? (bytes / 2 ** 30).toFixed(d) : "—");
 const clock = (t) => (isnum(t) ? new Date(t * 1000).toLocaleTimeString() : "—");
@@ -104,6 +114,18 @@ function text(id, value) {
   if (!el) return;
   const s = value === null || value === undefined ? "—" : String(value);
   if (el.textContent !== s) el.textContent = s;
+}
+
+// A slot is a line of the page that is allowed to change its CONTENT but not its SPACE: class "slot" keeps it
+// to one line (nowrap, ellipsis), and whatever a reader needs beyond what fits goes into the title. The point is
+// that these lines carry numbers whose width changes every poll - "13 tok/s" then "13,570 tok/s" - and a line
+// that re-wraps changes the height of its card, of the grid row, and of everything below it. A page that
+// jiggles once a second is a page nobody reads the numbers on.
+function slot(id, value, title) {
+  const el = $(id);
+  if (!el) return;
+  text(id, value);
+  if (title !== undefined && el.title !== title) el.title = title;
 }
 
 // A qualifier hanging off a big number -- "since launch" under a value--sm stat -- must not inherit the

@@ -359,7 +359,9 @@ engine's cumulative counters, not means of the 1 s samples - averaging those wou
 second with six streams running - and a span the page has not had time for is labelled with what it actually averaged
 (`90s`, `2m`) rather than borrowing the name it asked for. The waveforms get the same treatment: 90 points at one per
 poll, or an hour at one point per 15 s, each of those points the rate over its interval rather than a sample of one
-poll.
+poll. Every one of those lines is a **slot**: one line high whatever the engine reports, so a number growing from
+`2.0` to `8,481` changes the value and never moves the page. The copy is written to fit the tightest card the layout
+can produce (24 characters at 12 px) and the full sentences ride in the element's title.
 
 The Requests card splits the waiting queue the way the engine labels it: `N waiting · M for scheduling capacity ·
 K deferred`, and the split is the whole point on this model. Eight ~30,000-token prompts measured holding

@@ -165,6 +165,14 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
 
 ## [Unreleased]
 
+### Fixed
+
+- The Monitor's note lines no longer re-wrap when a number changes width, which moved the cards and (with
+  `grid-auto-flow: dense` on the rate row) could change their order. Every number-bearing note line is now a
+  slot: one line high whatever the engine reports, ellipsized, with the full sentence in its `title`. Headline
+  digit widths were already pinned by the theme's mono stack; `knum()` now pins the width of every number that
+  changes inside a sentence (`999.9`, `16.2k`, `1.01M`).
+
 ### Added
 - **A launch is no longer called "up" just because it answers `/health` -- its context is compared to the
   checkpoint** (`setup.py`, `tests/test_setup.py`). After health, `setup.py` reads the context the launch is

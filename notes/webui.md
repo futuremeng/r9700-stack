@@ -1116,3 +1116,97 @@ whether anything had changed. The panel's own content moves between repaints (`q
 AER counter lands), so rewriting those lines is correct, and the check failed twice against a live box for the right
 behaviour. It now counts writes that wrote **the value already there** and fails only on those, which is what
 "rewrites lines it did not have to" was trying to say.
+
+## A number changing width must not move the page: every note line becomes a slot (2026-11-04)
+
+The user's report: **数字长度变化时可能造成换行变化** - when a number's length changes, the wrapping changes, and
+the page moves. It is real, and these pages have three places where it happens on every poll.
+
+1. **The note line under a headline.** It carries an explanation plus one or two numbers, and the numbers change
+   width every poll: the stream card's number was `2.0` for four polls and `95.7` on the fifth. A note line that
+   wraps turns one line into two and the card's height changes.
+2. **A long prose note under a card** (`exact, from prompt_tokens_total; the other number is estimated from KV
+   growth`). These were built to be long, so they were guaranteed two lines at narrow widths and their exact
+   break point depends on the digits in the sentence.
+3. **A whole-card reflow.** `grid--rates` uses `repeat(4, minmax(0, 1fr))` and `grid-auto-flow: dense`. A card
+   that grows makes its row taller, and every card in that row resizes; `dense` then has room to move cards into
+   different columns. The row does not just grow, it *rearranges*: `tests/test_readme.py` pins
+   `grid-auto-flow:dense` in monitor.css precisely because reordering these cards under a reader is a bug.
+
+The theme already had one of the two tools. `tokens.css` defines `--st-font-mono`, the JetBrains Mono fallback
+chain the release page's own font stack uses, and `web.css` puts it on `.value` with `tabular-nums` - so the
+**headline** digits already advance at a fixed width. What it lacked was any rule about the note lines and, worse,
+a font mismatch: `.small` and `.winbar` carry no font-family, so the 12 px text under a headline renders in
+Inter while the headline above it renders in mono.
+
+### The fix: fixed slots
+
+Every number-bearing note line in the rate row, the trend row and the KV pool card is now a **slot**:
+
+```css
+.slot{display:inline-block;min-width:2.5ch;max-width:100%;white-space:nowrap;overflow:hidden;
+     text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+```
+
+**No slot may wrap, whatever it holds.** A slot's height is one line always, so the card's height never moves, so
+the row never moves. Overflow is ellipsized and the full sentence lives in the element's `title`.
+
+The shape that came out of it:
+
+- Rate card = headline + **three slots**: why/which, the other spans, this poll.
+- Trend card = wave + **two slots**: the level (`now`/`avg`), the spread (`peak`/`pts`/`span`).
+- KV pool = headline + **two slots**: size · used · span, and the spans' means.
+
+The old classes (`small--avg`, the long inline notes) were deleted outright. A line that is allowed to wrap
+anywhere is the bug; a slot that ellipsizes is a decision.
+
+### The budget is arithmetic, and the harness knows it
+
+The same grid arithmetic `docs/monitor-cards.py` and `tests/test_readme.py` use: main is capped at 1560 with
+32 px of padding, 14 px column gaps, and each card gives up 42 px to padding and border. Text is laid out at
+**0.60 em per glyph** - the factor the release page's label-fit check has used all along, and the right one for
+`--st-font-mono`.
+
+| viewport | 4-up card, inner | 2-up card, inner | chars at 12 px (4-up / 2-up) |
+|---|---|---|---|
+| 981 px (the narrowest a 4-up row exists) | 177 px | 416 px | **24** / 57 |
+| 1100 px | 219 px | 483 px | 30 / 67 |
+| 1560 px (capped) | 354 px | 706 px | **44** / 98 |
+
+Two things followed:
+
+- `knum()` caps a changed number's **width**, not just its precision: `999.9`, `16.2k`, `1.01M` - at most five
+  characters, so a digit count can never change the length of a sentence around it.
+- `tests/render-monitor.mjs` reads the slot list out of `monitor.html` (so it cannot drift from the markup),
+  prints what the live page renders into each one, and fails on any slot over the **widest** budget (44). It
+  flags any slot over the **tightest** (24) as wide. Writing the copy to fit 24 characters is what makes the
+  ellipsis something the reader should never see.
+
+`kv-note2` was 31 characters - `1m 25.9 · 15m 30.6 · 13m 30.6 %` - and is now `15m 30.6 · 13m 30.6 %`: the pool's
+headline *is* its current value, so a one-minute mean of it is the same number rounded.
+
+**What this check is not.** There is no browser on this box, so nothing here lays the page out and measures the
+pixels. The guarantee rests on two things instead: the arithmetic above, and the fact that a slot *cannot* wrap
+by construction - `white-space:nowrap` makes overflow a clipping event, not a reflow. The worst case the budget
+can get wrong is a clipped word, never a moved card. That is the difference between this and the release page's
+figures, where the same char metric is used to fit text exactly and a mistake shows as overlapping glyphs.
+
+### What this made visible, and one clause nearly lost
+
+Shortening to fit is not free: the stream card's note used to read `× 1.30 tokens a step`, which is the bridge
+between "83 tok/s across all streams" and "118 ms a step", and it left when the line became a slot. It came back
+as `poll 890 ms · ×2.33` - five characters - with the explanation ("one engine step turns into that many tokens
+with speculation", and, when the window holds no per-token observation, "since launch") moved into the title.
+Same for `pts`, the axis range and the sampling interval on the trend row.
+
+A related loss to keep honest: `· 90s back` reads as "90 seconds ago" when the label means "this window spans 90
+seconds", so the span now goes where the window label lives - `15 min (150 s)` in the window bar - and the wave's
+axis range went to the title with it.
+
+### Kept by tests
+
+- `tests/test_webui.py`: every slot the JS writes is declared in the markup and every slot declared is written
+  (an undeclared one silently stops rendering; a stale one shows a dash forever); the `.slot` rule carries
+  nowrap + ellipsis + tabular-nums; the rate row is three slots per card and the trend row two, so the two rows
+  stay the same shape; `small--avg` is gone.
+- `tests/render-monitor.mjs`: the per-slot character budget above, against a live payload.

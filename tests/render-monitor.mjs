@@ -234,18 +234,29 @@ console.log(`\nheadline window: ${winShown}  (${t("win-note")})`);
 if (STAT?.avg && winShown === "live" && fulls.length) {
   console.log(`BAD  a span is full (${fulls.join(" ")}) and the headline is still the 1 s poll`); process.exitCode = 1;
 }
-const firstNum = (h) => { const m = String(h).match(/[\d,]+(?:\.\d+)?/); return m ? Number(m[0].replace(/,/g, "")) : null; };
+const firstNum = (h) => {                       // reads "12.2k" and "1.01M" as the number they stand for
+  const m = String(h).match(/[\d,]+(?:\.\d+)?\s*[kKM]?/);
+  if (!m) return null;
+  const txt = m[0].replace(/,/g, "").trim();
+  const mult = txt.endsWith("k") ? 1e3 : txt.endsWith("M") ? 1e6 : 1;
+  return Number(txt.replace(/[^\d.]/g, "")) * mult;
+};
 const near = (a, b) => (a === null || b === null ? a === b : Math.abs(a - b) <= Math.max(0.02, Math.abs(b) * 0.011));
 for (const [id, avgKey, rateKey] of [["rate-stream", "stream_tok_s", "stream_tok_s_live"],
                                      ["rate-gen", "generation_tok_s", "generation_tok_s"],
                                      ["rate-prefill", "prefill_tok_s", "prompt_tok_s"],
                                      ["rate-step", "itl_ms", "itl_ms"]]) {
+  // The prefill card's live number is the KV-growth ESTIMATE whenever the counter has not credited yet (it
+  // lands at request end), so both are legitimate live values -- they differ by the ~6% the notes measured.
   const want = winShown === "live" ? STAT?.rate?.[rateKey] : STAT?.avg?.[winShown]?.[avgKey];
+  const wants = id === "rate-prefill" && winShown === "live"
+    ? [want, STAT?.rate?.kv_tok_s].filter((v) => typeof v === "number" && isFinite(v)) : [want];
   const got = firstNum(html(id));
   console.log(`  ${(id + "            ").slice(0, 14)} ${String(html(id)).replace(/<[^>]*>/g, "").trim()}`
               + `   [${winShown} wants ${want === undefined ? "-" : want}]`);
-  if (want !== undefined && want !== null && !near(got, want)) {
-    console.log(`BAD  ${id} shows ${got} for a ${winShown} window whose value is ${want}`); process.exitCode = 1;
+  if (wants.length && !wants.some((w) => near(got, w))) {
+    console.log(`BAD  ${id} shows ${got} for a ${winShown} window whose values are ${wants.join(" / ")}`);
+    process.exitCode = 1;
   }
   if (winShown !== "live" && isnum(STAT?.rate?.[rateKey]) && Math.abs(STAT.rate[rateKey] - want) > Math.abs(want) * 0.25)
     if (near(got, STAT.rate[rateKey])) {
@@ -253,15 +264,14 @@ for (const [id, avgKey, rateKey] of [["rate-stream", "stream_tok_s", "stream_tok
     }
 }
 // The spans the headline is not, plus this poll.
-console.log("\nthe other spans, under each card");
-for (const [id, key, rateKey] of [["avg-stream", "stream_tok_s", "stream_tok_s_live"],
-                                  ["avg-gen", "generation_tok_s", "generation_tok_s"],
-                                  ["avg-prefill", "prefill_tok_s", "prompt_tok_s"],
-                                  ["avg-step", "itl_ms", "itl_ms"],
-                                  ["avg-kv", "kv_used_pct_mean", "__kv"]]) {
+console.log("\nthe other spans, and this poll, under each card");
+for (const [id, key, rateKey] of [["spans-stream", "stream_tok_s", "stream_tok_s_live"],
+                                  ["spans-gen", "generation_tok_s", "generation_tok_s"],
+                                  ["spans-prefill", "prefill_tok_s", "prompt_tok_s"],
+                                  ["spans-step", "itl_ms", "itl_ms"]]) {
   const line = t(id) || "";
   const shown = Object.entries((STAT?.avg || {})).filter(([l, b]) => isnum(b?.[key]) && l !== winShown);
-  console.log(`  ${(id + "          ").slice(0, 12)} ${line}`
+  console.log(`  ${(id + "            ").slice(0, 15)} ${line}`
               + (shown.length ? `   [${shown.map(([l, b]) => `${l}=${b[key].toFixed(1)}/${Math.round(b.span_s)}s`).join(" ")}]`
                               : "   [no other span has this field]"));
   for (const [lbl, b] of shown) {
@@ -273,25 +283,57 @@ for (const [id, key, rateKey] of [["avg-stream", "stream_tok_s", "stream_tok_s_l
       console.log(`BAD  ${id}: prints ${lbl} for a span of ${Math.round(b.span_s)}s -- a young window wearing an old label`); process.exitCode = 1;
     }
   }
-  if (winShown !== "live" && !/poll /.test(line) && !/no trailing averages/.test(line)) {
-    console.log(`BAD  ${id}: the headline is an average and the card does not carry this poll`); process.exitCode = 1;
+  const poll = t(id.replace("spans-", "poll-")) || "";
+  console.log(`  ${(id.replace("spans-", "  poll-") + "          ").slice(0, 15)} ${poll}`);
+  if (winShown !== "live" && !/^poll /.test(poll)) {
+    console.log(`BAD  the card has no this-poll slot (${id}); the average is all the reader gets`); process.exitCode = 1;
+  }
+}
+// Every slot: one line, and short enough for the tightest card it can be laid out in. The widths are the same
+// arithmetic docs/monitor-cards.py and tests/test_readme.py use: main is capped at 1560 with 32 px of padding,
+// the row is 4 columns over 14 px gaps, a card gives up 42 px to padding and border, and the theme lays text out
+// at 0.60 em per glyph. A 4-up row only exists down to 981 px of viewport, so that is the tight case; a slot
+// that does not fit there ellipsizes (its full text is in the title), but the copy is written to fit it.
+const CHAR = 0.60, FS = 12;
+const inner = (W) => (Math.min(W, 1560) - 64 - 3 * 14) / 4 - 42;
+const TIGHT = Math.floor(inner(981) / (FS * CHAR)), WIDEST = Math.floor(inner(1560) / (FS * CHAR));
+// The slots are whatever the page declares, so the list cannot drift out of date with the markup.
+const SLOTS = [...readFileSync(path.join(WEB, "monitor.html"), "utf8")
+  .matchAll(/class="([^"]*)"[^>]*?\bid="([^"]+)"/g)]
+  .filter(([, cls]) => cls.split(/\s+/).includes("slot")).map(([, , id]) => id);
+console.log(`\nslots (the tightest 4-up card holds ${TIGHT} characters at ${FS} px; the widest holds ${WIDEST})`);
+for (const id of SLOTS) {
+  const line = t(id);
+  if (line === null) { console.log(`BAD  no slot called ${id} was written`); process.exitCode = 1; continue; }
+  const flag = line.length > TIGHT ? `  ${line.length > WIDEST ? "BAD" : "wide"} (${line.length} > ${TIGHT})` : "";
+  console.log(`  ${(id + "              ").slice(0, 16)} ${line}${flag}`);
+  if (line.length > WIDEST) {
+    console.log(`       it does not fit the WIDEST card either -- this one wraps, and the card's height moves`);
+    process.exitCode = 1;
   }
 }
 // The trend rings: 90 s of per-poll points, or an hour of 15 s interval rates. The caption's span has to come
 // from the samples, not from points x poll, which is the thing that would otherwise quietly lie.
 console.log("\ntrend source");
-console.log(`  90 s ring: ${t("trend-note")}`);
-const slowNote = (() => { const el = byId.get("trend-slow"); if (el?.onclick) el.onclick(); return t("trend-note"); })();
-console.log(`  1 h ring: ${slowNote}`);
-if (/one point per/.test(slowNote)) {
-  console.log("BAD  pressing the 1 h trend button left the fast ring in charge"); process.exitCode = 1;
+const fastNote = t("trend-note");
+console.log(`  fast ring: ${fastNote}`);
+byId.get("trend-slow")?.onclick();
+const slowNote = t("trend-note");
+const pressedFast = byId.get("trend-fast")?.attrs["aria-pressed"];
+const pressedSlow = byId.get("trend-slow")?.attrs["aria-pressed"];
+console.log(`  slow ring: ${slowNote}  (aria-pressed fast=${pressedFast} slow=${pressedSlow})`);
+if (slowNote === fastNote) {
+  console.log("BAD  pressing the 1 h trend button changed nothing about what the row says"); process.exitCode = 1;
 }
-if (byId.get("trend-fast")?.onclick) byId.get("trend-fast").onclick();
-console.log(`  back to 90 s: ${t("trend-note")}`);
-if (!/one point per/.test(t("trend-note"))) {
+if (pressedSlow !== "true" || pressedFast !== "false") {
+  console.log("BAD  the buttons' aria-pressed does not follow the ring actually in use"); process.exitCode = 1;
+}
+byId.get("trend-fast")?.onclick();
+console.log(`  back to fast: ${t("trend-note")}`);
+if (t("trend-note") !== fastNote) {
   console.log("BAD  pressing the 90 s trend button did not restore the fast ring"); process.exitCode = 1;
 }
-console.log(`  caption now: ${t("gen-spark-note")}`);
+console.log(`  caption slots now: ${t("gen-note1")} | ${t("gen-note2")}`);
 
 // The page swallows render errors into its notice bar, so a broken section can look like an empty one.
 const bar = t("error");

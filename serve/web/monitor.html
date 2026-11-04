@@ -53,6 +53,9 @@
        only the 9.9. "this poll" stays one click away and its number stays in every card's second line, because
        "is it stuck right now" is a question a 15 min mean cannot answer. -->
   <div class="winbar">
+    <span class="small slot" id="fresh" title="How old these numbers are: the sidecar polls the engine every poll
+window, the page refetches on the same beat, and this says how long the snapshot has been sitting. When it grows,
+the tab has stopped getting answers - the page says so rather than letting the numbers look current.">—</span>
     <span class="small">Rates over</span>
     <button class="st-btn" id="win-live" type="button" aria-pressed="false"
             title="The gap between two engine polls (about a second here). Exact for that instant, and a coin toss
@@ -65,45 +68,44 @@ where a request runs 17-50 s, this is the shortest window that stops being a sam
     <button class="st-btn" id="win-1h" type="button" aria-pressed="false"
             title="Deltas of the engine's cumulative counters over the last hour. Goes quiet-by-omission if the
 sidecar has only been up a few minutes - the label says what was averaged.">1 h</button>
-    <span class="small" id="win-note">—</span>
+    <span class="small slot" id="win-note">—</span>
   </div>
+  <!-- Four rate cards, three SLOT lines each. A slot is a fixed line that never wraps: it ellipsizes and puts
+       its full text in the title. That is deliberate. These lines carry numbers whose WIDTH changes every poll
+       (13 tok/s, then 5,417 tok/s, then 13.6k), and a line that wraps when the number grows taller moves every
+       card in the grid row and everything under it. Fixed slots mean the cards are the same height whatever the
+       engine reports, which is also what makes a change in a number visible as a change rather than as a jiggle.
+       The budgets the harness enforces (notes/webui.md): a 4-up card is 177-322 px of text at any page width
+       that keeps four columns, and the theme lays out at 0.60 em per glyph, so a 12 px slot fits 24 chars at the
+       tightest 4-up width and 44 at the widest. The copy is written to fit the tight one. -->
   <section class="grid grid--4 grid--rates">
     <div class="card">
       <div class="label">Decode · one stream</div>
       <div class="value value--xl" id="rate-stream">—<span class="unit">tok/s</span></div>
-      <div class="small" id="rate-stream-note">aggregate ÷ running, over the poll window</div>
-      <div class="small small--avg" id="avg-stream" title="The same rate over the last minute, quarter hour and
-hour: generated tokens across the span divided by the MEAN number of running streams in it. The number above
-is one poll; these are the level the poll was a sample of. A span labelled shorter than its name is the whole
-ring so far - the page says what it averaged rather than waiting for the hour to fill.">—</div>
+      <div class="small slot slot--lead" id="note-stream">aggregate ÷ running</div>
+      <div class="small slot" id="spans-stream">—</div>
+      <div class="small slot" id="poll-stream">—</div>
     </div>
     <div class="card">
       <div class="label">Decode · all streams</div>
       <div class="value value--xl" id="rate-gen">—<span class="unit">tok/s</span></div>
-      <div class="small" id="rate-gen-note">generation_tokens_total, credited per step</div>
-      <div class="small small--avg" id="avg-gen" title="generation_tokens_total across the span, divided by the
-span. The engine's counters are cumulative, so a span mean is an exact delta of two reads - not an average of
-the one-second samples, which would weight an idle second the same as a second with six streams running.">—</div>
+      <div class="small slot slot--lead" id="note-gen">generation_tokens_total</div>
+      <div class="small slot" id="spans-gen">—</div>
+      <div class="small slot" id="poll-gen">—</div>
     </div>
     <div class="card">
       <div class="label">Prefill · prompt processing</div>
       <div class="value value--xl" id="rate-prefill">—<span class="unit">tok/s</span></div>
-      <div class="small" id="rate-prefill-note">no window yet</div>
-      <div class="small small--avg" id="avg-prefill" title="Prompt tokens across the span divided by the engine's
-own prefill seconds over the span - token-weighted prefill speed, which is the level the prefill card's live
-estimate is a sample of. Note this is speed while prefilling, not wall-clock throughput: the box spends part of
-every minute decoding.">—</div>
+      <div class="small slot slot--lead" id="note-prefill">no window yet</div>
+      <div class="small slot" id="spans-prefill">—</div>
+      <div class="small slot" id="poll-prefill">—</div>
     </div>
     <div class="card">
       <div class="label">Engine step · first token</div>
       <div class="value value--xl" id="rate-step">—<span class="unit">ms</span></div>
-      <div class="small" id="rate-ttft">—</div>
-      <div class="small small--avg" id="avg-step" title="Mean engine step (inter-token latency) over each span,
-from delta(sum)/delta(count) of the engine's own histogram families - the two halves of a cumulative counter,
-so requests that started in the span and ended in it are the ones counted.">—</div>
-      <div class="small" id="fresh" title="How old this snapshot is (the sidecar polls the engine every poll
-window, and the page refetches it on the same beat). The window behind the rates is the gap between two
-engine polls, so a rate is at most that old -- plus this snapshot's age.">—</div>
+      <div class="small slot slot--lead" id="note-step">—</div>
+      <div class="small slot" id="spans-step">—</div>
+      <div class="small slot" id="poll-step">—</div>
     </div>
   </section>
 
@@ -120,28 +122,32 @@ as a shape.">90 s</button>
     <button class="st-btn" id="trend-slow" type="button" aria-pressed="false"
             title="One point per 15 s for the last hour, each point the rate over its interval. Answers "what has
 the box looked like this hour"; it cannot show a single stuck step.">1 h</button>
-    <span class="small" id="trend-note">—</span>
+    <span class="small slot" id="trend-note">—</span>
   </div>
   <section class="grid grid--4 grid--trends">
     <div class="card">
       <div class="label">Decode · one stream</div>
       <div class="sparkline sparkline--lg" id="stream-spark"></div>
-      <div class="small" id="stream-spark-note">—</div>
+      <div class="small slot" id="stream-note1">—</div>
+      <div class="small slot" id="stream-note2">—</div>
     </div>
     <div class="card">
       <div class="label">Decode · all streams</div>
       <div class="sparkline sparkline--lg" id="gen-spark"></div>
-      <div class="small" id="gen-spark-note">—</div>
+      <div class="small slot" id="gen-note1">—</div>
+      <div class="small slot" id="gen-note2">—</div>
     </div>
     <div class="card">
       <div class="label">Prefill · from KV growth</div>
       <div class="sparkline sparkline--lg" id="prefill-spark"></div>
-      <div class="small" id="prefill-spark-note">—</div>
+      <div class="small slot" id="prefill-note1">—</div>
+      <div class="small slot" id="prefill-note2">—</div>
     </div>
     <div class="card">
       <div class="label">Streams running</div>
       <div class="sparkline sparkline--lg" id="running-spark"></div>
-      <div class="small" id="running-spark-note">—</div>
+      <div class="small slot" id="running-note1">—</div>
+      <div class="small slot" id="running-note2">—</div>
     </div>
   </section>
 
@@ -179,10 +185,8 @@ the box looked like this hour"; it cannot show a single stuck step.">1 h</button
       <div class="sparkline" id="kv-spark" title="The pool over the last 90 points, drawn on a 0-100% axis (so a
 quarter-full pool is a quarter of the box) rather than autoscaled to its own min and max. The colour carries the
 old progress bar's warning: warn past 85%, danger past 95%."></div>
-      <div class="small" id="kv-spark-note">—</div>
-      <div class="small" id="kv-tokens">—</div>
-      <div class="small small--avg" id="avg-kv" title="Mean KV pool used over each span, from the same gauge the
-sparkline draws. The sparkline's 90 s cannot answer whether the pool has been tight all afternoon; this can.">—</div>
+      <div class="small slot" id="kv-note1">—</div>
+      <div class="small slot" id="kv-note2">—</div>
     </div>
     <div class="card">
       <div class="label">Requests</div>

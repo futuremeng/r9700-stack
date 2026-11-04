@@ -9,9 +9,15 @@ button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible{ou
 [hidden]{display:none!important}
 code{font:13px/1.5 var(--st-font-mono)}
 .muted{color:var(--st-ink-muted)}.small{font-size:var(--st-fs-xs);color:var(--st-ink-muted)}
-/* The trailing-average line under a rate: a different instrument from the note above it -- one is this poll, the
-   other is the level the poll was a sample of -- so it reads as a separate line, not as more of the same note. */
-.small--avg{border-top:1px solid var(--st-line);padding-top:5px;margin-top:5px;opacity:.85}
+/* A slot: a line that may change its content but never its space. These lines carry numbers whose WIDTH
+   changes every poll ("13 tok/s" then "13,570 tok/s" then "13.6k"), and a line that re-wraps changes the height
+   of its card, of the grid row it sits in, and of everything below it -- a page that jiggles once a second is a
+   page nobody reads the numbers on. So one line, ellipsized, with the full text in the title; the copy is written
+   to fit the tightest 4-up card (the arithmetic is in notes/webui.md and tests/render-monitor.mjs enforces it).
+   Digits are tabular so a change of value is a change of one glyph, not of the whole line's spacing. */
+.slot{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;
+     min-width:0;flex:0 1 auto;line-height:1.5}
+.slot--lead{border-top:1px solid var(--st-line);padding-top:5px;margin-top:5px}
 .nowrap{white-space:nowrap}
 
 /* header + page nav --------------------------------------------------------------- */

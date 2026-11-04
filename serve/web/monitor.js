@@ -341,128 +341,162 @@ function renderStatus(s) {
   // Big numbers, and only from what moves per engine step. stream_tok_s_live is aggregate over running:
   // the rate of the stream you are watching, available while it runs -- 1/itl (stream_tok_s) is not, because
   // vLLM observes that histogram when the request FINISHES. The two agree once a request ends.
+  // -- fixed slots, so a number that changes width cannot move the page ---------------------------
+  // Every line in these cards is a SLOT: fixed position, never wraps, ellipsizes, and carries its full text in
+  // the title. The reason is arithmetic, not taste. A 4-up card is 177-322 px of text depending on page width
+  // (main is capped at 1560 with 32 px padding, a 14 px gap, 42 px of card padding and border), the theme lays
+  // text out at 0.60 em per glyph, and these lines are 12 px - so 24 characters fit the tightest 4-up width and
+  // 44 the widest. A line that says "13 tok/s" and later "13,570 tok/s while prefilling" changes how many lines
+  // the card needs, which changes the height of the whole grid row, which moves every card under it: the page
+  // jiggles once a second and a reader stops trusting a number they see change. So the copy is short by
+  // construction, knum() keeps a number to five characters whatever it is, and anything longer that a reader
+  // needs lives in the title. (Not verified as pixels - there is no browser on this box; the arithmetic above
+  // is the same one docs/monitor-cards.py and tests/test_readme.py use, and the harness fails a slot whose
+  // text is longer than the widest 4-up card can hold.)
+  const TT = {                                   // the sentences that do not fit in a slot
+    win: "Which window the four numbers below answer to. A window is used only once it has filled (80% of its "
+       + "width); if the chosen one has not, the widest span that has is used and this line says so. Each card's "
+       + "second line carries the other spans, and its third line carries this poll.",
+    fresh: "How old these numbers are: the sidecar polls the engine every poll window, the page refetches on the "
+         + "same beat, and this is how long the snapshot has been sitting. When it grows, this tab has stopped "
+         + "getting answers.",
+    stream: "Tokens a second for one stream: generated tokens across the span divided by the MEAN number of "
+          + "running streams in it. The window's version divides by the running count of that one poll. The "
+          + "engine's own decode seconds give a second opinion on the same quantity.",
+    gen: "All streams together: generation_tokens_total across the span divided by the span. The engine's counters "
+       + "are cumulative, so a span mean is an exact delta of two reads, not an average of the 1 s samples (which "
+       + "would weight an idle second the same as a second with six streams running).",
+    prefill: "Prompt tokens per second of the engine's own prefill time - how fast it chews when it is chewing. "
+           + "The wall-clock figure is lower by the duty cycle: this launch runs ~7,900 while prefilling and "
+           + "~2,200 across the wall. Over a span the histogram-backed figures count only requests that finished "
+           + "inside it, which matters when the span is shorter than a request's wall time.",
+    step: "Mean engine step (inter-token latency) from delta(sum)/delta(count) of the engine's own histogram "
+        + "families, so the requests counted are the ones that ran across the span. The poll's value is the only "
+        + "one that can show a single slow step - a 905 ms step inside a long prefill reads 103 ms over a span.",
+    spans: "The same quantity over the other spans - the spans this number is NOT. A span labelled shorter than "
+         + "its name (90s, 2m) is the whole ring so far: the page says what it averaged rather than waiting for "
+         + "the hour to fill.",
+    poll: "This poll's own value: the gap between two engine polls (about a second). It is the only number here "
+        + "that can catch something stuck right now, and the only one that swings on a single slow step.",
+  };
   const big = (id, v, unit) =>
-    { $(id).innerHTML = `${isnum(v) ? fmt(v, 1) : "—"}<span class="unit">${unit}</span>`; };
+    { $(id).innerHTML = `${isnum(v) ? knum(v) : "\u2014"}<span class="unit">${unit}</span>`; };
   // -- which window the four numbers answer to ---------------------------------------------------
-  // The default is the 15 min mean. Measured here: one 1 s poll read 9.9 tok/s of generation with six streams
-  // running and another, a minute later in a gap, read 0 - while the quarter hour around them was 51.7. Printing
-  // only the poll number teaches a reader to treat it as the level, which is the complaint the window picker
-  // exists to answer. The poll stays one click away AND in every card's second line, because "is it stuck right
-  // now" is not a question a 15 min mean can answer. A chosen span that has not filled yet falls back to the
-  // widest span that HAS, and the note says so: an hour's label over four minutes of ring is the failure mode.
+  // The default is the 15 min mean: measured here, one 1 s poll read 9.9 tok/s with six streams running and
+  // another, a minute later in a gap, read 0, while the quarter hour around them was 51.7. Printing only the
+  // poll number teaches a reader to treat it as the level, which is what the window picker exists to answer.
   const AVG_WIDE = { "1m": 60, "15m": 900, "1h": 3600 };
-  const WIN_NAME = { live: "this poll", "1m": "1 min", "15m": "15 min", "1h": "1 h" };
+  const WIN_NAME = { live: "poll", "1m": "1 min", "15m": "15 min", "1h": "1 h" };
   const fullSpans = (avg) => Object.keys(AVG_WIDE).filter((k) => avg[k] && !avg[k].reset
     && isnum(avg[k].span_s) && avg[k].span_s >= AVG_WIDE[k] * 0.8);
   const spans = fullSpans(s.avg || {});
   const widest = spans.sort((a, b) => AVG_WIDE[b] - AVG_WIDE[a])[0];
   const win = rateWin === "live" ? "live" : (spans.includes(rateWin) ? rateWin : (widest || "live"));
   const A = win === "live" ? null : (s.avg || {})[win];
-  text("win-note", win === rateWin
-    ? `${WIN_NAME[win]}${A ? ` · ${Math.round(A.span_s)} s of counters` : ""} · each card's second line carries this poll and the other spans`
-    : `${WIN_NAME[rateWin]} has not filled yet - showing ${WIN_NAME[win]}`
-      + (A ? ` (${Math.round(A.span_s)} s of counters)` : ""));
+  const noSpans = Object.keys(s.avg || {}).length === 0;
+  slot("win-note", noSpans ? "poll - this payload has no spans"
+    : win === rateWin ? `${WIN_NAME[win]} (${Math.round(A ? A.span_s : (rate.window_s || 0))} s)`
+                      : `${WIN_NAME[win]} - ${WIN_NAME[rateWin]} not full`, TT.win);
   ["live", "1m", "15m", "1h"].forEach((k) =>
     $("win-" + k).setAttribute("aria-pressed", String(k === rateWin)));
 
-  // stream_tok_s_live is aggregate over running: the rate of the stream you are watching, available while it
-  // runs -- 1/itl (stream_tok_s) is not, because vLLM observes that histogram when the request FINISHES. Over a
-  // span, stream_tok_s divides by the MEAN running across it, which is the honest long-window version of the
-  // same number; decode_tok_s (generated tokens over the engine's own decode seconds) is the second opinion.
-  const streamV = A ? A.stream_tok_s : rate.stream_tok_s_live;
-  big("rate-stream", streamV, "tok/s");
-  // Tokens per step reconciles the two clocks: the step clock and the per-accepted-token clock. The window
-  // usually holds no histogram observation at all (vLLM observes one when a request FINISHES), so the
-  // since-launch ratio fills in and gets labelled, rather than the clause vanishing whenever nothing ended.
-  const sn = s.since || {};
-  const tpsW = A ? A.tokens_per_step : rate.tokens_per_step;
-  const tpsS = isnum(sn.itl_ms) && isnum(sn.tpot_ms) ? sn.itl_ms / sn.tpot_ms : null;
-  const stepV = A ? A.itl_ms : (isnum(rate.itl_ms) ? rate.itl_ms : (s.since || {}).itl_ms);
-  text("rate-stream-note", A
-    ? `aggregate ÷ ${fmt(A.running_mean || 0, 2)} mean running · ${WIN_NAME[win]} mean`
-      + (isnum(stepV) ? ` · step ${fmt(stepV, 1)} ms` : "")
-      + (isnum(tpsW) ? ` × ${fmt(tpsW, 2)} tokens a step` : "")
-      + (isnum(A.decode_tok_s) ? ` · the engine's own decode seconds say ${fmt(A.decode_tok_s, 1)}` : "")
-    : isnum(streamV)
-      ? `aggregate ÷ ${Math.round(live.running || 0)} running · this window`
-        + (isnum(rate.itl_ms) ? ` · step ${fmt(rate.itl_ms, 1)} ms` : "")
-        + (isnum(tpsW) ? ` × ${fmt(tpsW, 2)} tokens a step`
-          : isnum(tpsS) ? ` × ${fmt(tpsS, 2)} tokens a step (since launch)` : "")
-      : inflight ? "nothing generated in this window yet" : "nothing running");
-  const genV = A ? A.generation_tok_s : rate.generation_tok_s;
-  big("rate-gen", genV, "tok/s");
-  text("rate-gen-note", A
-    ? `${fmt((A.generation_tok_s || 0) * (A.span_s || 0), 0)} tokens across ${Math.round(A.span_s)} s`
-      + (isnum(A.requests_per_min) ? ` · ${fmt(A.requests_per_min, 2)} req/min` : "")
-      + (isnum(A.generation_tokens_mean) ? ` · ${fmt(A.generation_tokens_mean, 0)} tokens a request` : "")
-    : isnum(rate.generation_tok_s)
-      ? `${fmt(rate.generation_tok_s * (rate.window_s || 1), 0)} tokens in ${fmt(rate.window_s || 0, 1)} s`
-        + (isnum(rate.requests_per_min) ? ` · ${fmt(rate.requests_per_min, 1)} req/min` : "")
-      : "generation_tokens_total, credited per step");
-  // Prefill, both numbers, always labelled. Over a span there are two honest prefill speeds and they differ by
-  // the duty cycle: prompt tokens per second of the engine's own PREFILL time (how fast it chews when it is
-  // chewing) and per second of WALL time (how much chewing the box does in an hour). This launch runs ~7,900
-  // while prefilling and ~2,200 across the wall, and a card that showed only one of them answers a question
-  // nobody asked. While a long prompt is running the window's number is the KV gauge's growth in tokens a
-  // second -- an estimate, measured to within ~6% of the truth on a 51,859-token prefill, and negative when
-  // finishing requests free blocks.
-  const kvr = isnum(rate.kv_tok_s) ? Math.max(0, rate.kv_tok_s) : null;
-  const exact = isnum(rate.prompt_tok_s) && rate.prompt_tok_s > 0 ? rate.prompt_tok_s : null;
-  const prefillV = A ? A.prefill_tok_s : (exact ?? kvr);
-  big("rate-prefill", prefillV, "tok/s");
-  text("rate-prefill-note", A
-    ? `while prefilling · ${WIN_NAME[win]} mean`
-      + (isnum(A.prompt_tok_s) ? ` · across the wall ${fmt(A.prompt_tok_s, 0)}` : "")
-      + (isnum(A.span_s) && A.span_s < 300 ? ` · only requests that finished inside ${Math.round(A.span_s)} s` : "")
-    : exact !== null
-      ? `exact, from prompt_tokens_total (credited at request end)`
-        + (kvr !== null ? ` · KV growth now ${fmt(kvr, 0)}` : "")
-      : kvr !== null ? "≈ estimated from KV growth · the counter credits at request end"
-        : "no prefill in this window");
-  big("rate-step", stepV, "ms");
-  const ttftV = A ? A.ttft_ms : (rate.ttft_ms ?? (s.since || {}).ttft_ms);
-  text("rate-ttft", isnum(ttftV)
-    ? `first token ${ms(ttftV)}`
-      + (A ? ` (${WIN_NAME[win]} mean)`
-           : (isnum(rate.ttft_ms) || !isnum((s.since || {}).ttft_ms) ? "" : " (since launch)"))
-      + (A && isnum(A.queue_ms) ? ` · queued ${ms(A.queue_ms)}` : "")
-    : "no first-token observation in this window");
-  // -- the spans this number is NOT, plus this poll ------------------------------------------------
-  // The card shows one window; these lines carry the rest, so a reader can see the spread instead of being told
-  // to trust the one number. `span_s` is honoured throughout: a span that has not filled is labelled with what
-  // was actually averaged (`90s`, `2m`), never with the name it asked for.
+  // The other spans, in one short line: "1m 30 - 15m 52 - 1h 24". No unit - the card's label and the number
+  // above already carry it, and 22 characters is what the tightest 4-up card can hold.
   const spanName = (label, wide, span) => span < wide * 0.8
     ? (span < 600 ? `${Math.round(span / 10) * 10}s` : `${Math.round(span / 60)}m`) : label;
-  const avgLine = (id, key, unit, dp, liveV) => {
-    if (!$(id)) return;
-    const parts = [];
-    const said = new Set();
+  const spanList = (key) => {
+    const parts = [], said = new Set();
     for (const [label, wide] of Object.entries(AVG_WIDE)) {
       const b = (s.avg || {})[label];
       if (!b || label === win) continue;
-      if (b.reset) { parts.push(`${label} engine restarted`); continue; }
+      if (b.reset) { parts.push(`${label} reset`); continue; }
       const v = b[key];
       if (!isnum(v)) continue;
       const name = spanName(label, wide, isnum(b.span_s) ? b.span_s : wide);
       if (said.has(name)) continue;      // two spans resolve to the same window: say it once, not twice
       said.add(name);
-      parts.push(`${name} ${fmt(v, dp)}`);
+      parts.push(`${name} ${knum(v)}`);
     }
-    if (win !== "live" && isnum(liveV)) parts.push(`poll ${fmt(liveV, dp)}`);
-    text(id, parts.length ? `${parts.join(" · ")} ${unit}`
-      : (s.avg ? `nothing else to show in these spans yet` : "no trailing averages in this payload"));
+    return parts.join(" \u00b7 ") || "\u2014";
   };
-  avgLine("avg-stream", "stream_tok_s", "tok/s a stream", 1, rate.stream_tok_s_live);
-  avgLine("avg-gen", "generation_tok_s", "tok/s all streams", 0, rate.generation_tok_s);
-  avgLine("avg-prefill", "prefill_tok_s", "tok/s while prefilling", 0, exact ?? kvr);
-  avgLine("avg-step", "itl_ms", "ms a step", 1, rate.itl_ms);
-  avgLine("avg-kv", "kv_used_pct_mean", "% of the pool", 0, live.kv_used_pct);
+  // Every span, including the one the headline is showing: for a card with no headline of this quantity (the
+  // pool), the full set is the point.
+  // Every span, including the one the headline is showing -- for a card with no headline of this quantity (the
+  // pool), the full set is the point. `skip` drops spans whose mean would only repeat what is already on the
+  // card: the pool's headline IS its current value, so a 1-minute mean of it is the same number rounded.
+  const spanAll = (key, skip = []) => {
+    const parts = [], said = new Set();
+    for (const [label, wide] of Object.entries(AVG_WIDE)) {
+      if (skip.includes(label)) continue;
+      const b = (s.avg || {})[label];
+      if (!b) continue;
+      if (b.reset) { parts.push(`${label} reset`); continue; }
+      const v = b[key];
+      if (!isnum(v)) continue;
+      const name = spanName(label, wide, isnum(b.span_s) ? b.span_s : wide);
+      if (said.has(name)) continue;
+      said.add(name);
+      parts.push(`${name} ${knum(v)}`);
+    }
+    return parts.join(" \u00b7 ") || "\u2014";
+  };
 
-  // Say how old the numbers are instead of letting the reader guess: the engine poll sets the window, the
-  // snapshot age says how long this payload has been sitting, and the page refetches on the same beat.
+  const sn = s.since || {};
+  const stepV = A ? A.itl_ms : (isnum(rate.itl_ms) ? rate.itl_ms : sn.itl_ms);
+  // How many tokens a step turns into: step / per-output-token. The window usually holds no histogram
+  // observation at all (vLLM observes one when a request FINISHES), so the since-launch ratio stands in and
+  // says so - in the title, because "x1.30" is the whole of what fits in a slot.
+  const tpsW = A ? A.tokens_per_step : rate.tokens_per_step;
+  const tpsS = isnum(sn.itl_ms) && isnum(sn.tpot_ms) ? sn.itl_ms / sn.tpot_ms : null;
+  const tps = isnum(tpsW) ? tpsW : tpsS;
+  const streamV = A ? A.stream_tok_s : rate.stream_tok_s_live;
+  big("rate-stream", streamV, "tok/s");
+  slot("note-stream", A ? `${WIN_NAME[win]} \u00b7 \u00f7 ${knum(A.running_mean || 0, 1)} run`
+                        : `poll \u00b7 \u00f7 ${Math.round(live.running || 0)} running`, TT.stream);
+  slot("spans-stream", spanList("stream_tok_s"), TT.spans);
+  slot("poll-stream", `poll ${knum(rate.stream_tok_s_live)}`
+       + (isnum(rate.itl_ms) ? ` \u00b7 step ${knum(rate.itl_ms)}` : ""), TT.poll);
+
+  const genV = A ? A.generation_tok_s : rate.generation_tok_s;
+  big("rate-gen", genV, "tok/s");
+  slot("note-gen", A ? `${WIN_NAME[win]} \u00b7 ${knum(A.requests_per_min || 0, 1)} req/min`
+                     : `${knum(rate.generation_tokens || 0)} tok / ${fmt(rate.window_s || 0, 1)} s`, TT.gen);
+  slot("spans-gen", spanList("generation_tok_s"), TT.spans);
+  slot("poll-gen", `poll ${knum(rate.generation_tok_s)}`
+       + (isnum((s.since || {}).generation_tokens_mean)
+          ? ` \u00b7 ${knum((s.since || {}).generation_tokens_mean)}/req` : ""), TT.poll);
+
+  // Prefill, both honest speeds. Prompt tokens per second of the engine's PREFILL time (how fast it chews when
+  // it is chewing) and per second of WALL time (how much chewing an hour contains); this launch runs ~7,900 and
+  // ~2,200. While a long prompt is running the window's number is the KV gauge's growth in tokens a second --
+  // an estimate, measured within ~6% on a 51,859-token prefill, negative when finishing requests free blocks.
+  const kvr = isnum(rate.kv_tok_s) ? Math.max(0, rate.kv_tok_s) : null;
+  const exact = isnum(rate.prompt_tok_s) && rate.prompt_tok_s > 0 ? rate.prompt_tok_s : null;
+  const prefillV = A ? A.prefill_tok_s : (exact ?? kvr);
+  big("rate-prefill", prefillV, "tok/s");
+  slot("note-prefill", A ? `${WIN_NAME[win]} \u00b7 wall ${knum(A.prompt_tok_s || 0)}`
+                         : exact !== null ? "exact \u00b7 credits at end"
+                           : kvr !== null ? "\u2248 from KV growth" : "no prefill in window", TT.prefill);
+  slot("spans-prefill", spanList("prefill_tok_s"), TT.spans);
+  slot("poll-prefill", `poll ${knum(exact ?? kvr)}`
+       + (kvr !== null && exact !== null ? ` \u00b7 KV ${knum(kvr)}` : ""), TT.poll);
+
+  big("rate-step", stepV, "ms");
+  const ttftV = A ? A.ttft_ms : (rate.ttft_ms ?? sn.ttft_ms);
+  const qV = A ? A.queue_ms : rate.queue_ms;
+  slot("note-step", isnum(ttftV) ? `1st ${ms(ttftV)}` + (isnum(qV) ? ` \u00b7 q ${ms(qV)}` : "")
+                                 : "no first token yet", TT.step);
+  slot("spans-step", spanList("itl_ms"), TT.spans);
+  slot("poll-step", `poll ${knum(rate.itl_ms)} ms` + (isnum(tps) ? ` \u00b7 \u00d7${tps.toFixed(2)}` : ""),
+       TT.poll + (isnum(tps) ? ` \u00d7${tps.toFixed(2)} is tokens a step (step time over per-output-token time): `
+                              + "one engine step turns into that many tokens with speculation. "
+                              + (isnum(tpsW) ? "Measured over this window." : "Since launch - this window holds no "
+                                 + "per-token observation, because vLLM takes one when a request finishes.") : ""));
+
+  // Say how old the numbers are instead of letting the reader guess.
   const age = isnum(s.at) ? Math.max(0, Date.now() / 1000 - s.at) : null;
-  text("fresh", `${isnum(s.poll_s) ? s.poll_s.toFixed(1) : "?"} s poll · snapshot `
-    + (age === null ? "age unknown" : `${age.toFixed(1)} s ago`));
+  slot("fresh", `${isnum(s.poll_s) ? s.poll_s.toFixed(1) : "?"}s poll \u00b7 `
+       + (age === null ? "?" : `${age < 10 ? age.toFixed(1) : Math.round(age)}s`) + " ago", TT.fresh);
 
   text("mode", s.mode === "proxy" ? "in the path (recording)"
     : s.mode === "merged" ? "inside the serve (engine records)" : "observing (read-only)");
@@ -563,7 +597,6 @@ function renderStatus(s) {
   // question is really about -- how fast it filled, and whether it ever stopped. The tone (ok / warn /
   // danger past 85 and 95%) carries over to the line's colour, so the bar's warning job survives.
   const kv = Math.max(0, Math.min(100, live.kv_used_pct || 0));
-  text("kv-tokens", isnum(live.kv_tokens) ? `KV pool ${fmt(live.kv_tokens)} tokens` : "pool size not in /metrics");
   text("running", String(Math.round(live.running || 0)));
   text("waiting", `${Math.round(live.waiting || 0)} waiting`
     // Why they wait, when this vLLM says why (0.32 does): "capacity" is waiting for scheduling capacity,
@@ -620,8 +653,8 @@ function renderStatus(s) {
   // changes what a waveform is looking back at. A series that was null for part of it (the prefill estimate
   // before anything ran) draws through the gap rather than as a flat 0, which is why the point count is on
   // the line: 12 of 90 pts means the shape is only as old as those 12 samples.
-  const trend = (sparkId, noteId, values, unit, d, { keep = (v) => v !== 0, label = " while running",
-                                                    lo = null, hi = null, empty = "no samples" } = {}) => {
+  const trend = (sparkId, n1, n2, values, d, { keep = (v) => v !== 0, lo = null, hi = null,
+                                               empty = "no samples", title = "" } = {}) => {
     const xs = values.filter(isnum);
     // The axis, per series. Autoscaling a rate to its own min/max makes a series that spends most of the
     // window at zero look like a full-height oscillation, so rates run on 0..peak and are comparable to each
@@ -635,53 +668,69 @@ function renderStatus(s) {
     // the pool GREW -- the rest are finished requests freeing blocks, and averaging them gave "avg -1,004
     // tok/s". The KV pool series keeps everything: an idle pool at 0% IS the value.
     const used = xs.filter(keep);
-    const spanS = histSpan;
-    // The old whole message was that a series had no points, which left the reader to guess whether the box
-    // was empty because
-    // nothing is running, because the counter is dead, or because the page is broken. Say which, and name the
-    // axis the flat line is drawn against: a per-stream rate with no streams has no denominator, and that is
-    // a different statement from a rate that was measured at zero.
-    text(noteId, used.length < 2
-      ? `${empty} · ${spanS} s back`
-        + (lo === null || !(top > lo) ? "" : ` · axis ${fmt(lo, 0)}..${fmt(top, 0)} ${unit}`)
-      : `last ${fmt(xs[xs.length - 1], d)} · peak ${fmt(Math.max(...used), d)} · `
-        + `avg ${fmt(used.reduce((x, y) => x + y, 0) / used.length, d)} ${unit}${label}`
-        + ` · ${used.length}/${values.length} pts over ${histSpan}`);
+    if (used.length < 2) {
+      slot(n1, empty, title);
+      slot(n2, `${xs.length}/${values.length} \u00b7 ${histSpan}`, title);
+      return;
+    }
+    // Two slots, never one wrapped line: the level on the first, the spread and the sampling on the second.
+    // Both are written to fit the tightest 4-up card (the arithmetic is in notes/webui.md), so the height of
+    // this row does not depend on how many digits the engine happens to be reporting.
+    slot(n1, `now ${knum(xs[xs.length - 1], d)} \u00b7 avg ${knum(used.reduce((x, y) => x + y, 0) / used.length, d)}`,
+         title + ` (peak ${knum(Math.max(...used), d)} over ${histSpan})`);
+    slot(n2, `peak ${knum(Math.max(...used), d)} \u00b7 ${used.length}/${values.length} \u00b7 ${histSpan}`,
+         title + (lo !== null && top > lo ? ` The waveform is drawn on a ${knum(lo)}..${knum(top)} axis.` : ""));
   };
-  // Two rings. The fast one is a point per engine poll for the last HIST points; the slow one is a point per
-  // SLOW_STEP (15 s) for an hour, and its rates are taken OVER the interval. The span in every caption comes
-  // from the samples' own timestamps: points x poll was true of one ring and a lie about the other.
+  const TREND_T = {
+    stream: "Tokens a second for one stream, per poll (fast ring) or per 15 s interval (hour ring). A gap in the "
+          + "line is a poll with no stream running: a per-stream rate has no denominator then.",
+    gen: "All streams together. Flat stretches are the engine prefilling rather than decoding, which is why the "
+       + "peak and the average of this line differ by an order of magnitude on a prefill-heavy launch.",
+    prefill: "Prefill estimated from how fast the KV pool is growing (the counter credits at request end, so the "
+           + "counter series would be a flat line with one spike). It goes NEGATIVE when finishing requests free "
+           + "blocks; peak and average count only the windows where the pool grew.",
+    running: "How many streams the engine is actually running. The aggregate rate is a function of this line: the "
+           + "same engine that gives one stream ~200 tok/s gives ~20 each at six, with prefills interleaved.",
+  };
   const hist = trendWin === "slow" ? (s.history_slow || []) : (s.history || []);
   const histSec = hist.length > 1 ? Math.max(0, Math.round(hist[hist.length - 1].at - hist[0].at)) : 0;
-  const histSpan = histSec >= 120 ? `${Math.round(histSec / 60)} min` : `${histSec} s`;
+  const histSpan = histSec >= 120 ? `${Math.round(histSec / 60)}m` : `${histSec}s`;
   $("trend-fast").setAttribute("aria-pressed", String(trendWin === "fast"));
   $("trend-slow").setAttribute("aria-pressed", String(trendWin === "slow"));
-  text("trend-note", trendWin === "slow"
-    ? `15 s a point · ${hist.length} pts · back ${histSpan} · each point is the rate over its interval`
-    : `one point per ${isnum(s.poll_s) ? s.poll_s.toFixed(1) : "?"} s poll · ${hist.length} pts · back ${histSpan}`);
-  trend("stream-spark", "stream-spark-note", hist.map((h) => h.stream_tok_s), "tok/s", 1,
-        { lo: 0, hi: "peak",
-          empty: "no stream running, so a per-stream rate has no denominator" });
-  trend("gen-spark", "gen-spark-note", hist.map((h) => h.gen_tok_s), "tok/s", 1,
-        { lo: 0, hi: "peak", empty: "nothing was being generated" });
+  slot("trend-note", `${hist.length} pts over ${histSpan}`,
+       trendWin === "slow"
+         ? "One point per 15 s for the last hour, each point the rate over its interval rather than a sample of "
+           + "one poll. Answers \"what has the box looked like this hour\"; it cannot show a single stuck step."
+         : `One point per engine poll (${isnum(s.poll_s) ? s.poll_s.toFixed(1) : "?"} s), 90 points. This is `
+           + "where a stuck step, a restart or one huge prefill shows up as a shape.");
+
+  trend("stream-spark", "stream-note1", "stream-note2", hist.map((h) => h.stream_tok_s), 1,
+        { lo: 0, hi: "peak", empty: "no stream, no denominator", title: TREND_T.stream });
+  trend("gen-spark", "gen-note1", "gen-note2", hist.map((h) => h.gen_tok_s), 0,
+        { lo: 0, hi: "peak", empty: "nothing generated", title: TREND_T.gen });
   // The prefill waveform is the live estimate (KV growth), not the counter rate: over a long prefill the
   // counter series is a flat line with one spike at the end, which is a fact about vLLM, not about the work.
   // It stays autoscaled: it goes negative when finishing requests free blocks, and a 0 baseline would clip
   // the half that says "the pool is draining".
-  trend("prefill-spark", "prefill-spark-note", hist.map((h) => h.kv_tok_s), "tok/s", 0,
-        { keep: (v) => v > 0, label: " while the pool grew", empty: "the KV pool did not grow" });
+  trend("prefill-spark", "prefill-note1", "prefill-note2", hist.map((h) => h.kv_tok_s), 0,
+        { keep: (v) => v > 0, empty: "the pool did not grow", title: TREND_T.prefill });
   // The fourth waveform is how many streams the engine is actually running: at NSEQ=32 the aggregate rate is
   // a function of this line, and the knee (PROGRESS: the spread past 32) is visible in its shape.
-  trend("running-spark", "running-spark-note", hist.map((h) => h.running), "streams", 0,
-        { lo: 0, hi: "peak", empty: "0 streams running" });
+  trend("running-spark", "running-note1", "running-note2", hist.map((h) => h.running), 0,
+        { lo: 0, hi: "peak", empty: "0 streams", title: TREND_T.running });
   // The KV pool's own waveform lives on its card, not here: its axis is 0..100 (a quarter-full pool is a
   // quarter of the box), which would flatten every other series if it shared the trends row's scale.
   spark($("kv-spark"), hist.map((h) => h.kv_used_pct), { baseLo: 0, baseHi: 100 });
   $("kv-spark").dataset.tone = kv > 95 ? "danger" : kv > 85 ? "warn" : "ok";
-  text("kv-spark-note", isnum(live.kv_tokens)
-    ? `${fmt(live.kv_tokens, 0)} tokens in the pool · ${histSpan} back`
-      + (kv > 85 ? ` · ${kv > 95 ? "at the limit" : "nearly full"}` : "")
-    : "pool size not in /metrics");
+  slot("kv-note1", isnum(live.kv_tokens)
+    ? `${knum(live.kv_tokens)} tok \u00b7 ${kv.toFixed(0)}% \u00b7 ${histSpan}`
+    : "pool size not in /metrics",
+    `The pool this launch was given, how full it is now, and how far back the waveform reaches. ` +
+    (kv > 85 ? "Above 85% is tight, above 95% is the limit: a request that needs blocks the pool cannot give is "
+              + "preempted and re-prefilled from scratch." : ""));
+  slot("kv-note2", `${spanAll("kv_used_pct_mean", ["1m"])} %`,
+    "Mean pool used over each span, from the same gauge the waveform draws. The ring cannot answer whether the "
+    + "pool has been tight all afternoon; these can. A span labelled shorter than its name is the whole ring so far.");
 
   for (const [id, k] of [["t-ttft", "ttft_ms"], ["t-queue", "queue_ms"], ["t-prefill", "prefill_ms"],
                          ["t-decode", "decode_ms"], ["t-step", "itl_ms"], ["t-tpot", "tpot_ms"]])
@@ -989,8 +1038,11 @@ bindTheme();
   } finally {
     const since = lastOk ? Date.now() / 1000 - lastOk : null;
     if (!paused && since !== null && since > 5) {
-      text("fresh", `snapshot is ${since.toFixed(0)} s old -- this tab is not getting answers`
-        + (lastErr ? ` (${lastErr})` : ""));
+      // A slot, so going stale cannot re-flow the page: short visible text, the full sentence and the last
+      // error in the title.
+      slot("fresh", `${Math.round(since)}s stale`,
+           `This tab has not had an answer for ${since.toFixed(0)} s - the numbers on the page are frozen at the `
+           + `last one that arrived` + (lastErr ? ` (last error: ${lastErr})` : "."));
       if (!lastErr) text("updated", "Stale · retrying");   // a failed fetch already said "Disconnected"
     }
     setTimeout(poll, 1000);

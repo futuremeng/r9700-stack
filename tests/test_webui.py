@@ -1039,8 +1039,9 @@ ck("every api() call carries a deadline (a stalled request must become one visib
 _m = _js["monitor.js"]
 ck("the poll loop reschedules in a finally, so no tick can be the last one",
    bool(re.search(r"finally\s*\{.*setTimeout\(poll", _m, re.S)) and "await refresh(); setTimeout(poll" not in _m)
-ck("a page with no answer for 5 s says how old its numbers are, and stays quiet while deliberately paused",
-   bool(re.search(r"!paused.*snapshot is \$\{since", _m, re.S)))
+ck("a page with no answer for 5 s says how old its numbers are (short in the slot, the sentence in the title), "
+   "and stays quiet while deliberately paused",
+   bool(re.search(r"!paused.*s stale", _m, re.S)) and "has not had an answer for" in _m)
 ck("returning to a throttled background tab refetches at once instead of waiting for the timer",
    all("visibilitychange" in _js[f] for f in ("monitor.js", "about.js")))
 # the de-emphasis itself: colour follows activity, not a counter that has stopped moving
@@ -1259,11 +1260,13 @@ ck("all four rate slots exist and are written",
        for i in ("rate-stream", "rate-gen", "rate-prefill", "rate-step")))
 ck("the headline decode rate is the live aggregate-over-running one",
    "rate.stream_tok_s_live" in monjs and 'id="rate-stream"' in monhtml)
-ck("the headline line reconciles the step rate with the token rate",
-   "tokens a step" in monjs and "rate.tokens_per_step" in monjs)
+ck("the step card reconciles the step rate with the token rate (xN tokens a step, five characters in a slot)",
+   "rate.tokens_per_step" in monjs and "\\u00d7${tps.toFixed(2)}" in monjs and "tokens a step" in monjs)
 ck("the prefill rate names which of its two numbers is showing",
-   "estimated from KV growth" in monjs and "exact, from prompt_tokens_total" in monjs)
-ck("the page says how old its numbers are", 'id="fresh"' in monhtml and "snapshot " in monjs)
+   "from KV growth" in monjs and "exact \\u00b7 credits at end" in monjs)
+ck("the page says how old its numbers are (the sentence is the slot's title, in the markup and in what the page "
+   "writes into it)", 'id="fresh"' in monhtml and " ago" in monjs
+   and "How old these numbers are" in (monhtml + monjs))
 ck("the page refetches on the engine's beat", "setTimeout(poll, 1000)" in monjs)
 # The waveforms belong in one row, not sprinkled through the value cards: four series over the same span,
 # each with last/peak/avg attached. (The aggregate series used to be drawn twice -- once big, once small.)
@@ -1296,8 +1299,8 @@ ck("a series with no samples keeps its axis line instead of an empty box",
 # says which, in its own words, and names the axis the flat line sits on.
 ck("an empty waveform says why in the series' own terms, not 'no series yet'",
    '"no series yet"' not in monjs
-   and "has no denominator" in monjs and "0 streams running" in monjs and "did not grow" in monjs
-   and "` · axis ${fmt(lo, 0)}..${fmt(top, 0)} ${unit}`" in monjs)
+   and "no denominator" in monjs and "0 streams" in monjs and "did not grow" in monjs
+   and "drawn on a ${knum(lo)}..${knum(top)} axis" in monjs)
 ck("a peak axis is never computed as Math.max() of nothing (which is -Infinity)",
    'Math.max(...xs, 0)' in monjs and "isFinite(lo) || !isFinite(hi)" in (WEB / "common.js").read_text())
 # The per-card cards: busy and VRAM as waveforms on honest axes (0..100, and 0..the card's own VRAM), and
@@ -1308,7 +1311,7 @@ ck("a caveat on a headline number is note-sized, not headline-sized",
 # "(since launch)" sat inside value--sm elements, set in the headline's own size -- three words louder than
 # the measurement they qualify, which is backwards. The qualifier helper carries them instead.
 ck("the tokens-per-step clause falls back to the since-launch ratio, labelled, when the window has none",
-   "tokens a step (since launch)" in monjs and "sn.itl_ms / sn.tpot_ms" in monjs)
+   "sn.itl_ms / sn.tpot_ms" in monjs and "Since launch - this window holds no" in monjs)
 ck("the since-launch caveats on the headline stats ride the qualifier",
    monjs.count("qualText(") >= 2 and '"since launch"' in monjs
    and 'text(id, ms(pick(k)) + (isnum(rate[k])' not in monjs)
@@ -1417,10 +1420,11 @@ ck("the brief line only reads: one /health GET, no request bodies, nothing echoe
 # "fully loaded" and a 0 as "healthy idle" when either could also mean "the launch let go".
 ck("the cards line says busy % is coarse here, with the observed spread",
    "busy % is coarse here" in monjs and "amdgpu sysfs" in monjs)
-ck("each waveform carries last, peak and average",
-   'avg ${fmt' in monjs and 'peak ${fmt' in monjs
-   and all(f'id="{i}"' in monhtml for i in ("stream-spark-note", "gen-spark-note",
-                                            "prefill-spark-note", "running-spark-note", "kv-spark-note")))
+ck("each waveform carries the level and the spread, in two slots that never wrap",
+   'avg ${knum' in monjs and 'peak ${knum' in monjs
+   and all(f'id="{i}"' in monhtml for i in ("stream-note1", "stream-note2", "gen-note1", "gen-note2",
+                                             "prefill-note1", "prefill-note2", "running-note1", "running-note2",
+                                             "kv-note1", "kv-note2")))
 # A null is "no sample in this window", not "the series was at zero": the line has to break, and the filled
 # area under it has to stop, or the gap reads as a measurement at the baseline.
 _ck = (WEB / "common.js").read_text()
@@ -1430,7 +1434,7 @@ ck("the span is named in points and seconds, since the ring counts points",
    "pts over" in monjs and "s.history" in monjs)
 ck("a rate waveform averages only the windows that carried a rate, and the estimate only the growing ones",
    'keep = (v) => v !== 0' in monjs and 'keep: (v) => v > 0' in monjs
-   and 'label: " while the pool grew"' in monjs)
+   and "count only the windows where the pool grew" in monjs)
 ck("the pool's own waveform is plotted straight, with no sample filtering",
    'spark($("kv-spark"), hist.map((h) => h.kv_used_pct)' in monjs)
 ck("the sidecar polls the engine at 1 s by default, both modes",
@@ -1855,6 +1859,38 @@ ck("but the KV-growth series is not guarded that way: a negative there is the po
 ck("the payload carries the slow ring and says how far apart its points are, capped like every other ring",
    len(s.get("history_slow", [])) <= W.SLOW_KEEP and s.get("slow_step_s") == W.SLOW_STEP,
    f"{len(s.get('history_slow', []))} pts, step {s.get('slow_step_s')}")
+
+# --- the layout cannot move when a number changes width -----------------------------------------
+# Every number line in the rate and trend rows is a SLOT: one line, ellipsized, full text in the title. The
+# reason is arithmetic: these lines carry numbers whose width changes every poll ("2.0" then "8,481" then
+# "16.2k"), a line that re-wraps changes its card's height, the card's height changes the grid row, and the row
+# moves everything below it. The checks below keep the mechanism honest; tests/render-monitor.mjs enforces the
+# character budget on what the live page actually renders.
+_wh = open(os.path.join(ROOT, "serve/web/monitor.html")).read()
+_wc = open(os.path.join(ROOT, "serve/web/web.css")).read()
+_slot_html = {m.group(2) for m in re.finditer(r'class="([^"]*)"[^>]*?\bid="([^"]+)"', _wh)
+              if "slot" in m.group(1).split()}
+_slot_js = set(re.findall(r'slot\("([^"]+)"', _mjs2)) | {
+    x for pair in re.findall(r'trend\("[^"]+", "([^"]+)", "([^"]+)"', _mjs2) for x in pair}
+ck("every slot the page writes is declared in the markup (an undeclared one silently stops rendering)",
+   _slot_js <= _slot_html, f"missing from HTML: {sorted(_slot_js - _slot_html)}")
+ck("and every slot in the markup is written (a stale one shows a dash forever)",
+   _slot_html <= _slot_js, f"never written: {sorted(_slot_html - _slot_js)}")
+ck("a slot is one line: nowrap, ellipsis, tabular digits",
+   ".slot{" in _wc and all(x in _wc.split(".slot{")[1][:260]
+                           for x in ("white-space:nowrap", "text-overflow:ellipsis",
+                                     "font-variant-numeric:tabular-nums")),
+   _wc.split(".slot{")[1][:180] if ".slot{" in _wc else "no .slot rule in web.css")
+ck("the rate row is three slots per card and the trend row two, so the two rows are the same shape",
+   len(re.findall(r'id="note-[a-z]+"', _wh)) == 4 and len(re.findall(r'id="spans-[a-z]+"', _wh)) == 4
+   and len(re.findall(r'id="poll-[a-z]+"', _wh)) == 4
+   and len(re.findall(r'id="(stream|gen|prefill|running)-note[12]"', _wh)) == 8,
+   f"{len(re.findall(chr(34) + 'id=' + chr(34) + 'note-', _wh))} note slots")
+ck("numbers in those slots go through knum(), which caps their width (5 characters: 999.9 / 16.2k / 1.01M)",
+   "const knum = " in (open(os.path.join(ROOT, "serve/web/common.js")).read())
+   and "knum(" in _mjs2 and _mjs2.count("knum(") >= 12, f"{_mjs2.count('knum(')} uses in monitor.js")
+ck("and the old always-wraps note class is gone, so nothing outside the slot mechanism re-wraps",
+   "small--avg" not in _wc and "small--avg" not in _wh)
 
 print("PASS" if fail == 0 else "FAIL", f"({fail} failing)")
 sys.exit(1 if fail else 0)
