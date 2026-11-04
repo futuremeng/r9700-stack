@@ -487,3 +487,132 @@ needs the 208 / 240 V feed) and a fused per-layer decode kernel (research). Item
 across ranks instead of replicated) is the route past the Sparks' 524k validated context and is scheduled after v0.4.1.
 Rules unchanged: stock vLLM / ROCm / exllamav3, unmodified checkpoints, plugin only; every package bit-exact or within bf16
 rounding; the Qwen and GLM gates on the same tree before the tag.
+
+### Phase 4, the ledger's verdict (2026-11-03 12:30 UTC; notes/exl3-ledger.md, package Z)
+The default single-stream step is **25.4 ms** (74 tok/s at 1.89 accepted tokens) and **GPU-bound**: the kernels sum to 23.5 ms,
+launch + CPU gaps are <= 1.9 ms, so the "~810 launches at a 4 us floor" picture was wrong (it counted kernels a token; a step is
+1,754-1,866 launches, glue 1.2-1.4 ms of GPU time). Where the 23.5 ms goes: **collectives 9.6 ms (41 %)** -- of which **4.1 ms is one
+kernel, the flat eight-rank all-gather `r9k_ag_oneshot_nrank_kernel<8>`** (the target logits gather at <= 4 verify rows lands on it
+because the message fits R9K_AG_MAX_KB 128 and leaves RCCL, which does the 6-row gather in 0.20 ms; Engram's two gathers 0.65-1.07
+ms each), 81 all-reduces at 71-81 us (40-60 KB) + 106 us (90-160 KB); bf16 GEMMs 4.3 ms (wo_a 1.1, shared experts 1.2, router 0.5,
+heads 1.6 incl. the drafter's markov head 0.54-0.67 = five sequential [129280 x 256] f16 GEMVs + argmax); expert tier 2.6 ms;
+EXL3 GEMVs 2.0 ms at 288-292 GB/s; glue 1.6 ms; decode attention 0.9; hc seams 0.75; drafter 2.6-3.2 ms in all. At four streams
+(40.0 ms): collectives 13.3, expert tier 7.1, **EXL3 GEMVs 5.0 because every EXL3 linear dequantizes its whole matrix above 16 rows**
+(7.6 ms at a true 24-row verify), bf16 5.5. Adaptive verification costs 8-12 % single-stream only because of the slow gather
+(74 vs 81 tok/s), and wins at four streams (202 vs 155). NSEQ 8 (T = 48) does not launch on v0.4.0 (HSA memory aperture
+violation in the sparse-MLA warm-up; v0.4.0's r9k tier also caps at 42 tokens).
+**Re-prioritised:** C first fixes the all-gather (route <= 128 KB gathers back to RCCL as the stop-gap, then a proper one-kernel
+all-gather; ~3.5-4 ms a step = ~15 %), then the one-kernel all-reduce; D's multi-row GEMV must cover M <= 48 so the dequant path
+never runs in decode (~5 ms at four streams), then wo_a; A fixes the NSEQ 8 launch fault before its T = 48 tier work; B's pool is
+the 1.6 ms of glue plus the drafter's head path (markov head, lm_head gather), not launch gaps. New floor estimate after A-D:
+single-stream step ~15-16 ms (~115-125 tok/s prose), four streams ~26-28 ms (~290-310 aggregate).
+
+### Phase 4 results, package C (collectives; quiet box, HIP graphs, best of 3; 2026-11-03 12:49-12:51 UTC, tables in VM100 ~/ds41/exl3/C4/)
+- **The all-gather.** v0.4.0 routes gathers whose eight-way result exceeds R9K_AG_MAX_KB (128) but whose piece does not onto the flat
+  eight-rank kernel, where every rank stores its whole piece into seven peers across the root complexes -- the same fabric cliff as
+  the flat all-reduce: **403 / 709 / 919 / 1040 us at [3 / 4 / 5 / 6, 3200]** (Engram) and **890 / 2585 / 3896 us at [1 / 2 / 4,
+  16160]** (the target logits at the adaptive-trimmed verify widths), against RCCL's 76-85 and 80-144. C's one-kernel all-gather
+  (own piece -> own host pool + partner's pair pool over P2P; pull the quartet's pieces from host memory and forward to the
+  partner; copy the partner quartet's four from the pair pool; nothing crosses a root complex; pure copies, exact bits):
+  **15.7-47.5 us on the Engram shapes, 39.7 / 71.9 / 129.1 / 181.7 / 233.9 us at 1 / 2 / 4 / 6 / 8 rows x 16160** (RCCL 80 / 103 /
+  144 / 187 / 229). Defaults: R9K_AG8_OS_KB 192 (RCCL above), R9K_AG8_FLAT_KB 0 (the flat kernel never). Worth ~3.8 ms of the
+  25.4 ms single-stream step.
+- **One-kernel all-reduce** (three phases with system-scope flags, host pools, 16 blocks a rank): **14.6 / 17.3 / 23.5 / 27.2 us at
+  8 / 16 / 32 / 40 KiB** (stage kernels 21 / 34.5 / 46 / 34.7; RCCL 107-114), 39.8 at 60 KiB and 41.8 at 64 against the fused
+  split path's 37.6 / 38.5 -> default R9K_AR8_OS_KB 48. Peer writes instead of host pools (R9K_AR8_OS_P2P_KB) are 83-153 us at
+  every size: off. Bit-identical to the stage kernels (same rounding order), so GLM TP8's results cannot change; its speed goes
+  through the GLM gate (its 1-row logits gather and its <= 48 KiB all-reduces take the new kernels).
+- **Fused MoE reduction** (the expert tier's per-slot f32 partials x pick weights + the shared expert formed inside the collective's
+  first phase; no residual add before the all-reduce on this pin): T = 1 **18.5 us vs 40.9** for add + stage kernels; no gain at
+  60 KiB, hence the 48 KiB cap (fused for T <= 4). One launch a layer saved. Hook r9700_vllm/moe/exl3_combine.py, installed from
+  the EXL3 model classes (integration step), R9K_EXL3_MOE_AR=0 to disable.
+- **Real server, v0.4.0 + C on a clean tree** (git archive of v041 a970cd5 -> VM100 ~/r9700-exl3-C2, combine hook wired; 14:37-14:55
+  UTC, `~/ds41/exl3/C4/clean-C2.log`; v0.4.0 in parentheses): adaptive off -- prose x1 **80.1-80.3** (74.6), prose x4 39.0-39.3 per
+  stream (38.3), code x1 **173.5-175.3** (158.1), code x4 85.5-85.9 (84.3); adaptive on -- prose x1 **75.9-83.0** (72.5-73.0), prose x4
+  **43.5-51.5** (44.3-45.6; 159-188 aggregate), code x1 **176.6-177.7** (152.2), code x4 **86.6** (81; 316-320 aggregate). Divergence
+  22 / 24 / 24. Single stream +8-16 %, four streams +0-13 %, no regression: the all-gather fix is worth less on the server than the
+  per-call arithmetic said (the logits gather only hits the slow kernel at <= 4 verify rows, i.e. with adaptive trimming) and the
+  one-kernel all-reduce saves ~20-30 us x 81 calls. Committed as b9c07e8 + a970cd5 (build.sh) on v041.
+  LESSON: an earlier "HEAD + C" server run was really the union of every package's uncommitted edits (the agents' private trees were
+  copies of the shared working tree), and it showed a four-stream regression (prose x4 26-29, code x4 63) that the clean tree does
+  not have -- so one of A / B / D's in-progress changes is slower at 24 rows; each package is integrated on a clean tree from now on.
+
+### Phase 4 results, package B (decode glue; card 6, graph replay, us a call, warm weights; 2026-11-03; notes/exl3-glue.md)
+- **FFN front in one launch** (`r9k_dsv4_sk`: ffn_norm + router gate GEMV + sqrt-softplus top-k with bias / bias_vl / padding /
+  renormalize / routed scaling + the shared expert's gate_up GEMV + silu-and-mul with clamp; 5 launches -> 1): 39.7 -> 21.0 us at
+  1 row, 38.6 -> 22.2 at 2, 39.3 -> 25.2 at 4, 35.8 -> 27.1 at 6, 40.2 -> 32.3 at 8; stock above 8 rows (the first version lost
+  217-560 us a layer at 24 rows -- the union tree's four-stream regression -- hence R9K_DSV41_ROUTE_MAX_M 8).
+- **DSpark markov head** (one launch a draft step + one final; greedy): five steps 720 -> 245 us at 1 request, 747 -> 313 at 4
+  (an fp8 head copy, R9K_DSV41_MARKOV_FP8=1, is 158 / 394: off by default). Token-identical drafts.
+- **Attention input on the 8 compressor / indexer layers** (attn_norm + compressor kv_score + indexer weights_proj): 29.1 -> 13.4 us
+  at 1 row, 28.3 -> 18.9 at 4, stock from 8. **wq_b + indexer wq_b stacked** on D's GEMV (untimed until D lands). A norm + cast +
+  rotation pre-pass (`dsv4_glue.prepass`) for D's rotated input.
+- Projected a single-stream step: ~214 fewer launches of 1,754 and 1.0-1.3 ms of GPU time (FFN front 0.4-0.7, markov 0.45,
+  attention input 0.1). 116 checks pass: norms within 1 bf16 ulp of stock's rms_norm, top-k bit-exact, graphs = eager.
+  Committed as 828115a on v041 (B's clean-tree versions of build.sh and deepseek_v41_rdna4.py, without D's hunks).
+- **Real server, v0.4.0 + C + B on a clean tree** (git archive 828115a -> VM100 ~/r9700-exl3-CB; 16:02-16:24 UTC, `~/ds41/exl3/B4/clean-CB.log`;
+  v0.4.0 + C / v0.4.0 in parentheses): adaptive off -- prose x1 **83.2-84.2** (80.2 / 74.6), prose x4 35.2-38.9 per stream (39.1 /
+  38.3), code x1 **178.3-178.9** (174.4 / 158.1), code x4 **87.5-88.7** (85.7 / 84.3; 327-331 aggregate); adaptive on -- prose x1
+  **89.9-92.4** (75.9-83.0 / 72.5-73.0), prose x4 42.8-50.2 (43.5-51.5 / 44.3-45.6), code x1 **179.3** (177 / 152.2), code x4 84.0-85.3
+  (86.6 / 81). Divergence 23 / 24 / 23 (|dlogprob| 0.084 / 0.031 / 0.048), GSM8K 98 / 100. B adds +4-11 % single stream on top of C;
+  four streams unchanged (its fusions fall back to stock above 8 rows). Running total vs v0.4.0: single-stream prose **+24-27 %**
+  (73 -> 90-92), code **+18 %** (152 -> 179); the Sparks' 80.7 / 118 are now beaten by 1.1x / 1.5x single stream.
+
+### Phase 4 results, package A (expert tier to 48 tokens, split-path collective; card 5 / eight cards; 2026-11-03 17:35 UTC)
+- **r9k expert tier** (card 5, graph replay, us a layer, K = 3, 48 local experts, cold weights, SCLK offset 0; T / local picks /
+  distinct experts): 6/4/4 **123 -> 118-124**, 6/5/5 146 -> 141-152, 24/18/15 **518 -> 414-435**, 36/27/21 795 -> 616-620, 48/36/25
+  **2324 (exllamav3's fused tier) -> 674-741** (449-492 GB/s on trellis bytes; gate+up 586 us at 377 GB/s, down 211 at 525),
+  48/36/12 676, 48/36/36 990. K = 2: 24 tok 548 -> 369, 48 tok 2309 -> 717. Drafter (K = 4, 16 local, top-3): T = 20 223 -> 213,
+  T = 40 407 -> 342. Slot cap 512, grouping compacts local slots first (O(nl^2)), batched input rotation, 2-row groups above 8
+  tokens, `r9k_moe_exl3_groups` validation export; R9K_EXL3_MOE_R9K_M default 48, scratch 47.5 MiB a rank. Bit-exact decode,
+  graphs = eager, rms rel err <= 4.2e-4 to T = 48. Target T = 48 <= 700 narrowly missed (steady state 735-741).
+- **NSEQ 8 launches** with the tier at 48: the v0.4.0 fault (HSA aperture violation in the mixed warm-up) is in the > 24-token path
+  through exllamav3's fused tier in-server (R9K_EXL3_MOE_R9K_M=24 on A's tree faults the same way; the fused tier is clean on one
+  card at 25-64 tokens; AMD_SERIALIZE_KERNEL names no kernel). Known limit: steps above 48 tokens (NSEQ > 8 at k = 5) stay off.
+- **Split-path collective** (eight cards, quiet box, us per all-reduce; before -> after, RCCL): 100 KiB 49.8 -> 45.4 (101), 160 65.1
+  -> 60.3 (112), **240 81.7 -> 77.2** (124), 320 99.8 -> 90.9 (135), **480 140.2 -> 121.8** (161), 640 158 -> 156 (182). The stage
+  trace: the two host-memory read roles (reduce, gather) take 31 + 23 us of the 85 us span at 240 KiB (~180 KB of host reads a
+  rank at ~3 GB/s, request-limited); more lanes or sub-steps lose (15 lanes 134 us; 30 lanes at 480 KiB 252). Rule: one lane with
+  1024-word sub-steps (R9K_AR8_FUSED_W1). Targets (<= 50 / <= 90) missed; the remaining gain needs a data path with fewer host
+  reads (v0.4.2). Rank skew inside a pair < 2 us; the ledger's 161 vs 80 us at 240 KB is arrival skew from the preceding compute.
+- **Launcher finding (unverified by the owner yet):** exporting ANY extra `-e` variable through DOCKER_ARGS into the container left
+  the DSpark drafter at MAL 1.01-1.04 (vs 1.7-1.8) in 5 of 5 launches, including a dummy `R9K_A4_DUMMY=48`; the bad runs JIT a
+  different rejection-sampler path. A's launcher export of R9K_EXL3_MOE_R9K_M was the union tree's four-stream regression. Being
+  reproduced on the clean C+B+A tree (clean-CBA.sh: `-e FOO_DUMMY=1` and `-e R9K_A4_DUMMY=48`).
+- Committed as 3f2167a on v041 (A's files + the build.sh export; the trace / lane-cap hunks were in b9c07e8).
+
+### Phase 4 results, package D (EXL3 decode GEMV M = 1..48, wo_a on EXL3; card 7 at -500 MHz, graph replay, cold ring; 2026-11-03)
+- **`kernels/r9k_exl3_gemv.hip`** (P1's trellis device functions, MIT): one launch takes up to 16 (matrix, rows, columns) groups, grid =
+  128-column tiles x input chunks; each block rotates its input chunk into LDS (x * suh, Hadamard; a pre-rotated f16 input is only
+  copied, for B's pre-pass), streams the trellis to f32 partials, and the last block of a tile sums them in a fixed order, applies the
+  output Hadamard + svh and stores bf16 / f16 / f32 at the group's column offset. M = 1..8: the fdot row tile; M = 9..48: WMMA
+  16x16x16 f16 (gfx12 layout) with a per-wave LDS transpose, one decode feeding three 16-row tiles, 2 x 128 columns a block.
+  Deterministic, graph replay = eager bitwise. Bit-exact decode vs reconstruct; rms rel 0.6-2.1e-6 vs fp32 on the same rotated
+  input at every M; 2.1-2.6e-4 with the in-kernel rotation (exllamav3's own path: 3.0-3.8e-4).
+- **us a call, exllamav3 path (with its casts; the dequant path above 16 rows) -> ours:** fused_wqa_wkv 26.3 -> 18.9 at M=1 (304 GB/s),
+  35.3 -> 23.8 at 6, **119.5 -> 44.3 at 24**, 121 -> 66 at 48; wq_b / indexer wq_b 19.9 -> 11.4 / 22.9 -> 14.7 / 51.9 -> 26.2 /
+  58.1 -> 36.9; wo_b the same; drafter K6 similar; engram wkv (25 tiles, odd) 31.8 -> 24.0 at M <= 16, dequant kept above;
+  mtp main_proj (59 MB) 115.8 -> 108.7 at 1, exllamav3 kept at 3-8, 660 -> 289 at 24. **wo_a bf16 einsum -> EXL3: 18.0 -> 12.1 at 1,
+  17.7 -> 14.9 at 6, but 18.1 -> 27.8 at 24 and 18.4 -> 37.3 at 48** (-230 MiB a rank; R9K_DSV41_WOA=bf16 restores v0.4.0).
+  Synthetic layer (wqa_wkv + wq_b + wo_a + wo_b): 86 -> 54 us at M=1, 104 -> 66 at 6, **243 -> 122 at 24**, 254 -> 178 at 48;
+  launches 13-24 -> 4. Projection a step: -1.5 ms at M=1, -1.7 at 6, **-5.8 at 24**, -3.7 at 48; ~390 fewer launches at M=6.
+  The 450 GB/s target at M <= 8 is not met (285-340; a ~9 us fixed latency chain a launch: prefetching the first tiles before the
+  rotation is the next step). Open: NB2=4 crashes on main_proj (default 2).
+- Committed as the package D commit on v041 (D's files; build.sh now carries A, B, C and D's exports; C's combine hook wired in the
+  EXL3 model classes in the same commit).
+- **Package A on the clean tree (git archive 3f2167a = C + B + A; 17:33-18:35 UTC, `~/ds41/exl3/A4/clean-CBA.log`, `bisect-A.log`):
+  the DSpark drafter accepts nothing -- MAL 1.01, acceptance 0.002 at every width, NSEQ 4 and 8, with and without extra container
+  variables** (prose x1 50-54 tok/s, code 49-55; the target is still right: divergence 22 / 24 / 24, GSM8K 99 / 100). The "any
+  extra -e breaks the drafter" finding was this. Bisect by knob: `R9K_EXL3_MOE_DECODE=mgemv` (A's kernel bypassed) MAL 1.80 / 4.43,
+  prose 87.3 / code 196; `R9K_EXL3_MOE_R9K_M=24` (A's kernel, old cap) MAL 1.71 / 4.49 but prose **62.8** / code 182.6. So A's
+  rewritten kernel (a) corrupts the drafter when the tier is sized for 48 rows (the warm-up at 36 / 48 rows or the 2-row
+  group path leaves the drafter's small calls wrong -- the single-card tests at R9K_TEST_DRAFT_EP=32 did not see it), and (b) costs
+  ~+6 ms a step at the 1-4-row widths the single-stream step actually runs (not in A's table, which starts at T = 6). Held back:
+  commit "Hold back package A's 48-token expert tier" returns the kernel, tier wiring and tests to v0.4.0; the split-path lane
+  rule (+4-13 % at 240-480 KiB), spectune STREAMS and the NSEQ-8 caveat stay. v0.4.2 item: redo the 48-token tier with the
+  drafter geometry (16 local, top-3, K = 4) and T = 1-4 in the acceptance, on a clean tree, server-validated.
+- **Plain decode (no drafter), release-candidate tree** (by accident: the hold-back edit had cut the launcher's speculative-config
+  line; `~/ds41/exl3/D4/clean-REL.log`, 18:39-19:10 UTC): **83.2-83.5 tok/s single stream** (v0.4.0's no-drafter probe: 51.7),
+  52.9-60.4 per stream at four (v0.4.0: 31.5), prose = code as expected without speculation; divergence 22 / 24 / 22, GSM8K
+  99 / 100. wo_a on EXL3 vs bf16 at these widths: 83.3 vs 80.5 single, 59.8-60.4 vs 58.0-58.3 at four -> EXL3 stays the default.
+  The launcher is restored (commit after a9ec6a9) and the drafter runs are repeated as REL2.

@@ -1,12 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1266" viewBox="0 0 1000 1266" font-family="Outfit, 'DejaVu Sans', system-ui, sans-serif" role="img">
-<rect x="0" y="0" width="1000" height="1266" rx="0" fill="#0e1113" stroke="none"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1302" viewBox="0 0 1000 1302" font-family="Outfit, 'DejaVu Sans', system-ui, sans-serif" role="img">
+<rect x="0" y="0" width="1000" height="1302" rx="0" fill="#0e1113" stroke="none"/>
 <rect x="38.0" y="26.0" width="22.0" height="7.0" rx="3.5" fill="#34d399" stroke="none"/>
 <rect x="30.0" y="36.0" width="30.0" height="7.0" rx="3.5" fill="#34d399" stroke="none"/>
 <rect x="22.0" y="46.0" width="38.0" height="7.0" rx="3.5" fill="#34d399" stroke="none"/>
 <rect x="16.0" y="56.0" width="44.0" height="7.0" rx="3.5" fill="#34d399" stroke="none"/>
 <text x="78.0" y="58" font-size="34" font-weight="800" fill="#eef1f3">r9700-stack</text>
 <rect x="491.6" y="32" width="492.4" height="27" rx="13.5" fill="none" stroke="#34d399"/>
-<text x="502.6" y="52" font-size="14" fill="#34d399">v0.4.0 · 2026-11-03 · vLLM 0.32 line, nightly 2026-10-25</text>
+<text x="502.6" y="52" font-size="14" fill="#34d399">v0.4.1 · 2026-11-03 · vLLM 0.32 line, nightly 2026-10-25</text>
 <text x="16" y="78" font-size="14" fill="#8e979f">LLM inference on 2 to 8 AMD Radeon AI PRO R9700</text>
 <rect x="16" y="90" width="968" height="110" rx="12" fill="#161a1d" stroke="#2a3036"/>
 <text x="32" y="120" font-size="14" font-weight="700" fill="#34d399">01</text>
@@ -65,12 +65,12 @@
 <rect x="236.0" y="619" width="11" height="13" rx="2" fill="#f5b53d" stroke="none"/>
 <rect x="252.0" y="619" width="11" height="13" rx="2" fill="#f5b53d" stroke="none"/>
 <text x="274.0" y="632" font-size="15" font-weight="700" fill="#eef1f3">TP8 · 8 cards</text>
-<text x="140.0" y="652" font-size="14" fill="#8e979f">8-rank collective via host RAM</text>
+<text x="140.0" y="652" font-size="14" fill="#8e979f">one-kernel 8-rank collectives</text>
 <rect x="563.0" y="476" width="421.0" height="222" rx="10" fill="#1d2226" stroke="#2a3036"/>
 <text x="575.0" y="502" font-size="19" font-weight="700" fill="#eef1f3">DeepSeek-V4.1-Flash</text>
 <text x="575.0" y="522" font-size="14" fill="#f5b53d">552B MoE, EXL3 2.9 bpw</text>
 <text x="575.0" y="550" font-size="14" fill="#c7cdd3">·  384 routed experts, Engram tables</text>
-<text x="575.0" y="570" font-size="14" fill="#c7cdd3">   EXL3 trellis, our decode kernel</text>
+<text x="575.0" y="570" font-size="14" fill="#c7cdd3">   EXL3 GEMV + expert decode</text>
 <text x="575.0" y="590" font-size="14" fill="#c7cdd3">   DSpark k=5 drafter, adaptive</text>
 <text x="575.0" y="610" font-size="14" fill="#c7cdd3">   329k-token KV pool at 32k</text>
 <rect x="575.0" y="639" width="11" height="13" rx="2" fill="#f5b53d" stroke="none"/>
@@ -104,10 +104,10 @@
 <text x="128" y="1036" font-size="14" fill="#8e979f">75-80 before v0.3.8's host-memory collective</text>
 <text x="128" y="1060" font-size="15" font-weight="700" fill="#eef1f3">DeepSeek-V4.1-Flash</text>
 <text x="128" y="1078" font-size="14" fill="#8e979f">TP8+EP, EXL3 · 8 cards, -500 MHz</text>
-<rect x="128" y="1088" width="189.6" height="18" rx="7" fill="#7b93ff" stroke="none"/>
-<text x="440" y="1104" font-size="26" font-weight="800" fill="#eef1f3">158</text>
+<rect x="128" y="1088" width="242.4" height="18" rx="7" fill="#7b93ff" stroke="none"/>
+<text x="440" y="1104" font-size="26" font-weight="800" fill="#eef1f3">202</text>
 <text x="496.8" y="1104" font-size="14" fill="#8e979f">tok/s</text>
-<text x="128" y="1122" font-size="14" fill="#8e979f">on code; 70-75 on prose, GSM8K-style 114-121</text>
+<text x="128" y="1122" font-size="14" fill="#8e979f">on code; 87-97 prose (v0.4.0: 158 code, 73)</text>
 <text x="644" y="768" font-size="15" font-weight="700" fill="#eef1f3">aggregate · prefill · context</text>
 <text x="644" y="786" font-size="14" fill="#8e979f">the native box, uncapped</text>
 <text x="644" y="816" font-size="15" font-weight="700" fill="#eef1f3">1,792 tok/s</text>
@@ -124,5 +124,7 @@
 <text x="16" y="1196" font-size="14" fill="#8e979f">box" is one 4x R9700 box, uncapped. They are not comparable across.</text>
 <text x="16" y="1214" font-size="14" fill="#8e979f">The Flash-Next column is the fp8 e4m3 main-KV launch this box runs by default: the pool doubles (1,009,899 against</text>
 <text x="16" y="1232" font-size="14" fill="#8e979f">540,202 tokens) and GSM8K 800 reads 96.0 against 95.6 %, HumanEval 164 98.17 against 96.95.</text>
-<text x="16" y="1250" font-size="14" fill="#8e979f">github.com/bkvargyas/r9700-stack</text>
+<text x="16" y="1250" font-size="14" fill="#8e979f">v0.4.1 is the DeepSeek step: one-kernel eight-rank all-gather and all-reduce, decode glue, an EXL3 GEMV to 48 rows.</text>
+<text x="16" y="1268" font-size="14" fill="#8e979f">The 48-token expert tier that came with it was held back - in the server it left the drafter accepting nothing.</text>
+<text x="16" y="1286" font-size="14" fill="#8e979f">github.com/bkvargyas/r9700-stack</text>
 </svg>

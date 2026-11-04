@@ -2637,3 +2637,63 @@ rests on the arithmetic above plus the fact that a slot cannot wrap by construct
 produce is a clipped word, never a moved card. `tests/test_webui.py`: 349 checks (six new). Clean against the :8099
 sidecar (which has `avg` and the hour ring) and against the merged `:8080` page (whose payload has neither, and says
 so in the slots rather than throwing).
+
+## 2026-11-04: upstream v0.4.1 merged - and the honest list of what this box cannot gate
+
+`git merge upstream/master` brought the tag **v0.4.1** (25 commits: one-kernel eight-rank all-gather / all-reduce
+that never cross a root complex, the DeepSeek decode glue, an EXL3 GEMV for 1-48 rows, the fused MoE combine). The
+`v041` and `v042` branches are pointers, 0 commits from master. Upstream touched none of the QSA / fp8-KV / webui
+files, so the conflicts were the same two as last time: `kernels/build.sh` and `README.md`.
+
+**A mistake worth keeping.** The first attempt at the build.sh resolution **destroyed the file**: the tail was
+rebuilt from "the first line containing `hidden_hostcall_buffer`", and that string is also in the file's header
+comment, so everything between line 4 and the conflict vanished (23 sources, the compile line, the guard).
+`bash -n` did not object -- a 22-line truncated script is valid bash. What caught it was running the build
+(`line 12: D: command not found`) and then a structural count: sources 23, symbols 115, guard present. So the
+resolution check is written as counts now, and recovery was `git checkout -m -- kernels/build.sh`, which restores
+the conflicted version mid-merge (note it relabels the markers `ours`/`theirs`, which broke the marker strings the
+script keyed on).
+
+**Composition, not choice, for the README.** Upstream rewrote it into a shorter conventional outline. The merged
+file takes upstream's tagline + badges, What it does, Features, Speed (DeepSeek now 87-97 prose / 202 code single
+stream, 179-212 / 368 at four), How it fits together, Quick start, Build on it, Documentation, Development,
+Feedback and License; keeps this fork's lockup opening, generated release page, four-card table, the three
+native-box speed subsections, the Monitor section and the one-command deployment blocks; and adds fork rows to the
+Documentation table for `notes/native-4xr9700.md`, `context-262k`, `kv-fp8-qsa` and `webui`. Upstream's NOTE box
+("every number here was measured on one machine: eight R9700s at 210 W") is false for this README, whose first
+table is a 4-card uncapped box, so it names both machines and says they do not compare.
+
+**The figure follows the numbers.** `docs/summary-page.py`: DeepSeek 158 -> 202 on code (with "v0.4.0: 158 code, 73
+prose" beside it), the card line becomes "EXL3 GEMV + expert decode", the GLM note "one-kernel 8-rank collectives",
+and the footer gains the held-back tier sentence -- v0.4.1's 48-token expert tier was 1.5-3x faster on one card and
+left the drafter accepting nothing in the server, the same trap this fork's fp8 KV measured (accepted per draft
+1.60 -> 1.55). Canvas 1000x1302, PNG 2000x2604. `test_readme.py` now measures every `docs/r9700-stack-v*.svg` the
+tags ship (9.8 / 13.7 / 9.0 / 9.0 px in github's column) instead of one hard-coded file, and requires the caption
+to name the newest.
+
+**Gates on this box**, with the merged tree and a rebuilt `libr9k.so` (13,052,128 bytes -- the new kernels roughly
+double it; 115 exports including `r9k_qsa_attn_f8`; no `hidden_hostcall_buffer`):
+
+- `tests/test_qsa_fp8.py` PASS -- fp8 kernel vs its own reference 1.7e-3..3.9e-3, indistinguishable from bf16.
+- `tests/test_qsa_r9k.py` PASS; `tests/test_integration.py` **ALL OK** against this box's stock vLLM
+  0.32.0+rocm723 -- the gate that catches a plugin expecting entry points this pin does not have.
+- `test_webui.py` (349 checks), `test_webui_plugin.py`, `test_readme.py`, `test_setup.py` PASS;
+  `node tests/render-monitor.mjs http://127.0.0.1:8099` clean.
+- Library replaced by rename + copy, backups `libr9k.so.pre-v041` in both locations (`.pre-f8` still under both
+  from the fp8 work). **The live serve was not restarted**: it still answers `plugin 0.4.0 / 953a3901`, which is
+  what the header feature is for.
+
+**What this box cannot gate, said out loud:**
+
+- `tests/test_ar8.py` wants `torchrun --nproc-per-node=8`. Four cards here, all four held by the live serve
+  (~1.4 GiB free each).
+- `tests/test_exl3_gemv.py` (and the other EXL3 tests) `import exllamav3_ext` at module level with no guard;
+  exllamav3 is built inside upstream's image and is not in this venv.
+- `tests/test_dsv4_glue.py` runs and reports **95 ok, 10 fail**. Every failure is a bit-exactness gate against the
+  installed vLLM's ops: ids identical, fused-router weights within 3e-8 at M<=12 and 6e-8 at M>=24, and one
+  attention-input check off by 3 ulp on 2 of 192 values. Upstream's numbers were taken against their 0.32.1rc1
+  nightly; this box is 0.32.0+rocm723, and 3e-8 is a different op's rounding, not a broken kernel. Not chased --
+  this box does not serve DeepSeek -- but the consequence is recorded: **the v0.4.1 DeepSeek path is unvalidated on
+  this pin**, and serving DeepSeek here needs the image (or exllamav3 in the venv), not this tree alone.
+
+Rollback for the merge is `git revert -m 1 <merge>`; for the library alone, the `.pre-v041` copies.

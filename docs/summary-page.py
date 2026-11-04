@@ -38,7 +38,7 @@ W, PAD = 1000, 16
 CHAR = 0.60                                              # em per glyph, as in docs/monitor-cards.py
 HEAD, BODY, SMALL = 19, 15, 14                           # SMALL is the floor: 14 px at the column's width
 
-VERSION, RELEASED, LINE_OF = "v0.4.0", "2026-11-03", "vLLM 0.32 line, nightly 2026-10-25"
+VERSION, RELEASED, LINE_OF = "v0.4.1", "2026-11-03", "vLLM 0.32 line, nightly 2026-10-25"
 TAGLINE = "LLM inference on 2 to 8 AMD Radeon AI PRO R9700"
 WHAT = "a vLLM plugin plus HIP and Triton kernels for gfx1201 (RDNA4)"
 BADGES = [("stock vLLM 0.32", 1), ("stock ROCm 10", 1), ("no fork", 0),
@@ -60,10 +60,10 @@ MODELS = [
         "NVFP4 checkpoint + MTP layer",
         "NVFP4 in, MXFP4 at load",
         "fp8 KV cache, MTP-3"], 8,
-     "8-rank collective via host RAM"),
+     "one-kernel 8-rank collectives"),
     ("DeepSeek-V4.1-Flash", "552B MoE, EXL3 2.9 bpw", [
         "384 routed experts, Engram tables",
-        "EXL3 trellis, our decode kernel",
+        "EXL3 GEMV + expert decode",
         "DSpark k=5 drafter, adaptive",
         "329k-token KV pool at 32k"], 8,
      "128k recipe retrieves at 126.7k"),
@@ -78,7 +78,7 @@ BARS = [
     ("Qwen3.8-Flash-Next", "TP4, four cards", 225, "14.3-14.4 ms a step; best sample 228", GATE),
     ("Qwen3.8-27B-NVFP4", "TP2, two cards", 222, "4.5 tokens a step with the DFlash2 drafter", GATE),
     ("GLM-5.3-Flash", "TP8, eight cards", 100, "75-80 before v0.3.8's host-memory collective", GATE),
-    ("DeepSeek-V4.1-Flash", "TP8+EP, EXL3", 158, "on code; 70-75 on prose, GSM8K-style 114-121", DSGATE),
+    ("DeepSeek-V4.1-Flash", "TP8+EP, EXL3", 202, "on code; 87-97 prose (v0.4.0: 158 code, 73)", DSGATE),
 ]
 
 # the column beside the bars: what the same four cards do in aggregate, and what the context costs.
@@ -93,6 +93,9 @@ FOOT = ["Each number names its machine: \"210 W gate\" is the release configurat
         "\"the native box\" is one 4x R9700 box, uncapped. They are not comparable across.",
         "The Flash-Next column is the fp8 e4m3 main-KV launch this box runs by default: the pool doubles (1,009,899 "
         "against 540,202 tokens) and GSM8K 800 reads 96.0 against 95.6 %, HumanEval 164 98.17 against 96.95.",
+        "v0.4.1 is the DeepSeek step: one-kernel eight-rank all-gather and all-reduce, decode glue, an EXL3 GEMV to "
+        "48 rows. The 48-token expert tier that came with it was held back - in the server it left the drafter "
+        "accepting nothing.",
         "github.com/bkvargyas/r9700-stack"]
 
 warn, out = [], []

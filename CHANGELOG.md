@@ -1,4 +1,49 @@
 # Changelog
+## upstream v0.4.1 merged: the DeepSeek step, and what its gates cannot run on this box
+
+- **v0.4.1** (25 commits over v0.4.0, tag + the `v041`/`v042` branch pointers): one-kernel eight-rank all-gather
+  and all-reduce that never cross a root complex, the DeepSeek decode glue (FFN front, markov head, compressor /
+  indexer attention input), an EXL3 decode GEMV for 1-48 rows, the fused MoE combine inside the collective. The
+  48-token expert tier that came with it was **held back** upstream: in the server it left the DSpark drafter
+  accepting nothing (MAL 1.01), which is the same failure shape as this fork's fp8 acceptance penalty.
+- **Conflicts: the same two as the v0.4.0 merge** - `kernels/build.sh` and `README.md`. `CHANGELOG.md`,
+  `CREDITS.md` and `r9700_vllm/__init__.py` auto-merged; the plugin is now **0.4.1**, which the Monitor's header
+  will show when the serve next restarts. Upstream touched no QSA, fp8-KV or webui file.
+- **build.sh resolution**: upstream's source list (it gains `r9k_exl3_gemv.hip`, `r9k_dsv4_glue.hip`) and symbol
+  list, our single-`nm`-pass check, and `r9k_qsa_attn_f8` put back into the list - upstream's predates it. The
+  first attempt at that resolution **destroyed the file**: rebuilding the tail from the first line containing
+  `hidden_hostcall_buffer` found the header comment rather than the guard, cutting everything between. Recovered
+  with `git checkout -m --`; what caught it was the build (`D: command not found`) plus counting what should be
+  there - 23 sources, 115 symbols - because a 22-line truncated script still passes `bash -n`.
+- **README**: upstream rewrote it into a shorter outline. Composed rather than chosen - its tagline, badges,
+  *What it does*, *Features*, speed table (DeepSeek now 87-97 prose / 202 code single stream), *How it fits
+  together*, *Quick start*, *Build on it*, *Documentation*, *Development*, *Feedback* and *License*; this fork's
+  lockup opening, generated release page, four-card table, the three native-box speed subsections, the Monitor
+  section and the one-command deployment blocks. The lockup stays the title because `tests/test_readme.py` pins it
+  and `docs/lockup.py` draws it; upstream's `# r9700-stack` heading became the tagline's container instead.
+  Upstream's NOTE ("every number here was measured on one machine: eight R9700s at 210 W") is false for this
+  README, whose first table is a 4-card uncapped box, so it now names both machines and says they do not compare.
+- **The release page is regenerated for v0.4.1** (`docs/summary-page.py`): DeepSeek's bar moves 158 -> **202** on
+  code with "(v0.4.0: 158 code, 73 prose)" beside it, the model card says what v0.4.1's kernels are, and the footer
+  now records the held-back 48-token tier. Canvas 1000 x 1302, PNG 2000 x 2604. `tests/test_readme.py` measures
+  **every** tag's hand-drawn page now, not one named file: 9.8 px (v0.3.7), 13.7 px (v0.3.8), 9.0 px (v0.4.0 and
+  v0.4.1) in github's column - all under the 14 px floor this page holds - and the caption has to name the newest.
+- **Gates run here on the merged tree** (rebuilt `libr9k.so`, 13,052,128 bytes, 115 exports including
+  `r9k_qsa_attn_f8`, no `hidden_hostcall_buffer`): `tests/test_qsa_fp8.py` PASS (fp8 rel 1.7e-3 to 3.9e-3, as
+  tight as bf16), `tests/test_qsa_r9k.py` PASS, `tests/test_integration.py` ALL OK against this box's stock vLLM
+  0.32.0+rocm723, `test_webui.py` (349 checks) / `test_webui_plugin.py` / `test_readme.py` / `test_setup.py` PASS,
+  `node tests/render-monitor.mjs` clean. The library was replaced by rename + copy with `.pre-v041` backups; the
+  live serve was not restarted and still answers as plugin 0.4.0 at 953a3901.
+- **What this box cannot gate**, stated rather than skipped silently: `tests/test_ar8.py` needs
+  `torchrun --nproc-per-node=8` (four cards here, all held by the live serve, ~1.4 GiB free each).
+  `tests/test_exl3_gemv.py` and the other EXL3 tests import `exllamav3_ext` at module level, and exllamav3 exists
+  only in upstream's image, not in this venv. `tests/test_dsv4_glue.py` runs: **95 ok, 10 fail**, and every failure
+  is a bit-exactness gate against the *installed* vLLM - ids identical, router weights within 3e-8 (M<=12) and
+  6e-8 (M>=24), one attention-input check off by 3 ulp on 2 of 192 values. Upstream verified those bit-exactly
+  against its 0.32.1rc1 nightly; this box runs 0.32.0+rocm723, and 3e-8 is another op's rounding rather than a
+  broken kernel. Not chased, because this box does not serve DeepSeek - but it means the v0.4.1 DeepSeek path is
+  **unvalidated on this pin**, and serving DeepSeek here needs the image, not this tree alone.
+
 ## fp8 e4m3 main KV is this box's default, upstream v0.4.0 is merged, and the release page is generated again
 
 - **Main KV in e4m3 for Qwen4Exp QSA** (`R9K_QSA_KVF8` + `compat/qsa_kvfp8.py` + a KV-element-typed `r9k_qsa.hip`):
@@ -1161,6 +1206,24 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   when a request *finishes*: polling every 2 s, TTFT/queue/prefill/decode read as no-data for the whole
   duration of a 600-token generation. The payload now carries `since` — the same ratios over the engine's whole
   run — and the page marks those numbers "(since launch)" instead of showing a dash it cannot justify.
+
+## [0.4.1] - 2026-11-03
+
+Release notes with the ledger and the validation record: [notes/release-v0.4.1.md](notes/release-v0.4.1.md).
+
+### Changed
+- **DeepSeek-V4.1-Flash: the serving step measured (notes/exl3-ledger.md) and cut down.** The eight-rank all-gather that cost 4.1 ms
+  of a 25.4 ms single-stream step (the flat kernel: every rank storing into seven peers across the root complexes) is replaced by a
+  one-kernel all-gather that never crosses a root complex (16-129 us; `R9K_AG8_OS_KB`, `R9K_AG8_FLAT_KB`); a one-kernel eight-rank
+  all-reduce for messages up to 64 KiB (14.6-34 us vs 21-46; `R9K_AR8_ONESHOT`) with the MoE combine fused into it
+  (`moe/exl3_combine.py`); the decode glue in one launch each (`kernels/r9k_dsv4_glue.hip`: the FFN front 40 -> 21 us a layer, the
+  DSpark markov head 720 -> 245 us, the attention input of the indexer layers 29 -> 13 us); our own EXL3 decode GEMV for 1-48 rows
+  (`kernels/r9k_exl3_gemv.hip`: attention linears 26 -> 19 us at one row, 120 -> 44 at 24 rows where every matrix was dequantized
+  each step) with `wo_a` back on EXL3 (`R9K_DSV41_WOA`); the split-path all-reduce at 240-480 KiB 5-13 % faster. DeepSeek-V4.1-Flash on eight cards: prose **82-91 tok/s** single stream (v0.4.0 73), code **185-187** (152); four streams prose 186-230 aggregate (167), code **360-375** (297); GSM8K 98 / 100, divergence unchanged.
+- GLM-5.3-Flash TP8 takes the new small collectives (same bits; re-gated).
+
+### Held back
+- A 48-token expert-tier kernel (eight-stream steps) that broke the DSpark drafter in the server; NSEQ above 4 stays unsupported.
 
 ## [0.4.0] - 2026-11-03
 

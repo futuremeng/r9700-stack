@@ -229,21 +229,30 @@ pn = [t.strip() for t in re.findall(r">([^<>]+)</text>", PAGE) if re.fullmatch(r
 ck("every number on the release page is a number the README also carries",
    all(n in README for n in pn), f"{len(pn)} numbers, missing: {[n for n in pn if n not in README][:6]}")
 ck("and the claims the page exists to make are on it: four models' single-stream decode and the native box's pool",
-   all(n in PAGE for n in ("225", "222", "100", "158", "1,009,899", "250,078")))
+   all(n in PAGE for n in ("225", "222", "100", "202", "1,009,899", "250,078")))
 nbars = len(re.findall(r'fill="#7b93ff"', PAGE))
 ck("and every decode row carries the gate its number came from, and the fact column names its own",
    nbars == 4 and PAGE.count("210 W gate") >= 3 and PAGE.count("-500 MHz") >= 1
    and PAGE.count("the native box, uncapped") >= 1,
    f"{nbars} bars, {PAGE.count('210 W gate')} x 210 W, {PAGE.count('-500 MHz')} x -500 MHz")
 
-# the tag's own graphic: kept, measured, and not the README's figure
-UP = (ROOT / "docs" / "r9700-stack-v0.4.0.svg").read_text()
-upw, uph = re.search(r'<svg[^>]*width="(\d+)" height="(\d+)"', UP).groups()
-upfs = [float(x) for x in re.findall(r'font-size="([\d.]+)"', UP)]
-ck(f"and why the hand-drawn one is not the README's figure is measured, not assumed: {min(upfs)} px on a {upw}-unit "
-   f"canvas renders {min(upfs) * 980 / int(upw):.1f} px in that column, against {min(sizes)} px on this one",
-   "docs/r9700-stack-v0.4.0.svg" not in FIGS and min(upfs) * 980 / int(upw) < 14,
-   f"canvas {upw} x {uph}, smallest {min(upfs)}px")
+# the tag's own graphics: kept, measured, and not the README's figure. Every hand-authored page the tags ship is
+# measured, not just the newest, so the claim ("11 px on a 1200-unit canvas lands at 9 px in github's column")
+# stays a measurement at the next tag instead of a sentence about one file. The caption has to name the newest.
+TAGPAGES = sorted((ROOT / "docs").glob("r9700-stack-v*.svg"))
+ck("the tags' hand-drawn pages are in the tree to be measured", len(TAGPAGES) >= 1,
+   f"{[p.name for p in TAGPAGES]}")
+for tp in TAGPAGES:
+    up = tp.read_text()
+    upw = re.search(r'<svg[^>]*width="(\d+)"', up).group(1)
+    upfs = [float(x) for x in re.findall(r'font-size="([\d.]+)"', up)]
+    ck(f"{tp.name}: not the README's figure, and its smallest type ({min(upfs)} px on a {upw}-unit canvas) renders "
+       f"{min(upfs) * 980 / int(upw):.1f} px in the column - under the {min(sizes)} px floor this page holds",
+       f"docs/{tp.name}" not in FIGS and min(upfs) * 980 / int(upw) < 14)
+newest = TAGPAGES[-1] if TAGPAGES else None
+ck("and the caption names the newest of them, by name, as the page it is not using",
+   newest is not None and newest.name in (HERO_BLOCK.group(1) if HERO_BLOCK else ""),
+   f"newest={newest.name if newest else '-'}")
 
 # its type is readable where it sits; the PNG stays for zooming, and has to be big enough to buy anything
 ck("the generated page and its PNG are both in the tree",
