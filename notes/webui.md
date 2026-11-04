@@ -402,6 +402,17 @@ requests free blocks), with the exact counter rate appearing beside it when the 
 2 s to 1 s on both beats (engine poll and browser refetch), and the page prints its own age (`1.0 s poll ·
 snapshot 0.4 s ago`) instead of letting the reader guess.
 
+**One caveat on the 1 s poll column, measured 2026-11-04.** The engine advances its counters on its own logging
+beat, not on the poll's schedule, so a poll's counter delta can cover more engine time than the spacing between two
+polls. Live during a six-request wave the poll line read `×12.34 decoding` with **8** requests running and 496.5
+tok/s summed: the deltas covered ~1.5 s of engine time while `dt` said 1.0 s. What that does and does not break:
+the **per-stream** rate (40.2 tok/s that poll, 71.5 the next) is a ratio of two deltas over the same interval, so
+it is immune; the **summed** rate and the **fan-out** carry the same factor, so their product stays consistent and
+the card's arithmetic still closes; the **spans** divide by the ring's own timestamps, so a 1% phase error on one
+poll is under 2% over a minute and invisible over 15. Recorded because the fan-out briefly exceeding `running` is
+not a bug in the fan-out — averaging stream-seconds over the interval the deltas cover is not the same as sampling
+the gauge at one instant.
+
 **A page that stops listening has to look different from a box that went quiet** (2026-11-03, asked as
 "why have the Monitor's numbers stopped moving?"). Three ways that used to be indistinguishable, all fixed:
 

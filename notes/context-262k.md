@@ -464,7 +464,10 @@ stays off and the cliff stays where the mechanism puts it. Lower `NBT` would sho
 more finely, at the cost of prompt throughput (9,702 tok/s at NBT 8,192 is why it is 8,192). `MTP=3` buys
 single-stream latency (197.6 against 179.8) and costs 18% of aggregate at 32 in flight. Turning prefix caching
 back on is the one lever that removes prompt work rather than redistributing it, and it is off on purpose for the
-262k recipe (notes/kv-fp8-qsa.md and the 262k tables above).
+262k recipe (notes/kv-fp8-qsa.md and the 262k tables above) — measured on 2026-11-04 with six copies of one
+14,530-token prompt: wall 32.3 s → 3.6 s, median TTFT 25.3 s → 0.66 s, 133,120 of 346,754 prompt tokens served
+from cache. That is the best case, not the expected one; the win scales with how much of the prompt is genuinely
+shared (notes/launch-methodology.md §8, including the config revert and its check).
 
 **"Shouldn't the seconds spent chewing prompts be out of the decode denominator?" -- asked of the right counters,
 the answer is no, and the card that asked it was wrong (2026-11-04, same launch).** vLLM publishes two ways to

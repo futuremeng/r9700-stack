@@ -139,3 +139,38 @@ STOP=1 bash serve/native-flashnext.sh            # stop (kill -9: the ranks igno
 WEBUI=same bash serve/native-flashnext.sh        # relaunch by hand
 ./setup.sh --yes --launch native-flashnext.sh --webui same    # or the whole check, then a supervised launch
 ```
+
+## 8. A test config, and getting back to production the same day
+
+Measuring something on this box usually means changing something: today it was `PREFIX_CACHE=1`, to price what the
+prefix cache would buy. A launch that carries a test config is not the machine the recipe describes, and every
+number the Monitor then shows silently belongs to the other machine -- which is worse than not measuring, because
+the page looks the same. Three rules, and one command that checks them:
+
+- **Name the test session and its log as tests.** `tmux new-session -d -s r9700-TEST-prefixcache "PREFIX_CACHE=1
+  WEBUI=same LOG=~/logs/test-prefixcache-$(date +%H%M).log bash serve/native-flashnext.sh 2>&1 | tee -a ..."`:
+  `tmux ls` then answers "is a test running right now" without reading a log, and the test's bytes never land in
+  the production log the About page points at.
+- **Revert by relaunching the untouched command**, not by re-typing the test one without the flag. The default is
+  the recipe; the flag was the exception.
+- **Prove it with `tools/recipe-check.py`.** It asks `serve/native-flashnext.sh` for its own `DRY=1` launch line
+  (so it can never disagree with the tree about what production means), reads the live serve's `config` block and
+  the recipe meta file, and prints either `PRODUCTION recipe` or every measured knob that differs, with the
+  restore command. Exit status 1 when it differs, so it goes in a gate.
+
+**What the 2026-11-04 test bought, and what it does not mean.** Six concurrent requests, each the *same* 14,530-token
+filler with a unique nonce at the end, 250 output tokens, started from an idle engine:
+
+| | wall | summed tok/s | median TTFT | median own rate |
+|---|---:|---:|---:|---:|
+| production recipe (`PREFIX_CACHE=0`) | 32.3 s | 46.0 | 25.3 s | 37.6 tok/s |
+| test config, cold prefix (`PREFIX_CACHE=1`) | 13.7 s | 103.9 | 10.0 s | 71.5 tok/s |
+| test config, same prefix re-sent | **3.6 s** | **389.9** | **0.66 s** | 88.6 tok/s |
+
+The 8.6x on wall and 38x on TTFT are the **best case**: the corpus is six copies of one prompt, so 133,120 of the
+346,754 prompt tokens were cache hits (block-quantized to the 880-token hybrid block, which the engine's own
+`prompt_tokens_cached_total` reported and the Monitor subtracted). Real traffic pays in proportion to how much of
+its prompt is actually shared, and a `PREFIX_CACHE=0` recipe stays the right default for the 262k measurement
+series (notes/kv-fp8-qsa.md). The number worth remembering is the shape: for identical-prefix traffic the cache
+does not redistribute prompt work, it **removes** it -- which is the one lever the step census in
+notes/context-262k.md says the scheduler's fairness knobs cannot reach.

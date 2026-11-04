@@ -1524,6 +1524,41 @@ compile(_pl, "probe-load-link.py", "exec")        # syntax only -- running it wo
 ck("the link probe sends exactly one request, samples at a stated rate, and states what it cannot show",
    _pl.count("urllib.request.Request(") == 1 and "max_tokens" in _pl and "HZ = 10.0" in _pl
    and "what it cannot show is whether the hop is marginal under a heavy" in _pl)
+# tools/recipe-check.py exists because measuring things here needs config changes, and a test config left running
+# silently changes the meaning of every number the Monitor shows. So: get "production" from the launcher itself (a
+# copied default goes stale the day native-flashnext.sh changes), and answer "改回来没有" in one command.
+_rcs = open(os.path.join(ROOT, "tools", "recipe-check.py")).read()
+import importlib.util as _ilu                                                   # noqa: E402
+_spec = _ilu.spec_from_file_location("recipe_check", os.path.join(ROOT, "tools", "recipe-check.py"))
+rc = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(rc)
+_PROD_CMD = ("/venv/bin/vllm serve /models/M --served-model-name Qwen3.8 --host 0.0.0.0 --port 8080 "
+             "--tensor-parallel-size 4 --max-model-len 262144 --max-num-seqs 32 --max-num-batched-tokens 8192 "
+             "--gpu-memory-utilization 0.97 --kv-cache-dtype fp8_e4m3 --no-enable-prefix-caching "
+             '--speculative-config {"method": "mtp", "num_speculative_tokens": 2} '
+             '--compilation-config {"cudagraph_capture_sizes": [1,2,4], "max_cudagraph_capture_size": 256}')
+_META = {"maxlen": "262144", "nseq": "32", "nbt": "8192", "kvdtype": "fp8_e4m3", "prefix_cache": "0", "mtp": "2"}
+_CFG = {"enable_prefix_caching": "False", "cache_dtype": "fp8_e4m3"}
+ck("the recipe check keeps no copy of the recipe: it asks the launcher (DRY=1) and reads the live serve",
+   '"DRY": "1"' in _rcs and "FORCE" in _rcs
+   and not any(n in _rcs for n in ("262144", "8192", "fp8_e4m3")),          # no copied defaults, anywhere
+   "a default hardcoded outside TRUTH goes stale the day native-flashnext.sh changes")
+ck("the production launch, taken from this tree's own launcher, passes the check",
+   rc.compare(_PROD_CMD, _CFG, _META) == [], str(rc.compare(_PROD_CMD, _CFG, _META)))
+ck("a PREFIX_CACHE=1 test config left running is caught and named (the launcher says off, the box says on)",
+   [d["key"] for d in rc.compare(_PROD_CMD, {**_CFG, "enable_prefix_caching": "True"},
+                                 {**_META, "prefix_cache": "1"})] == ["enable_prefix_caching"])
+ck("an NBT left at a probe value is caught, even though the engine publishes no such field (the meta carries it)",
+   [d["key"] for d in rc.compare(_PROD_CMD, _CFG, {**_META, "nbt": "4096"})] == ["max_num_batched_tokens"])
+ck("MTP raised for a probe is caught, and so is a KV dtype the box ended up running without asking for",
+   [d["key"] for d in rc.compare(_PROD_CMD, _CFG, {**_META, "mtp": "3"})] == ["num_speculative_tokens"]
+   and [d["key"] for d in rc.compare(_PROD_CMD, {**_CFG, "cache_dtype": "auto"},
+                                     {**_META, "kvdtype": "auto"})] == ["kv_cache_dtype"])
+ck("a launch line's JSON-valued flags survive parsing (the launcher echoes ARGS unquoted, so the braces arrive "
+   "spread across words)",
+   rc.parse_args(_PROD_CMD)[0]["--speculative-config"].startswith('{"method"')
+   and "num_speculative_tokens" in rc.parse_args(_PROD_CMD)[0]["--speculative-config"]
+   and rc.parse_args(_PROD_CMD)[1] == {"--no-enable-prefix-caching"})
 # tools/journal-pcie.py asks the page's questions from a terminal, per boot: AER by port and name, and the
 # crash record the firmware kept. Read-only, and it must stay that way -- a tool that pokes the box while
 # diagnosing it changes what it diagnoses.

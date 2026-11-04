@@ -411,7 +411,12 @@ function renderStatus(s) {
          + "its name (90s, 2m) is the whole ring so far: the page says what it averaged rather than waiting for "
          + "the hour to fill.",
     poll: "This poll's own value: the gap between two engine polls (about a second). It is the only number here "
-        + "that can catch something stuck right now, and the only one that swings on a single slow step.",
+        + "that can catch something stuck right now, and the only one that swings on a single slow step. One "
+        + "caveat, measured 2026-11-04: the engine advances its counters on its OWN logging beat, so a poll's "
+        + "counter delta can cover more (or less) engine time than the poll spacing -- which is why the live "
+        + "fan-out once read x12.3 with 8 requests running. The per-stream rate is a ratio of two deltas over the "
+        + "same interval, so it survives that phase; the summed rate and the fan-out inflate together, and their "
+        + "product stays consistent with each other. Spans are immune: they divide by the ring's own timestamps.",
   };
   const big = (id, v, unit) =>
     { $(id).innerHTML = `${isnum(v) ? knum(v) : "\u2014"}<span class="unit">${unit}</span>`; };
