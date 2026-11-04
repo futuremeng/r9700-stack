@@ -466,27 +466,75 @@ single-stream latency (197.6 against 179.8) and costs 18% of aggregate at 32 in 
 back on is the one lever that removes prompt work rather than redistributing it, and it is off on purpose for the
 262k recipe (notes/kv-fp8-qsa.md and the 262k tables above).
 
-**"Shouldn't the seconds spent chewing prompts be out of the decode denominator?" -- yes, and the two families the
-engine offers agree (2026-11-04, same launch).** vLLM publishes two ways to count decode seconds, and they cross-check
-to 0.08%: `inter_token_latency_seconds` carries 430,954 observations summing to **24,236.14 s**, and
-`request_decode_time_seconds` carries 1,812 observations summing to **24,216.27 s**. Both are *stream*-seconds: a step
-with two streams decoding accrues twice. The step family is the one to divide by, because it moves on every decode step
-while the request family moves only when a request finishes -- over a 60 s span of pure decode with long generations the
-request family can have no denominator at all. Dividing the same generated tokens by them gives the two figures people
-actually mean:
+**"Shouldn't the seconds spent chewing prompts be out of the decode denominator?" -- asked of the right counters,
+the answer is no, and the card that asked it was wrong (2026-11-04, same launch).** vLLM publishes two ways to
+count decode seconds, and they cross-check to 0.08%: `inter_token_latency_seconds` carries 430,954 observations
+summing to **24,236.14 s**, and `request_decode_time_seconds` carries 1,812 observations summing to **24,216.27 s**.
+That agreement is not corroboration, it is tautology: it is ONE sum sampled twice -- the step family
+per stream-step (`v1/metrics/stats.py:551`, `itl = engine_core_timestamp - req_stats.last_token_ts`, recorded in the
+per-request loop of `v1/metrics/loggers.py:275-280`), the request family once at the end
+(`stats.py:601`, `last_token_ts - first_token_ts`). So both are **stream-seconds**: a step with two streams
+decoding accrues twice. Two consequences the Monitor had backwards:
 
-| basis for the summed decode rate | denominator | this launch | the 661 s window measured |
+- Dividing the engine's summed generated tokens by stream-seconds gives a **per-stream** rate, not a summed one.
+  The live 15 min card read **17.3 tok/s labelled "summed, decode time"** in a span whose tokens summed to **45.1
+  tok/s over wall seconds** -- a summed figure below the summed one, which is what gave it away.
+- The step interval **contains** the chunked prefill computed in that step (a chunk step ~1.0 s against ~20 ms for
+  a bare one), so an ITL-shaped denominator does not exclude prompt chewing at all. What it excludes is queue,
+  prefill before the first token, and steps that produced no token.
+
+| basis for a decode rate | denominator | this launch (10.6 h) | the 661 s window |
 |---|---|---:|---:|
-| wall seconds (what a day of traffic produces) | span | 23.7 tok/s | 20.1 tok/s |
-| seconds with something in flight | journal union | 80.8 | 21.3 |
-| **decode seconds (prompt chewing excluded)** | ITL / request-decode sums | **41.8** | **68.8** |
+| **summed over streams, over wall seconds** (what a day of traffic produces) | span | 23.4 tok/s | 20.1 |
+| summed over seconds with something in flight | journal union | 80.8 | 21.3 |
+| **per stream actually decoding** (a per-stream rate; prompt chunks are inside it) | stream-seconds | 36.8 | 68.8 |
 | one request's own decode window | per request | 115 (median) | 158 (median, p10 24.4 / p90 176.8) |
 
-The window's shape is why the first and third differ by 3.4x: 35 requests, **4,234,830 prompt tokens against 13,139
-generated** (322:1), 94% of the span holding a request, 83% holding somebody's prefill, and **29% holding a stream in
-its decode phase** -- at 1 Hz, 0 streams decoding for 71% of seconds, 1 stream for 28%, 2 for 1%. 20.1 / 68.8 = 0.29,
-which is that same share: the ratio of the two rates IS the decode-time share, so the Monitor prints both and the share
-next to them (notes/webui.md).
+and the identity that ties the first to the third, which is what the sidecar publishes and the tests assert:
+
+    summed tok/s = tok/s per stream-second  x  streams decoding (stream-seconds / wall seconds)
+    launch:      23.4  = 36.8 x 0.64        (0.64 streams in decode phase at an average instant of a day)
+    15 min:      42.5  = 17.2 x 2.47        (2.47 while traffic is on)
+
+The old card's `decode_time_pct` was that last factor wearing a percent sign. It read 29% for the 661 s window and
+**260%** for a 15-minute one, and the window table's sentence "the ratio of the two rates IS the decode-time
+share" was right only because that window rarely had two streams decoding at once (at 1 Hz: 0 streams for 71% of
+seconds, 1 for 28%, 2 for 1%). A count of stream-seconds per wall second has no 100% ceiling, so the card now
+prints `x2.6 decoding`, never `260%`. The same naming discipline runs through the payload: `..._tok_s` is per wall
+second, `..._stream_tok_s` is per stream-second, and `decode_streams` / `prefill_streams` are counts that may
+exceed 1. `streams_per_record` -- ITL observations over `iteration_tokens_total` records, **2.85** live -- is the
+same fan-out per *step* rather than per second, and it reconciles with the census from the other side: 2.85 streams
+x ~2.5 accepted tokens = 7.05 tokens a record.
+
+`prefill_streams` (1.04 live) is why the prefill headline did not move when renamed: long prefills take the whole
+8,192-token step, so they serialize. Its denominator, `request_prefill_time_seconds_sum`, is the request's own
+scheduled -> first-token span, which therefore contains decode interference from other requests -- that is the
+difference between this launch's **~7,200 tok/s per prefill-second** and the census's **8,079 per
+whole-prefill-record**, and why a long-context prompt reading 7,6xx in the Monitor is not contradicting the bench.
+
+Three more calculation bugs the same pass found, each now pinned by a test:
+
+- **A request's own decode rate was 14% fast, and 2x fast for a two-token request.** The row divided
+  `num_generation_tokens` by `decode_time` while calling the result "the engine's own mean". The engine's mean is
+  `decode_time / (gen - 1)` (`stats.py:606-610`), because `decode_time` spans first token -> last token and the
+  first token came out of the prefill step. Live: mean 28.57 ms a token -> the engine says 35.0 tok/s, the row
+  showed 37.5.
+- **The PCIe rate divided a partial watch by the whole window.** `aer_poll_s = 5` needs 60 clean polls before it
+  reports a rate at all, and then divided by `window_s = 300` whether it had watched 300 s or 60 -- so the first
+  five minutes of every launch read a trickle at one fifth its true per-minute rate, which is exactly when the
+  number matters (ramp-up). The denominator is now the span actually watched, floored at the 60 s the estimator
+  needs, with each chain's `watched_s` alongside.
+- **Every journalled relay row lost its timings.** `Journal.append` serialises `ROW_KEYS` when it is called, and
+  the proxy path appended *before* computing `wallclock_s` and `timings`: the list looked right in memory while
+  the file held nulls, so after a hard reset every restored row had no wall, no decode rate, and no span for
+  `shared_decode` to count. Both paths append last now.
+
+Plus two exactness wins taken while the counters were open: the skipped-prefix numerator prefers
+`prompt_tokens_cached_total` (vLLM's exact count of tokens it did not read, KV-connector transfers included) to
+`prefix_cache_hits_total` (local cache only, counted at admission), and `num_requests_running` /
+`num_requests_waiting` are **summed across series** -- with TP4 each API-server instance reports its own pair, and
+the old code took the max, reporting one instance's count as the engine's. `kv_used_pct_mean` also stopped
+summing the gauge across the two KV pools and calling the total a mean: a pair of ranks 40% full used to read 80%.
 
 ## Why the GLM-5.3-Flash 262k failure did not repeat here
 

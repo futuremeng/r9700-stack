@@ -128,6 +128,33 @@ INFO line per engine step on the path everything else is measured on. Strata can
 (`prompt_read / prompt_total`, `serve/server.py:2102`) because it owns the engine's terminal protocol and the
 tokenizer; stock vLLM gives neither.
 
+**Two decode denominators, one identity, and no card gets to mix them (2026-11-04).** vLLM's two decode-seconds
+families — `inter_token_latency_seconds` (one observation per stream-step, `v1/metrics/stats.py:551`) and
+`request_decode_time_seconds` (one per request, at its end, `stats.py:601`) — are the same sum sampled twice:
+24,236.14 s over 430,954 observations against 24,216.27 s over 1,812, on the same launch. Both are
+**stream-seconds**, so tokens ÷ them is a **per-stream** rate, and a step two streams share is counted twice in
+the denominator. It follows that the step interval contains the chunked prefill computed in that step (~1.0 s for
+a chunk step, ~20 ms without one), so an ITL-shaped denominator excludes queue, prefill-before-first-token and
+no-token steps — **not** prompt chewing, whatever a card's tooltip used to claim.
+
+The card leads with **`decode_stream_tok_s`: decode output ÷ decode time** (the reading asked for directly — total
+decode output over total decode time — and the same quantity a request row prints, so the card and the rows under it
+read alike: 152 tok/s on a live burst whose rows ran 160-200). The wall sum is kept, labelled: the note line reads
+`22 summed ×0.15`, i.e. headline × fan-out (`decode_streams` = stream-seconds ÷ wall seconds, a COUNT with no 100%
+ceiling: 0.15 serialized, 2.60 loaded). Its waveform stays on the summed-wall basis — the per-stream denominator
+does not exist in a window that was all prefill or idle, and a line of gaps reads as an idle box — and its card
+label names the basis it draws. The identities the sidecar publishes and `tests/test_webui.py` pins:
+
+    headline × decode_streams  ==  the summed figure on the note line
+    152 × 0.15 = 22 (live burst, serialized)      17.3 × 2.60 = 45.1 (live launch, 15 min, traffic on)
+    gen_per_step      ==  tokens_per_step × streams_per_record      42.5 = 2.47 × 17.2 records/s
+
+A field named `…_tok_s` is per wall second; `…_stream_tok_s` is per stream-second; `decode_streams` /
+`prefill_streams` / `streams_per_record` are counts that may exceed 1. The old pair of names — `decode_tok_s`
+(a per-stream rate labelled "summed") and `decode_time_pct` (the same fan-out printed as 260%) — are gone from the
+source and their names are grepped for by the tests, because a reader cannot tell a stream-second denominator
+from a span denominator by looking at a number.
+
 **What cannot be answered per request from outside:** queue wait and the prefill/decode split. vLLM counts
 those in aggregate, so in `observe`/`proxy` the Monitor shows them as window means under "Engine timings"
 and the per-request rows carry a dash. Inside the serve (`serve/plugin`) the engine hands over each request's
@@ -366,7 +393,9 @@ The other half of that measurement matters for freshness, and is why the Monitor
 | `request_time_per_output_token_seconds` | **no** — one observation per request | `tpot: null` mid-request, 6.3 ms the window it finishes in |
 | every latency histogram (TTFT, queue, prefill, decode, e2e) | **no** | observed at request end |
 
-So: decode rates are live (counter-derived, `stream_tok_s_live` = aggregate ÷ running), prefill is not — the
+So: decode rates are live (counter-derived from `generation_tokens_total`, summed over streams per second of span;
+the per-stream figure divides by the ITL/request-decode sums, which are **stream-seconds** — see the block below),
+prefill is not — the
 number shown during a long prefill is the **KV gauge's growth in tokens a second** (`kv_tok_s`, measured within
 ~6% of the truth on that 51,859-token prompt: 5,787 estimated against 5,459 real, and negative when finishing
 requests free blocks), with the exact counter rate appearing beside it when the request lands. Polls went from
@@ -780,7 +809,7 @@ where it is still greppable against the server log.
 analysis in [context-262k.md](context-262k.md) says a stream runs **158 tok/s alone, 119 at two in flight and 23
 at three or four**, so a decode number printed without its concurrency is not a speed at all — it is a speed and a
 guess about the box welded together. `shared_decode(rows)` in `serve/webui.py` computes, for each row, the **mean
-number of requests in flight across that row's own decode span, itself counted**, and the tooltip carries both the
+number of requests in their decode phase across that row's own decode span, itself counted**, and the tooltip carries both the
 window it was counted over ("the N rows this page holds") and the ladder to read it against. Three rules it has to
 get right, each with a test:
 
@@ -1034,12 +1063,16 @@ samples the sparkline keeps would have been easier and wrong: it weights a secon
 second with six streams running, and on a launch that spends a quarter of its wall time prefilling, plenty of seconds
 are gaps.
 
-Per span the payload carries: `generation_tok_s`, `prompt_tok_s`, `requests_per_min`, `stream_tok_s` (aggregate over
-the **mean** running of the span, which is the long-window form of the card's aggregate-over-this-poll number),
-`prefill_tok_s` (prompt tokens over the engine's own prefill seconds - token-weighted), `decode_tok_s` (generated
-tokens over decode seconds), `itl_ms`/`tpot_ms`/`ttft_ms`/`queue_ms`/`e2e_ms`/`prefill_ms`/`decode_ms`,
-`prompt_tokens_mean`/`generation_tokens_mean`, `tokens_per_step`, `accept_pct`/`accepted_per_draft`,
-`prefix_hit_pct`, and `running_mean`/`waiting_mean`/`kv_used_pct_mean`.
+Per span the payload carries: `generation_tok_s`, `prompt_tok_s`, `prompt_read_tok_s`, `requests_per_min`,
+`stream_tok_s` (the summed rate over the **mean** running gauge of the span — the approximate one, kept for the
+tools; it counts a request sitting in a chunked prefill as a producer), `decode_stream_tok_s` (÷ stream-seconds),
+`decode_streams` and `prefill_streams` (stream-seconds per wall second: counts, may exceed 1),
+`streams_per_record` (ITL observations ÷ records), `prefill_stream_tok_s` (read prompt tokens ÷ request-prefill
+seconds; `prefill_stream_tok_s_credited` keeps the cached-in version beside it), `decode_time_s` /
+`decode_time_req_s` (the two families' stream-seconds, kept so the agreement can be seen), `itl_ms`/`tpot_ms` /
+`ttft_ms`/`queue_ms`/`e2e_ms`/`prefill_ms`/`decode_ms`, `prompt_tokens_mean`/`generation_tokens_mean`,
+`tokens_per_step`/`gen_per_step`/`records`, `accept_pct`/`accepted_per_draft`, `prefix_hit_pct`, and
+`running_mean`/`waiting_mean`/`kv_used_pct_mean`/`kv_series`.
 
 What it refuses to do:
 
@@ -1268,7 +1301,16 @@ well as a ratio, because on a box that idles between requests 2.0 and 3.0 tok/s 
 Both pass against the sidecar (`:8099`, new payload) and against the production serve (`:8080`, whose payload predates
 these fields: the card shows a dash rather than inventing a total).
 
-### ...and then the denominator: prefill time comes out of the decode rate (same day)
+### ...and then the denominator: prefill time comes out of the decode rate (same day) — **SUPERSEDED the same day; kept because it records a wrong turn**
+
+Read this one with the block above ("Two decode denominators, one identity") open. Two of its claims are false: the
+two decode-seconds families agreeing to 0.08% is one sum sampled twice, not corroboration, and an ITL-shaped
+denominator does **not** exclude prompt chewing (the step interval contains the chunked prefill computed in that
+step). `decode_tok_s` was a per-stream rate wearing a "summed" label, and `decode_time_pct` was a fan-out printed
+as a percent — 260% on a span where 2.6 streams decoded at an average moment. Both names are gone. The card first
+led with the wall sum and printed `×2.60 decoding`; the same day it went the other way round and now leads with the
+per-stream-second rate, the wall sum labelled `summed` on its note line (see "Two decode denominators, one
+identity" above).
 
 The summed card still read ~15-20 tok/s, and the follow-up question was the right one: **what is the time basis, and
 shouldn't the seconds spent chewing prompts not count?** It shouldn't, and now they don't -- with the summed figure kept
@@ -1296,11 +1338,14 @@ other spans; the poll line is the poll's own decode-time rate plus the span's ar
 `poll · no decode step` when the window held no decode step (no denominator is not a rate of zero).
 
 **Field names say which seconds were counted**, because the last thing this page needs is a rate whose denominator is
-guesswork: `decode_tok_s` (÷ decode seconds, step family preferred), `decode_time_s` (those seconds), `decode_time_req_s`
-(the request-family version, reported so the two can be reconciled), `decode_time_pct` (share of span), and
-`generation_tok_s` unchanged as the wall figure. The `Decode · summed, wall` waveform deliberately stays on the wall
-basis: a decode-time waveform has no denominator in a window that was all prefill, and a line full of gaps would be
-read as an idle box.
+guesswork. The surviving rule (written out in "Two decode denominators, one identity" above): `…_tok_s` means per
+wall second, `…_stream_tok_s` means per stream-second, and a stream-count field (`decode_streams`,
+`prefill_streams`, `streams_per_record`) is a count that may exceed 1 — never a percentage. `decode_time_s` and
+`decode_time_req_s` are the two families' stream-seconds, kept side by side so their 0.08% agreement can be seen for
+what it is. `generation_tok_s` is the wall figure and lives on the note line, labelled `summed`; the headline is
+now `decode_stream_tok_s`. The `Decode · summed, wall` waveform stays
+on the wall basis: a stream-second waveform has no denominator in a window that was all prefill, and a line full of
+gaps would be read as an idle box.
 
 **What the two bases are for.** The headline answers "how fast does this engine decode when it is decoding" (166 tok/s
 now; 158 tok/s median per request over the launch; 41.8 tok/s summed across the whole launch's decode seconds, against
@@ -1343,14 +1388,16 @@ long one". Requests with no timings or one token are dropped. `strata_cli/overvi
 
 **What we took.**
 
-- **Prefill's numerator is READ tokens.** Strata: `prompt_tokens - reused`. Ours now: `prompt_tokens_total -
-  prefix_cache_hits_total`, in the span (`prefill_tok_s`), in the poll (`prompt_read_tok_s`) and on the engine-state
+- **Prefill's numerator is READ tokens.** Strata: `prompt_tokens - reused`. Ours: `prompt_tokens_total` minus
+  `prompt_tokens_cached_total` when the build publishes it (vLLM's exact count of tokens it did not read — local
+  prefix cache *and* KV-connector transfers), falling back to `prefix_cache_hits_total` (local cache only, counted
+  at admission) — in the span (`prefill_stream_tok_s`), in the poll (`prompt_read_tok_s`) and on the engine-state
   line (`N prompt tok/s read`). vLLM credits cached prefix tokens to `prompt_tokens_total`, so with the cache on a
   rate over credited tokens is high by the hit rate. `PREFIX_CACHE=0` on this recipe, so read == credited today and
   the live numbers did not move (`7,177 tok/s` read, `wall 6,180` unchanged); the field pair
-  `prefill_tok_s` / `prefill_tok_s_credited` exists so the day the cache goes back on, the difference is visible
-  rather than implied. When hits are non-zero the prefill card's note line gains `· N% cache` (22 characters, inside
-  the tightest slot's 24); with the cache off it says nothing, so it is not printed.
+  `prefill_stream_tok_s` / `prefill_stream_tok_s_credited` exists so the day the cache goes back on, the difference
+  is visible rather than implied. When hits are non-zero the prefill card's note line gains `· N% cache` (22
+  characters, inside the tightest slot's 24); with the cache off it says nothing, so it is not printed.
 - **The zero discipline.** A span with no decode seconds has no decode rate. The card shows a dash, `poll · no decode
   step`, `poll · nothing credited` -- the same refusal in the same three places.
 

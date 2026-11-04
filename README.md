@@ -298,8 +298,17 @@ by prompt size — which is the shape a fixed-length bench cannot show:
 Time to first token over all 1,563: **p50 6.50 s, p95 24.52 s, max 56.1 s** at prompt p50 52,083. The longest
 prompt this launch served, **198,073 tokens**, took 27.0 s to its first token at 7,330 tok/s of prefill and then
 generated 1,242 tokens. Aggregating the counters the other way — `prompt_tokens_total / request_prefill_time_sum`
-— gives **7,949 tok/s while prefilling**, and `generation_tokens_total / request_decode_time_sum` gives **42.0
-tok/s** in aggregate: both within 1% of what the journal rows say.
+— gives **7,949 tok/s per prefill-second**: the request's own scheduled→first-token span summed over requests, so
+it carries decode interference as well as prefill work (the step census in
+[notes/context-262k.md](notes/context-262k.md) prices a whole-prefill record at 8,079, ~3% higher; long prefills
+take the 8,192-token step one at a time, which is why they serialize). The decode side needed a different
+denominator than the one first printed in this paragraph: `generation_tokens_total / request_decode_time_sum` is
+per **stream**-second — that family accrues one observation per stream-step, so a step two streams share is
+counted twice — measured **36.8 tok/s** over the launch's 10.6 h, not an aggregate. The aggregate is 891,750
+generated tokens over 10.6 h of wall = **23.4 tok/s**, and the two are one number times the fan-out: 36.8 × 0.64
+streams in decode phase at an average instant of a day. The journal's per-request medians (101–115 tok/s) sit above
+both because a request's median decode window is mostly unshared — 158 alone, 41 at three-to-four, 23 at
+five-to-six.
 
 **What the drafter did over the launch:** 376,433 drafts of 2 tokens (MTP=2 is this launcher's default at TP4),
 752,866 draft tokens, **501,271 accepted** — 1.33 accepted per draft, a mean acceptance length of **2.33 tokens a
@@ -313,6 +322,22 @@ step**, 66.6% of drafted tokens accepted.
 | 1 min | 45.8 tok/s | 4,214 tok/s | 17.2 | 4.7 | 90.7 ms | 1.29 | 28.4% |
 | 15 min | 23.7 tok/s | 7,713 tok/s | 12.8 | 2.7 | 100.6 ms | 1.45 | 18.5% |
 | 1 h | 26.4 tok/s | 7,737 tok/s | 17.9 | 3.5 | 65.4 ms | 1.48 | 12.6% |
+
+The `per stream` column is per **stream-second**, and it is not comparable to the `generation` column without its
+multiplier: on a 15-minute span taken later the same pair read **42.5 tok/s summed** against **17.2 per
+stream-second**, `×2.47 streams decoding`, and the two multiply exactly. `request_decode_time_seconds` and
+`inter_token_latency_seconds` are both stream-seconds — one observation per stream-step — so a rate built on them
+is per stream, whatever the word "aggregate" next to it suggests; and their step interval *contains* the chunked
+prefill computed in that step, so it excludes queue and prefill-before-first-token, not prompt chewing
+([notes/context-262k.md](notes/context-262k.md) has the census and the arithmetic).
+
+The Monitor's decode card therefore leads with the **per stream-second** figure — decode output ÷ decode time — which
+is also the quantity every request row prints, so card and rows read alike: on a live 716 s burst, 18,118 generated
+tokens over 119.1 stream-seconds = **152 tok/s**, with rows at 160-200 tok/s and `shared ×1.0`. The summed figure
+(what a second of this traffic produces, prefill and idle back in the denominator) stays on the note line labelled
+`summed`, with the fan-out as the explicit multiplier between the two — `25 summed ×0.17` on that burst — and the
+trend card beside it draws the summed series, because a per-stream waveform has no denominator in a window that was
+all prefill.
 
 The 1 min prefill figure is low **because of the metric, not the box**: `prompt_tokens_total` credits a prompt when
 its request finishes, so a 60-second span that has long prefills running but not finished credits only what happened

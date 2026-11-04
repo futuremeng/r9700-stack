@@ -98,8 +98,20 @@ ck("the per-request queue/prefill/decode split, measured rather than averaged ov
 ck("token counts from the engine, cache hits included",
    u["prompt_tokens"] == 4399 and u["completion_tokens"] == 128
    and u["prompt_tokens_details"]["cached_tokens"] == 1152, json.dumps(u))
-ck("a speed is stated with its basis", t["predicted_per_second"] == 80.0 and "accepted token" in t["speed_basis"],
-   json.dumps(t))
+ck("a speed is stated with its basis -- and the basis IS the engine's published mean, not our arithmetic: this "
+   "fixture's mean_time_per_output_token (12.0 ms) and decode_time/(gen-1) (12.6 ms) disagree on purpose, and a "
+   "row that recomputes would disagree with the engine's own card",
+   abs(t["predicted_per_second"] - 1.0 / 0.012) < 1e-9 and "mean 12.0 ms" in t["speed_basis"]
+   and abs(t["tpot_ms"] - 12.0) < 1e-9, json.dumps(t))
+_nof = Fin(request_id="nofield", num_generation_tokens=128, decode_time=1.6, queued_time=0.5, prefill_time=1.2,
+           inference_time=3.0)
+del _nof.mean_time_per_output_token                 # an older build: the field is not there to ask
+er.add(_nof)
+_t2 = er.get("nofield")["timings"]
+ck("on a build that does not publish the mean, the fallback is the engine's OWN formula (gen-1 over the span), "
+   "so a 128-token request reads 79.4 tok/s and not the 80 that counts the prefill's first token as a decode token",
+   abs(_t2["predicted_per_second"] - 127.0 / 1.6) < 1e-9 and "127 tokens after the first" in _t2["speed_basis"],
+   json.dumps(_t2))
 ck("the gaps say what is missing instead of showing an empty body",
    d["input"] is None and "serve/webui.sh with WEBUI_MODE=proxy" in d["input_note"])
 ck("detail lookup by id only", er.get("nope") is None)

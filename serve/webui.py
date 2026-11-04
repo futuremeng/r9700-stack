@@ -84,7 +84,16 @@ WANT = ("model_name", "model_compiler", "tensor_parallel_size", "pipeline_parall
 # alongside it). Read whichever of the build publishes -- and say null when it publishes none.
 KV_USED = ("kv_cache_usage_perc", "gpu_cache_usage_perc")
 # NOT the same quantity, and the difference is speculation:
-#   inter_token_latency_seconds            one observation per engine STEP -- what a client feels as one delta
+#   inter_token_latency_seconds            one observation per (REQUEST x STEP that gave it a token) -- the
+#                                          interval a client feels between two of ITS OWN deltas. Summed over a
+#                                          span this is stream-seconds, not engine-seconds: two streams decoding
+#                                          in one 30 ms step accrue 60 ms. Measured here (2026-11-04): 1,598
+#                                          observations against 917 engine records in one 60 s window = 1.74 a
+#                                          record, and request_decode_time_seconds_sum rose 93.07 s inside those
+#                                          60 s of wall. The identity that nails it is v1/metrics/stats.py:551
+#                                          (`itl = engine_core_timestamp - req_stats.last_token_ts`) against
+#                                          stats.py:601 (`decode_time = last_token_ts - first_token_ts`): the two
+#                                          families are the same sum, sampled per step and per request.
 #   request_time_per_output_token_seconds  one observation per REQUEST, that request's own mean per ACCEPTED
 #                                          token, so MTP's accepted drafts divide it.
 # Which one is "a stream's tok/s" was written backwards here until 2026-11-02: it claimed 1/step, from a pair
@@ -98,8 +107,10 @@ KV_USED = ("kv_cache_usage_perc", "gpu_cache_usage_perc")
 # per-output-token family carries ONE observation per REQUEST, so while a request is in flight the window has no
 # observation of it at all (itl 12.8-13.0 ms with tpot None, then tpot 6.3 ms the moment the request lands). The
 # fallback therefore shows the step rate mid-request -- 77 instead of 155, off by exactly the tokens a step
-# produces -- which is why the headline rate is stream_tok_s_live (counter-derived, live every window) and not
-# this field. stream_tok_s stays in the payload for the finished-request view.
+# produces -- which is why the summed rate the page puts in its headline comes from the counters
+# (generation_tokens_total over wall seconds) and this family only answers the per-stream question. In the
+# spans block the same rule holds: `generation_tok_s` is summed over wall seconds and
+# `decode_stream_tok_s` is per stream-second, with `decode_streams` as the multiplier between them.
 ITL_STEP = ("inter_token_latency_seconds",)
 TPOT = ("request_time_per_output_token_seconds", "time_per_output_token_seconds")
 
@@ -238,6 +249,8 @@ AVG_COUNTERS = ("generation_tokens_total", "prompt_tokens_total", "e2e_request_l
                 "e2e_request_latency_seconds_sum",
                 "spec_decode_num_drafts_total", "spec_decode_num_accepted_tokens_total",
                 "spec_decode_num_draft_tokens_total", "prefix_cache_queries_total", "prefix_cache_hits_total",
+                # the exact skipped-token count (local + external), which the read-rate numerator prefers
+                "prompt_tokens_cached_total",
                 # the record counter: what the decode cards divide by to say "tokens a step" over a span instead
                 # of a second. Records, not steps, at 0.32 -- see the note in since() -- which the titles say.
                 "iteration_tokens_total_count", "iteration_tokens_total_sum")
@@ -246,9 +259,12 @@ AVG_COUNTERS = ("generation_tokens_total", "prompt_tokens_total", "e2e_request_l
 def avg_sample(cur, t0):
     """One point of the trailing-average ring: the cumulative counters, plus the gauges whose mean is wanted."""
     kvn = next((n for n in KV_USED if cur.get(n)), None)
+    # [0] is the sum over series, [1] the max (see parse_metrics). Request COUNTS are summed across engines, pool
+    # FULLNESS is the max of them -- the same split derive()'s `live` block uses, so the ring's means and this
+    # poll's live gauges cannot disagree about which of the two a gauge means.
     s = {"at": t0,
-         "run": (cur.get("num_requests_running") or [0, 0.0, 0])[1],
-         "wait": (cur.get("num_requests_waiting") or [0, 0.0, 0])[1],
+         "run": (cur.get("num_requests_running") or [0, 0.0, 0])[0],
+         "wait": (cur.get("num_requests_waiting") or [0, 0.0, 0])[0],
          "kv": (cur[kvn] or [0, 0.0, 0])[1] if kvn else None}
     for n in AVG_COUNTERS:
         v = cur.get(n)
@@ -286,18 +302,32 @@ def trailing(snaps, cur, t0, spans=AVG_SPANS):
         span_s = t0 - base["at"]
         miss = lambda n: n not in base                # a family that appeared after the base snapshot
         dn = lambda n: None if miss(n) else (cur.get(n) or [0.0, 0.0, 0])[0] - base[n]
-        msk = lambda fam: (1e3 * dn(fam + "_sum") / dn(fam + "_count")) if dn(fam + "_count") else None
-        mtk = lambda fam: (dn(fam + "_sum") / dn(fam + "_count")) if dn(fam + "_count") else None
-        first = lambda fams: next((msk(h) for h in fams if dn(h + "_count")), None)
+        # `> 0`, not truthy: after a restart the ring's base can hold a BIGGER counter than the current read, and
+        # a negative observation count would happily divide and print a negative latency in ms.
+        cnt = lambda fam: (dn(fam + "_count") or 0) > 0
+        msk = lambda fam: (1e3 * dn(fam + "_sum") / dn(fam + "_count")) if cnt(fam) else None
+        mtk = lambda fam: (dn(fam + "_sum") / dn(fam + "_count")) if cnt(fam) else None
+        first = lambda fams: next((msk(h) for h in fams if cnt(h)), None)
         gen, pre = dn("generation_tokens_total"), dn("prompt_tokens_total")
         pt, dtm = dn("request_prefill_time_seconds_sum"), dn("request_decode_time_seconds_sum")
-        # Decode time, from the family that grows EVERY decode step rather than at request end. Measured on this
-        # launch (2026-11-04): inter_token_latency_seconds carries 430,954 observations summing to 24,236.14 s
-        # and request_decode_time_seconds carries 1,812 observations summing to 24,216.27 s -- 0.08% apart, which
-        # is what licenses using either as "seconds the box spent in the decode phase". The step family is
-        # preferred because a short span in which no request finished still has a denominator; at request-end
-        # granularity a 60 s span of pure decode would report none. Both are reported so a reader can reconcile.
+        nrec = dn("e2e_request_latency_seconds_count")
+        # DECODE SECONDS, and the two families vLLM offers are the SAME sum, not two ways of measuring the box.
+        # vLLM records one inter_token_latency per (request x the step that gave it a token) --
+        # v1/metrics/stats.py:551-552 `itl = engine_core_timestamp - req_stats.last_token_ts` -- so the family's
+        # sum is, request by request, exactly `last token - first token`, which is what
+        # request_decode_time_seconds measures once at request end. Measured here (2026-11-04, one launch):
+        # 430,954 observations summing to 24,236.14 s against 1,812 request observations summing to 24,216.27 s,
+        # 0.08% apart -- that agreement is the PROOF that both are STREAM-seconds (a step with two streams
+        # decoding accrues twice), not evidence that either is "seconds the box spent in the decode phase".
+        # Measured straight off /metrics to be sure (60 s window): 1,598 ITL observations against 917 engine
+        # records = 1.74 per record, and request_decode_time_seconds_sum rose by 93.07 s inside 60 s of wall.
+        # Consequences, both of them lived into: tokens over stream-seconds is a PER-STREAM rate, and
+        # stream-seconds over the span is a STREAM COUNT with no 100% ceiling (the first version of this printed
+        # `286% dec` for a span in which 2.9 streams decoded at an average moment). The step family is still the
+        # one to divide by, because it grows on every decode step while the request family moves only when a
+        # request finishes -- over a 60 s span in which no request finished, the request family has no denominator.
         dtl = dn("inter_token_latency_seconds_sum")
+        itlc = dn("inter_token_latency_seconds_count")
         run = [x["run"] for x in snaps if x["at"] > base["at"]]
         wait = [x["wait"] for x in snaps if x["at"] > base["at"]]
         kvv = [x["kv"] for x in snaps if x["at"] > base["at"] and x["kv"] is not None]
@@ -305,14 +335,23 @@ def trailing(snaps, cur, t0, spans=AVG_SPANS):
         iters = dn("iteration_tokens_total_count")
         dgrams = dn("spec_decode_num_draft_tokens_total")
         hitq, hits = dn("prefix_cache_queries_total"), dn("prefix_cache_hits_total")
+        # See derive()'s `_cached`: the exact skipped count when the build publishes it, the local prefix-cache
+        # counter when it does not.
+        cached = dn("prompt_tokens_cached_total") if "prompt_tokens_cached_total" in cur else hits
         # What the engine READ, not what the prompt was called. vLLM credits cached prefix tokens to
         # prompt_tokens_total, so with the prefix cache on, prompt_tokens / prefill_seconds is not a read speed:
         # it counts tokens that were never read and overstates it by the hit rate. Strata's run average uses
         # `prompt_tokens - reused` for exactly this reason (serve/web/app.js), and says so on the card. On this
         # recipe the cache is off on purpose (PREFIX_CACHE=0), so read == credited today; the distinction is here
         # so that turning the cache back on cannot quietly inflate the number.
-        read = None if pre is None else pre - (hits or 0.0)
-        reset = any(v is not None and v < 0 for v in (gen, pre, drafts, iters, dtm, dtl, hits))
+        read = None if pre is None else pre - (cached if cached is not None else 0.0)
+        # Every counter in the span that can only grow is checked: a restart that lands in the middle of a span
+        # shows up as a DECREASE, and the families the page never showed (the request count, the cache counters)
+        # are exactly where a negative used to leak out -- a `requests_per_min` of -8.4, or a mean latency built
+        # on a negative observation count. An engine that restarted and has already counted PAST its old totals
+        # cannot be caught this way, and no counter says "process started"; that residual case stays unguarded.
+        reset = any(v is not None and v < 0 for v in (gen, pre, drafts, iters, dtm, dtl, hits, hitq, nrec, itlc,
+                                                      cached))
         itl, tpot = first(ITL_STEP), first(TPOT)
         genps = gen / span_s if gen is not None else None
         runmean = (sum(run) / len(run)) if run else None
@@ -327,30 +366,45 @@ def trailing(snaps, cur, t0, spans=AVG_SPANS):
             "gen_per_step": (gen / iters) if (gen is not None and iters) else None,
             "drafts_per_step": (drafts / iters) if (drafts is not None and iters) else None,
             "prompt_tok_s": None if reset or pre is None else pre / span_s,
-            "requests_per_min": None if reset or dn("e2e_request_latency_seconds_count") is None
-                                 else 60.0 * dn("e2e_request_latency_seconds_count") / span_s,
+            "requests_per_min": None if reset or nrec is None else 60.0 * nrec / span_s,
             # aggregate over the MEAN concurrency of the span, which is the honest long-window version of the
             # window's aggregate-over-running figure: running moves, and dividing by this poll's count would be
             # wrong by whatever it moved by.
             "stream_tok_s": (genps / runmean) if (genps is not None and runmean) else None,
-            # The two speeds the box is actually judged on, token-weighted and exact over the span: prompt tokens
-            # per second of prefill time, and generated tokens per second of decode time. The engine's own
-            # prefill/decode seconds, not wall time -- which is why they stay readable while the queue moves.
+            # The two speeds the box is judged on, token-weighted and exact over the span, and both on a STREAM
+            # denominator: read prompt tokens per second of request-prefill time, generated tokens per second of
+            # request-decode time. `request_prefill_time_seconds` is SCHEDULED -> first token for one request, so
+            # its sum is stream-seconds too: with two prefills in flight the rate is per stream, not the box's,
+            # and `prefill_streams` says how many. Today that factor is 1.04 on this launch (long prefills take
+            # the 8,192-token step one at a time, so they serialize), which is why 7,222 and the wall 7,036 look
+            # like the same number; the field is here so the day they do not is a factor and not a mystery.
+            # It is NOT the engine's chewing speed either: under chunked prefill a request's prefill span contains
+            # the steps in which the engine was decoding other requests.
             # READ tokens per second of prefill time. The credited version stays alongside it so a reader (or a
             # future us) can see what the cache took out, the same way the decode rate reports both families.
-            "prefill_tok_s": (read / pt) if (read is not None and pt) else None,
-            "prefill_tok_s_credited": (pre / pt) if (pre is not None and pt) else None,
+            "prefill_stream_tok_s": (read / pt) if (read is not None and pt) else None,
+            "prefill_stream_tok_s_credited": (pre / pt) if (pre is not None and pt) else None,
+            "prefill_streams": (pt / span_s) if (pt is not None and span_s) else None,
             "prompt_read_tokens": None if reset else read,
-            # Generated tokens per second of DECODE time: prompt chewing is not in the denominator, so this is
-            # "how fast it decodes when it is decoding". Measured on the live launch, 68.8 tok/s against 20.1
-            # summed over the span's wall seconds -- the gap is that only 29% of those seconds held a stream in
-            # its decode phase while 83% held somebody's prefill. The wall figure stays visible (generation_tok_s
-            # above) because that is what the traffic produces per wall second; the two answer different
-            # questions and the page shows both.
-            "decode_tok_s": (gen / dtl) if (gen is not None and dtl) else None,
+            # Generated tokens over STREAM-seconds: a per-stream rate, so the name says stream. Over the live
+            # 15 min it reads 17.4 tok/s while the same span sums to 45.1 over wall seconds -- the pair is not a
+            # contradiction and the factor between them is the next field, exactly:
+            # 17.4 x 2.60 = 45.1. (The first version of this divided the summed numerator by these stream-seconds
+            # and put the result in the page's largest type under the words "summed, decode time"; it read BELOW
+            # the wall figure, which is what a summed number can never do.)
+            "decode_stream_tok_s": (gen / dtl) if (gen is not None and dtl) else None,
             "decode_time_s": None if reset else dtl,
             "decode_time_req_s": (gen / dtm) if (gen is not None and dtm) else None,
-            "decode_time_pct": (100.0 * dtl / span_s) if (dtl is not None and span_s) else None,
+            # Streams in their decode phase, averaged over the span: stream-seconds per wall second. A COUNT, not
+            # a share -- it is 2.6 live and has no ceiling, which is why it replaced the impossible 260%. It is
+            # the exact multiplier between the per-stream rate and the summed one, so the page can print both and
+            # the reader can check the arithmetic.
+            "decode_streams": (dtl / span_s) if (dtl is not None and span_s) else None,
+            # The same fan-out per engine RECORD instead of per wall second (a step advances every decoding
+            # stream once). It relates to gen_per_step the way decode_streams relates to the two rates: 16,419 ITL
+            # observations over 5,753 records = 2.85 streams a record, and 7.05 generated tokens a record at 2.47
+            # tokens a stream-step. `decode_streams` weights by time, this one by step, hence 2.85 vs 2.60.
+            "streams_per_record": (itlc / iters) if (itlc is not None and iters) else None,
             "itl_ms": itl, "tpot_ms": tpot,
             "stream_tok_s_hist": (1e3 / tpot) if tpot else ((1e3 / itl) if itl else None),
             "ttft_ms": msk("time_to_first_token_seconds"), "queue_ms": msk("request_queue_time_seconds"),
@@ -387,16 +441,33 @@ def derive(cur, prev, dt, cap, info, mode, kept, hist):
     dgrams = d("spec_decode_num_draft_tokens_total")          # tokens drafted (0.31+ name)
     hitq, hits = (d("prefix_cache_queries_total"), d("prefix_cache_hits_total")) if have \
         else (g("prefix_cache_queries_total"), g("prefix_cache_hits_total"))
+    # Tokens the engine SKIPPED because a cache already held them. `prompt_tokens_cached_total` is the exact
+    # per-request count (v1/metrics/loggers.py: counter_prompt_tokens_cached.inc(pts.cached_tokens), and
+    # PromptTokenStats' invariant makes cached = local hit + external transfer). `prefix_cache_hits_total` is
+    # only the LOCAL prefix cache and only what the scheduler looked up at admission, so on a build with a KV
+    # connector the old subtraction left external hits inside the numerator and called them a read speed.
+    # Prefer the exact counter, keep the old one as the fallback for builds that do not publish it.
+    _cached = (d("prompt_tokens_cached_total") if cur.get("prompt_tokens_cached_total")
+               else d("prefix_cache_hits_total"))
     mean_any = lambda fam: next((m for m in (mean(h) for h in fam) if m is not None), None)
-    itl = mean_any(ITL_STEP) or mean_any(TPOT)          # a stream's rate is 1 / step; older builds only have
+    itl = mean_any(ITL_STEP) or mean_any(TPOT)          # per-stream step interval; older builds only have
     tpot = mean_any(TPOT)                               # the per-token family, which then stands in for both
     kv_used = next((n for n in KV_USED if cur.get(n)), None)
     swapped = cur.get("num_requests_swapped")
-    wr = lambda r: (cur.get(f"num_requests_waiting_by_reason;{r}") or [None, None, 0])[1]
+    # GAUGES, and which of parse_metrics' three numbers each one wants. COUNTS of requests want the SUM over
+    # series: with more than one engine (DP, or a second model) the running gauge is per engine, and the max is
+    # "the busiest engine", not "how many requests are running" -- the same trap as summing a percentage. Today
+    # this launch is TP4 with a single engine series, so sum and max agree and the choice is invisible; it is
+    # written down because the day it stops being invisible the page must not have to change. POOL FULLNESS wants
+    # the MAX ("one rank's KV pool is full" is the sentence that matters, see parse_metrics) and its mean over the
+    # series is sum/series_count -- NOT the sum, which is what this line used to be and which reads as a 160%
+    # full pool the moment two series exist.
+    nser = lambda n: (cur.get(n) or [0.0, 0.0, 0])[2] or 1
+    wr = lambda r: (cur.get(f"num_requests_waiting_by_reason;{r}") or [None, None, 0])[0]
     prem_tot = cur.get("num_preemptions_total")
-    live = {"running": g("num_requests_running", 1), "waiting": g("num_requests_waiting", 1),
+    live = {"running": g("num_requests_running"), "waiting": g("num_requests_waiting"),
             "waiting_capacity": wr("capacity"), "waiting_deferred": wr("deferred"),
-            "swapped": (swapped[1] if swapped else None), "preempting": g("num_preemptions_total") > 0,
+            "swapped": (swapped[0] if swapped else None), "preempting": g("num_preemptions_total") > 0,
             # Cumulative since launch, not just "is it happening" -- a preempt costs the victim a whole re-prefill,
             # so the count over a session is the number that predicts the pain (measured: two 160k-token requests
             # at a 100%-full pool, first token 20.9 s / 30.2 s, their own decode 14.8 / 3.4 tok/s). Read the
@@ -404,7 +475,8 @@ def derive(cur, prev, dt, cap, info, mode, kept, hist):
             # publish the counter stays unknown.
             "preemptions_total": (prem_tot[0] if prem_tot else None),
             "kv_used_pct": 100.0 * g(kv_used, 1) if kv_used else None,
-            "kv_used_pct_mean": 100.0 * g(kv_used) if kv_used else None,
+            "kv_used_pct_mean": (100.0 * g(kv_used) / nser(kv_used)) if kv_used else None,
+            "kv_series": nser(kv_used) if kv_used else None,
             "kv_tokens": cap,
             "prefix_hit_pct": (100.0 * hits / hitq) if hitq > 0 else None}
     # What is live WHILE a request runs, measured on this box against 0.32.0+rocm723 (2026-11-02, the
@@ -416,24 +488,30 @@ def derive(cur, prev, dt, cap, info, mode, kept, hist):
     # that can be computed from what moves per step; the prefill card shows both its live estimate and the
     # exact figure, and says which is which.
     gen_rate = per(d("generation_tokens_total"))
-    run_now = g("num_requests_running", 1)
+    run_now = g("num_requests_running")
     kv_now = (cap or 0) * g(kv_used, 1) if (kv_used and cap) else None
     kv_was = (cap or 0) * ((prev.get(kv_used) or [0.0, 0.0, 0])[1]) if (kv_used and cap and have) else None
     rate = {"window_s": dt, "requests": nrec if have else None, "requests_per_min": per(nrec),
             "generation_tokens": d("generation_tokens_total") if have else None,
             "generation_tok_s": gen_rate, "prompt_tok_s": per(d("prompt_tokens_total")),
-            # the same correction for one poll: cached tokens were not read (see trailing())
-            "prompt_read_tok_s": per(d("prompt_tokens_total") - d("prefix_cache_hits_total")),
-            "prompt_read_tokens": (d("prompt_tokens_total") - d("prefix_cache_hits_total")) if have else None,
-            # Per poll: generated tokens per second of DECODE time in this window. d(ITL_sum) is 0 when no decode
-            # step ran (a window that was all prefill, or idle) -- then there is no denominator, which is a fact
-            # about the window rather than a rate of 0.
-            "decode_tok_s": ((d("generation_tokens_total") / (d("inter_token_latency_seconds_sum")
-                                                              or d("request_decode_time_seconds_sum")))
-                             if (d("inter_token_latency_seconds_sum") or d("request_decode_time_seconds_sum")) > 0
-                             else None),
+            # the same correction for one poll: cached tokens were not read (see trailing(), and `_cached`).
+            "prompt_read_tok_s": per(d("prompt_tokens_total") - _cached),
+            "prompt_read_tokens": (d("prompt_tokens_total") - _cached) if have else None,
+            # Per poll: generated tokens per STREAM-second in this window -- a per-stream rate, name included.
+            # d(ITL_sum) is 0 when no decode step ran (a window that was all prefill, or idle) -- then there is no
+            # denominator, which is a fact about the window rather than a rate of 0. `decode_streams` is the
+            # multiplier that turns it back into the summed figure on the card (x window seconds).
+            "decode_stream_tok_s": ((d("generation_tokens_total") / (d("inter_token_latency_seconds_sum")
+                                                                     or d("request_decode_time_seconds_sum")))
+                                    if (d("inter_token_latency_seconds_sum")
+                                        or d("request_decode_time_seconds_sum")) > 0
+                                    else None),
             "decode_time_s": (d("inter_token_latency_seconds_sum")
                               or d("request_decode_time_seconds_sum")) or None,
+            "decode_streams": ((d("inter_token_latency_seconds_sum") / dt)
+                               if (have and dt and d("inter_token_latency_seconds_sum") > 0) else None),
+            "streams_per_record": (d("inter_token_latency_seconds_count") / d("iteration_tokens_total_count"))
+                                  if d("iteration_tokens_total_count") > 0 else None,
             # aggregate / running: a rate for the stream you are watching, available while it runs (1/itl
             # is not -- see the block above). Exact only when the streams run at the same rate.
             "stream_tok_s_live": (gen_rate / run_now) if (gen_rate is not None and run_now >= 1) else None,
@@ -891,7 +969,8 @@ def _pci_node(path, bdf, depth):
                         **{f"{k}#ft": v for k, v in ft_named.items()}}}
 
 
-def aer_deltas(chains, last, named=None, events=None, at=None, last_err=None, recent=None, window_s=300.0):
+def aer_deltas(chains, last, named=None, events=None, at=None, last_err=None, recent=None, window_s=300.0,
+               watch=None):
     """Per-poll AER deltas per chain, from counters that are cumulative since boot.
 
     A counter that went DOWN is not negative traffic: the kernel zeroes these on a link recovery or a driver
@@ -920,6 +999,13 @@ def aer_deltas(chains, last, named=None, events=None, at=None, last_err=None, re
     weight-load window put 34 counters on the c6 chain in 3.0 min = 11.3/min (digits, coloured), while the
     trickle this chain shows during real traffic -- one BadTLP per few minutes of large prefills -- is ~0.2/min
     (glyph). `window_s` travels with it so a page can name the span.
+
+    `watch` (chain bus -> the poll this watcher first saw that chain) is what makes that span honest: a window
+    younger than `window_s` is divided by what it actually is, floored at one minute. Dividing by a flat 300 s
+    from the very first poll diluted everything the sidecar saw while starting up -- 4 counters raised in the
+    first 20 s reported 0.8/min, which the page dims to the "quiet" glyph: an event storm turned into calm, the
+    one thing the page's own rule ("never invent calm") forbids. Over the span actually watched the same burst
+    reads 12.0/min and keeps its digits.
     """
     out, nxt = [], {}
     for ch in chains:
@@ -965,10 +1051,16 @@ def aer_deltas(chains, last, named=None, events=None, at=None, last_err=None, re
         if recent is not None:
             seen = recent.setdefault(ch["bus"], deque())
             now = at or time.time()
+            if watch is not None:
+                watch.setdefault(ch["bus"], now)      # the first poll that saw this chain: the rate's zero mark
             while seen and now - seen[0][0] > window_s:
                 seen.popleft()
-            d["rate_per_min"] = round(sum(n for _, n in seen) / (window_s / 60.0), 3)
-            d["window_s"] = window_s
+            # Denominator = the span actually watched, not the nominal window (see the docstring).
+            started = (watch or {}).get(ch["bus"]) or now
+            span = min(window_s, max(60.0, now - started))
+            d["rate_per_min"] = round(sum(n for _, n in seen) / (span / 60.0), 3)
+            d["window_s"] = round(span, 1)
+            d["watched_s"] = round(now - started, 1)
         out.append(d)
     return out, nxt
 
@@ -1216,7 +1308,13 @@ ROW_KEYS = ("id", "seq", "path", "model", "state", "started_at", "wallclock_s", 
 
 
 def shared_decode(rows):
-    """Mean number of requests in flight across each row's OWN decode window, itself included.
+    """Mean number of requests in their DECODE PHASE across each row's OWN decode window, itself included.
+
+    "in decode phase", not "in flight", and the difference is the whole point of the number: a request sitting in
+    this request's window in the middle of a 160k-token chunked prefill shares the STEP with it but is not a
+    second decoding stream, and the row's tag would say x2 where the engine ran one decoding stream. The spans
+    intersected here are first token -> last token, which is the quantity the decode rate is read against; the
+    running gauge is the one that counts a prefilling request as a producer (see derive()'s stream_tok_s_live).
 
     Why this rides the payload: measured off 1,400 real requests, a stream's decode rate is 158 tok/s
     alone, 119 at two in flight and 23 at three or four ([notes/context-262k.md](../notes/context-262k.md)). A
@@ -1428,6 +1526,18 @@ class EngineRecords:
                                if cached > 0 and pre_comp else
                                (pre_all, "prompt tokens / prefill time"))
         e2e = inf if inf > 0 else (q + pre + dec)
+        # This request's own decode rate, on the engine's OWN denominator. decode_time spans first token -> last
+        # token, so the tokens it pays for are gen - 1: the first token came out of the prefill step, and vLLM's
+        # own mean_time_per_output_token is decode_time / (gen - 1) (v1/metrics/stats.py:606-610). Dividing gen
+        # by decode_time instead -- what this line did, while labelling itself "the engine's own mean" -- charges
+        # the first token twice: 0.17% at 600 tokens, 17% at 6, and it is why a 2-token request read 2x its real
+        # rate. Prefer the engine's field; compute its formula when the build does not hand one over.
+        tpot = getattr(f, "mean_time_per_output_token", None)
+        tpot = float(tpot) if isinstance(tpot, (int, float)) and not isinstance(tpot, bool) and tpot > 0 else None
+        own_rate = (1.0 / tpot) if tpot and tpot > 0 else ((gen - 1) / dec if gen > 1 and dec > 0 else None)
+        own_basis = (f"1 / the engine's mean {tpot * 1e3:.1f} ms per output token ({gen - 1} tokens after the "
+                     f"first, over {dec:.2f} s)" if tpot and tpot > 0 else
+                     (f"{gen - 1} tokens after the first over its {dec:.2f} s decode span" if own_rate else None))
         with self.lock:
             self.n += 1
             r = {"id": getattr(f, "request_id", None) or f"eng-{self.n}", "seq": self.n, "path": None,
@@ -1438,8 +1548,9 @@ class EngineRecords:
                  "usage": {"prompt_tokens": prompt,
                            "completion_tokens": gen,
                            "prompt_tokens_details": {"cached_tokens": cached}},
-                 "timings": {"predicted_per_second": (gen / dec) if gen and dec > 0 else None,
-                             "speed_basis": "per accepted token (the engine's own mean)",
+                 "timings": {"predicted_per_second": own_rate,
+                             "speed_basis": own_basis,
+                             "tpot_ms": (tpot * 1e3) if tpot and tpot > 0 else None,
                              "tokens_are_estimate": False,
                              "prefill_tok_s": pre_rate, "prefill_basis": pre_basis,
                              "queue_s": q, "prefill_s": pre, "decode_s": dec,
@@ -1509,7 +1620,7 @@ class Records:
                  "queue_s": None, "stream": stream, "response_format": "stream" if stream else "json",
                  "http_status": None, "usage": None, "timings": None, "error": None,
                  "_in": body[:CAP], "_in_truncated": len(body) > CAP, "_out": [], "_out_len": 0,
-                 "_resp": [], "_reason": [], "tokens_est": 0}
+                 "_resp": [], "_reason": [], "tokens_est": 0, "stream_chars": 0}
             self.items.appendleft(r)
             while len(self.items) > self.keep:
                 self.items.pop()
@@ -1525,13 +1636,20 @@ class Records:
         r["state"] = state
         if state in ("completed", "error", "disconnected"):
             r["_closed"] = True
-            if self.journal is not None:
-                self.journal.append(r)
             r["wallclock_s"] = time.time() - r["started_at"]
             gen = (r["usage"] or {}).get("completion_tokens") or r["tokens_est"] or None
+            est = not bool((r["usage"] or {}).get("completion_tokens"))
             span = max(r["wallclock_s"] - (r["first_token_s"] or 0.0), 0.0) or r["wallclock_s"]
             r["timings"] = {"predicted_per_second": (gen / span) if gen and span > 0 else None,
-                            "tokens_are_estimate": not bool((r["usage"] or {}).get("completion_tokens"))}
+                            "tokens_are_estimate": est,
+                            # A streamed delta is not a token. vLLM emits one delta per SCHEDULED step per stream,
+                            # and a step carries 1 + accepted draft tokens with MTP on (2.05 tokens a stream-step
+                            # live), so counting deltas understates the tokens by up to that factor -- and the
+                            # decode rate built on it is a FLOOR, not an approximation with a ~ on it. Said in the
+                            # row, because this path is the only token count a plain relay ever gets.
+                            "gen_basis": (f"{r['tokens_est']} streamed deltas over {r['stream_chars']} characters "
+                                          "-- a delta is a step, not a token, so this token count is a floor"
+                                          if est and r["tokens_est"] else None)}
             # Same per-request prefill mean as the engine-side record, built from what a relay can see: the
             # prompt token count the response reports and the wait for the first token. Labelled as this page's
             # own measurement (it includes anything the engine queued before starting), never presented as the
@@ -1541,6 +1659,13 @@ class Records:
             r["timings"]["prefill_tok_s"] = (ptok / pspan) if ptok and pspan and pspan > 0 else None
             r["timings"]["prefill_basis"] = ("prompt tokens over first-token latency, timed through this page"
                                              if r["timings"]["prefill_tok_s"] else None)
+            # Journal LAST, once every ROW_KEYS field exists. Journal.append serialises the row immediately, so
+            # appending before wallclock_s and timings were set wrote nulls for both to disk on every relay row:
+            # the list looked right in memory and every restored row lost its wall, its decode rate, and its
+            # span (shared_decode answers None for a row with no timings). The engine-side path
+            # (EngineRecords.add) already builds the row first and appends last.
+            if self.journal is not None:
+                self.journal.append(r)
 
     def note(self, r, text):
         if r["_out_len"] < CAP:
@@ -1676,6 +1801,7 @@ class Hub:
         self.aer_named, self.pcie_events = {}, deque(maxlen=60)
         self.aer_quiet = {}            # chain bus -> when a counter last moved (drives quiet_s)
         self.aer_recent = {}           # chain bus -> (time, n) events in the trailing window (drives rate_per_min)
+        self.aer_watch = {}            # chain bus -> the first poll that saw it (rate_per_min's denominator)
         self.health, self.engine, self.host = None, {}, read_host()
         # What ended the PREVIOUS boot (ACPI BERT, replayed by the kernel at startup) and how many such
         # records the journal still holds. Read once: neither can change while this process is alive.
@@ -1746,7 +1872,7 @@ class Hub:
         inow = (cur.get("iteration_tokens_total_count") or [0.0, 0.0, 0])[0]
         runs = [h.get("running") for h in self.hist if h.get("at", 0) > (base["at"] if base else 0)]
         runs = [r for r in runs if isinstance(r, (int, float))]
-        runm = (sum(runs) / len(runs)) if runs else (cur.get("num_requests_running") or [0, 0.0, 0])[1]
+        runm = (sum(runs) / len(runs)) if runs else (cur.get("num_requests_running") or [0, 0.0, 0])[0]
         gen = (gnow - base["c"]["gen"]) / dt if (base and dt) else None
         prompt = (pnow - base["c"]["prompt"]) / dt if (base and dt) else None
         kvrate = ((kvnow - base["c"]["kv"]) / dt) if (base and dt and kvnow is not None
@@ -1912,7 +2038,8 @@ class Hub:
                                 for ch in chains]
                 new_events = []
                 deltas, self.aer_last = aer_deltas(chains, self.aer_last, self.aer_named, new_events,
-                                                   time.time(), self.aer_quiet, self.aer_recent)
+                                                   time.time(), self.aer_quiet, self.aer_recent,
+                                                   watch=self.aer_watch)
                 for e in reversed(new_events):
                     self.pcie_events.appendleft(e)
                 self.pcie = chains
@@ -2147,7 +2274,8 @@ class H(BaseHTTPRequestHandler):
                 self.hub.rec.note_reason(rec, rc)
             txt = txt or d.get("content")
             if txt:
-                rec["tokens_est"] += 1
+                rec["tokens_est"] += 1                          # a delta per step: a floor on the tokens, see finish()
+                rec["stream_chars"] += len(txt)
                 self.hub.rec.note(rec, txt)
             if ch.get("finish_reason"):
                 rec["finish_reason"] = ch["finish_reason"]

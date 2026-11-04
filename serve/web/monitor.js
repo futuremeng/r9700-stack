@@ -368,29 +368,42 @@ function renderStatus(s) {
           + "page's decode numbers (99.2% of the tokens this box processed were prompt tokens, and the summed "
           + "rate is 1.62 streams a record x 2.33 tokens a step x 6.3 records a second). Per-span counts in the "
           + "title because only two fit the slot: ",
-    gen: "All streams summed, per second of DECODE time: generated tokens divided by seconds the engine spent in "
-       + "the decode phase (delta of inter_token_latency_seconds_sum -- 430,954 observations this launch summing "
-       + "to within 0.08% of request_decode_time_seconds_sum, which is why either family can be called decode "
-       + "seconds; the step family is preferred because it grows every decode step instead of at request end, so a "
-       + "span with no finished request still has a denominator). Prefill chewing is NOT in the divisor, and "
-       + "neither is idle time. `wall N` beside it is the same tokens over the span's wall seconds, and `N% dec` "
-       + "is what share of the span was decode time -- the ratio of the two rates IS that share. Live example "
-       + "(2026-11-04): 68.8 tok/s of decode time against 20.1 over wall, with 29% decode seconds and 83% of the "
-       + "span holding somebody's prefill. A span with no decode seconds has NO number here, not a 0 -- the "
-       + "same rule Strata's cards follow ('never an invented zero'). "
-       + "The waveform next to it is drawn on the wall basis, because a "
-       + "decode-time waveform has no denominator in a window that was all prefill.",
-    prefill: "READ tokens per second of the engine's own prefill time -- how fast it chews when it is chewing. "
-           + "READ, deliberately: vLLM credits cached prefix tokens to prompt_tokens_total, so with the prefix "
-           + "cache on, credited tokens would count work the engine never did and the rate would be high by the "
-           + "hit rate; the numerator here is prompt_tokens_total - prefix_cache_hits_total, and `N% cache` says "
-           + "how much came out. Today the cache is off on this recipe (PREFIX_CACHE=0), so read and credited are "
-           + "the same number. The same rule is what `prompt_read_tok_s` and `prefill_tok_s_credited` carry. "
-           + "Strata's run average does the same subtraction (`prompt_tokens - reused`, serve/web/app.js). "
-           + "Prompt tokens per second of the engine's own prefill time - how fast it chews when it is chewing. "
-           + "The wall-clock figure is lower by the duty cycle: this launch runs ~7,900 while prefilling and "
-           + "~2,200 across the wall. Over a span the histogram-backed figures count only requests that finished "
-           + "inside it, which matters when the span is shorter than a request's wall time.",
+    gen: "Total decode output over total DECODE time: generated tokens divided by the stream-seconds the engine's "
+       + "decode families report. Queue, prefill phases, the wait before the first token, idle seconds and steps "
+       + "that produced no token are all OUT of the denominator -- that is the point of the number, and it is the "
+       + "same quantity as a request row's speed (1 / the engine's mean time per output token), which is why the "
+       + "card and the rows under it read alike: 18,118 tokens over 119.1 stream-seconds = 152 tok/s on a live "
+       + "burst whose rows ran 160-200 tok/s. The unit is per STREAM-second: vLLM observes one inter_token_latency "
+       + "per REQUEST x STEP (v1/metrics/stats.py:551), so a step two streams share is counted twice -- that is "
+       + "correct here (each stream got a token out of it) but it is why the label says stream. The two decode "
+       + "families agree to 0.08% (24,236.14 s over 430,954 observations against 24,216.27 s over 1,812 request "
+       + "observations) because they are one sum sampled per step and per request, not two measurements. "
+       + "`N summed ×M` on the note line is the throughput reading of the same traffic: N is generated tokens per "
+       + "WALL second (prefill and idle back in the denominator -- what a minute of this traffic produces), M is "
+       + "streams decoding per wall second (a COUNT, not a share: 0.15 on a serialized burst, 2.60 with traffic "
+       + "on, no 100% ceiling), and the big number times M is exactly N: 152 x 0.15 = 22. The waveform card next "
+       + "door stays on the summed-wall basis on purpose -- this denominator does not exist in a window that was "
+       + "all prefill or idle, and a line full of gaps reads as an idle box. What this denominator cannot remove: "
+       + "under chunked prefill a chunk is computed INSIDE a decode-phase step, so the step interval carries that "
+       + "work too. A bare single-stream step measures 13.0 ms in the bench; this launch's live itl is 15.5 ms, "
+       + "the +19% that no counter separates -- which is also why the span's per-stream figure (152) sits below "
+       + "the mean of its own request rows (167).",
+    prefill: "READ tokens per second of REQUEST-prefill time -- the engine's own scheduled -> first-token span, "
+           + "summed over streams, so stream-seconds and a per-stream speed. It is NOT the engine's chew rate: "
+           + "under chunked prefill a request's prefill span contains the steps in which the engine was decoding "
+           + "other requests, and if two prefills run at once this divides by both -- the note line then prints "
+           + "`×N prefilling` (today 1.04: long prefills take the 8,192-token step one at a time, so they "
+           + "serialize). READ, deliberately: vLLM credits cached and externally transferred prefix tokens to "
+           + "prompt_tokens_total, so credited tokens would count work the engine never did and the rate would be "
+           + "high by the hit rate; the numerator subtracts prompt_tokens_cached_total (the exact skipped count, "
+           + "local + external) when the build publishes it and prefix_cache_hits_total (local only, counted at "
+           + "admission) when it does not, and `N% cache` says how much came out. Today the cache is off on this "
+           + "recipe (PREFIX_CACHE=0), so read and credited are the same number, and "
+           + "`prefill_stream_tok_s_credited` keeps the difference visible if that changes -- the same subtraction "
+           + "Strata's run average makes (`prompt_tokens - reused`, serve/web/app.js). The wall figure is the duty "
+           + "cycle on top: ~7,200 over prefill seconds against ~7,000 across the wall. Over a span the "
+           + "histogram-backed figures count only requests that finished inside it, which matters when the span is "
+           + "shorter than a request's wall time.",
     step: "Mean engine step (inter-token latency) from delta(sum)/delta(count) of the engine's own histogram "
         + "families, so the requests counted are the ones that ran across the span. The poll's value is the only "
         + "one that can show a single slow step - a 905 ms step inside a long prefill reads 103 ms over a span.",
@@ -511,44 +524,61 @@ function renderStatus(s) {
   slot("poll-gentot", isnum(rate.generation_tokens) && rate.generation_tokens > 0
        ? `poll +${knum(rate.generation_tokens)} tok` : `poll \u00b7 none credited`, TT.poll);
 
-  // Decode, summed over streams, on a DECODE-TIME denominator: prompt chewing is not in the divisor.
-  // The two rates differ by 3.4x on the live launch (68.8 tok/s of decode time against 20.1 summed over the
-  // span's wall seconds) and both are honest, because the window was 83% prefill and only 29% decode-phase
-  // seconds (notes/context-262k.md). The headline answers "how fast does it decode when it decodes"; the note
-  // line keeps the summed-over-wall figure where the "how much decode does this traffic produce per second"
-  // question is answered, plus the share of the span that was decode time -- without that share the two
-  // numbers look like a contradiction instead of a ratio.
+  // Decode, on the basis the user of this page actually asks for: total decode output over total DECODE time --
+  // generated tokens divided by the stream-seconds the engine's decode families report (inter_token_latency and
+  // request_decode_time are one sum sampled twice: per stream-step and per request; a step two streams share
+  // accrues twice, which is why the unit is per STREAM-second and the label says so). Live on the burst this
+  // launch was tested with: 18,118 tokens over 119.1 stream-seconds = 152 tok/s, against the rows' 160-200 tok/s
+  // for the same traffic -- A and the per-request rows are the same quantity, so the card and the rows finally
+  // read alike. The wall-second sum (what a minute of this traffic produces, 22 tok/s) is NOT dropped: it is the
+  // note line, and the fan-out sits between the two as an explicit multiplication -- 152 x 0.15 = 22 -- so a
+  // reader who wants the throughput number sees it, and sees why it is smaller. (The card has been wrong in both
+  // directions here: the summed figure once carried a per-stream number under the words "summed, decode time",
+  // and before that a per-stream mean divided by the running gauge. The unit and the fan-out are what make the
+  // pair checkable.)
+  const perS = A ? A.decode_stream_tok_s : rate.decode_stream_tok_s;
   const wallV = A ? A.generation_tok_s : rate.generation_tok_s;
-  const decV = A ? A.decode_tok_s : rate.decode_tok_s;
-  big("rate-gen", decV, "tok/s");
-  slot("note-gen", isnum(wallV)
-       ? `wall ${knum(wallV)}` + (A && isnum(A.decode_time_pct) ? ` \u00b7 ${knum(A.decode_time_pct, 0)}% dec` : "")
+  const streamsV = A ? A.decode_streams : rate.decode_streams;
+  big("rate-gen", perS, "tok/s");
+  slot("note-gen", isnum(wallV) && isnum(streamsV)
+       ? `${knum(wallV, 1)} summed \u00d7${streamsV < 10 ? streamsV.toFixed(2) : knum(streamsV, 1)}`
        : "\u2014", TT.gen);
-  slot("spans-gen", spanList("decode_tok_s"), TT.spans);
-  slot("poll-gen", (isnum(rate.decode_tok_s) ? `poll ${knum(rate.decode_tok_s)}` : `poll \u00b7 no decode step`)
-       + (A && isnum(A.requests_per_min) ? ` \u00b7 ${knum(A.requests_per_min, 1)} req/m` : ""), TT.poll);
+  slot("spans-gen", spanList("decode_stream_tok_s"), TT.spans);
+  // A poll with no decode step gets the sentence ALONE: `poll · no decode step · 0.0 req/m` measured 33 characters
+  // against the tightest 4-up slot's 24 (the harness flags it), and an arrival rate is not the missing denominator.
+  slot("poll-gen", isnum(rate.decode_stream_tok_s)
+       ? `poll ${knum(rate.decode_stream_tok_s)}`
+         + (A && isnum(A.requests_per_min) ? ` \u00b7 ${knum(A.requests_per_min, 1)} req/m` : "")
+       : `poll \u00b7 no decode step`, TT.poll);
 
-  // Prefill, both honest speeds. Prompt tokens per second of the engine's PREFILL time (how fast it chews when
-  // it is chewing) and per second of WALL time (how much chewing an hour contains); this launch runs ~7,900 and
-  // ~2,200. While a long prompt is running the window's number is the KV gauge's growth in tokens a second --
-  // an estimate, measured within ~6% on a 51,859-token prefill, negative when finishing requests free blocks.
+  // Prefill, both honest speeds. Read prompt tokens per second of REQUEST-prefill time (the engine's own
+  // scheduled -> first-token span, summed over streams, so stream-seconds: `prefill_streams` says how many
+  // prefills share them) and per second of WALL time (how much chewing an hour contains). This launch runs
+  // ~7,200 and ~7,000, a 3% gap because long prefills take the 8,192-token step one at a time; the two would
+  // separate the moment two prefills run at once. While a long prompt is running the window's number is the KV
+  // gauge's growth in tokens a second -- an estimate, measured within ~6% on a 51,859-token prefill, negative
+  // when finishing requests free blocks.
   const kvr = isnum(rate.kv_tok_s) ? Math.max(0, rate.kv_tok_s) : null;
-  // READ tokens, not credited ones: with the prefix cache on, vLLM counts cached prefix tokens in
-  // prompt_tokens_total, and a rate built on them is not a read speed. The poll's exact fallback therefore follows
-  // the same rule as the span (prompt_read_tok_s), so a switch of basis cannot happen between the headline and
-  // the spans line.
+  // READ tokens, not credited ones: vLLM counts cached and externally transferred prefix tokens in
+  // prompt_tokens_total, and a rate built on them is not a read speed. The sidecar subtracts
+  // prompt_tokens_cached_total when the build publishes it (the exact skipped count, local + external) and
+  // prefix_cache_hits_total when it does not (local cache only). The poll's exact fallback follows the same
+  // rule as the span (prompt_read_tok_s), so a switch of basis cannot happen between the headline and the
+  // spans line.
   const exact = isnum(rate.prompt_read_tok_s) && rate.prompt_read_tok_s > 0 ? rate.prompt_read_tok_s
               : isnum(rate.prompt_tok_s) && rate.prompt_tok_s > 0 ? rate.prompt_tok_s : null;
-  const prefillV = A ? A.prefill_tok_s : (exact ?? kvr);
+  const prefillV = A ? A.prefill_stream_tok_s : (exact ?? kvr);
   big("rate-prefill", prefillV, "tok/s");
   // `N% cache` only appears when the engine actually served from cache: with PREFIX_CACHE=0 (this recipe) it would
   // be a permanent `0% cache` saying nothing, and every character in a slot is budgeted.
   slot("note-prefill", A && isnum(A.prefix_hit_pct) && A.prefix_hit_pct > 0
        ? `wall ${knum(A.prompt_tok_s || 0)} \u00b7 ${knum(A.prefix_hit_pct, 0)}% cache`
-       : A ? `${WIN_NAME[win]} \u00b7 wall ${knum(A.prompt_tok_s || 0)}`
+       : A ? `wall ${knum(A.prompt_tok_s || 0)}`
+             + (isnum(A.prefill_streams) && A.prefill_streams > 1.05
+                ? ` \u00b7 \u00d7${knum(A.prefill_streams, 1)} prefilling` : "")
          : exact !== null ? "exact \u00b7 credits at end"
            : kvr !== null ? "\u2248 from KV growth" : "no prefill in window", TT.prefill);
-  slot("spans-prefill", spanList("prefill_tok_s"), TT.spans);
+  slot("spans-prefill", spanList("prefill_stream_tok_s"), TT.spans);
   // Three different states, and "poll 0.0" was lying about which one it was: nothing credited in the window is
   // not the same measurement as a prefill running at zero tokens a second. prompt_tokens_total credits when a
   // request ENDS, so a 90 k-token prompt in flight has credited nothing, and the only number that moves while
@@ -765,13 +795,18 @@ function renderStatus(s) {
   };
   const TREND_T = {
     perstep: "Generated tokens per engine record, summed over streams -- never a per-stream mean. It is the "
-           + "fan-out times the acceptance length: ~1.6 streams a record x 2.33 tokens a step on this launch, "
-           + "against the 2.33 a stream gets of its own. At 0.32 a whole chunked prefill lands in one record, so "
-           + "the line dips exactly where the engine was prefilling; a gap is an interval with no record in it.",
-    gen: "All streams summed over WALL seconds -- the summed figure, not the decode-time one the card above "
-       + "leads with, because a decode-time waveform has no denominator in a window that was all prefill. "
-       + "Flat stretches are the engine prefilling rather than decoding, which is why the "
-       + "peak and the average of this line differ by an order of magnitude on a prefill-heavy launch.",
+           + "fan-out times the acceptance length: live over 15 min, 2.85 streams producing per record x ~2.5 "
+           + "tokens per stream-step = 7.05 tokens a record, against the ~2.09 a stream turns out of its own step "
+           + "(the ratio between the two is the payload's `streams_per_record`, ITL observations over records). At "
+           + "0.32 a whole chunked prefill lands in one record, so the line dips exactly where the engine was "
+           + "prefilling; a gap is an interval with no record in it.",
+    gen: "All streams summed over WALL seconds -- the summed figure, the throughput reading of the box. The decode "
+       + "card's big number is this traffic's other reading (output per stream-second) and its note line carries "
+       + "the bridge: that number × this series' fan-out = this line. Flat stretches are the engine prefilling or "
+       + "idle rather than decoding, which is why the peak and the average of this line differ by an order of "
+       + "magnitude on a prefill-heavy launch. This series is drawn on the wall basis because the per-stream "
+       + "denominator does not exist in a window that was all prefill, and a gap-per-second line reads as an idle "
+       + "box.",
     prefill: "Prefill estimated from how fast the KV pool is growing (the counter credits at request end, so the "
            + "counter series would be a flat line with one spike). It goes NEGATIVE when finishing requests free "
            + "blocks; peak and average count only the windows where the pool grew.",
