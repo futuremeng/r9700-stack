@@ -184,9 +184,18 @@ if (!PEL.onclick) {
     set(v) { if (this._det) detWrites++; dsc.set.call(this, v); } });
   DET.children.forEach((c) => { if (c.className === "pcie-detail-line") c._det = true; });
   const marked = DET.children.filter((c) => c._det).length;
+  // "Nothing changed" has to be checked, not assumed: these counters come from a live box, and an AER error during
+  // the two refreshes makes rewriting the pinned line CORRECT. This check failed once against a link that put a
+  // BadTLP on the wire while the test was running -- a flake in the test, not in the page.
+  const pcieSig = async () => FIX ? "fixture"
+    : ((await (await fetch(`${BASE}/api/status`)).json()).pcie || []).map((ch) =>
+        (ch.devices || []).map((d) => `${d.bdf}:${d.cor}/${d.nonfatal}/${d.fatal}`).join(" ")).join("|");
+  const sig0 = await pcieSig();
   await ctx.refresh();
+  const moved = (await pcieSig()) !== sig0;
   console.log(`repainted with nothing changed: ${detWrites} line write(s) across ${marked} pinned lines`);
-  if (detWrites > 0) { console.log("BAD  a pinned panel rewrites lines it did not have to"); process.exitCode = 1; }
+  if (detWrites > 0 && !moved) { console.log("BAD  a pinned panel rewrites lines it did not have to"); process.exitCode = 1; }
+  else if (detWrites > 0) console.log("  not counted: a PCIe counter moved under the test, and rewriting that line is right");
   click("c6:00.0");
   console.log(`clicked the same chain again -> hidden=${DET.hidden}, children=${DET.children.length}`);
   if (!DET.hidden) { console.log("BAD  unpinning left the panel open"); process.exitCode = 1; }
@@ -214,6 +223,40 @@ if (!FIX) { await new Promise((r) => setTimeout(r, 2500)); }   // longer than th
 console.log(`brand line after another poll: ${t("brand-line")} (${(t("brand-line") || "").length - len0} chars changed)`);
 if (!FIX && (t("brand-line") || "").length !== len0) {
   console.log("BAD  the header grew on repaint -- the version is being appended, not replaced"); process.exitCode = 1;
+}
+
+// The trailing averages: the window answers "right now", these answer "what has it been doing". Two failure
+// modes worth a check: a card that claims an average and prints nothing, and -- worse -- a span printed under
+// its own name ("1h") when the ring only holds 40 s of it. The page relabels a young span ("40s", "2m"), so the
+// label in the rendered line has to agree with the span_s in the payload.
+const isnum = (v) => typeof v === "number" && isFinite(v);
+const AVG_W = { "1m": 60, "15m": 900, "1h": 3600 };
+console.log("\ntrailing averages");
+for (const [id, key] of [["avg-stream", "stream_tok_s"], ["avg-gen", "generation_tok_s"],
+                         ["avg-prefill", "prefill_tok_s"], ["avg-step", "itl_ms"],
+                         ["avg-kv", "kv_used_pct_mean"]]) {
+  const line = t(id) || "";
+  const spans = Object.entries((STAT?.avg || {})).filter(([, b]) => isnum(b?.[key]));
+  console.log(`  ${(id + "      ").slice(0, 12)} ${line}` +
+              (spans.length ? `   [${spans.map(([l, b]) => `${l}=${b[key].toFixed(1)}/${Math.round(b.span_s)}s`).join(" ")}]` : "   [no span has this field yet]"));
+  if (spans.length && !/^avg /.test(line)) {
+    console.log(`BAD  ${id}: the payload has ${key} in ${spans.length} span(s) and the card does not show it`);
+    process.exitCode = 1;
+  }
+  for (const lbl of Object.keys(AVG_W)) {
+    const b = (STAT?.avg || {})[lbl];
+    if (!isnum(b?.[key])) continue;
+    const named = line.includes(lbl + " ");
+    const short = b.span_s < AVG_W[lbl] * 0.8;
+    if (named && short) {
+      console.log(`BAD  ${id}: prints ${lbl} for a span of ${Math.round(b.span_s)}s -- a young window wearing an old label`);
+      process.exitCode = 1;
+    }
+    if (!named && !short) {
+      console.log(`BAD  ${id}: ${lbl} has ${b[key]} over ${Math.round(b.span_s)}s and the line omits it`);
+      process.exitCode = 1;
+    }
+  }
 }
 
 // The page swallows render errors into its notice bar, so a broken section can look like an empty one.

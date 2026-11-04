@@ -53,21 +53,35 @@
       <div class="label">Decode · one stream</div>
       <div class="value value--xl" id="rate-stream">—<span class="unit">tok/s</span></div>
       <div class="small" id="rate-stream-note">aggregate ÷ running, over the poll window</div>
+      <div class="small small--avg" id="avg-stream" title="The same rate over the last minute, quarter hour and
+hour: generated tokens across the span divided by the MEAN number of running streams in it. The number above
+is one poll; these are the level the poll was a sample of. A span labelled shorter than its name is the whole
+ring so far - the page says what it averaged rather than waiting for the hour to fill.">—</div>
     </div>
     <div class="card">
       <div class="label">Decode · all streams</div>
       <div class="value value--xl" id="rate-gen">—<span class="unit">tok/s</span></div>
       <div class="small" id="rate-gen-note">generation_tokens_total, credited per step</div>
+      <div class="small small--avg" id="avg-gen" title="generation_tokens_total across the span, divided by the
+span. The engine's counters are cumulative, so a span mean is an exact delta of two reads - not an average of
+the one-second samples, which would weight an idle second the same as a second with six streams running.">—</div>
     </div>
     <div class="card">
       <div class="label">Prefill · prompt processing</div>
       <div class="value value--xl" id="rate-prefill">—<span class="unit">tok/s</span></div>
       <div class="small" id="rate-prefill-note">no window yet</div>
+      <div class="small small--avg" id="avg-prefill" title="Prompt tokens across the span divided by the engine's
+own prefill seconds over the span - token-weighted prefill speed, which is the level the prefill card's live
+estimate is a sample of. Note this is speed while prefilling, not wall-clock throughput: the box spends part of
+every minute decoding.">—</div>
     </div>
     <div class="card">
       <div class="label">Engine step · first token</div>
       <div class="value value--xl" id="rate-step">—<span class="unit">ms</span></div>
       <div class="small" id="rate-ttft">—</div>
+      <div class="small small--avg" id="avg-step" title="Mean engine step (inter-token latency) over each span,
+from delta(sum)/delta(count) of the engine's own histogram families - the two halves of a cumulative counter,
+so requests that started in the span and ended in it are the ones counted.">—</div>
       <div class="small" id="fresh" title="How old this snapshot is (the sidecar polls the engine every poll
 window, and the page refetches it on the same beat). The window behind the rates is the gap between two
 engine polls, so a rate is at most that old -- plus this snapshot's age.">—</div>
@@ -136,6 +150,8 @@ quarter-full pool is a quarter of the box) rather than autoscaled to its own min
 old progress bar's warning: warn past 85%, danger past 95%."></div>
       <div class="small" id="kv-spark-note">—</div>
       <div class="small" id="kv-tokens">—</div>
+      <div class="small small--avg" id="avg-kv" title="Mean KV pool used over each span, from the same gauge the
+sparkline draws. The sparkline's 90 s cannot answer whether the pool has been tight all afternoon; this can.">—</div>
     </div>
     <div class="card">
       <div class="label">Requests</div>

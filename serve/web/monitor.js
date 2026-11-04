@@ -373,6 +373,39 @@ function renderStatus(s) {
     ? `first token ${ms(rate.ttft_ms ?? (s.since || {}).ttft_ms)}`
       + (isnum(rate.ttft_ms) || !isnum((s.since || {}).ttft_ms) ? "" : " (since launch)")
     : "no first-token observation in this window");
+  // -- the trailing averages ----------------------------------------------------------------------
+  // A 1 s poll answers "right now", and on this launch "right now" is a coin toss: measured 2026-11-04 with six
+  // streams in flight, one poll read 9.9 tok/s of generation and no prefill at all, while the ten minutes around
+  // it were 41 tok/s of generation and ~6,900 tok/s of prefill. These lines put the level next to the sample it
+  // came from. `span_s` is honoured: a page that has been open for two minutes labels a wide span with what was
+  // actually averaged, instead of printing an hour's number that is really 120 s.
+  const AVG_W = [["1m", 60], ["15m", 900], ["1h", 3600]];
+  const avgLine = (id, key, unit, dp) => {
+    if (!$(id)) return;
+    const parts = [];
+    const said = new Set();
+    for (const [label, wide] of AVG_W) {
+      const b = (s.avg || {})[label];
+      if (!b) continue;
+      if (b.reset) { parts.push(`${label} engine restarted`); continue; }
+      const v = b[key];
+      if (!isnum(v)) continue;
+      const span = isnum(b.span_s) ? b.span_s : wide;
+      const name = span < wide * 0.8
+        ? (span < 600 ? `${Math.round(span / 10) * 10}s` : `${Math.round(span / 60)}m`) : label;
+      if (said.has(name)) continue;      // two spans resolve to the same window: say it once, not twice
+      said.add(name);
+      parts.push(`${name} ${fmt(v, dp)}`);
+    }
+    text(id, parts.length ? `avg ${parts.join(" · ")} ${unit}`
+      : (s.avg ? `nothing to average in these spans yet` : "no trailing averages in this payload"));
+  };
+  avgLine("avg-stream", "stream_tok_s", "tok/s a stream", 1);
+  avgLine("avg-gen", "generation_tok_s", "tok/s all streams", 0);
+  avgLine("avg-prefill", "prefill_tok_s", "tok/s while prefilling", 0);
+  avgLine("avg-step", "itl_ms", "ms a step", 1);
+  avgLine("avg-kv", "kv_used_pct_mean", "% of the pool", 0);
+
   // Say how old the numbers are instead of letting the reader guess: the engine poll sets the window, the
   // snapshot age says how long this payload has been sitting, and the page refetches on the same beat.
   const age = isnum(s.at) ? Math.max(0, Date.now() / 1000 - s.at) : null;

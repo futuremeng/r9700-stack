@@ -234,7 +234,7 @@ serves (`/v1/*`, `/metrics`) is untouched apart from `GET /`, which the plugin r
 
 ## Tests
 
-`tests/test_webui.py` (325 checks, no GPU and no network needed) and `tests/test_webui_plugin.py`
+`tests/test_webui.py` (336 checks, no GPU and no network needed) and `tests/test_webui_plugin.py`
 (32 checks; the record store and the stat logger run anywhere, the routes need FastAPI, and vLLM's own
 route-replacement tier runs only where vLLM imports — `LD_LIBRARY_PATH=~/opt/openmpi/usr/lib/x86_64-linux-gnu
 ~/venv-r9700/bin/python tests/test_webui_plugin.py`). Three more cover the parts that are not the sidecar:
@@ -1009,3 +1009,66 @@ commit, that both headers carry the id the line is written into, that both pages
 has the row; `node tests/render-monitor.mjs` reads the status the live page is fed and fails if the rendered header
 does not carry `vLLM <version>` and `plugin <version>`, then waits a poll and fails if it grew. About's row is checked
 at text level only — there is no render harness for `about.js`, and no browser on this box.
+
+## The trailing averages: 1 min / 15 min / 1 h beside the 1 s window (2026-11-04)
+
+Asked from the box, with six streams in flight: "decode and prefill are how fast? the Monitor is all realtime, it
+does not tell me the actual average level." The measurement the page was giving, and the measurement the question
+wanted, are not the same number:
+
+| what was read | generation | prefill | one stream |
+|---|---|---|---|
+| one 1 s poll, six streams running | 9.9 tok/s | 0 (counter credits at request end) | 890 ms a step |
+| another 1 s poll a minute later, drained | 0 tok/s, running 1, KV 3% | 0 | - |
+| the ten minutes around them (journal) | 41-43 tok/s across the span | 6,967 tok/s across the span; 7,306 per request | 20.2 tok/s median |
+| the whole launch (523 min, 1,189 requests) | 21.6 tok/s | 2,232 tok/s | - |
+
+So the window answers "right now" and the since-launch block answers "since the engine started", and the question
+lives in between. `/api/status` now carries `avg` with spans `1m`, `15m`, `1h`, and each rate card prints that line
+under its live number: `avg 1m 54 - 8m 56 tok/s all streams`.
+
+How they are computed (`trailing()` in `serve/webui.py`): the Hub keeps a second ring of the cumulative counters,
+sampled every 5 s (`AVG_STEP`) for `AVG_KEEP` points, so a span is a **delta of cumulative counters over the delta
+of time**, and a span latency is `delta(sum)/delta(count)` of the engine's own histogram families. Averaging the 1 s
+samples the sparkline keeps would have been easier and wrong: it weights a second with nothing running the same as a
+second with six streams running, and on a launch that spends a quarter of its wall time prefilling, plenty of seconds
+are gaps.
+
+Per span the payload carries: `generation_tok_s`, `prompt_tok_s`, `requests_per_min`, `stream_tok_s` (aggregate over
+the **mean** running of the span, which is the long-window form of the card's aggregate-over-this-poll number),
+`prefill_tok_s` (prompt tokens over the engine's own prefill seconds - token-weighted), `decode_tok_s` (generated
+tokens over decode seconds), `itl_ms`/`tpot_ms`/`ttft_ms`/`queue_ms`/`e2e_ms`/`prefill_ms`/`decode_ms`,
+`prompt_tokens_mean`/`generation_tokens_mean`, `tokens_per_step`, `accept_pct`/`accepted_per_draft`,
+`prefix_hit_pct`, and `running_mean`/`waiting_mean`/`kv_used_pct_mean`.
+
+What it refuses to do:
+
+- **A young span keeps its own name.** `span_s` says what was averaged, and the page relabels a span that has not
+  filled (`90s`, `2m`) rather than printing `1h` over 40 s of data. A ring younger than 15 s (`AVG_MIN`) reports
+  None: a dash is cheaper than a number wearing a label it has not earned.
+- **A counter that went down is a restart, not a rate.** Any span whose generation/prompt/draft counters decreased
+  comes back all-None with `reset: true`; the alternative is a spectacular negative number, and the page prints
+  "1m engine restarted".
+- **A family the base snapshot did not have is a dash**, not a division by the whole cumulative counter (an older
+  vLLM gaining a family mid-run would otherwise produce an enormous mean). `tests/test_webui.py` feeds the ring a
+  `cur` with every family and fails if any documented field comes back None, which is how the missing
+  `request_prefill_time_seconds_count` got caught while writing this.
+- **The histogram-backed fields are credited at request end**, so a span shorter than the typical request's wall time
+  is a mean over the requests that happened to finish inside it. Measured: a 47 s span reported `prefill_tok_s`
+  4,840 while ten-minute spans of the same launch report 7,000-8,200, and the journal agrees with the longer spans.
+  The counter-derived rates (`generation_tok_s`, `prompt_tok_s`, `requests_per_min`) have no such bias, because
+  those counters move every step.
+- The sparklines still span 90 s (`HIST` x poll). Longer trends would be a second chart, not a longer sparkline.
+
+Seen while writing it: this launch is prefill-dominated in the extreme - 70,015,813 prompt tokens against 678,007
+generated over 523 minutes, 2.3 requests a minute, mean prompt 57,275 tokens. "Decode speed" on this box is therefore
+mostly a question about concurrency: the same engine does ~200 tok/s to a lone stream and ~20 tok/s per stream when
+six are running and long prefills are interleaving between them. A single number on a card cannot hold both, which is
+why the averages sit next to the live number instead of replacing it.
+
+Tested: `tests/test_webui.py` (12 checks on a synthetic ring with exactly known counters - span rates, the two
+token-weighted speeds, mean-concurrency division, histogram means, the pool mean, restart, young ring, partial ring,
+missing family, payload shape) and `tests/render-monitor.mjs`, which now prints the five `avg` lines and fails if a
+card claims an average the payload has, or prints `1h` over a span of 40 s. Verified against a live serve by running
+the standalone sidecar (`serve/webui.py --port 8099`) next to the running one - the merged page picks the same code up
+at the next restart of the serve, which was not restarted for this.

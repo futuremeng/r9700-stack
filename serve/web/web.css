@@ -9,6 +9,9 @@ button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible{ou
 [hidden]{display:none!important}
 code{font:13px/1.5 var(--st-font-mono)}
 .muted{color:var(--st-ink-muted)}.small{font-size:var(--st-fs-xs);color:var(--st-ink-muted)}
+/* The trailing-average line under a rate: a different instrument from the note above it -- one is this poll, the
+   other is the level the poll was a sample of -- so it reads as a separate line, not as more of the same note. */
+.small--avg{border-top:1px solid var(--st-line);padding-top:5px;margin-top:5px;opacity:.85}
 .nowrap{white-space:nowrap}
 
 /* header + page nav --------------------------------------------------------------- */

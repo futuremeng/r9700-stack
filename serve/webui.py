@@ -199,6 +199,128 @@ def since(s, g):
             "requests": g("e2e_request_latency_seconds_count") if s.get("e2e_request_latency_seconds_count") else 0}
 
 
+# -------------------------------------------------------------------------------------- trailing averages
+# The poll window is 1 s, and on a busy launch one poll is a coin toss. Measured on this box (2026-11-04, six
+# streams in flight): one poll read 9.9 tok/s of generation and no prefill at all, while the ten minutes around it,
+# from the engine's own counters, were 41 tok/s of generation, 6,900 tok/s of prefill and ~19 tok/s per stream.
+# The window is the right instrument for "what is it doing right now" and the wrong one for "what has it been
+# doing". The page had the window and the whole-run since() block, and the gap between those two is where the
+# question actually gets asked -- a since-launch mean over a day with quiet hours in it is not an average level.
+AVG_SPANS = (("1m", 60.0), ("15m", 900.0), ("1h", 3600.0))
+AVG_STEP = 5.0                                      # snapshot spacing: this ring is for minutes, not seconds
+AVG_KEEP = int(max(s for _, s in AVG_SPANS) / AVG_STEP) + 8
+AVG_MIN = 15.0                                      # shorter than this and it is a poll, not an average
+
+# Deliberately a name list rather than the whole parsed dict: the ring would otherwise carry every family vLLM
+# happens to publish, for an hour, at 5 s spacing, to average a dozen of them. _sum and _count pairs are listed
+# explicitly, because a mean over a span needs both halves of the histogram family.
+AVG_COUNTERS = ("generation_tokens_total", "prompt_tokens_total", "e2e_request_latency_seconds_count",
+                "e2e_request_latency_seconds_sum",
+                "request_prefill_time_seconds_sum", "request_prefill_time_seconds_count",
+                "request_decode_time_seconds_sum", "request_decode_time_seconds_count",
+                "request_prompt_tokens_sum", "request_prompt_tokens_count",
+                "request_generation_tokens_sum", "request_generation_tokens_count",
+                "request_time_per_output_token_seconds_sum", "request_time_per_output_token_seconds_count",
+                "inter_token_latency_seconds_sum", "inter_token_latency_seconds_count",
+                "time_to_first_token_seconds_sum", "time_to_first_token_seconds_count",
+                "request_queue_time_seconds_sum", "request_queue_time_seconds_count",
+                "e2e_request_latency_seconds_sum",
+                "spec_decode_num_drafts_total", "spec_decode_num_accepted_tokens_total",
+                "spec_decode_num_draft_tokens_total", "prefix_cache_queries_total", "prefix_cache_hits_total")
+
+
+def avg_sample(cur, t0):
+    """One point of the trailing-average ring: the cumulative counters, plus the gauges whose mean is wanted."""
+    kvn = next((n for n in KV_USED if cur.get(n)), None)
+    s = {"at": t0,
+         "run": (cur.get("num_requests_running") or [0, 0.0, 0])[1],
+         "wait": (cur.get("num_requests_waiting") or [0, 0.0, 0])[1],
+         "kv": (cur[kvn] or [0, 0.0, 0])[1] if kvn else None}
+    for n in AVG_COUNTERS:
+        v = cur.get(n)
+        if v:
+            s[n] = v[0]
+    return s
+
+
+def trailing(snaps, cur, t0, spans=AVG_SPANS):
+    """The window's means, recomputed over the last minute, quarter hour and hour.
+
+    A rate over a span is the delta of a cumulative counter over the delta of time, and a mean latency is
+    delta(sum)/delta(count) of the engine's own histogram family: both exact over the span, because the counters
+    are cumulative. What would be wrong here is averaging the 1 s samples the sparkline keeps -- that weights a
+    second with nothing running the same as a second with six streams running, and on a launch like this one most
+    seconds have a gap in them.
+
+    Two conditions make a span weaker than it asks for, and both are reported rather than papered over. The ring
+    is younger than the span, so `span_s` carries what was actually averaged. And a counter that went DOWN means
+    the engine restarted inside the span, which would otherwise come out as a large negative rate -- the whole
+    span is then None, with `reset` saying why. A span younger than AVG_MIN reports None fields too: a dash costs
+    the reader nothing, while a 12 s window wearing an hour's label costs the argument built on it.
+    """
+    out = {}
+    for label, span in spans:
+        base = None
+        for s in snaps:                              # the newest snapshot at or before the far edge
+            if s["at"] <= t0 - span and (base is None or s["at"] > base["at"]):
+                base = s
+        if base is None and snaps:
+            base = min(snaps, key=lambda s: s["at"])  # the ring is younger than the span asked for
+        if base is None or (t0 - base["at"]) < AVG_MIN:
+            out[label] = {"span_s": (t0 - base["at"]) if base else None, "generation_tok_s": None}
+            continue
+        span_s = t0 - base["at"]
+        miss = lambda n: n not in base                # a family that appeared after the base snapshot
+        dn = lambda n: None if miss(n) else (cur.get(n) or [0.0, 0.0, 0])[0] - base[n]
+        msk = lambda fam: (1e3 * dn(fam + "_sum") / dn(fam + "_count")) if dn(fam + "_count") else None
+        mtk = lambda fam: (dn(fam + "_sum") / dn(fam + "_count")) if dn(fam + "_count") else None
+        first = lambda fams: next((msk(h) for h in fams if dn(h + "_count")), None)
+        gen, pre = dn("generation_tokens_total"), dn("prompt_tokens_total")
+        pt, dtm = dn("request_prefill_time_seconds_sum"), dn("request_decode_time_seconds_sum")
+        run = [x["run"] for x in snaps if x["at"] > base["at"]]
+        wait = [x["wait"] for x in snaps if x["at"] > base["at"]]
+        kvv = [x["kv"] for x in snaps if x["at"] > base["at"] and x["kv"] is not None]
+        drafts, acc = dn("spec_decode_num_drafts_total"), dn("spec_decode_num_accepted_tokens_total")
+        dgrams = dn("spec_decode_num_draft_tokens_total")
+        hitq, hits = dn("prefix_cache_queries_total"), dn("prefix_cache_hits_total")
+        reset = any(v is not None and v < 0 for v in (gen, pre, drafts))
+        itl, tpot = first(ITL_STEP), first(TPOT)
+        genps = gen / span_s if gen is not None else None
+        runmean = (sum(run) / len(run)) if run else None
+        out[label] = {
+            "span_s": span_s, "reset": reset, "samples": len(run),
+            "generation_tok_s": None if reset else genps,
+            "prompt_tok_s": None if reset or pre is None else pre / span_s,
+            "requests_per_min": None if reset or dn("e2e_request_latency_seconds_count") is None
+                                 else 60.0 * dn("e2e_request_latency_seconds_count") / span_s,
+            # aggregate over the MEAN concurrency of the span, which is the honest long-window version of the
+            # window's aggregate-over-running figure: running moves, and dividing by this poll's count would be
+            # wrong by whatever it moved by.
+            "stream_tok_s": (genps / runmean) if (genps is not None and runmean) else None,
+            # The two speeds the box is actually judged on, token-weighted and exact over the span: prompt tokens
+            # per second of prefill time, and generated tokens per second of decode time. The engine's own
+            # prefill/decode seconds, not wall time -- which is why they stay readable while the queue moves.
+            "prefill_tok_s": (pre / pt) if (pre is not None and pt) else None,
+            "decode_tok_s": (gen / dtm) if (gen is not None and dtm) else None,
+            "itl_ms": itl, "tpot_ms": tpot,
+            "stream_tok_s_hist": (1e3 / tpot) if tpot else ((1e3 / itl) if itl else None),
+            "ttft_ms": msk("time_to_first_token_seconds"), "queue_ms": msk("request_queue_time_seconds"),
+            "e2e_ms": msk("e2e_request_latency_seconds"),
+            "prefill_ms": msk("request_prefill_time_seconds"), "decode_ms": msk("request_decode_time_seconds"),
+            "prompt_tokens_mean": mtk("request_prompt_tokens"), "generation_tokens_mean": mtk("request_generation_tokens"),
+            "tokens_per_step": (itl / tpot) if (itl and tpot) else None,
+            "accept_pct": (100.0 * acc / dgrams) if (dgrams and acc is not None) else None,
+            "accepted_per_draft": (acc / drafts) if (drafts and acc is not None) else None,
+            "prefix_hit_pct": (100.0 * hits / hitq) if (hitq and hits is not None) else None,
+            "running_mean": runmean, "waiting_mean": (sum(wait) / len(wait)) if wait else None,
+            "kv_used_pct_mean": (100.0 * sum(kvv) / len(kvv)) if kvv else None}
+        if reset:
+            for k in list(out[label]):
+                if k not in ("span_s", "reset", "samples"):
+                    out[label][k] = None
+    return out
+
+
 def derive(cur, prev, dt, cap, info, mode, kept, hist):
     """One /api/status payload out of two metric snapshots dt seconds apart.
 
@@ -1467,6 +1589,9 @@ class Hub:
                        "live": {}, "rate": {}, "history": [], "requests_kept": 0, "models": []}
         self.gpus, self.models, self.meta = [], [], {}
         self.prev, self.prev_t, self.hist = {}, 0.0, deque(maxlen=HIST)
+        # The trailing-average ring: cumulative counters sampled every AVG_STEP seconds, so a 1 h mean can be an
+        # exact delta of two cumulative reads instead of an average of 3,600 one-second guesses.
+        self.avgring = deque(maxlen=AVG_KEEP)
         # Per-card history, sampled by gpu_poll: one entry per gpu poll with one slot per card, aligned by
         # index (read_gpus sorts by card name, and the card set does not change under us). VRAM in particular
         # is a number people ask us to prove by hand -- the soak runs log it to a side file to show a leak is
@@ -1542,6 +1667,13 @@ class Hub:
                 with self.lock:
                     payload = derive(cur, self.prev, dt, cap, info, self.cfg["mode"],
                                      self.kept(), list(self.hist))
+                    # Means over 1 min / 15 min / 1 h next to the 1 s window's rate: the window answers "right
+                    # now", and on a launch with six streams and 90 k-token prompts one poll is a coin toss.
+                    # Sampled on its own beat, not per poll -- these spans are minutes wide, and a 1 s ring for
+                    # an hour is 720 points of noise to average.
+                    if not self.avgring or t0 - self.avgring[-1]["at"] >= AVG_STEP:
+                        self.avgring.append(avg_sample(cur, t0))
+                    payload["avg"] = trailing(list(self.avgring), cur, t0)
                     payload["upstream"] = self.cfg["upstream"]
                     payload["reachable"] = True
                     payload["health"] = self.health

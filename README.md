@@ -350,6 +350,15 @@ the tree that plugin was loaded from - today `vLLM 0.32.0 · plugin 0.4.0 · 953
 the tree has uncommitted edits, and the same facts as a row in About. "Is the live serve the new one?" used to cost
 an ssh and a look at the launch log; now it is a glance, and the string survives into the screenshot someone sends.
 
+The rates are shown twice on purpose: the big number is the poll window (1 s on this box), and under it the same
+figure averaged over the last minute, quarter hour and hour. That is not decoration - on a launch with six streams
+and 90 k-token prompts a single poll is a coin toss. Measured: one poll read 9.9 tok/s of generation and no prefill
+at all, while the ten minutes around it were 41 tok/s of generation, 7,820 tok/s of prefill per request and ~19 tok/s
+per stream. The spans are deltas of the engine's cumulative counters, not means of the 1 s samples - averaging those
+would weight an idle second the same as a second with six streams running. A span the page has not had time for is
+labelled with what it actually averaged (`90s`, `2m`) instead of waiting for the hour to fill, and a span that
+contains an engine restart says so rather than reporting a negative rate.
+
 The Requests card splits the waiting queue the way the engine labels it: `N waiting · M for scheduling capacity ·
 K deferred`, and the split is the whole point on this model. Eight ~30,000-token prompts measured holding
 `running 2 · waiting 6 · capacity 6 · deferred 0` with the KV pool at 8.8-10.2%: the queue is long prefills taking

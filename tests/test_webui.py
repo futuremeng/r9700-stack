@@ -1742,5 +1742,84 @@ ck("and both pages call it, from one shared helper that remembers the header's b
 ck("About lists the stack as a fact, not only in the header",
    '["Stack", s.stack?.plugin' in (Path(ROOT) / "serve" / "web" / "about.js").read_text())
 
+# --- the trailing averages --------------------------------------------------------------------------
+# The poll window is 1 s and since() is the whole run, and the question people actually ask sits between them:
+# "what has this box been doing for the last quarter of an hour?" A span mean must be a delta of the engine's
+# cumulative counters, not an average of the 1 s samples -- that would weight an idle second the same as a second
+# with six streams running, which on this launch is most seconds.
+def _cur(t, run=6):
+    ser = lambda v: [v, v, 1]
+    return {"generation_tokens_total": ser(40.0 * t), "prompt_tokens_total": ser(7000.0 * t),
+            "e2e_request_latency_seconds_count": ser(0.05 * t),
+            "e2e_request_latency_seconds_sum": ser(0.05 * 20 * t),
+            "request_prefill_time_seconds_sum": ser(1.0 * t), "request_prefill_time_seconds_count": ser(0.05 * t),
+            "request_decode_time_seconds_sum": ser(0.5 * t), "request_decode_time_seconds_count": ser(0.05 * t),
+            "request_prompt_tokens_sum": ser(4500.0 * t), "request_prompt_tokens_count": ser(0.05 * t),
+            "request_generation_tokens_sum": ser(30.0 * t), "request_generation_tokens_count": ser(0.05 * t),
+            "request_time_per_output_token_seconds_sum": ser(0.08 * 1.5 * t),
+            "request_time_per_output_token_seconds_count": ser(1.5 * t),
+            "inter_token_latency_seconds_sum": ser(0.03 * 1.5 * t), "inter_token_latency_seconds_count": ser(1.5 * t),
+            "time_to_first_token_seconds_sum": ser(0.05 * 3 * t), "time_to_first_token_seconds_count": ser(0.05 * t),
+            "request_queue_time_seconds_sum": ser(0.05 * 0.8 * t), "request_queue_time_seconds_count": ser(0.05 * t),
+            "spec_decode_num_drafts_total": ser(100.0 * t),
+            "spec_decode_num_accepted_tokens_total": ser(150.0 * t),
+            "spec_decode_num_draft_tokens_total": ser(200.0 * t),
+            "prefix_cache_queries_total": ser(0.0), "prefix_cache_hits_total": ser(0.0),
+            "num_requests_running": ser(float(run)), "num_requests_waiting": ser(0.0),
+            "gpu_cache_usage_perc": [0.4, 0.4, 4]}
+
+# 13 snapshots at the ring's own spacing, with running alternating 6 / 2 so a mean of 4 is the right answer and
+# a single poll's running is provably the wrong one.
+_snaps = [W.avg_sample(_cur(t, 6 if (t // 5) % 2 == 0 else 2), float(t)) for t in range(60, 125, 5)]
+_avg = W.trailing(_snaps, _cur(124.0), 124.0)["1m"]
+ck("a span rate is the delta of the cumulative counter over the span",
+   abs(_avg["generation_tok_s"] - 40.0) < 1e-9 and abs(_avg["prompt_tok_s"] - 7000.0) < 1e-6, str(_avg)[:200])
+ck("the two speeds the box is judged on, token-weighted from the engine's own seconds",
+   abs(_avg["prefill_tok_s"] - 7000.0) < 1e-6 and abs(_avg["decode_tok_s"] - 80.0) < 1e-9,
+   f"prefill {_avg['prefill_tok_s']} decode {_avg['decode_tok_s']}")
+ck("a per-stream average over a span divides by the MEAN concurrency of the span, not by this poll's running",
+   abs(_avg["running_mean"] - 4.0) < 1e-9 and abs(_avg["stream_tok_s"] - 10.0) < 1e-9,
+   f"running_mean {_avg['running_mean']} stream {_avg['stream_tok_s']}")
+ck("span latencies are delta(sum)/delta(count) of the histogram families",
+   abs(_avg["itl_ms"] - 30.0) < 1e-9 and abs(_avg["ttft_ms"] - 3000.0) < 1e-9
+   and abs(_avg["queue_ms"] - 800.0) < 1e-9 and abs(_avg["prompt_tokens_mean"] - 90000.0) < 1e-6
+   and abs(_avg["accepted_per_draft"] - 1.5) < 1e-9, str(_avg)[:240])
+ck("and the pool's mean over the span comes from the same gauge the sparkline draws",
+   abs(_avg["kv_used_pct_mean"] - 40.0) < 1e-9 and abs(_avg["requests_per_min"] - 3.0) < 1e-9, str(_avg)[:240])
+ck("every field the span is asked to report is fed by a name the ring actually stores",
+   all(_avg.get(k) is not None for k in
+       ("generation_tok_s", "prompt_tok_s", "prefill_tok_s", "decode_tok_s", "stream_tok_s", "requests_per_min",
+        "itl_ms", "tpot_ms", "stream_tok_s_hist", "ttft_ms", "queue_ms", "e2e_ms", "prefill_ms", "decode_ms",
+        "prompt_tokens_mean", "generation_tokens_mean", "tokens_per_step", "accept_pct", "accepted_per_draft",
+        "running_mean", "waiting_mean", "kv_used_pct_mean")),
+   str({k: _avg.get(k) for k in _avg if _avg.get(k) is None})[:220])
+
+_bad = _cur(124.0); _bad["generation_tokens_total"] = [10.0, 10.0, 1]      # the engine restarted inside the span
+_r = W.trailing(_snaps, _bad, 124.0)["1m"]
+ck("a counter that went DOWN is reported as a restart, not as a large negative rate",
+   _r["reset"] and _r["generation_tok_s"] is None and _r["decode_tok_s"] is None and _r["accept_pct"] is None,
+   str(_r)[:200])
+
+_tiny = [W.avg_sample(_cur(t), float(t)) for t in (120, 122, 124)]
+_t = W.trailing(_tiny, _cur(124.0), 124.0)
+ck("a ring younger than the span says what it averaged instead of lending the span its name",
+   _t["1h"]["span_s"] < 20 and _t["1h"]["generation_tok_s"] is None
+   and _t["15m"]["span_s"] == _t["1m"]["span_s"], str(_t["1h"])[:160])
+
+_mid = [W.avg_sample(_cur(t), float(t)) for t in range(40, 125, 5)]
+_m = W.trailing(_mid, _cur(124.0), 124.0)
+ck("and the same page at the same moment can have a real 1 m and a still-labelled 15 m",
+   abs(_m["1m"]["span_s"] - 64.0) < 1e-6 and _m["15m"]["generation_tok_s"] is not None
+   and _m["15m"]["span_s"] < 900 and _m["1h"]["span_s"] < 90,
+   f"1m {_m['1m']['span_s']} 15m {_m['15m']['span_s']} 1h {_m['1h']['span_s']}")
+
+_partial = {k: v for k, v in _cur(60.0).items() if not k.startswith("inter_token_latency")}
+_p = W.trailing([W.avg_sample(_partial, 60.0)], _cur(124.0), 124.0)["1m"]
+ck("a family the base snapshot does not have is a dash, not a division by the whole cumulative counter",
+   _p["itl_ms"] is None and abs(_p["generation_tok_s"] - 40.0) < 1e-9,
+   f"itl {_p['itl_ms']} gen {_p['generation_tok_s']}")
+ck("the payload carries all three spans so the page can label what it has and wait for the rest",
+   sorted(s.get("avg", {})) == ["15m", "1h", "1m"], str(sorted(s.get("avg", {}))))
+
 print("PASS" if fail == 0 else "FAIL", f"({fail} failing)")
 sys.exit(1 if fail else 0)

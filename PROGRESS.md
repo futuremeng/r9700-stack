@@ -2539,3 +2539,39 @@ helper now keeps the element's base text and rebuilds from it, and `tests/render
 page's JS in a stub DOM — waits past the 2 s poll and fails if the line grew at all. Details (why the fields are
 absent rather than guessed, why it rides the engine-unreachable payload, and what the line deliberately does not
 track) are in notes/webui.md.
+
+## 2026-11-04: what the box is doing ON AVERAGE -- the Monitor gains 1 min / 15 min / 1 h
+
+Asked from the box with six streams in flight: "decode and prefill are how fast? the Monitor's display is realtime,
+it gives too little feedback on the actual average level." Three instruments, the same afternoon:
+
+- **One 1 s poll:** 9.9 tok/s of generation, no prefill at all, 890 ms a step with six running. A poll a minute
+  later, caught in a gap: 0 tok/s, running 1, KV 3%. That is the instrument the headline numbers were built on.
+- **The ten minutes around it** (the request journal, 37-46 finished requests): mean prompt 90-110 k tokens,
+  prefill **7,306-7,876 tok/s per request** and **6,967 tok/s across the span**, generation **41-43 tok/s across the
+  span**, decode **20.2 tok/s per stream** (median), ~4 req/min, mean queue 3.3 s.
+- **The whole launch** (523 min, 1,189 requests): 70,015,813 prompt tokens against 678,007 generated, 2.2 req/min --
+  so 2,232 tok/s of prefill and 21.6 tok/s of generation averaged over everything, and a box that is prefill
+  dominated rather than decode dominated.
+
+`/api/status` now also carries `avg`: `1m`, `15m`, `1h`, each computed as a **delta of the engine's cumulative
+counters over the delta of time**, and a span latency as `delta(sum)/delta(count)` of the engine's own histogram
+families. The Hub keeps a second ring, sampled every 5 s for an hour plus slack, for exactly this. Means of the 1 s
+sparkline samples would have been easier and wrong: they weight an idle second like a second with six streams
+running. Two fields are new rather than re-cuts of old ones -- `prefill_tok_s` (prompt tokens over the engine's own
+prefill seconds) and `decode_tok_s` (generated tokens over decode seconds) -- and `stream_tok_s` divides by the
+**mean** running across the span, not by whatever this poll saw. Each rate card prints the line under its live
+number; the KV card gains a mean pool over each span.
+
+The refusals are the part worth keeping. A span the page has not had yet keeps its real label (`90s`, `2m`) instead
+of the one it asked for; a ring younger than 15 s reports nothing; a span whose counters went down says
+`reset: true` and prints "engine restarted" rather than a negative rate; a histogram family the base snapshot did
+not have is a dash rather than a division by the whole cumulative counter (that is how a missing
+`request_prefill_time_seconds_count` was caught). And the histogram-backed speeds are credited when a request
+finishes, so a span shorter than the typical wall time of a request is a mean over the requests that happened to
+finish in it -- measured, a 47 s span said 4,840 tok/s of prefill where ten-minute spans say 7,000-8,200.
+
+`tests/test_webui.py` gained 12 checks against a synthetic ring with exactly known counters; `render-monitor.mjs`
+prints the five average lines and fails if a card claims an average the payload does not have, or prints `1h` over
+40 s of data. Verified live by running the standalone sidecar on :8099 beside the production serve -- the merged
+page takes the same code at the next restart, and the serve was not restarted for this. Details in notes/webui.md.

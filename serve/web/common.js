@@ -33,13 +33,14 @@ function brandStack(s) {
   if (!b) return;
   if (b.dataset.base === undefined) b.dataset.base = b.textContent;
   const stack = (s && s.stack) || {};
-  const v = (s && s.engine && s.engine.vllm_version) || "";
+  const v = (s && s.engine && s.engine.vllm_version) || (s && s.config && s.config.version) || "";
   const parts = [];
-  // The engine version arrives as whatever this process reports -- "vllm 0.32.0+rocm723", or "vllm 0.32.0
-  // (this process)" from the merged page's own registry -- and the header has room for the number, not the
-  // sentence. Take the version token and label it once.
-  const vm = String(v).match(/\d[\w.]*/);
-  if (vm) parts.push("vLLM " + vm[0]);
+  // The engine version arrives as whatever this process knows: "vllm 0.32.0 (this process)" from the merged
+  // page's own registry, "vllm 0.32.0+rocm723" from a tagged build, or the launcher's "native vllm 0.32.0"
+  // handed to a sidecar with --version when the pages are a separate process. The header has room for the
+  // number, not the sentence, so it takes the dotted version token and labels it once.
+  const vm2 = String(v).match(/\d+(?:\.\d+)+/);
+  if (vm2) parts.push("vLLM " + vm2[0]);
   if (stack.plugin) parts.push("plugin " + stack.plugin);
   if (stack.commit) parts.push(stack.commit + (stack.dirty ? "*" : ""));
   b.textContent = [b.dataset.base, ...parts].filter(Boolean).join(" · ");
