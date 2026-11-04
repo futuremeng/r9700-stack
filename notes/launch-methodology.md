@@ -250,3 +250,21 @@ sidecar it was printing -- and its 1 m / 15 m / 1 h windows restart from empty, 
 visible consequences on the page. The checks in `tests/test_webui.py` run the preview for real: with this box's file
 it must print `--bind 0.0.0.0`, with `LOCAL_ENV=/nonexistent-box.env` it must print `--bind 127.0.0.1`, and the
 sidecar that is actually running must be listening on the address the file claims (`ss -ltn`).
+
+## 11. `STOP=1` kills anything whose command line contains the pattern -- including your own command
+
+The stop path is `pkill -9 -f 'VLLM[::]'; pkill -9 -f 'vll[m] serve'`. The brackets are there so the launcher does
+not match its own command line. They are also the reason a routine check can come back dead: I ran
+
+    STOP=1 bash serve/native-flashnext.sh ... pgrep -cf 'VLLM::'; pgrep -cf 'vllm serve'
+
+in one command, and the whole shell exited **137** -- `pkill -9 -f 'VLLM[::]'` matched the literal `VLLM::` sitting in
+my own wrapper's command line and SIGKILLed it mid-flight. Nothing was wrong with the stop path; the operator's
+command line was inside its blast radius. Two rules: **run `STOP=1` by itself**, and when checking afterwards use the
+bracket forms (`'vll[m] serve'`, `'VLLM[::]'`) so your probe cannot match its own pattern. The same applies to any
+`pgrep -f` in a one-liner that also mentions the thing being killed.
+
+A second, quieter effect of a hard stop: the engine pane dies by SIGKILL, so the tmux **server** exits with it
+(`no server running on /tmp/tmux-1000/default`) -- the session does not linger in a dead state, and `tmux ls` is not
+a way to tell "stopped" from "crashed". What answers that question is the log's last lines plus
+`rocm-smi --showpids` (and, on a crash, the four ranks that held ~32 GB each after the API server left -- §9).

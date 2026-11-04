@@ -253,3 +253,18 @@ whole block, so a finer block keeps slightly more history. What the tests
 pin is exactly the four ways this could lie: a hit that is a shared substring rather than a shared *prefix*,
 identical content being shared when the cache is off, retained blocks being counted as free, and a corpus quietly
 dropping the records it cannot parse.
+
+### The launch that answered it, and the acceptance number it left
+
+The cache-on launch was restarted at 13:32 on 2026-11-04 to pick up the About payload (an in-process plugin older
+than the card cannot publish it). Counters at the moment before the stop, for the whole launch:
+
+- `prefix_cache_hits_total` **80,180,672** prompt tokens arrived as cache hits, `num_preemptions_total` **0**.
+- `spec_decode_num_drafts_total` 264,253, `spec_decode_num_accepted_tokens_total` 358,742 → **1.358 accepted per
+  draft**, up from the 1.281 read 40 minutes into the launch and still below the **1.438** of the cache-off launch
+  it replaced.
+
+So the open number in the section above stays open: it moved with traffic shape (1.28 → 1.36 on the same config)
+without any config change, which is exactly why the fixed-prompt `bench/quality.py 10 8` gate -- not a live window --
+is the only thing that can decide whether `align` costs acceptance. Geometry was unchanged by the restart
+(`block_size 832`, `num_gpu_blocks 1242`, `kv_cache_size_tokens 977,726`, `mamba_cache_mode align`).
