@@ -368,26 +368,23 @@ function renderStatus(s) {
           + "page's decode numbers (99.2% of the tokens this box processed were prompt tokens, and the summed "
           + "rate is 1.62 streams a record x 2.33 tokens a step x 6.3 records a second). Per-span counts in the "
           + "title because only two fit the slot: ",
-    gen: "Total decode output over total DECODE time: generated tokens divided by the stream-seconds the engine's "
-       + "decode families report. Queue, prefill phases, the wait before the first token, idle seconds and steps "
-       + "that produced no token are all OUT of the denominator -- that is the point of the number, and it is the "
-       + "same quantity as a request row's speed (1 / the engine's mean time per output token), which is why the "
-       + "card and the rows under it read alike: 18,118 tokens over 119.1 stream-seconds = 152 tok/s on a live "
-       + "burst whose rows ran 160-200 tok/s. The unit is per STREAM-second: vLLM observes one inter_token_latency "
-       + "per REQUEST x STEP (v1/metrics/stats.py:551), so a step two streams share is counted twice -- that is "
-       + "correct here (each stream got a token out of it) but it is why the label says stream. The two decode "
-       + "families agree to 0.08% (24,236.14 s over 430,954 observations against 24,216.27 s over 1,812 request "
-       + "observations) because they are one sum sampled per step and per request, not two measurements. "
-       + "`N summed ×M` on the note line is the throughput reading of the same traffic: N is generated tokens per "
-       + "WALL second (prefill and idle back in the denominator -- what a minute of this traffic produces), M is "
-       + "streams decoding per wall second (a COUNT, not a share: 0.15 on a serialized burst, 2.60 with traffic "
-       + "on, no 100% ceiling), and the big number times M is exactly N: 152 x 0.15 = 22. The waveform card next "
-       + "door stays on the summed-wall basis on purpose -- this denominator does not exist in a window that was "
-       + "all prefill or idle, and a line full of gaps reads as an idle box. What this denominator cannot remove: "
-       + "under chunked prefill a chunk is computed INSIDE a decode-phase step, so the step interval carries that "
-       + "work too. A bare single-stream step measures 13.0 ms in the bench; this launch's live itl is 15.5 ms, "
-       + "the +19% that no counter separates -- which is also why the span's per-stream figure (152) sits below "
-       + "the mean of its own request rows (167).",
+    gen: "Total decode output over WALL seconds: generated tokens divided by the wall seconds of the window. This "
+       + "is the throughput reading of the box -- what a minute of this traffic produces -- so the queue, the "
+       + "prefill phase, the wait before the first token and idle seconds are all IN the denominator, because they "
+       + "are part of the wall. The note line is the other reading of the same traffic and the two are one "
+       + "arithmetic: `N tok/stream-s ×M` = the big number, where N is output per DECODE second and M is streams "
+       + "decoding per wall second (152 x 0.15 = 22 on a live burst). N's denominator is the stream-seconds the "
+       + "engine's decode families report: vLLM observes one inter_token_latency per REQUEST x STEP "
+       + "(v1/metrics/stats.py:551), so a step two streams share accrues twice -- correct here (each stream got a "
+       + "token out of it) but why the unit says stream -- and it is the same quantity as a request row's speed "
+       + "(1 / the engine's mean time per output token), which is why the card and the rows under it read alike: "
+       + "18,118 tokens over 119.1 stream-seconds = 152 tok/s on a burst whose rows ran 160-200. M is a COUNT, not "
+       + "a share (0.15 serialized, 2.60 loaded, no 100% ceiling) -- a percent on that line is a category error. "
+       + "The two decode families agree to 0.08% (24,236.14 s over 430,954 observations against 24,216.27 s over "
+       + "1,812 request observations) because they are one sum sampled per step and per request, not two "
+       + "measurements. What the per-stream figure cannot remove: under chunked prefill a prompt chunk is computed "
+       + "INSIDE a decode-phase step, so the step interval carries that work too (a bare single-stream step "
+       + "measures 13.0 ms; this launch's live itl is 15.5 ms, the +19% no counter separates).",
     prefill: "READ tokens per second of REQUEST-prefill time -- the engine's own scheduled -> first-token span, "
            + "summed over streams, so stream-seconds and a per-stream speed. It is NOT the engine's chew rate: "
            + "under chunked prefill a request's prefill span contains the steps in which the engine was decoding "
@@ -397,10 +394,11 @@ function renderStatus(s) {
            + "prompt_tokens_total, so credited tokens would count work the engine never did and the rate would be "
            + "high by the hit rate; the numerator subtracts prompt_tokens_cached_total (the exact skipped count, "
            + "local + external) when the build publishes it and prefix_cache_hits_total (local only, counted at "
-           + "admission) when it does not, and `N% cache` says how much came out. Today the cache is off on this "
-           + "recipe (PREFIX_CACHE=0), so read and credited are the same number, and "
-           + "`prefill_stream_tok_s_credited` keeps the difference visible if that changes -- the same subtraction "
-           + "Strata's run average makes (`prompt_tokens - reused`, serve/web/app.js). The wall figure is the duty "
+           + "admission) when it does not, and `N% cache` says how much came out. This recipe has had the cache ON "
+           + "since 2026-11-04 (upstream's default; notes/prefix-cache-decision.md), so read and credited are NOT "
+           + "the same number here -- the first ten minutes of real traffic measured 83% of prompt tokens arriving "
+           + "as local_cache_hit -- and `prefill_stream_tok_s_credited` keeps the difference visible next to the "
+           + "read figure. Same subtraction Strata's run average makes (`prompt_tokens - reused`, serve/web/app.js). The wall figure is the duty "
            + "cycle on top: ~7,200 over prefill seconds against ~7,000 across the wall. Over a span the "
            + "histogram-backed figures count only requests that finished inside it, which matters when the span is "
            + "shorter than a request's wall time.",
@@ -497,9 +495,26 @@ function renderStatus(s) {
       const name = spanName(label, wide, isnum(b.span_s) ? b.span_s : wide);
       if (said.has(name)) continue;
       said.add(name);
-      parts.push(`${name} +${dnum(v)}`);
+      parts.push({ name, v, span: isnum(b.span_s) ? b.span_s : wide });
     }
-    return parts.join(" \u00b7 ") || "\u2014";
+    // No sign: this is a cumulative counter's delta inside a window, which cannot go negative without the engine
+    // having restarted -- and a restart is exactly what this same slot reports as `reset`. The `+` therefore carried
+    // no information while costing a character.
+    // And when the line still does not fit, a SPAN is dropped, never a digit: the tightest 4-up column measured 24
+    // characters and these counts run to six and seven digits (`15m 104,648 · 16m 104,712` is 25). What goes first
+    // is a span that repeats another -- a launch 16 minutes old has a 900 s "15m" and a 960 s "1h" holding the same
+    // count -- and after that the widest, because the card's big number IS the since-launch total, so the widest
+    // window is the one the card already says. Anything dropped is named in the title rather than lost quietly.
+    const line = (ps) => ps.map((p) => `${p.name} ${dnum(p.v)}`).join(" \u00b7 ");
+    const dropped = [];
+    while (parts.length > 1 && line(parts).length > 24) {
+      const dup = parts.findIndex((p, i) => i + 1 < parts.length
+        && Math.abs(parts[i + 1].v - p.v) <= Math.max(1, 0.02 * Math.abs(parts[i + 1].v))
+        && parts[i + 1].span - p.span <= 0.15 * parts[i + 1].span);
+      dropped.push(parts.splice(dup >= 0 ? dup : parts.length - 1, 1)[0]);
+    }
+    return [line(parts) || "\u2014",
+            dropped.length ? " Not printed for want of width: " + line(dropped) + "." : ""];
   };
 
   const sn = s.since || {};
@@ -524,48 +539,71 @@ function renderStatus(s) {
   big("rate-gentot", sn.generation_tokens_total, "tok out");
   slot("note-gentot", isnum(sn.prompt_tokens_total) ? `vs ${dnum(sn.prompt_tokens_total)} in` : "\u2014",
        TT.gentot + spanAll("generation_tokens").replace(/(\w+) (\S+)/g, "$1 +$2"));
-  slot("spans-gentot", spanSigned("generation_tokens"), TT.spans);
+  const gentotSpans = spanSigned("generation_tokens");
+  slot("spans-gentot", gentotSpans[0], TT.spans + gentotSpans[1]);
   // "none credited", not "+0.0": in this window the counter moved nothing, which for a count is a fact about the
   // window (the engine was prefilling), not a measurement of zero tokens a second.
   slot("poll-gentot", isnum(rate.generation_tokens) && rate.generation_tokens > 0
        ? `poll +${dnum(rate.generation_tokens)} tok` : `poll \u00b7 none credited`, TT.poll);
 
-  // Decode, on the basis the user of this page actually asks for: total decode output over total DECODE time --
-  // generated tokens divided by the stream-seconds the engine's decode families report (inter_token_latency and
-  // request_decode_time are one sum sampled twice: per stream-step and per request; a step two streams share
-  // accrues twice, which is why the unit is per STREAM-second and the label says so). Live on the burst this
-  // launch was tested with: 18,118 tokens over 119.1 stream-seconds = 152 tok/s, against the rows' 160-200 tok/s
-  // for the same traffic -- A and the per-request rows are the same quantity, so the card and the rows finally
-  // read alike. The wall-second sum (what a minute of this traffic produces, 22 tok/s) is NOT dropped: it is the
-  // note line, and the fan-out sits between the two as an explicit multiplication -- 152 x 0.15 = 22 -- so a
-  // reader who wants the throughput number sees it, and sees why it is smaller. (The card has been wrong in both
-  // directions here: the summed figure once carried a per-stream number under the words "summed, decode time",
-  // and before that a per-stream mean divided by the running gauge. The unit and the fan-out are what make the
-  // pair checkable.)
-  const perS = A ? A.decode_stream_tok_s : rate.decode_stream_tok_s;
+  // Decode, headline = summed output per WALL second: generated tokens over the wall seconds of the window. That is
+  // the throughput reading of the box (22 tok/s on the burst this launch was tested with), and it is the same basis
+  // the summed waveform next door plots, so the card and the trace agree. The note line carries the other reading and
+  // the two are one arithmetic: <output per stream-second> x <streams decoding> = the big number
+  // (152 tok/stream-s x 0.15 = 22). The per-stream denominator is the stream-seconds the engine's decode families
+  // report -- inter_token_latency and request_decode_time are one sum sampled twice (per stream-step and per
+  // request), and a step two streams share accrues twice, which is why the unit says STREAM-second. It is the same
+  // quantity as a request row's speed, so card and rows read alike: 18,118 tokens over 119.1 stream-seconds =
+  // 152 tok/s, rows for that traffic ran 160-200. The card has been wrong in both directions here -- the summed
+  // figure once carried a per-stream number under the words "summed, decode time", and before that a per-stream
+  // mean divided by the running gauge -- which is why both figures are printed with the multiplication between them:
+  // either one is then checkable against the other.
   const wallV = A ? A.generation_tok_s : rate.generation_tok_s;
+  const perS = A ? A.decode_stream_tok_s : rate.decode_stream_tok_s;
   const streamsV = A ? A.decode_streams : rate.decode_streams;
-  big("rate-gen", perS, "tok/s");
-  // The summed figure and the fan-out have different denominators, so they can be missing separately. Wall
-  // seconds always exist, so a wall-second rate of 0 is a MEASUREMENT and stays on the line; decode stream-seconds
-  // do not exist until a decode step has been measured, and then the multiplier is what has no denominator -- it
-  // goes out and the sentence says which one it was, instead of the whole slot going to a dash (the harness fails
-  // a printed dash where a measured zero belongs).
-  slot("note-gen", isnum(wallV)
-       ? `${dnum(wallV, 1)} summed` + (isnum(streamsV)
-           ? ` \u00d7${streamsV < 10 ? streamsV.toFixed(2) : dnum(streamsV, 1)}` : "")
-       : "\u2014",
-       TT.gen + (isnum(wallV) && !isnum(streamsV)
-         ? " No multiplier: this window contains no decode step, so there are no decode stream-seconds to divide "
-         + "by. The summed figure has a different denominator -- wall seconds -- and it is a measurement of 0, so "
-         + "it is printed as one." : ""));
-  slot("spans-gen", spanList("decode_stream_tok_s"), TT.spans);
-  // A poll with no decode step gets the sentence ALONE: `poll · no decode step · 0.0 req/m` measured 33 characters
-  // against the tightest 4-up slot's 24 (the harness flags it), and an arrival rate is not the missing denominator.
-  slot("poll-gen", isnum(rate.decode_stream_tok_s)
-       ? `poll ${dnum(rate.decode_stream_tok_s)}`
+  big("rate-gen", wallV, "tok/s");
+  // The fan-out has two causes, and the span publishes the split: gaps in which the engine had nothing to do, and
+  // gaps in which several streams shared a step. `busy_frac` is the first -- the share of the span covered by
+  // worked 5 s gaps, an upper bound at the ring's own resolution -- and `streams_while_busy` the second; their
+  // product is the multiplier on the note line, and the fan-out itself is the exact figure of the three. This belongs in the title rather than on the card because it is the answer to
+  // the objection every reader makes when the big number is smaller than the engine's own log line: vLLM writes its
+  // stat line at DEBUG level when the engine is idle (v1/metrics/loggers.py, `log_fn = logger.debug if
+  // self.engine_is_idle`), so tailing the log shows an unweighted mean over the BUSY 10 s intervals. Measured on
+  // live traffic 2026-11-04 over a 903 s span: 420 s of it printed anything, those lines average 42.4 tok/s, and the
+  // same tokens over all 903 s -- this number -- is 19.7. The card is upstream's own basis; the log is not.
+  // Three decimals below 0.1, not two: the render harness multiplies the two printed figures and compares their
+  // product to the headline, and a fan-out of 0.0168 printed as "x0.02" breaks that check in front of the reader
+  // (168 x 0.02 = 3.4 against a headline of 2.8). It costs one character and the slot still fits the tightest 4-up
+  // column, which the same harness measures.
+  const fanS = (v) => v < 0.1 ? v.toFixed(3) : (v < 10 ? v.toFixed(2) : dnum(v, 1));
+  const swbS = (v) => v < 0.1 ? v.toFixed(3) : v.toFixed(2);
+  const busyNote = A && isnum(A.busy_frac) && isnum(A.streams_while_busy) && isnum(streamsV)
+    ? ` What the fan-out is made of: ${Math.round(100 * A.busy_frac)}% of this span is covered by gaps in which `
+      + `the engine did something (${dnum(A.busy_s, 0)} s of ${dnum(A.span_s, 0)} at the ring's 5 s spacing) -- an `
+      + `upper bound at that resolution, since a gap is judged by whether the engine's own record counter moved `
+      + `across it. In those gaps ${swbS(A.streams_while_busy)} streams were in their decode phase: `
+      + `${fanS(streamsV)} = ${A.busy_frac.toFixed(2)} busy x ${swbS(A.streams_while_busy)} streams, and `
+      + `the exact one of those three figures is the fan-out, which comes from counters. Compare the engine's log `
+      + `with care: it writes its stat line at debug level when idle and marks a whole 10 s interval for a request `
+      + `that took half a second, so its printed lines average only the busy intervals, and coarsely at that.`
+    : "";
+  // Wall seconds always exist, so the big number always has a denominator. The note line's pair does not: a window
+  // with no decode step has no decode stream-seconds, so both the per-stream figure and the fan-out go, and the slot
+  // says which case it is instead of printing a rate with no denominator (a measured 0 above stays printed -- the
+  // harness fails a dash where a zero belongs).
+  slot("note-gen", isnum(perS) && isnum(streamsV)
+       ? `${dnum(perS)} tok/stream-s \u00d7${fanS(streamsV)}`
+       : "no decode step",
+       TT.gen + busyNote + (isnum(perS) ? "" : " This window contains no decode step, so there are no decode stream-seconds to "
+         + "divide by: the per-stream figure and the fan-out have no denominator. The summed figure above does -- "
+         + "wall seconds -- and a 0 there is a measurement, so it prints as one."));
+  slot("spans-gen", spanList("generation_tok_s"), TT.spans);
+  // Same basis as the big number: a poll window always has wall seconds, so 0 is a measurement, not a gap. The
+  // req/m clause shares the slot; the pair is what fits the tightest 4-up column (24 characters).
+  slot("poll-gen", isnum(rate.generation_tok_s)
+       ? `poll ${dnum(rate.generation_tok_s)}`
          + (A && isnum(A.requests_per_min) ? ` \u00b7 ${dnum(A.requests_per_min, 1)} req/m` : "")
-       : `poll \u00b7 no decode step`, TT.poll);
+       : "poll \u00b7 no window", TT.poll);
 
   // Prefill, both honest speeds. Read prompt tokens per second of REQUEST-prefill time (the engine's own
   // scheduled -> first-token span, summed over streams, so stream-seconds: `prefill_streams` says how many
@@ -585,20 +623,22 @@ function renderStatus(s) {
               : isnum(rate.prompt_tok_s) && rate.prompt_tok_s > 0 ? rate.prompt_tok_s : null;
   const prefillV = A ? A.prefill_stream_tok_s : (exact ?? kvr);
   big("rate-prefill", prefillV, "tok/s");
-  // `N% cache` only appears when the engine actually served from cache: with PREFIX_CACHE=0 (this recipe) it would
-  // be a permanent `0% cache` saying nothing, and every character in a slot is budgeted. Asked on 2026-11-04
-  // whether the caches were in effect, and the answer was not on this page: a missing cache clause reads the same:
-  // feature is OFF, on-and-missed, or not measured at all (asked 2026-11-04: "are the caches in effect?"). The
-  // engine states the state (`config
-  // .enable_prefix_caching`, which is what its own boot line prints), so OFF is now said in words -- and only OFF:
-  // a build that publishes neither that config nor the counters keeps the silence, which is the one case where
-  // silence is honest. It shares the line with the fan-out clause rather than both being printed: `wall 4,316
-  // cache off` fits the 24-character budget, `wall 4,316 cache off ×2.0 prefilling` does not.
+  // `N% cache` only appears when the engine actually served from cache: on a cache-off launch it would be a
+  // permanent `0% cache` saying nothing, and every character in a slot is budgeted (the clause is rounded to a whole
+  // percent for exactly that reason: `wall 14,097 · 89.9% cache` is 25 characters, over the 24 the tightest 4-up
+  // column takes; `wall 14,097 · 90% cache` is 23). Asked on 2026-11-04 whether the caches were in effect, and the
+  // answer was not on this page: a missing cache clause reads identically whether the feature is OFF, on-and-missed,
+  // or not measured at all. The engine states the state (`config.enable_prefix_caching`, the same string its own
+  // boot line prints), so OFF is said in words -- and only OFF: a build that publishes neither that config nor the
+  // counters keeps the silence, which is the one case where silence is honest. It shares the line with the fan-out
+  // clause rather than both being printed: `wall 4,316 cache off` fits the budget, `wall 4,316 cache off x2.0
+  // prefilling` does not. The recipe turned the cache ON the same day (notes/prefix-cache-decision.md), so this is
+  // now the branch that runs, at 83-90% on the box's own traffic.
   const pcState = String(((s.config || {}).enable_prefix_caching ?? "")).toLowerCase();
   const pcOff = pcState === "false" || pcState === "0";
   const fan = A && isnum(A.prefill_streams) && A.prefill_streams > 1.05;
   slot("note-prefill", A && isnum(A.prefix_hit_pct) && A.prefix_hit_pct > 0
-       ? `wall ${dnum(A.prompt_tok_s || 0)} \u00b7 ${dnum(A.prefix_hit_pct, 0)}% cache`
+       ? `wall ${dnum(A.prompt_tok_s || 0)} \u00b7 ${Math.round(A.prefix_hit_pct)}% cache`
        : A ? `wall ${dnum(A.prompt_tok_s || 0)}`
              + (fan ? ` \u00b7 \u00d7${dnum(A.prefill_streams, 1)} prefilling`
                     : pcOff ? ` \u00b7 cache off` : "")
@@ -800,7 +840,7 @@ function renderStatus(s) {
   // before anything ran) draws through the gap rather than as a flat 0, which is why the point count is on
   // the line: 12 of 90 pts means the shape is only as old as those 12 samples.
   const trend = (sparkId, n1, n2, values, d, { keep = (v) => v !== 0, lo = null, hi = null,
-                                               empty = "no samples", title = "" } = {}) => {
+                                               empty = "no samples", keptWord = "", title = "" } = {}) => {
     const xs = values.filter(isnum);
     // The axis, per series. Autoscaling a rate to its own min/max makes a series that spends most of the
     // window at zero look like a full-height oscillation, so rates run on 0..peak and are comparable to each
@@ -835,8 +875,8 @@ function renderStatus(s) {
     slot(n1, drain ? `now draining ${dnum(-last, d)}`
                    : `now ${dnum(last, d)} \u00b7 avg ${dnum(avg, d)}`,
          title + ` (avg ${drain ? dnum(avg, d) + ", " : ""}peak ${dnum(Math.max(...used), d)} over ${histSpan})`);
-    slot(n2, `peak ${dnum(Math.max(...used), d)} \u00b7 ${used.length}/${values.length}`,
-         title + ` (${used.length} of ${values.length} points kept, over ${histSpan}.`
+    slot(n2, `peak ${dnum(Math.max(...used), d)} \u00b7 ${keptWord ? keptWord + " " : ""}${used.length}/${values.length}`,
+         title + ` (${used.length} of ${values.length} points kept${keptWord ? ", a point kept means the counter moved in it" : ""}, over ${histSpan}.`
          + (lo !== null && top > lo ? ` The waveform is drawn on a ${dnum(lo)}..${dnum(top)} axis.` : "") + ")");
   };
   const TREND_T = {
@@ -846,13 +886,13 @@ function renderStatus(s) {
            + "(the ratio between the two is the payload's `streams_per_record`, ITL observations over records). At "
            + "0.32 a whole chunked prefill lands in one record, so the line dips exactly where the engine was "
            + "prefilling; a gap is an interval with no record in it.",
-    gen: "All streams summed over WALL seconds -- the summed figure, the throughput reading of the box. The decode "
-       + "card's big number is this traffic's other reading (output per stream-second) and its note line carries "
-       + "the bridge: that number × this series' fan-out = this line. Flat stretches are the engine prefilling or "
-       + "idle rather than decoding, which is why the peak and the average of this line differ by an order of "
-       + "magnitude on a prefill-heavy launch. This series is drawn on the wall basis because the per-stream "
-       + "denominator does not exist in a window that was all prefill, and a gap-per-second line reads as an idle "
-       + "box.",
+    gen: "All streams summed over WALL seconds -- the summed figure, the throughput reading of the box, plotted over "
+       + "time. Same basis as the decode card's big number, so the trace and the number agree; what the trace adds "
+       + "is the shape -- where the minute went. Flat stretches are the engine prefilling or idle rather than "
+       + "decoding, which is why this line's peak and its average differ by an order of magnitude on a "
+       + "prefill-heavy launch. The card's note line is the bridge to the other basis: its per-stream-second "
+       + "figure x this series' fan-out = this line. Drawn on the wall basis because the per-stream denominator "
+       + "does not exist in a window that was all prefill, and a gap-per-second line reads as an idle box.",
     prefill: "Prefill estimated from how fast the KV pool is growing (the counter credits at request end, so the "
            + "counter series would be a flat line with one spike). It goes NEGATIVE when finishing requests free "
            + "blocks; peak and average count only the windows where the pool grew.",
@@ -874,7 +914,7 @@ function renderStatus(s) {
   trend("perstep-spark", "perstep-note1", "perstep-note2", hist.map((h) => h.gen_per_step), 2,
         { lo: 0, hi: "peak", empty: "no records this window", title: TREND_T.perstep });
   trend("gen-spark", "gen-note1", "gen-note2", hist.map((h) => h.gen_tok_s), 0,
-        { lo: 0, hi: "peak", empty: "nothing generated", title: TREND_T.gen });
+        { lo: 0, hi: "peak", empty: "nothing generated", keptWord: "busy", title: TREND_T.gen });
   // The prefill waveform is the live estimate (KV growth), not the counter rate: over a long prefill the
   // counter series is a flat line with one spike at the end, which is a fact about vLLM, not about the work.
   // It stays autoscaled: it goes negative when finishing requests free blocks, and a 0 baseline would clip

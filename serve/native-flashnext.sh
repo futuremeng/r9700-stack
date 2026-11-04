@@ -7,6 +7,16 @@ MODEL=${MODEL:-$HOME/models/Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ}
 VENV=${VENV:-$HOME/venv-r9700}
 REPO=${REPO:-$(dirname "$(realpath "$0")")/..}
 PY=$VENV/bin/python3
+
+# Machine-local launch defaults, deliberately kept outside the repo. The repo's own defaults are the conservative
+# ones: HOST=127.0.0.1, which is also upstream's (`args.host or "127.0.0.1"`). This box is not served over loopback
+# -- `ss` shows 192.168.1.130 and 192.168.1.200 holding :8080 open -- so the bind address is a fact about the box,
+# not about the code, and it lives here where it survives a checkout reset and gets named in the log at every
+# launch instead of being remembered by whoever last typed the command. LOCAL_ENV= overrides the path.
+# notes/launch-methodology.md section 10.
+LOCAL_ENV=${LOCAL_ENV:-$HOME/.config/r9700-stack/native.env}
+if [ -f "$LOCAL_ENV" ]; then . "$LOCAL_ENV"; echo "local env: $LOCAL_ENV"; fi
+: ${HOST:=127.0.0.1}
 # stock ROCm 7.2-era vLLM wheels link OpenMPI; on a box without root we unpacked the runtime debs locally
 OPENMPI=${OPENMPI:-$HOME/opt/openmpi/usr/lib/x86_64-linux-gnu}
 [ -d "$OPENMPI" ] && export LD_LIBRARY_PATH=$OPENMPI${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
@@ -91,7 +101,34 @@ elif [ -n "${KVDTYPE:-}" ]; then
 fi
 export R9K_QSA_KVF8
 
-ARGS=(--served-model-name "${SERVED_NAME:-Qwen3.8}" --host 0.0.0.0 --port "${PORT:-8080}"
+# The prefix cache, ON -- which is upstream's default (`config/cache.py`: `enable_prefix_caching: bool = True`).
+# This launcher has been passing --no-enable-prefix-caching since it was written, inherited from
+# serve/flashnext.sh, where the choice WAS measured: 5056943 (2026-09-25, "prefix caching off by default for
+# Flash-Next; short-prefill root cause"). The mechanism serve/serve.sh documents next to its own ON default: on a
+# hybrid GDN/attention model caching moves the recurrent state to "align" mode, the scheduler then aligns every
+# prefill chunk end to the mamba block size, and a prompt that is not a multiple of it pays an extra forward pass
+# (~285 ms of CPU-bound Python each; a 1.5k prompt ran as two), which read 2.8k tok/s of 2k-token prefill against
+# ~4.7k with the cache off. That is a real cost and it is a SHORT-prompt cost.
+# What this box carries is not short prompts: p50 in the 30k tier and p99 245,792 prompt tokens in its own request
+# ledger. Measured against this box's traffic, tools/prefix-replay.py replays 6,560 model calls / 581.9M prompt
+# tokens out of the local conversation records through the engine's own rules (880-token hybrid blocks, contiguous
+# prefix reuse only, LRU-evictable retained blocks, this pool's 1,175 blocks): 98.2% of prompt tokens are already
+# resident, 77,851 s of prefill back over four days, and zero admission queueing at every load tried, while OFF
+# (which has 186 blocks free at its peak) starts queueing at 2x. The endpoint those same conversations go through
+# reports cacheRead for 99.1% of their prompt tokens: measured on the identical calls, not simulated.
+# The price, measured on this box rather than modelled: mamba_cache_mode goes "none" -> "align", the attention
+# block 880 -> 832, and the pool reads 989,534 tokens instead of 1,009,899 (-2.0%). notes/release-v0.2.4.md's
+# one-page GDN state is Stage-1 for mode "none" only, so with the cache on this runs on vLLM's stock pages -- and
+# the -2.0% above is that cost as the engine published it here, not the 27B table's +18% quoted there.
+# What owed a measurement was taken on 2026-11-04, on the cache-on launch, 15 distinct prompts a tier:
+# `ITEMS=0,66,152 bench/ttft_breakdown.py http://127.0.0.1:8080 cacheon` -> TTFT 37 ms at 45 tokens, 188 ms at
+# 1,412, 371 ms at 3,323 -- 3x better than 2026-09-25's cache-on numbers and better than that day's cache-off ones --
+# with EXACTLY 1.00 iterations per request at every tier, i.e. the align-mode extra pass no longer happens on this
+# stack. notes/prefix-cache-decision.md. PREFIX_CACHE=0 still turns it off, and tools/recipe-check.py fails the
+# launch if the running engine disagrees with this line.
+: ${PREFIX_CACHE:=1}
+
+ARGS=(--served-model-name "${SERVED_NAME:-Qwen3.8}" --host "$HOST" --port "${PORT:-8080}"
       --tensor-parallel-size "${TP:-4}" --max-model-len "${MAXLEN}"
       --max-num-seqs "$NSEQ" --max-num-batched-tokens "$NBT"
       --gpu-memory-utilization "${UTIL:-$([ "${TP:-4}" = 4 ] && echo 0.97 || echo 0.94)}"
@@ -99,7 +136,7 @@ ARGS=(--served-model-name "${SERVED_NAME:-Qwen3.8}" --host 0.0.0.0 --port "${POR
       --language-model-only)
 [ "${OFFLOAD_GB:-0}" != 0 ] && ARGS+=(--cpu-offload-gb "$OFFLOAD_GB" --cpu-offload-params experts)
 [ -n "${KVDTYPE:-}" ] && ARGS+=(--kv-cache-dtype "$KVDTYPE")
-[ "${PREFIX_CACHE:-0}" = 0 ] && ARGS+=(--no-enable-prefix-caching)
+[ "$PREFIX_CACHE" = 0 ] && ARGS+=(--no-enable-prefix-caching)
 [ "${EAGER:-0}" = 1 ] && ARGS+=(--enforce-eager)
 # Draft depth, measured 2026-11-01 on this box (fresh instances, 3 x 300-token @32 samples each side, plus ITL):
 #   MTP=2: @32 1,762 / 1,538 / 1,750 -> median 1,755 aggregate at 57.6 tok/s a stream; @16 1,265 / 83.4;
@@ -143,15 +180,27 @@ if [ "${WEBUI:-0}" = 1 ] || [ "${WEBUI:-}" = same ]; then
   D="$(dirname "$(realpath "$0")")"
   VER=$($VENV/bin/python -c "import importlib.metadata as m; print('native vllm '+m.version('vllm'))" 2>/dev/null \
         || echo "native")
-  META=$META bash "$D/webmeta.sh" venv="$VENV" model="$MODEL" served_name="${SERVED_NAME:-Qwen3.8}" \
-    gpus="${GPUS:-0,1,2,3}" tp="${TP:-4}" maxlen="$MAXLEN" nseq="$NSEQ" nbt="$NBT" \
-    reasoning="${REASONING:-qwen3}" toolcall="${TOOLCALL:-qwen3_coder}" \
-    util="${UTIL:-$([ "${TP:-4}" = 4 ] && echo 0.97 || echo 0.94)}" offload_gb="${OFFLOAD_GB:-0}" \
-    kvdtype="${KVDTYPE:-}" mtp="$MTP" attn="${ATTN:-}" cg_sizes="${CGSIZES:-}" prefix_cache="${PREFIX_CACHE:-0}" \
-    eager="${EAGER:-0}" log="$LOG" fold="${R9K_FOLD:-1}" ar_quant="${R9K_AR_QUANT:-1}" hc_fp8="${R9K_HC_FP8:-r9k}" \
-    hc_fp8_decode="${R9K_HC_FP8_DECODE:-1}" fp8_block="${R9K_FP8_BLOCK:-block}" fp8_qa="${R9K_FP8_QA:-1}" \
-    target_lmhead="${R9K_TARGET_LMHEAD:-mxfp4}" draft_lmhead="${R9K_DRAFT_LMHEAD:-mxfp4}" \
-    mtp_quant_rows="${R9K_MTP_QUANT_ROWS:-}" extra="${EXTRA:-}"
+  # DRY must not write anything, including this file. It bit on 2026-11-04: a DRY=1 WEBUI=same run meant to read back
+  # the launch line overwrote the recipe of the engine that was actually running, so the About page of a cache-off
+  # serve described a cache-on launch, and tools/recipe-check.py's meta-vs-engine agreement became a lie until a
+  # restart. METAONLY=1 is the deliberate version of the same thing: refresh the recipe file for a launch that is
+  # already up (or was started by hand) without starting anything.
+  if [ "${DRY:-0}" != 1 ]; then
+    META=$META bash "$D/webmeta.sh" venv="$VENV" model="$MODEL" served_name="${SERVED_NAME:-Qwen3.8}" \
+      gpus="${GPUS:-0,1,2,3}" tp="${TP:-4}" maxlen="$MAXLEN" nseq="$NSEQ" nbt="$NBT" \
+      reasoning="${REASONING:-qwen3}" toolcall="${TOOLCALL:-qwen3_coder}" \
+      util="${UTIL:-$([ "${TP:-4}" = 4 ] && echo 0.97 || echo 0.94)}" offload_gb="${OFFLOAD_GB:-0}" \
+      kvdtype="${KVDTYPE:-}" mtp="$MTP" attn="${ATTN:-}" cg_sizes="${CGSIZES:-}" prefix_cache="$PREFIX_CACHE" \
+      host="$HOST" \
+      eager="${EAGER:-0}" log="$LOG" fold="${R9K_FOLD:-1}" ar_quant="${R9K_AR_QUANT:-1}" hc_fp8="${R9K_HC_FP8:-r9k}" \
+      hc_fp8_decode="${R9K_HC_FP8_DECODE:-1}" fp8_block="${R9K_FP8_BLOCK:-block}" fp8_qa="${R9K_FP8_QA:-1}" \
+      target_lmhead="${R9K_TARGET_LMHEAD:-mxfp4}" draft_lmhead="${R9K_DRAFT_LMHEAD:-mxfp4}" \
+      mtp_quant_rows="${R9K_MTP_QUANT_ROWS:-}" extra="${EXTRA:-}"
+  fi
+  if [ "${DRY:-0}" = 1 ] || [ "${METAONLY:-0}" = 1 ]; then
+    [ "${DRY:-0}" = 1 ] && echo "  recipe file NOT written (preview): $META"
+    if [ "${METAONLY:-0}" = 1 ]; then echo "  recipe file refreshed for the launch that is running, nothing started: $META"; exit 0; fi
+  fi
   if [ "${WEBUI:-}" = same ]; then
     D="$(dirname "$(realpath "$0")")"
     if ! "$VENV/bin/python" -c 'import sys; from importlib.metadata import entry_points
@@ -177,8 +226,12 @@ sys.exit(0 if any(e.name == "r9700_webui" for e in entry_points(group="vllm.endp
       echo "  recipe file the About page reads: $META"
     fi
   else
-    WEBUI_PORT=$WPORT UPSTREAM=http://127.0.0.1:${PORT:-8080} META=$META VERSION="$VER" \
-    JOURNAL=${JOURNAL:-$HOME/logs/requests-$WPORT.jsonl} bash "$D/webui.sh"
+    # A preview writes nothing and starts nothing: the sidecar stays down for DRY and METAONLY too, or a DRY run
+    # meant to read the launch line would occupy PORT+1 and the next real launch would find the port taken.
+    if [ "${DRY:-0}" != 1 ] && [ "${METAONLY:-0}" != 1 ]; then
+      WEBUI_PORT=$WPORT UPSTREAM=http://127.0.0.1:${PORT:-8080} META=$META VERSION="$VER" \
+      JOURNAL=${JOURNAL:-$HOME/logs/requests-$WPORT.jsonl} bash "$D/webui.sh"
+    fi
   fi
 fi
 [ "${DRY:-0}" = 1 ] && { echo "launch: $VENV/bin/vllm serve $MODEL ${ARGS[*]} $EXTRA"; exit 0; }

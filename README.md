@@ -213,8 +213,11 @@ pin and clocks, and the 210 W figure has never been re-measured on this one.
 
 The native 4x R9700 box: vLLM 0.32.0+rocm723 in a venv, cards uncapped, so compare it against the uncapped numbers
 in [notes/native-4xr9700.md](notes/native-4xr9700.md), not against the 210 W tables above. Same model, four cards,
-TP4, MTP-3. Except where a row names another launch, this is the launch that runs on this box today
-(`MAXLEN=262144 NSEQ=32 NBT=8192 PREFIX_CACHE=0`), re-measured after a restart.
+TP4, MTP-3. Except where a row names another launch, this is the launch that runs on this box today —
+`MAXLEN=262144 NSEQ=32 NBT=8192`, and until 2026-11-04 also `PREFIX_CACHE=0`, which is why **every number in this
+table is a cache-off number**. The prefix cache went on that day, aligned with upstream's default
+(notes/prefix-cache-decision.md); rows from before it stay valid for the recipe they were measured on, and
+re-measuring them under the cache is owed rather than assumed.
 
 | | |
 |---|---:|
@@ -260,6 +263,27 @@ make these tables; `tools/watch-live.py` only samples, and the Monitor only read
 The engine's own counters agree with the journal, which is the cross-check that makes the rest usable: over the same
 launch `prompt_tokens_total` is 106,686,448 against the journal's 106,214,313, and `generation_tokens_total`
 877,747 against 874,128 — under 0.5%, the gap being requests the journal had not yet flushed.
+
+**The prefix cache, decided against that traffic instead of against a synthetic corpus (2026-11-04).** Every
+cache number above was measured on prompts built for the measurement. `tools/prefix-replay.py` replays this box's
+own conversation records instead — 6,560 model calls, 581.9M prompt tokens, four days, real arrival order and real
+overlap — against the engine's own rules (880-token hybrid blocks, contiguous-prefix reuse, LRU-evictable retained
+blocks, a 1,175-block pool). Result: **98.1% of prompt tokens would not be computed, 76,882 s of prefill back over
+four days, and no extra queueing at any concurrency tried** (OFF starts queueing at 2x load: 60,706 s at 8x).
+The endpoint those same conversations actually talk to reports `cacheRead` for **99.1%** of their prompt tokens, so
+the simulation and a live measurement of the identical calls agree to one point. The cost, measured here rather
+than simulated: the launch that made it permanent published `977,726` KV tokens against the cache-off launch's
+`1,009,899` — 1,242 blocks of 832 instead of 1,175 of 880, so 3.2% of the pool is what caching costs here when
+nothing hits, because on a hybrid model the cached unit carries a recurrent state. Verdict and the conditions that would reverse it:
+and the live number, ten minutes after the flip: **83.0% of this box's prompt tokens were `local_cache_hit`** (955,136 of 1,150,598), `num_preemptions_total` unchanged at 0, and a 98,541-token prompt taking 0.39 s to first token against a 22.9 s mean an hour earlier. notes/prefix-cache-decision.md — including the 2026-09-25 measurement that turned it off for this model in the first
+place (a short-prompt cost: 1,325-token TTFT 563 → 313 ms, 2k-token prefill 2.8k against ~4.7k tok/s, because
+"align" mode aligns every prefill chunk end to the block size) and why that does not decide a box whose p99 prompt
+is 245,792 tokens. It landed the same day: `: ${PREFIX_CACHE:=1}` in `serve/native-flashnext.sh`, the old number
+quoted in the comment so the next person inherits the argument instead of the default, and
+and the debt that came with it — `ITEMS=0,66,152 bench/ttft_breakdown.py http://127.0.0.1:8080 cacheon`, re-running
+that 2026-09-25 tier on the current stack. It paid: TTFT 37 / 188 / 371 ms at 45 / 1,412 / 3,323 tokens, three times
+better than the number that justified turning the cache off, with **1.00 iterations per request** at every tier — the
+align-mode extra pass that the old root cause measured no longer happens here.
 
 Each request's own decode rate is `completion_tokens / timings.decode_s` — the engine's own decode span, with
 queueing and prefill excluded. Concurrency is rebuilt from the rows' own start and end stamps at 1 Hz, taking the
@@ -331,13 +355,24 @@ is per stream, whatever the word "aggregate" next to it suggests; and their step
 prefill computed in that step, so it excludes queue and prefill-before-first-token, not prompt chewing
 ([notes/context-262k.md](notes/context-262k.md) has the census and the arithmetic).
 
-The Monitor's decode card therefore leads with the **per stream-second** figure — decode output ÷ decode time — which
-is also the quantity every request row prints, so card and rows read alike: on a live 716 s burst, 18,118 generated
-tokens over 119.1 stream-seconds = **152 tok/s**, with rows at 160-200 tok/s and `shared ×1.0`. The summed figure
-(what a second of this traffic produces, prefill and idle back in the denominator) stays on the note line labelled
-`summed`, with the fan-out as the explicit multiplier between the two — `25 summed ×0.17` on that burst — and the
-trend card beside it draws the summed series, because a per-stream waveform has no denominator in a window that was
-all prefill.
+The Monitor's decode card leads with the **summed** figure — generated tokens ÷ wall seconds, the throughput reading
+of the box, and the same basis the trend card beside it plots — and keeps the other reading labelled on the note
+line with the multiplication that connects them: `152 tok/stream-s ×0.17` = 25 on that burst. The per-stream figure
+is what every request row prints (so the note line and the rows agree), and it has no denominator in a window that
+was all prefill, which is why it is a number on a note line rather than a waveform. Both are published as separate
+fields (`generation_tok_s`, `decode_stream_tok_s`, `decode_streams`), and the harness checks the product. The summed
+basis is upstream's own: `vllm/v1/metrics/loggers.py` divides the tokens since its last stat line by the wall
+seconds since that line, and every line this boot printed implies 228,295 generated tokens against a counter of
+228,333. The log is still the easy way to be fooled, because vLLM writes that line at debug level when the engine is
+idle: over one 903 s span it printed 420 s of it, and its lines average 42.4 tok/s where the same tokens over all
+903 s are 19.7. So each span also says what its fan-out is made of -- `busy_frac`, the share of the span covered by 5 s gaps in
+which the engine's record counter moved (an upper bound at that resolution, not a count of busy seconds; the
+engine's own log is coarser at 10 s intervals), and `streams_while_busy` in its title. The fan-out is the exact one
+of the three: it comes from counters. The burst
+these numbers come from is a live 716 s one: 18,118 generated tokens over 119.1 stream-seconds = **152 tok per
+stream-second**, against **25 summed** over the wall seconds of the same window, with the request rows at
+160-200 tok/s and `shared ×1.0` (serialized traffic — which is why stream-seconds and the union of decoding seconds
+are the same 119.1 s there).
 
 The 1 min prefill figure is low **because of the metric, not the box**: `prompt_tokens_total` credits a prompt when
 its request finishes, so a 60-second span that has long prefills running but not finished credits only what happened
@@ -734,7 +769,12 @@ these numbers runs.
    Native, no container -- what this box runs today: four cards, the checkpoint's full 262k context, and the
    fp8 main KV the launcher now defaults, with Monitor and About on the serve's own port.
    ```bash
-   MAXLEN=262144 NSEQ=32 NBT=8192 PREFIX_CACHE=0 WEBUI=same bash serve/native-flashnext.sh
+   MAXLEN=262144 NSEQ=32 NBT=8192 WEBUI=same bash serve/native-flashnext.sh
+   ```
+   One box fact is not in that line: the bind address. The launcher's `HOST` default is `127.0.0.1` — upstream's own
+   default — and this machine's `0.0.0.0` comes from `~/.config/r9700-stack/native.env`, which the launcher sources
+   and names in the log (notes/launch-methodology.md §10). Nothing that changes what a number means goes in that
+   file.
    ```
    `serve/native-flashnext.sh` is the container-free launcher for a box with no docker (plugin and vLLM in a venv,
    `libr9k` built with the host `hipcc`, [notes/native-4xr9700.md](notes/native-4xr9700.md)); it takes the same knobs

@@ -246,7 +246,7 @@ const firstNum = (h) => {                       // reads "12.2k" and "1.01M" as 
 // span values, which are stable across that gap, stay tight.
 const near = (a, b, tol = 0.011) => (a === null || b === null ? a === b
   : Math.abs(a - b) <= Math.max(0.02, Math.abs(b) * tol));
-for (const [id, avgKey, rateKey] of [["rate-gen", "decode_stream_tok_s", "decode_stream_tok_s"],
+for (const [id, avgKey, rateKey] of [["rate-gen", "generation_tok_s", "generation_tok_s"],
                                      ["rate-prefill", "prefill_stream_tok_s", "prompt_tok_s"],
                                      ["rate-step", "itl_ms", "itl_ms"]]) {
   // The prefill card's live number is the KV-growth ESTIMATE whenever the counter has not credited yet (it
@@ -294,52 +294,95 @@ for (const [id, avgKey, rateKey] of [["rate-gen", "decode_stream_tok_s", "decode
     console.log("BAD  the count card carries a per-second unit; it is a count, not a rate"); process.exitCode = 1;
   }
 }
-// The card's headline is DECODE output per DECODE second (the basis a reader asks for, and the same quantity as a
-// request row's own speed); its note line carries the throughput reading and the bridge between them:
-// `N summed ×M` = wall-second sum, and the multiplier -- N = headline x M, exactly. A percent here would be a
-// category error: M is stream-seconds per wall second (0.15 serialized, 2.60 loaded), not a share of the span.
+// The basis a card CLAIMS, read off monitor.html: the `.label` div that sits above this element in the same card.
+// The check below is on the pair (label, number), because this card has been wrong in both directions -- a
+// per-stream figure printed under the words "summed, decode time", and before that a per-stream mean divided by the
+// running gauge -- and a check on either half alone passes when the two disagree.
+const cardLabel = (id) => {
+  const h = readFileSync(path.join(WEB, "monitor.html"), "utf8");
+  const i = h.indexOf(`id="${id}"`);
+  if (i < 0) return "";
+  const j = h.lastIndexOf('class="label"', i);
+  if (j < 0) return "";
+  return h.slice(h.indexOf(">", j) + 1, h.indexOf("</div>", j)).trim();
+};
+// The card's headline is the SUMMED figure: generated tokens per WALL second -- the throughput reading, and the
+// same basis the summed waveform plots. Its note line carries the other reading and the bridge between them:
+// `N tok/stream-s ×M`, where N is output per DECODE second and M is streams decoding per wall second, and
+// N x M = the big number exactly. A percent on that line is a category error: M is stream-seconds per wall second
+// (0.15 serialized, 2.60 loaded), not a share of the span.
 {
   const line = t("note-gen") || "";
   const b = STAT?.avg?.[winShown] || {};
-  const wantWall = winShown === "live" ? STAT?.rate?.generation_tok_s : b.generation_tok_s;
+  const wantStream = winShown === "live" ? STAT?.rate?.decode_stream_tok_s : b.decode_stream_tok_s;
   const wantStreams = winShown === "live" ? STAT?.rate?.decode_streams : b.decode_streams;
-  const fm = line.match(/^([\d.,kKM]+)\s+summed\s*[\u00d7x]([\d.,]+)/);
-  const gotWall = fm ? firstNum(fm[1]) : null;
+  const fm = line.match(/^([\d.,kKM]+)\s*tok\/stream-s\s*[\u00d7x]([\d.,]+)/);
+  const gotStream = fm ? firstNum(fm[1]) : null;
   const gotStreams = fm ? Number(fm[2].replace(/,/g, "")) : null;
-  console.log(`  note-gen         ${line}` + (wantWall == null ? "   [no decode seconds in this payload]"
-              : `   [${wantWall} summed, x${wantStreams}, from ${b.decode_stream_tok_s} tok/stream-s]`));
-  if (typeof wantWall === "number" && !near(gotWall, wantWall, 0.02)) {
-    console.log(`BAD  note-gen shows ${gotWall} summed for a wall-second rate of ${wantWall}`); process.exitCode = 1;
+  const noStep = /no decode step/.test(line);
+  console.log(`  note-gen         ${line}` + (wantStream == null ? "   [no decode stream-seconds in this payload]"
+              : `   [${wantStream} tok/stream-s, x${wantStreams}, summed to ${b.generation_tok_s}]`));
+  if (wantStream == null && !noStep) {
+    console.log("BAD  the payload has no decode stream-seconds, so the note line has to say so rather than print a "
+                + "rate with no denominator"); process.exitCode = 1;
+  }
+  if (typeof wantStream === "number" && !near(gotStream, wantStream, 0.02)) {
+    console.log(`BAD  note-gen shows ${gotStream} tok/stream-s for a per-stream-second rate of ${wantStream}`)
+    ; process.exitCode = 1;
   }
   if (typeof wantStreams === "number" && Math.abs(gotStreams - wantStreams) > Math.max(0.011, 0.02 * wantStreams)) {
     console.log(`BAD  note-gen shows x${gotStreams} decoding for a fan-out of ${wantStreams}`); process.exitCode = 1;
   }
-  // The three numbers on the card have to be one arithmetic: headline x fan-out = the summed figure it prints.
+  // The three numbers on the card have to be one arithmetic: per stream-second x fan-out = the summed headline.
   const shown = firstNum(html("rate-gen"));
-  if ([shown, gotStreams, gotWall].every((v) => typeof v === "number")
-      && Math.abs(shown * gotStreams - gotWall) > Math.max(0.05, 0.03 * Math.abs(gotWall))) {
-    console.log(`BAD  the card's numbers are not one arithmetic: ${shown} x ${gotStreams} != ${gotWall}`)
+  if ([gotStream, gotStreams, shown].every((v) => typeof v === "number")
+      && Math.abs(gotStream * gotStreams - shown) > Math.max(0.05, 0.03 * Math.abs(shown))) {
+    console.log(`BAD  the card's numbers are not one arithmetic: ${gotStream} x ${gotStreams} != ${shown}`)
     ; process.exitCode = 1;
   }
   if (/% dec/.test(line)) {
     console.log("BAD  note-gen prints a share of the span where the fan-out belongs -- a percent has no meaning "
                 + "for stream-seconds per wall second"); process.exitCode = 1;
   }
-  // The headline must be the per-stream-second rate, not the wall sum in per-stream clothes. This is the check the
-  // reversed card would fail: on this burst the wall sum (22) is 7x below the per-stream figure (152), so a card
-  // printing the wall number under a per-stream label is detectable.
+  // The fan-out has two causes, and the span is supposed to publish the split: seconds with nothing in flight
+  // (busy_frac) and seconds with several streams in their decode phase (streams_while_busy). The product is the
+  // fan-out on the line; if the payload measures the factors, the card has to state them, and if it states them
+  // they have to multiply back. This is the answer to the smallest number on the card being smaller than the
+  // engine's own log line -- the log skips idle intervals (debug level when idle), so its lines average only the
+  // busy ones: 42.4 tok/s printed against 19.7 over the wall of the same 903 s on 2026-11-04.
+  if (typeof wantStreams === "number" && typeof b.busy_frac === "number" && typeof b.streams_while_busy === "number") {
+    const prod = b.busy_frac * b.streams_while_busy;
+    if (Math.abs(prod - wantStreams) > Math.max(0.011, 0.02 * wantStreams)) {
+      console.log(`BAD  this span's busy_frac x streams_while_busy is ${prod.toFixed(3)} but its decode_streams is `
+                  + `${wantStreams} -- the split does not account for the fan-out`); process.exitCode = 1;
+    }
+    const ti = (byId.get("note-gen") || {}).title || "";
+    if (!/busy x [\d.]+ streams/.test(ti)) {
+      console.log("BAD  the span measures busy_frac and streams_while_busy, and the card never states the split");
+      process.exitCode = 1;
+    }
+  }
+  // The label and the number have to be the same claim. The card has been wrong in both directions -- a per-stream
+  // figure under "summed", and a per-stream mean divided by the running gauge -- so the check is on the pair: the
+  // word in the label picks which payload field the big number has to be. On a serialized burst the two differ by
+  // 7x (22 summed against 152 per stream-second), so a mismatch is not a rounding argument.
+  const label = cardLabel("rate-gen");
   if (winShown !== "live" && isnum(b.generation_tok_s) && isnum(b.decode_stream_tok_s)
       && Math.abs(b.generation_tok_s - b.decode_stream_tok_s) > b.decode_stream_tok_s * 0.25) {
-    if (near(shown, b.generation_tok_s, 0.02) && !near(shown, b.decode_stream_tok_s, 0.02)) {
-      console.log(`BAD  rate-gen shows the wall-summed rate (${b.generation_tok_s}) under the per-stream-second `
-                  + `label, which wants ${b.decode_stream_tok_s}`); process.exitCode = 1;
+    const wantsSummed = /summed/.test(label);
+    const wrong = wantsSummed ? (!near(shown, b.generation_tok_s, 0.02) && near(shown, b.decode_stream_tok_s, 0.02))
+                             : (!near(shown, b.decode_stream_tok_s, 0.02) && near(shown, b.generation_tok_s, 0.02));
+    if (wrong) {
+      console.log(`BAD  rate-gen shows ${shown} under the label "${label}" -- that label wants `
+                  + `${wantsSummed ? b.generation_tok_s : b.decode_stream_tok_s} (the other basis is `
+                  + `${wantsSummed ? b.decode_stream_tok_s : b.generation_tok_s})`); process.exitCode = 1;
     }
   }
 }
 // The spans the headline is not, plus this poll.
 console.log("\nthe other spans, and this poll, under each card");
 for (const [id, key, rateKey] of [["spans-gentot", "generation_tokens", "generation_tokens"],
-                                  ["spans-gen", "decode_stream_tok_s", "decode_stream_tok_s"],
+                                  ["spans-gen", "generation_tok_s", "generation_tok_s"],
                                   ["spans-prefill", "prefill_stream_tok_s", "prompt_tok_s"],
                                   ["spans-step", "itl_ms", "itl_ms"]]) {
   const line = t(id) || "";
@@ -353,8 +396,17 @@ for (const [id, key, rateKey] of [["spans-gentot", "generation_tokens", "generat
                               : "   [no other span has this field]"));
   for (const [lbl, b] of shown) {
     const short = b.span_s < AVG_W[lbl] * 0.8;
-    if (!short && !line.includes(lbl + " ")) {
-      console.log(`BAD  ${id}: ${lbl} has ${b[key]} over ${Math.round(b.span_s)}s and the line omits it`); process.exitCode = 1;
+    // A span may be left out for either reason the page states in its own comment: the two windows are the same
+    // window (a launch 16 minutes old has a 900 s "15m" and a 960 s "1h" holding the same count), or the line with
+    // every span in it would not fit the tightest 4-up column. Either way the figures that ARE printed have to match
+    // the payload, which is what the rest of this loop checks; a span simply vanishing is BAD.
+    const fullLine = shown.map(([l2, b2]) => `${l2} ${Math.round(b2[key]).toLocaleString("en-US")}`).join(" \u00b7 ");
+    const redundant = shown.some(([l2, b2]) => l2 !== lbl && isnum(b2[key])
+      && Math.abs(b2[key] - b[key]) <= Math.max(1, 0.02 * Math.abs(b2[key]))
+      && Math.abs(b2.span_s - b.span_s) <= 0.15 * Math.max(b2.span_s, b.span_s));
+    if (!short && !line.includes(lbl + " ") && !redundant && fullLine.length <= 24) {
+      console.log(`BAD  ${id}: ${lbl} has ${b[key]} over ${Math.round(b.span_s)}s and the line omits it`
+                  + " (no span here is redundant, and the line would fit)"); process.exitCode = 1;
     }
     if (short && line.includes(lbl + " ")) {
       console.log(`BAD  ${id}: prints ${lbl} for a span of ${Math.round(b.span_s)}s -- a young window wearing an old label`); process.exitCode = 1;

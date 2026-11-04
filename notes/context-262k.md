@@ -128,6 +128,11 @@ Same box, same recipe (`MAXLEN=262144 NSEQ=32 NBT=8192 PREFIX_CACHE=0 WEBUI=same
 after the Monitor changes, `~/logs/ctx262k-prefillrate-052720.log.out`; probe bands in
 `~/logs/probe32-262k-054506.log`. Prefill and throughput, nothing else changed.
 
+**These are cache-off numbers, and the recipe is no longer cache-off** (since 2026-11-04, aligned with upstream:
+notes/prefix-cache-decision.md). Re-running this section today reproduces the cold columns and not the last one --
+`the same context again` was the special case then and is what every repeated prefix pays now, so a fresh table
+needs cold corpora if it wants to compare against the rows below.
+
 | tier (`bench/needle_long.py`, prefix cache off) | prompt tokens | cold TTFT | cold prefill | the same context again |
 |---|---|---|---|---|
 | 60k | 60,061 | 6.93 s | 8,672 tok/s | 6.87 s, 8,742 tok/s -- **no reuse, the prefill was repeated**, which is what `--no-enable-prefix-caching` means |
@@ -570,7 +575,9 @@ from the buffer shape, not a measured OOM).
 ## Reproduce
 
 ```
-cd ~/r9700-stack && MAXLEN=262144 NSEQ=32 NBT=8192 PREFIX_CACHE=0 WEBUI=same bash serve/native-flashnext.sh
+cd ~/r9700-stack && MAXLEN=262144 NSEQ=32 NBT=8192 WEBUI=same bash serve/native-flashnext.sh
+#   (PREFIX_CACHE is ON by default from 2026-11-04; add PREFIX_CACHE=0 to reproduce the recipe the tables above
+#    were measured on. HOST comes from ~/.config/r9700-stack/native.env, notes/launch-methodology.md section 10.)
 ~/venv-r9700/bin/python bench/needle_long.py 30000,67000,150000,250000    # ladder; argv: TIERS BASE MODEL TOKENIZER MAXOUT WARM SEED
 ASK="Summarise the text above in detail, at least 300 words." ~/venv-r9700/bin/python bench/needle_long.py 250000 \
     http://127.0.0.1:8080 Qwen3.8 ~/models/Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ 400 1 11     # decode at depth

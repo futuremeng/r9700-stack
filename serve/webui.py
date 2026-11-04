@@ -80,7 +80,14 @@ WANT = ("model_name", "model_compiler", "tensor_parallel_size", "pipeline_parall
         # cache_config_info -- and kv_cache_size_tokens is the one that matters on a hybrid GDN model:
         # 1230 blocks x 448 = 551,040 is the attention geometry, the pool holds 497,588 tokens
         "kv_cache_size_tokens", "cache_dtype", "effective_attention_block_size", "gpu_memory_utilization",
-        "mamba_block_size", "mamba_cache_dtype", "kv_offloading_backend", "num_gpu_blocks_override")
+        "mamba_block_size", "mamba_cache_dtype", "kv_offloading_backend", "num_gpu_blocks_override",
+        # Measured 2026-11-04 on the cache-on launch: these two labels are what answer "which cache knobs are live"
+        # without reading the launch line. `hash_block_size` is `prefix_match_unit` -- None means a hit can only land
+        # on a whole physical block (832 tokens here), which is also why a 538-token prompt cannot hit at all. Note
+        # that `mamba_block_size` reads 16 while the pool's block is 832: vLLM's hybrid hook copies
+        # cache_config.block_size into it before the platform raises the attention block (the boot log's "Setting
+        # attention block size to 832 tokens"), so 16 is an ordering artifact and NOT something to divide 832 by.
+        "hash_block_size", "enable_mamba_shared_prefix_checkpoint")
 # The metric names move between vLLM releases: 0.32 renamed gpu_cache_usage_perc to kv_cache_usage_perc and
 # carries the per-output-token histogram as request_time_per_output_token_seconds (inter_token_latency_seconds
 # alongside it). Read whichever of the build publishes -- and say null when it publishes none.
@@ -330,9 +337,10 @@ def trailing(snaps, cur, t0, spans=AVG_SPANS):
         # request finishes -- over a 60 s span in which no request finished, the request family has no denominator.
         dtl = dn("inter_token_latency_seconds_sum")
         itlc = dn("inter_token_latency_seconds_count")
-        run = [x["run"] for x in snaps if x["at"] > base["at"]]
-        wait = [x["wait"] for x in snaps if x["at"] > base["at"]]
-        kvv = [x["kv"] for x in snaps if x["at"] > base["at"] and x["kv"] is not None]
+        seq = [x for x in snaps if x["at"] > base["at"]]
+        run = [x["run"] for x in seq]
+        wait = [x["wait"] for x in seq]
+        kvv = [x["kv"] for x in seq if x["kv"] is not None]
         drafts, acc = dn("spec_decode_num_drafts_total"), dn("spec_decode_num_accepted_tokens_total")
         iters = dn("iteration_tokens_total_count")
         dgrams = dn("spec_decode_num_draft_tokens_total")
@@ -343,9 +351,11 @@ def trailing(snaps, cur, t0, spans=AVG_SPANS):
         # What the engine READ, not what the prompt was called. vLLM credits cached prefix tokens to
         # prompt_tokens_total, so with the prefix cache on, prompt_tokens / prefill_seconds is not a read speed:
         # it counts tokens that were never read and overstates it by the hit rate. Strata's run average uses
-        # `prompt_tokens - reused` for exactly this reason (serve/web/app.js), and says so on the card. On this
-        # recipe the cache is off on purpose (PREFIX_CACHE=0), so read == credited today; the distinction is here
-        # so that turning the cache back on cannot quietly inflate the number.
+        # `prompt_tokens - reused` for exactly this reason (serve/web/app.js), and says so on the card. This recipe
+        # ran with the cache OFF (inherited from serve/flashnext.sh) until 2026-11-04, when it was aligned with
+        # upstream's ON default (notes/prefix-cache-decision.md) -- so from that day read != credited HERE, the
+        # subtraction is load-bearing, and a replay of this box's own conversations says 98.2% of the prompt tokens
+        # the engine credits were already resident.
         read = None if pre is None else pre - (cached if cached is not None else 0.0)
         # Every counter in the span that can only grow is checked: a restart that lands in the middle of a span
         # shows up as a DECREASE, and the families the page never showed (the request count, the cache counters)
@@ -356,6 +366,33 @@ def trailing(snaps, cur, t0, spans=AVG_SPANS):
                                                       cached))
         itl, tpot = first(ITL_STEP), first(TPOT)
         genps = gen / span_s if gen is not None else None
+        # Duty: how much of the span was covered by gaps in which the engine did something. It is a statement
+        # about GAPS at the ring's 5 s spacing, not about seconds, and it is an upper bound: a gap counts as
+        # worked when the engine's RECORD counter moved across it (a step ran -- the RECORD counter cannot miss
+        # one), or when a request was in flight at either end of it. Measured 2026-11-04 on a 62 s span holding
+        # four 0.45 s requests: this says 0.33 of the span, the engine's own log says 0.65 of it, and both are
+        # upper bounds at their own resolution (5 s gaps here, 10 s stat intervals there -- vLLM prints a line for
+        # any interval whose prompt or generation throughput was nonzero, which marks ten seconds for a request
+        # that took half a second). What is NOT granular is `decode_streams`: it comes from counters and is exact.
+        # The split is published because the fan-out invites the question "idle or sharing?", and the answer to
+        # that is a ratio, not a precision. Each sample stands for the gap that follows it, and the first is
+        # charged back to the span's far edge: charged only backwards instead, a span busy from its first sample
+        # to its last reads 0.9375 rather than 1.0 (the fixture proves that specific error).
+        itc = "iteration_tokens_total_count"
+        busy = 0.0
+        for i, x in enumerate(seq):
+            nxt = seq[i + 1] if i + 1 < len(seq) else None
+            after = (nxt.get(itc) or 0.0) if nxt else (cur.get(itc) or [0.0])[0]
+            held = (x["run"] + x["wait"]) > 0 or (nxt is not None and (nxt["run"] + nxt["wait"]) > 0)
+            if (x.get(itc) or 0.0) < after or held:
+                busy += (nxt["at"] if nxt else t0) - x["at"]
+        if seq and ((base.get(itc) or 0.0) < (seq[0].get(itc) or 0.0)
+                    or (seq[0]["run"] + seq[0]["wait"]) > 0):
+            busy += seq[0]["at"] - base["at"]
+        # A reset span has no duty: its gauge samples straddle two processes, and a share of a span whose counters
+        # cannot be differenced is a share of nothing. The clamp is a guard, not a fix: attributed this way the
+        # samples cover the span exactly, so a duty over 100% would mean the ring lied about its spacing.
+        busy = None if reset else min(busy, span_s or 0.0)
         runmean = (sum(run) / len(run)) if run else None
         out[label] = {
             "span_s": span_s, "reset": reset, "samples": len(run),
@@ -402,6 +439,24 @@ def trailing(snaps, cur, t0, spans=AVG_SPANS):
             # the exact multiplier between the per-stream rate and the summed one, so the page can print both and
             # the reader can check the arithmetic.
             "decode_streams": (dtl / span_s) if (dtl is not None and span_s) else None,
+            # The fan-out has two causes and the span cannot tell them apart by itself: seconds with nothing in
+            # flight (the engine waits for the next request), and seconds with several streams sharing the step.
+            # `busy_frac` is the first: the share of the span covered by gaps in which the engine did something,
+            # judged at the ring's 5 s spacing (see the loop above -- an upper bound at that resolution, not a
+            # count of busy seconds). Dividing the fan-out by it leaves `streams_while_busy`, the second: streams
+            # per active gap-second. Measured on live traffic 2026-11-04 (a 903 s span, notes/webui.md): fan-out
+            # 0.12, log-derived duty 0.47, mean running 0.31, 0.47 x 0.31 = 0.14 -- the paths agree in shape, and
+            # none of them is an identity, which is why the page keeps the split in the tooltip and never in the
+            # arithmetic it prints next to the big number. The exact one is `decode_streams`.
+            # Why this field exists at all: vLLM writes its stat line at DEBUG level when the engine is idle
+            # (v1/metrics/loggers.py, `log_fn = logger.debug if self.engine_is_idle`), so the lines an operator
+            # tails are an unweighted mean over the BUSY 10 s intervals -- over that same span the printed lines
+            # average 42.4 tok/s while the tokens over all 903 s is 19.7, 2.15x, and the reader concludes the card
+            # is wrong. It is not: the card is upstream's own basis, and this fraction is the missing factor.
+            "busy_s": busy,
+            "busy_frac": (busy / span_s) if (busy is not None and span_s) else None,
+            "streams_while_busy": ((dtl / span_s) / (busy / span_s))
+            if (dtl is not None and busy and span_s) else None,
             # The same fan-out per engine RECORD instead of per wall second (a step advances every decoding
             # stream once). It relates to gen_per_step the way decode_streams relates to the two rates: 16,419 ITL
             # observations over 5,753 records = 2.85 streams a record, and 7.05 generated tokens a record at 2.47
@@ -1210,6 +1265,10 @@ def launch_hint(meta):
                      ("prefix_cache", "PREFIX_CACHE")):
         if meta.get(key) not in (None, ""):
             parts.append(f"{env}={meta[key]}")
+    # `host` is deliberately NOT part of the hint even though the recipe file records it. The bind address is a
+    # fact about the box, not about the launch, and it comes from the machine-local env the launcher sources
+    # (~/.config/r9700-stack/native.env). A page that outlives the box must not hand out a hard-coded address as
+    # if it were the recipe.
     return " ".join(parts + ["WEBUI=same", "bash", "serve/native-flashnext.sh"]) or None
 
 

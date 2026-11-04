@@ -1358,29 +1358,53 @@ ck("the decode headline row shows COUNTS, not a per-stream average",
 # span summed to 45.1 over wall seconds). The payload keeps the per-stream figures for the request rows and the
 # titles; they must never reach a card's value, slot list or waveform. The prefill card is the deliberate
 # exception: its headline IS a per-prefill-second rate, and its label and note line say so.
-ck("the decode card's headline is DECODE output per DECODE second, and its label names the denominator",
-   'big("rate-gen", perS, "tok/s")' in monjs
-   and "A.decode_stream_tok_s : rate.decode_stream_tok_s" in monjs
-   and "Decode · per stream-second" in monhtml
+ck("the decode card's headline is the SUMMED figure -- output per WALL second -- and its label names that denominator",
+   'big("rate-gen", wallV, "tok/s")' in monjs
+   and "A.generation_tok_s : rate.generation_tok_s" in monjs
+   and "Decode · summed, wall second" in monhtml
    and "Decode · summed, decode time" not in monhtml
    and '"decode_tok_s"' not in monjs and '"stream_tok_s"' not in monjs
    and "decode_time_pct" not in monjs and "prefill_tok_s_credited" not in monjs
    and "decode_tok_s" not in monhtml)
-ck("the wall-second sum is NOT dropped: it sits on the note line labelled 'summed', with the fan-out as the "
-   "multiplier that reaches it from the headline",
-   'slot("note-gen", isnum(wallV)' in monjs
-   and "A.generation_tok_s : rate.generation_tok_s" in monjs
-   and "summed`" in monjs and "\\u00d7${streamsV" in monjs and "% dec" not in monjs,
-   "the multiplier is now conditional (it has no denominator before the first decode step), but the summed "
-   "figure never goes to a dash with it: wall seconds always exist")
-ck("the card's spans line and poll line stay on the headline's basis (no silent switch to the wall sum mid-card), "
-   "and a poll with no decode step says so instead of a 0",
-   'spanList("decode_stream_tok_s")' in monjs and 'spanList("generation_tok_s")' not in monjs
-   and "poll \\u00b7 no decode step" in monjs and '"poll \\u00b7 no window"' not in monjs)
+ck("the per-stream reading is NOT dropped: it sits on the note line with its unit spelled, and the fan-out is the "
+   "multiplier that reaches the headline from it",
+   'slot("note-gen", isnum(perS) && isnum(streamsV)' in monjs
+   and "A.decode_stream_tok_s : rate.decode_stream_tok_s" in monjs
+   and "tok/stream-s" in monjs and "\\u00d7${fanS(streamsV)}" in monjs and "% dec" not in monjs
+   and "no decode step" in monjs,
+   "with no decode step in the window that pair has no denominator, so the slot says which case it is; the headline "
+   "keeps its denominator (wall seconds always exist), a measured 0 included")
+ck("a small fan-out prints with enough digits to check by hand: the harness multiplies the printed pair against the "
+   "headline, and two decimals made 0.0168 into x0.02 (168 x 0.02 = 3.4 against a headline of 2.8)",
+   "const fanS = (v) => v < 0.1 ? v.toFixed(3) : (v < 10 ? v.toFixed(2) : dnum(v, 1));" in monjs
+   and "${fanS(streamsV)}" in monjs
+   and "streamsV < 10 ? streamsV.toFixed(2) : dnum(streamsV, 1)}" not in monjs)
+ck("the card's spans line and poll line stay on the headline's basis (no silent switch to the per-stream figure "
+   "mid-card), and the note line says when a window has no decode step",
+   'spanList("generation_tok_s")' in monjs and 'spanList("decode_stream_tok_s")' not in monjs
+   and "poll \\u00b7 no window" in monjs and '"poll \\u00b7 no decode step"' not in monjs)
+# The summed headline IS upstream's own basis -- vLLM's stat line divides the same generated tokens by the same
+# interval. Verified against the engine's own printed lines on 2026-11-04: the lines imply 228,295 tokens since
+# boot, the counter says 228,333 (0.02%). What readers compare the card to is the LOG, and the log is a different
+# statistic: vLLM writes the line at DEBUG level when the engine is idle, so the lines an operator tails are an
+# unweighted mean over the busy 10 s intervals -- over one 903 s span the printed lines averaged 42.4 tok/s while
+# the same tokens over all 903 s were 19.7, 2.15x apart, and the missing factor is the duty cycle. The card answers
+# that objection with the two factors the span measured, and the waveform labels its own busy count.
+ck("the card states what the fan-out is made of, in figures the span itself measured (busy x streams while busy)",
+   "A.busy_frac" in monjs and "A.streams_while_busy" in monjs and "busy x " in monjs
+   and "logger.debug if" in monjs and "self.engine_is_idle" in monjs
+   and "A.busy_frac * A.streams_while_busy" not in monjs,
+   "the sentence has to be built from the span's own fields; nothing on the page multiplies factors it did not read")
+ck("the summed waveform names its busy count instead of leaving `20/90` to be guessed",
+   'keptWord: "busy"' in monjs and '${keptWord ? keptWord + " " : ""}' in monjs)
+ck("a cumulative counter's delta line carries no sign -- it cannot go negative without a restart, and the same slot "
+   "says `reset` when one happened -- because the character is what the six-digit case needs",
+   'parts.push(`${name} ${dnum(v)}`)' in monjs and "`${name} +${dnum(v)}`" not in monjs,
+   "measured on the live launch: `15m +79,766 · 14m +79,766` is 25 characters, and the tightest 4-up column is 24")
 ck("the trends waveform keeps the summed-wall basis and says why (a per-stream denominator does not exist in a "
    "window that was all prefill)",
    "hist.map((h) => h.gen_tok_s)" in monjs and "summed over WALL seconds" in monjs
-   and "Decode · summed, wall" in monhtml)
+   and "Decode · summed, trend" in monhtml)
 ck("the payload keeps the per-record figures the new card and its waveform read",
    "hist.map((h) => h.gen_per_step)" in monjs
    and open(os.path.join(ROOT, "serve/webui.py")).read().count("gen_per_step") >= 4)
@@ -1526,6 +1550,100 @@ compile(_pl, "probe-load-link.py", "exec")        # syntax only -- running it wo
 ck("the link probe sends exactly one request, samples at a stated rate, and states what it cannot show",
    _pl.count("urllib.request.Request(") == 1 and "max_tokens" in _pl and "HZ = 10.0" in _pl
    and "what it cannot show is whether the hop is marginal under a heavy" in _pl)
+# tools/prefix-replay.py answers "would a prefix cache pay for itself" by replaying the box's own conversation
+# records. It is a GPU-free, read-only instrument: the one thing that would make its answer worthless is it putting
+# load on the serve it is judging, so the checks are: no requests sent, the pool/block geometry taken from the live
+# serve rather than remembered, and the recorded decision carrying the numbers it produced.
+_pr = open(os.path.join(ROOT, "tools", "prefix-replay.py")).read()
+compile(_pr, "prefix-replay.py", "exec")            # syntax only -- running it tokenizes four days of transcripts
+ck("the replay only reads: one GET (/api/status for the pool), no POST, no request bodies, nothing sent to /v1",
+   _pr.count("urlopen(") == 1 and "Request(" not in _pr and "POST" not in _pr and "/v1/" not in _pr)
+ck("its geometry comes from the live serve, so the simulation cannot drift from the machine it is judging",
+   "num_gpu_blocks" in _pr and "effective_attention_block_size" in _pr and "block_size" in _pr
+   and "1175" in _pr.split("def main")[-1], "the 1175/880 pair may appear only as the fallback, not as the source")
+_nd = open(os.path.join(ROOT, "notes", "prefix-cache-decision.md")).read()
+ck("the recorded verdict states the numbers, the cost, and the two things that would reverse it",
+   "98.1%" in _nd and "571,078,640" in _nd and "99.1%" in _nd and "num_preemptions_total" in _nd
+   and "977,726" in _nd and "3.2%" in _nd and "4,992" in _nd and "538" in _nd)
+ck("and it records the short-prompt re-measurement that could have reversed it, with the mechanism number",
+   "1.00" in _nd and "188 ms" in _nd and "3,323" in _nd and "5056943" in _nd
+   and "955,136" in _nd and "83.0%" in _nd,
+   [k for k in ("1.00", "188 ms", "3,323") if k not in _nd])
+ck("and the README points at it instead of quietly asserting the old default forever",
+   "prefix-cache-decision.md" in open(os.path.join(ROOT, "README.md")).read())
+# serve/native-flashnext.sh now carries two kinds of default, and the difference between them is the point: a knob
+# that changes what a measured number means lives in the launcher next to its measurement, while a fact about THIS
+# machine lives in a machine-local file the launcher sources and names in the log
+# (notes/launch-methodology.md section 10). Checked by running the launcher's own preview, not by reading for a
+# string: the recipe of a running serve was overwritten by a DRY run on 2026-11-04, and the About page of a cache-off
+# engine then described a cache-on launch for 20 minutes.
+lfsrc = open(ROOT + "/serve/native-flashnext.sh").read()
+ck("the repo's own bind default is loopback, which is also upstream's (`args.host or \"127.0.0.1\"`)",
+   ': ${HOST:=127.0.0.1}' in lfsrc and '--host "$HOST"' in lfsrc and "--host 0.0.0.0" not in lfsrc)
+ck("the prefix cache is ON by default, which is upstream's default, and PREFIX_CACHE=0 still turns it off",
+   ': ${PREFIX_CACHE:=1}' in lfsrc and '[ "$PREFIX_CACHE" = 0 ]' in lfsrc,
+   [l.strip() for l in lfsrc.splitlines() if "PREFIX_CACHE" in l and not l.startswith("#")][:3])
+ck("and the new default cites the measurement that argued the other way, so the next person inherits the argument",
+   "5056943" in lfsrc and "ttft_breakdown.py" in lfsrc and "2.8k" in lfsrc,
+   "this is how PREFIX_CACHE ended up off on one launcher and on on the other: the default outlived the reason")
+
+
+def _dry(extra):
+    env = {**os.environ, "DRY": "1", "FORCE": "1", "MAXLEN": "262144", "NSEQ": "32", "NBT": "8192"}
+    env.update(extra)
+    r = subprocess.run(["bash", ROOT + "/serve/native-flashnext.sh"], env=env,
+                       capture_output=True, text=True, timeout=180)
+    txt = r.stdout + r.stderr
+    return txt, next((l for l in txt.splitlines() if l.startswith("launch:")), "")
+
+
+with tempfile.TemporaryDirectory() as td:
+    _out, line = _dry({"LOCAL_ENV": str(Path(td) / "absent.env")})
+    ck("with no machine-local env the launch binds loopback, and the cache stays on",
+       "--host 127.0.0.1" in line and "--no-enable-prefix-caching" not in line, line[:220])
+    _le = Path(td) / "box.env"
+    _le.write_text("HOST=10.20.30.40\n")
+    _out2, line2 = _dry({"LOCAL_ENV": str(_le)})
+    ck("a machine-local env beats the repo default and names itself in the log",
+       "--host 10.20.30.40" in line2 and "local env: " + str(_le) in _out2, line2[:180])
+    _out3, line3 = _dry({"LOCAL_ENV": str(_le), "PREFIX_CACHE": "0"})
+    ck("PREFIX_CACHE=0 remains the escape hatch, and is the only thing that re-adds the flag",
+       "--no-enable-prefix-caching" in line3, line3[-200:])
+    _meta = Path(td) / "meta.json"
+    _side = subprocess.run(["pgrep", "-cf", "webui[.]py"], capture_output=True, text=True).stdout.strip()
+    _out4, _l4 = _dry({"LOCAL_ENV": str(_le), "WEBUI": "1", "WEBUI_META": str(_meta)})
+    _side2 = subprocess.run(["pgrep", "-cf", "webui[.]py"], capture_output=True, text=True).stdout.strip()
+    ck("a preview touches no state: DRY writes no recipe file and starts no sidecar",
+       not _meta.exists() and "NOT written (preview)" in _out4 and _side == _side2,
+       f"sidecars {_side} -> {_side2}; recipe file written: {_meta.exists()}")
+    _env = {**os.environ, "METAONLY": "1", "FORCE": "1", "MAXLEN": "262144", "NSEQ": "32", "NBT": "8192",
+            "LOCAL_ENV": str(_le), "WEBUI": "same", "WEBUI_META": str(_meta)}
+    _r = subprocess.run(["bash", ROOT + "/serve/native-flashnext.sh"], env=_env,
+                        capture_output=True, text=True, timeout=180)
+    _m = json.loads(_meta.read_text()) if _meta.exists() else {}
+    ck("METAONLY=1 refreshes the recipe file of a launch that is already up, and records the address it bound",
+       _r.returncode == 0 and _meta.exists() and _m.get("host") == "10.20.30.40"
+       and _m.get("prefix_cache") == "1" and "nothing started" in (_r.stdout + _r.stderr),
+       str(_m)[:240])
+
+
+def _localenv():
+    return Path.home() / ".config/r9700-stack/native.env"
+
+
+ck("this box's machine-local env exists, binds 0.0.0.0, and lives outside the repo",
+   _localenv().exists() and "HOST=0.0.0.0" in _localenv().read_text() and not str(_localenv()).startswith(ROOT),
+   str(_localenv()))
+ck("the decision note answers the measurement that turned the cache off instead of ignoring it",
+   all(k in _nd for k in ("5056943", "285 ms", "ITEMS=0,66,152", "How it landed")),
+   [k for k in ("5056943", "285 ms", "ITEMS=0,66,152", "How it landed") if k not in _nd])
+ck("the measurement series says which recipe its numbers were taken on",
+   "cache-off numbers" in open(os.path.join(ROOT, "notes/context-262k.md")).read()
+   and "cache-off number" in open(os.path.join(ROOT, "README.md")).read())
+ck("the local-env rule is written down, including the preview rule it came out of",
+   all(k in open(os.path.join(ROOT, "notes/launch-methodology.md")).read()
+       for k in ("LOCAL_ENV", "A box fact is not a repo fact", "a preview must not touch state")))
+
 # tools/recipe-check.py exists because measuring things here needs config changes, and a test config left running
 # silently changes the meaning of every number the Monitor shows. So: get "production" from the launcher itself (a
 # copied default goes stale the day native-flashnext.sh changes), and answer "改回来没有" in one command.
@@ -1720,6 +1838,13 @@ ck("the hint reproduces the standing recipe from the launch's own parameters",
    W.launch_hint({}) is None
    and W.launch_hint({"maxlen": "262144", "nseq": "32", "nbt": "8192", "prefix_cache": "0"})
    == "MAXLEN=262144 NSEQ=32 NBT=8192 PREFIX_CACHE=0 WEBUI=same bash serve/native-flashnext.sh")
+# The hint must follow the recorded recipe, not a remembered default: the same code on a cache-on launch says
+# PREFIX_CACHE=1, and the box's bind address stays out of it (it comes from the machine-local env the launcher
+# sources, so a page that outlives the box does not hand out an address as if it were the recipe).
+ck("and it follows what the launch recorded rather than what the defaults are today",
+   W.launch_hint({"maxlen": "262144", "nseq": "32", "nbt": "8192", "prefix_cache": "1", "host": "0.0.0.0"})
+   == "MAXLEN=262144 NSEQ=32 NBT=8192 PREFIX_CACHE=1 WEBUI=same bash serve/native-flashnext.sh",
+   W.launch_hint({"maxlen": "262144", "nseq": "32", "nbt": "8192", "prefix_cache": "1", "host": "0.0.0.0"}))
 cjs = open(os.path.join(ROOT, "serve/web/common.js")).read()
 ck("card rows carry the identity a person at the machine needs (BDF and slot), and every one of them is escaped",
    "PCI ${esc(g.bus)}" in cjs and "slot ${esc(g.slot)}" in cjs and "[g.card && esc(g.card), where]" in cjs
@@ -2047,17 +2172,49 @@ ck("every field the span is asked to report is fed by a name the ring actually s
         "accept_pct", "accepted_per_draft", "running_mean", "waiting_mean", "kv_used_pct_mean",
         "generation_tokens", "prompt_tokens", "records", "gen_per_step", "drafts_per_step", "decode_time_s",
         "decode_streams", "streams_per_record", "decode_time_req_s", "prefill_streams", "prompt_read_tokens",
-        "prefill_stream_tok_s_credited", "prefix_hit_pct")),
+        "prefill_stream_tok_s_credited", "prefix_hit_pct", "busy_s", "busy_frac", "streams_while_busy")),
    str({k: _avg.get(k) for k in _avg if _avg.get(k) is None})[:220])
 # How many prefills are in flight, as its own field: prefill_tok_s and prompt_tok_s agreed to 4% on this launch
 # because long prefills serialize, and a reader cannot tell that coincidence from a law without the factor.
 ck("the prefill span reports its own stream factor (1.0 prefill-second a second = prefills serialize here)",
    abs(_avg["prefill_streams"] - 1.0) < 1e-9, str(_avg["prefill_streams"]))
 
+# The fan-out has two causes and a span cannot tell them apart by itself: seconds with nothing in flight, and
+# seconds with several streams sharing the step. This matters because of where readers compare the card to: vLLM
+# writes its stat line at DEBUG level when the engine is idle (v1/metrics/loggers.py, `log_fn = logger.debug if
+# self.engine_is_idle`), so the lines an operator tails are an unweighted mean over the BUSY 10 s intervals.
+# Measured 2026-11-04 over one 903 s span: the log printed 420 s of it, those printed lines average 42.4 tok/s,
+# and the same tokens over all 903 s -- the card's summed figure, which is upstream's own basis -- is 19.7. 2.15x
+# apart, and the missing factor is this field. (The 42.4 figure is the mean of the PRINTED intervals, which is what
+# a human reading the log believes; it is not a throughput and the card must not be compared with it.)
+_allbusy = W.trailing(_snaps, _cur(124.0), 124.0)["1m"]
+ck("a span with work in every sample is busy for all of it, and the fan-out is then all streams",
+   abs(_allbusy["busy_frac"] - 1.0) < 1e-9 and abs(_allbusy["busy_s"] - _allbusy["span_s"]) < 1e-6
+   and abs(_allbusy["streams_while_busy"] - _allbusy["decode_streams"]) < 1e-9,
+   f"busy {_allbusy['busy_frac']} of {_allbusy['span_s']} s, streams_while_busy {_allbusy['streams_while_busy']}")
+# Traffic that STOPS mid-span is the case a gauge read at instants gets wrong: a 5 s instant can fall in a gap and
+# call a worked second idle. The engine's own RECORD counter cannot: a step ran in a gap exactly when that counter
+# moved across it, so this fixture freezes every counter the moment the last request leaves (60 s of work, then 40
+# s of nothing inside a 64 s span).
+_cold = [W.avg_sample(_cur(min(float(t), 90.0), 6 if t <= 90 else 0), float(t)) for t in range(60, 125, 5)]
+_c = W.trailing(_cold, _cur(90.0), 124.0)["1m"]
+ck("traffic that stops mid-span halves the duty while the streams that WERE running keep their count",
+   0.45 < _c["busy_frac"] < 0.68 and _c["busy_frac"] < _allbusy["busy_frac"] - 0.3
+   and abs(_c["busy_frac"] * _c["streams_while_busy"] - _c["decode_streams"]) < 1e-9
+   and 1.4 < _c["streams_while_busy"] <= 2.0,
+   f"busy_frac {_c['busy_frac']} x streams_while_busy {_c['streams_while_busy']} = decode_streams {_c['decode_streams']}")
+_nobody = [W.avg_sample(_cur(60.0, 0), float(t)) for t in range(60, 125, 5)]
+_nb = W.trailing(_nobody, _cur(60.0), 124.0)["1m"]
+ck("a span with nothing in flight has no streams-while-busy -- 0/0 is not a measurement of concurrency",
+   _nb["busy_frac"] == 0.0 and _nb["busy_s"] == 0.0 and _nb["streams_while_busy"] is None, str(_nb)[:200])
+
 _bad = _cur(124.0); _bad["generation_tokens_total"] = [10.0, 10.0, 1]      # the engine restarted inside the span
 _r = W.trailing(_snaps, _bad, 124.0)["1m"]
 ck("a counter that went DOWN is reported as a restart, not as a large negative rate",
    _r["reset"] and _r["generation_tok_s"] is None and _r["decode_stream_tok_s"] is None
+   # ...and the duty goes with them: the gauge samples in that span straddle two processes, so a busy share of it
+   # would be a share of nothing.
+   and _r["busy_s"] is None and _r["busy_frac"] is None
    and _r["accept_pct"] is None, str(_r)[:200])
 # The families the page never SHOWED are where a negative used to leak out: a restart that leaves the generated
 # token counter ahead but the request count behind produced a `requests_per_min` of -8.4 and means built on a
@@ -2082,6 +2239,11 @@ ck("a ring younger than the span says what it averaged instead of lending the sp
 
 _mid = [W.avg_sample(_cur(t), float(t)) for t in range(40, 125, 5)]
 _m = W.trailing(_mid, _cur(124.0), 124.0)
+ck("duty is a share and never reads above 100% (the first sample in a span is charged the nominal ring spacing)",
+   all(0.0 <= x["busy_frac"] <= 1.0 for x in _m.values() if "busy_frac" in x)
+   and all(0.0 <= x["busy_frac"] <= 1.0 for x in W.trailing(_snaps, _cur(124.0), 124.0).values()
+       if "busy_frac" in x),
+   str({k: v.get("busy_frac") for k, v in _m.items()})[:200])
 ck("and the same page at the same moment can have a real 1 m and a still-labelled 15 m",
    abs(_m["1m"]["span_s"] - 64.0) < 1e-6 and _m["15m"]["generation_tok_s"] is not None
    and _m["15m"]["span_s"] < 900 and _m["1h"]["span_s"] < 90,
@@ -2181,7 +2343,17 @@ ck("whether the prefix cache is ON is stated, from the engine's own config -- no
    and 'const pcOff = pcState === "false" || pcState === "0"' in monjs
    and "` cache off`" not in monjs and "cache off" in monjs
    and "This launch runs with the prefix cache OFF" in monjs
-   and '["Prefix caching", yesno(c.enable_prefix_caching)]' in (WEB / "about.js").read_text())
+   and '["Prefix caching", cachestate(c)]' in (WEB / "about.js").read_text())
+# yes/no could not tell "off" from "on, and structurally unable to hit": a hit needs a whole block, which this build
+# publishes as hash_block_size=None -> the physical block size. So the row states the granularity, and the labels the
+# granularity comes from have to be in the list the reader pulls out of vLLM's cache_config_info.
+_ab = (WEB / "about.js").read_text()
+ck("the cache row says where a hit can land, and reads it from the engine's labels",
+   "a hit lands on a" in _ab and "hash_block_size" in _ab and "enable_mamba_shared_prefix_checkpoint" in _ab
+   and "toLowerCase() !== \"true\"" in _ab, [l.strip() for l in _ab.splitlines() if "hit lands" in l])
+ck("and the payload keeps the two labels that answer it, with the mamba_block_size trap labelled in the source",
+   all(k in wsrc for k in ('"hash_block_size"', '"enable_mamba_shared_prefix_checkpoint"', "ordering artifact")),
+   [k for k in ("hash_block_size", "enable_mamba_shared_prefix_checkpoint") if k not in wsrc])
 ck("and the state is only claimed when the engine published it: an unknown config keeps the silence, not an "
    "invention",
    monjs.count("pcOff") == 3 and "pcState === \"unknown\"" not in monjs)

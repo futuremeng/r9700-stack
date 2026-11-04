@@ -137,15 +137,16 @@ the denominator. It follows that the step interval contains the chunked prefill 
 a chunk step, ~20 ms without one), so an ITL-shaped denominator excludes queue, prefill-before-first-token and
 no-token steps — **not** prompt chewing, whatever a card's tooltip used to claim.
 
-The card leads with **`decode_stream_tok_s`: decode output ÷ decode time** (the reading asked for directly — total
-decode output over total decode time — and the same quantity a request row prints, so the card and the rows under it
-read alike: 152 tok/s on a live burst whose rows ran 160-200). The wall sum is kept, labelled: the note line reads
-`22 summed ×0.15`, i.e. headline × fan-out (`decode_streams` = stream-seconds ÷ wall seconds, a COUNT with no 100%
-ceiling: 0.15 serialized, 2.60 loaded). Its waveform stays on the summed-wall basis — the per-stream denominator
-does not exist in a window that was all prefill or idle, and a line of gaps reads as an idle box — and its card
-label names the basis it draws. The identities the sidecar publishes and `tests/test_webui.py` pins:
+The card leads with **`generation_tok_s`: summed decode output ÷ wall seconds** -- the throughput reading, what a
+second of this traffic produces -- and keeps the other reading labelled on the note line: `152 tok/stream-s ×0.15`,
+i.e. per-stream-second × fan-out, which multiplies back to the headline exactly (`decode_streams` = stream-seconds ÷
+wall seconds, a COUNT with no 100% ceiling: 0.15 serialized, 2.60 loaded). The per-stream figure is the same quantity
+a request row prints (152 tok/s on a live burst whose rows ran 160-200), which is why it stays on the card instead of
+disappearing into the payload. Its waveform is on the same summed-wall basis as the headline -- the card is labelled
+`Decode · summed, trend` -- because the per-stream denominator does not exist in a window that was all prefill or
+idle, and a line of gaps reads as an idle box. The identities the sidecar publishes and `tests/test_webui.py` pins:
 
-    headline × decode_streams  ==  the summed figure on the note line
+    note-line tok/stream-s × decode_streams  ==  the summed headline
     152 × 0.15 = 22 (live burst, serialized)      17.3 × 2.60 = 45.1 (live launch, 15 min, traffic on)
     gen_per_step      ==  tokens_per_step × streams_per_record      42.5 = 2.47 × 17.2 records/s
 
@@ -1239,17 +1240,47 @@ the harness can measure it. Three lines gave up their tail to pay for it -
 |---|---|---|
 | `kv-note1` | `1,009,899 tok · 37% · 90s` | `1,009,899 tok · 37%` (the ring's span is in the trend caption already, and in the title) |
 | `*-note2` (the four waveforms) | `peak 22,886 · 74/90 · 90s` | `peak 22,886 · 74/90` (25 characters was over the 24 budget) |
-| `note-gen` | `18.7 summed ×0.93` | unchanged, but the multiplier now drops out on its own when the window has no decode stream-seconds, instead of the whole line going to a dash |
+| `note-gen` | `145 tok/stream-s ×0.89` | the per-stream reading, with the fan-out that multiplies it back to the summed headline; the pair drops out together when the window has no decode stream-seconds, and the slot says `no decode step` instead of printing a rate with no denominator |
 
-and two invariants were added to `tests/render-monitor.mjs`, checked against the **rendered text** rather than
-against which helper the page calls, so they hold whatever produces the string: no slot may print a `k`/`M`
+**When the digits win the argument, a span is dropped -- never a digit (2026-11-04).** `spans-gentot` grew into the
+24-character budget on its own, by arithmetic nobody argued about: two spans of a counter delta in five-digit numbers
+(`15m +79,766 · 14m +79,766`) is already 25 characters once the digits are written out rather than abbreviated. Two
+fixes, in order, both in `spanSigned()`: the `+` went, because a cumulative counter's delta cannot fall inside a
+window without the engine having restarted and this same slot reporting it as `reset` -- the sign was decoration, and
+the harness already forbids a bare signed number in a slot; and when the line still overflows, a **span** is dropped
+and named in the title. What goes first is a span repeating another (a launch 16 minutes old has a 900 s "15m" and a
+960 s "1h" holding the same count -- two labels on one window), and after that the widest, because the card's big
+number IS the since-launch total. `tests/render-monitor.mjs` allows those two omissions and only those: a span whose
+window is its own and whose line would have fit, vanishing, is still BAD.
+
+**A fan-out has to be printed to be checked (2026-11-04).** The render harness multiplies the two figures on the
+decode card's note line and compares the product with the headline, and it failed on real data: a fan-out of 0.0168
+printed as `x0.02`, so the card showed `189 tok/stream-s x0.02` under a headline of `2.8` -- a reader doing the
+multiplication gets 3.8 and concludes the card is wrong, which is the same class of failure as a wrong denominator,
+just harder to see. `fanS()` now prints three decimals below 0.1 (two up to 10, grouped above that); the extra digit
+costs one character and the harness's width check confirms the slot still fits the 24-character column.
+
+Two invariants are checked by `tests/render-monitor.mjs` against the **rendered text** rather than against which
+helper the page calls, so they hold whatever produces the string: no slot may print a `k`/`M`
 abbreviation (`/\d(?:[.,]\d+)?[kM]\b/`), and no slot may show a bare signed number. The second one is not
 hypothetical - the prefill waveform is drawn on the KV pool's growth, which goes negative when finishing requests
 free blocks, and its caption used to read `now -172,106 · avg 7,939` under a card labelled prefill. It now reads
 `now draining 172,106`, with the average moved to the title (both together are 32 characters against a budget of
 24); the sign is still in the drawn waveform, which autoscales through zero for exactly this reason.
 
-**The page could not answer "are the caches in effect?" (2026-11-04).** The prefill note line printed a cache
+**The page could not answer "are the caches in effect?" (2026-11-04).**
+
+**What the payload now has to say about the cache (2026-11-04, the cache-on launch).** Two more of vLLM's
+`cache_config_info` labels are read: `hash_block_size` (that is `prefix_match_unit`; `None` means a hit can only land
+on a whole physical block, 832 tokens on this launch) and `enable_mamba_shared_prefix_checkpoint` (the fork's knob for
+resuming an MTP sibling at a shared-prefix junction; off). About renders the pair as one line - `on · a hit lands on a
+832-token boundary` - rather than a bare yes/no, because yes/no was the question that could not distinguish "on and
+missing" from "on and structurally unable to hit". One value in the payload is a trap and is labelled as one in the
+source: `mamba_block_size` reads **16** while the pool's block is 832, because vLLM's hybrid hook copies
+`cache_config.block_size` into it before the platform raises the attention block size (boot log: "Setting attention
+block size to 832 tokens"), so 832 / 16 is not a checkpoint count. `mamba_cache_mode` is not in those labels at all;
+the boot log's `Mamba cache mode is set to 'align'` is the only place the engine states it, and the page does not
+claim it. The prefill note line printed a cache
 percent only when the engine had served hits, which is right (`0% cache` on a `PREFIX_CACHE=0` launch is a
 permanent nothing), but a *missing* clause reads identically whether the feature is off, on-and-missed, or
 unmeasured. The engine publishes the state itself - `config.enable_prefix_caching`, the same string its boot line
@@ -1370,9 +1401,11 @@ two decode-seconds families agreeing to 0.08% is one sum sampled twice, not corr
 denominator does **not** exclude prompt chewing (the step interval contains the chunked prefill computed in that
 step). `decode_tok_s` was a per-stream rate wearing a "summed" label, and `decode_time_pct` was a fan-out printed
 as a percent — 260% on a span where 2.6 streams decoded at an average moment. Both names are gone. The card first
-led with the wall sum and printed `×2.60 decoding`; the same day it went the other way round and now leads with the
-per-stream-second rate, the wall sum labelled `summed` on its note line (see "Two decode denominators, one
-identity" above).
+led with the wall sum and printed `×2.60 decoding`; the same day it went the other way round (per-stream-second
+headline, wall sum on the note line), and on 2026-11-04 it came back to the **summed headline** with the per-stream
+figure and its unit spelled out on the note line. What has not changed since the fix is the substance: both readings
+are on the card, their denominators are named in the payload field names, and the product is checked by the render
+harness (see "Two decode denominators, one identity" above).
 
 The summed card still read ~15-20 tok/s, and the follow-up question was the right one: **what is the time basis, and
 shouldn't the seconds spent chewing prompts not count?** It shouldn't, and now they don't -- with the summed figure kept
@@ -1455,10 +1488,12 @@ long one". Requests with no timings or one token are dropped. `strata_cli/overvi
   prefix cache *and* KV-connector transfers), falling back to `prefix_cache_hits_total` (local cache only, counted
   at admission) — in the span (`prefill_stream_tok_s`), in the poll (`prompt_read_tok_s`) and on the engine-state
   line (`N prompt tok/s read`). vLLM credits cached prefix tokens to `prompt_tokens_total`, so with the cache on a
-  rate over credited tokens is high by the hit rate. `PREFIX_CACHE=0` on this recipe, so read == credited today and
-  the live numbers did not move (`7,177 tok/s` read, `wall 6,180` unchanged); the field pair
-  `prefill_stream_tok_s` / `prefill_stream_tok_s_credited` exists so the day the cache goes back on, the difference
-  is visible rather than implied. When hits are non-zero the prefill card's note line gains `· N% cache` (22
+  rate over credited tokens is high by the hit rate. That was written on a `PREFIX_CACHE=0` recipe, so read ==
+  credited then and the live numbers did not move (`7,177 tok/s` read, `wall 6,180` unchanged). The cache went ON on
+  this recipe the same day (notes/prefix-cache-decision.md), so `prefill_stream_tok_s_credited` alongside
+  `prefill_stream_tok_s` is no longer a pair held in reserve: at the 98.2%
+  hit rate a replay of this box's own conversations measures, a rate over credited tokens would read ~55x the same
+  rate over read tokens (`1 / (1 - 0.982)`), which is why the card prints the read one. When hits are non-zero the prefill card's note line gains `· N% cache` (22
   characters, inside the tightest slot's 24); with the cache off it says nothing, so it is not printed.
 - **The zero discipline.** A span with no decode seconds has no decode rate. The card shows a dash, `poll · no decode
   step`, `poll · nothing credited` -- the same refusal in the same three places.
@@ -1478,3 +1513,74 @@ to match how llama.cpp's dashboards read those gauges. The vLLM-shaped names it 
 decode denominator uses its `_sum` and checks it against `request_decode_time_seconds` (0.08% apart on this launch).
 Its `vllm:num_requests_running` help text says "Requests reading their prompt or generating" -- the same gauge
 semantics that took the per-stream average off our headline.
+
+## The summed decode figure, re-checked against upstream's own arithmetic and against Strata's (2026-11-04)
+
+The headline moved to the summed figure, and it still read wrong to a human. So it was checked against the two
+places a reader compares it to, instead of argued about.
+
+**Upstream's aggregate IS this number.** `vllm/v1/metrics/loggers.py` computes
+`generation_throughput = self._get_throughput(self.num_generation_tokens, now)`: tokens accumulated since the last
+stat line over the wall seconds since the last stat line (`VLLM_LOG_STATS_INTERVAL`, default 10.0 s). Tokens over
+wall seconds -- `generation_tok_s`. Measured on the running launch rather than inferred: every printed line of this
+boot, multiplied by its 10 s interval, implies **228,295 generated tokens**; `vllm:generation_tokens_total` says
+**228,333**. 0.02%, with the residual at the two edges of the log. Repeated the same day over a 62 s window and a 286 s window:
+the payload's `generation_tok_s` and the log-implied aggregate come out identical to the first decimal (3.9 and 3.9,
+90.9 and 90.9).
+
+**What the log is not is an average a reader can compare against.** Same file:
+`log_fn = logger.debug if self.engine_is_idle else logger.info` -- an idle interval is never printed. Over one
+903 s span the log printed 420 s of it; the printed lines average **42.4 tok/s** while the same tokens over all
+903 s are **19.7**. A factor of 2.15 that comes entirely from intervals vLLM skipped, not from intervals it
+measured. The card is upstream's basis; the tail of the log is the mean of the busy intervals; neither is wrong, and
+the card now says which of its seconds were empty rather than leaving the reader to find the gap.
+
+**Strata's headline is the other reading.** `serve/web/app.js`:
+`avgDecode = totals.output_tokens / (totals.decode_ms / 1000)`, captioned "Decode · run average" and described as
+"token-weighted, the same figure the engine's DONE lines and Prometheus report"; `answer_speed` (`serve/server.py`)
+is "the one definition of answer speed: every token the model produced ... over the decode time, first generated
+token to last", and it refuses a one-token reply because a single token has no first-to-last span. That denominator
+is decode seconds, i.e. `decode_stream_tok_s` here, and the `produced >= 2` rule is the same discipline as dividing
+by `output_tokens - 1` instead of `output_tokens`. Strata has no summed-over-wall card at all: the summed number is
+this page's, which is exactly why its denominator has to be spelled out on it.
+
+**The prompt side, probed rather than reasoned about.** Three identical 2,881-token calls, counters differenced
+across them:
+
+    prompt_tokens_total          +8,643  = 3 x 2,881: the prompt AS CALLED, cached tokens included
+    prompt_tokens_cached_total   +3,328  = prefix_cache_hits_total: the reuse the engine granted
+    prompt_tokens_by_source      +3,328 local_cache_hit, +5,315 local_compute -- and the two sum to the 8,643
+    iteration_tokens_total_sum   +5,318  = 5,315 computed prompt tokens + 3 generated, exactly
+
+and over the whole boot the log's "Avg prompt throughput" accumulates the COMPUTED side: 1,791,798 implied by the
+printed lines against 1,797,485 of `local_compute`. So the log's prompt line and the payload's READ tokens are one
+quantity, and on a launch whose hit rate is 95%, `prompt_tokens_total` is 22x that quantity. The credited figure
+stays on the card as a credited figure and never becomes a speed on its own.
+
+**What came out of it: the fan-out's two factors, and the resolution of each.** Each span now carries `busy_s`,
+`busy_frac` and `streams_while_busy`. A gap of the ring's 5 s spacing counts as worked when the engine's RECORD
+counter moved across it (`iteration_tokens_total_count` -- a step ran exactly when that moved), or when a request was
+in flight at either end of it. That is an **upper bound at 5 s resolution**, not a count of busy seconds: measured on
+a 62 s span holding four 0.45 s requests, this says 0.33 of the span while the engine's own log says 0.65 of it, and
+neither is the truth -- vLLM marks a whole 10 s interval for a request that took half a second, and the ring marks a
+whole 5 s gap for the same work. The gauge alone was worse still: read at instants it calls a worked gap idle when a
+request arrives and finishes between two samples, which pushes `streams_while_busy` up (measured 0.46 against the
+log's 0.66 on a 286 s span before the RECORD counter was used). What is *not* granular is `decode_streams`: it comes
+from counters and is exact, and the product `busy_frac x streams_while_busy` is that exact figure by construction --
+so the split is a ratio answer to "idle, or sharing?", never a precision claim, and it stays in the tooltip rather
+than beside the big number. Each sample stands for the gap that follows it, and the first is charged back to the
+span's far edge -- charged only backwards, a span busy from its first sample to its last reads 0.9375 rather than
+1.0, which is the specific error `tests/test_webui.py` pins. The summed waveform's second note line prints
+`busy 20/90` where it used to print `20/90`, for the same reason a bare fraction should not have to be remembered.
+
+`tests/test_webui.py` pins the four cases: samples busy in every gap give duty 1.0 and `streams_while_busy ==
+decode_streams`; traffic that stops mid-span halves the duty while the streams that were running keep their count
+(a half-idle fixture whose counters keep moving would test the arithmetic and miss the point, so this one freezes
+them the moment the last request leaves); a span with nothing in flight has no `streams_while_busy` at all (0/0 is
+not a concurrency measurement); a restart inside the span gives no duty, because samples straddling two processes
+have no share to report.
+`tests/render-monitor.mjs` re-checks the product against the payload's own window and fails if the card measures
+the factors and never states them.
+
+The engine's own page (8080, in-process plugin) picks the fields up at its next restart; the sidecar has them now.
+The page's sentence is guarded by `isnum()`, so a payload without them stays silent rather than inventing a duty.

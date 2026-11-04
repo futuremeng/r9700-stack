@@ -170,10 +170,17 @@ filler with a unique nonce at the end, 250 output tokens, started from an idle e
 The 8.6x on wall and 38x on TTFT are the **best case**: the corpus is six copies of one prompt, so 133,120 of the
 346,754 prompt tokens were cache hits (block-quantized to the 880-token hybrid block, which the engine's own
 `prompt_tokens_cached_total` reported and the Monitor subtracted). Real traffic pays in proportion to how much of
-its prompt is actually shared, and a `PREFIX_CACHE=0` recipe stays the right default for the 262k measurement
-series (notes/kv-fp8-qsa.md). The number worth remembering is the shape: for identical-prefix traffic the cache
+its prompt is actually shared. That A/B ran while `PREFIX_CACHE=0` was still the recipe, and the whole 262k
+measurement series (notes/context-262k.md, notes/kv-fp8-qsa.md) was measured with the cache off -- those tables now
+carry that label. Extending the series means measuring on the recipe that runs, not keeping the old default so the
+tables stay comparable. The number worth remembering is the shape: for identical-prefix traffic the cache
 does not redistribute prompt work, it **removes** it -- which is the one lever the step census in
 notes/context-262k.md says the scheduler's fairness knobs cannot reach.
+
+That filler corpus is fine for pricing a mechanism and useless for deciding whether to run the cache always on.
+For the decision, replay the box's own conversations instead: `tools/prefix-replay.py`, and
+notes/prefix-cache-decision.md for the method, the numbers, and the verdict (98.1% of prompt tokens back, no extra
+queueing, 2% of pool as the price).
 
 ## 9. A death during measurement: 2026-11-04 07:53
 
@@ -192,3 +199,31 @@ The production serve died on its own, mid-traffic, and the Monitor noticed befor
 - **What was NOT the cause:** the prefix-cache test config had already been reverted and the test session killed
   (§8) 20 minutes earlier; the traffic in flight was real client traffic from 192.168.1.x, and the journal shows no
   test wave at 07:53. Recorded so the next reader does not blame the experiment that happened to be nearby.
+
+## 10. A box fact is not a repo fact: LOCAL_ENV
+
+`serve/native-flashnext.sh` sources `~/.config/r9700-stack/native.env` (path overridable with `LOCAL_ENV=`) before
+its own defaults, and prints `local env: <path>` at every launch. The dividing line for what may live in it:
+
+- **a knob that changes what a measured number means stays in the launcher**, next to the measurement that justifies
+  it, so `tools/recipe-check.py` can hold the running engine to it: `PREFIX_CACHE`, `NBT`, `NSEQ`, `UTIL`, `KVDTYPE`,
+  `MTP`, each with its numbers in the comment above it.
+- **a fact about this machine that changes no measurement goes in the local file.** Today it holds exactly one:
+  `HOST=0.0.0.0`. The repo's default is `127.0.0.1`, which is also upstream's (`args.host or "127.0.0.1"`), and that
+  is what a fresh checkout on a new box should bind: a committed `0.0.0.0` with no `--api-key` is an exposure that
+  follows the code to wherever the code goes next. On this box a loopback bind refuses the traffic it carries -- `ss`
+  shows 192.168.1.130 and 192.168.1.200 holding :8080 open -- so the address lives with the box, survives a
+  `git checkout` or `git reset`, and is named in the launch log instead of remembered by whoever typed the command.
+
+Provable rather than remembered: with `LOCAL_ENV=/nonexistent` the `DRY=1` line must read `--host 127.0.0.1`; with a
+local env naming another address it must print that address and the `local env:` line. The recipe file records
+`host` and the About page shows it, while `launch_hint()` deliberately leaves it out of the restore command because
+the launcher picks it up from the local file again -- a page that outlives the box must not hand out a hard-coded
+address as if it were the recipe.
+
+Found while adding this, and worth keeping as a rule: **a preview must not touch state.** `DRY=1` used to write the
+recipe file and could start the sidecar. A `DRY=1 WEBUI=same` run meant to read the launch line back overwrote the
+recipe of the serve that was actually running, so a cache-off engine's About page described a cache-on launch and
+`recipe-check.py`'s meta-against-engine agreement became a lie until a restart. `DRY` now writes nothing and starts
+nothing; `METAONLY=1` is the deliberate version of the same write, for refreshing the recipe file of a launch that
+is already up or was started by hand.

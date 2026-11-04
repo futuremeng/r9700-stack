@@ -87,9 +87,9 @@ sidecar has only been up a few minutes - the label says what was averaged.">1 h<
       <div class="small slot" id="poll-gentot">—</div>
     </div>
     <div class="card">
-      <div class="label">Decode · per stream-second</div>
+      <div class="label">Decode · summed, wall second</div>
       <div class="value value--xl" id="rate-gen">—<span class="unit">tok/s</span></div>
-      <div class="small slot slot--lead" id="note-gen">summed × streams decoding</div>
+      <div class="small slot slot--lead" id="note-gen">tok/stream-s × streams decoding</div>
       <div class="small slot" id="spans-gen">—</div>
       <div class="small slot" id="poll-gen">—</div>
     </div>
@@ -132,7 +132,7 @@ the box looked like this hour"; it cannot show a single stuck step.">1 h</button
       <div class="small slot" id="perstep-note2">—</div>
     </div>
     <div class="card">
-      <div class="label">Decode · summed, wall</div>
+      <div class="label">Decode · summed, trend</div>
       <div class="sparkline sparkline--lg" id="gen-spark"></div>
       <div class="small slot" id="gen-note1">—</div>
       <div class="small slot" id="gen-note2">—</div>

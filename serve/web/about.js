@@ -18,6 +18,20 @@ function facts(el, rows) {
 }
 
 const yesno = (v) => (v === undefined || v === null || v === "" ? null : (String(v) === "false" ? "off" : "on"));
+// "Is the prefix cache in effect, and at what granularity?" Read from the engine's own cache_config labels, so the
+// answer cannot drift from what the engine runs. A hit can only land on `hash_block_size` (a.k.a. prefix_match_unit)
+// when that is set, and otherwise only on a whole physical block -- 832 tokens on the 2026-11-04 cache-on launch,
+// measured: a 538-token repeated prompt hit nothing at all, a 3,658-token one hit 3 blocks (2,496 tokens). The
+// junction checkpoint is the fork's own knob for resuming an MTP sibling at a shared prefix; it does nothing unless
+// the match unit is finer than the mamba block, so it is shown only when it is on.
+const cachestate = (c) => {
+  if (c.enable_prefix_caching === undefined || c.enable_prefix_caching === null) return null;
+  if (String(c.enable_prefix_caching).toLowerCase() !== "true") return "off";
+  const none = (v) => v === undefined || v === null || String(v).toLowerCase() === "none";
+  const unit = none(c.hash_block_size) ? c.block_size : c.hash_block_size;
+  return `on · a hit lands on a ${unit}-token boundary`
+    + (String(c.enable_mamba_shared_prefix_checkpoint).toLowerCase() === "true" ? " · junction checkpoint on" : "");
+};
 const num = (v) => (v === undefined || v === null || v === "" ? null : fmt(Number(v)));
 
 function uptime(s) {
@@ -52,7 +66,7 @@ function render() {
     ["KV pool", isnum(s.live?.kv_tokens) ? `${fmt(s.live.kv_tokens)} tokens` : null],
     ["KV block", c.block_size ? `${c.block_size} tokens/block` : null],
     ["KV dtype", c.kv_cache_dtype || null],
-    ["Prefix caching", yesno(c.enable_prefix_caching)],
+    ["Prefix caching", cachestate(c)],
     ["Scheduler", c.scheduler_policy || null],
     ["Reachable", s.reachable ? `yes · /health ${s.health ?? 200}` : `no: ${s.error || "not answering"}`],
   ]);
