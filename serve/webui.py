@@ -48,6 +48,11 @@ KIND = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
 # shortened, only our copy of it, and the page says so when it happened.
 CAP = 256 * 1024
 HIST = 90                                   # sparkline points kept (poll_s * HIST of history)
+# The same four waveforms over an hour, one point every SLOW_STEP seconds. The rates in it are taken OVER THE
+# INTERVAL (deltas of the cumulative counters), not sampled at that instant: sampling a 1 s window once every 15 s
+# would draw a heartbeat, not a trend, and it would miss the work that happened between the beats.
+SLOW_STEP = 15.0
+SLOW_KEEP = 240                              # 240 x 15 s = an hour of trend, ~40 KB of dicts
 HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer",
        "transfer-encoding", "upgrade", "content-length", "date", "server", "host"}
 NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_:]*")
@@ -1592,6 +1597,9 @@ class Hub:
         # The trailing-average ring: cumulative counters sampled every AVG_STEP seconds, so a 1 h mean can be an
         # exact delta of two cumulative reads instead of an average of 3,600 one-second guesses.
         self.avgring = deque(maxlen=AVG_KEEP)
+        # The hour-long version of the four waveforms (see SLOW_STEP): a point per interval, each holding the
+        # counters it needs to difference against for the next one.
+        self.slowhist = deque(maxlen=SLOW_KEEP)
         # Per-card history, sampled by gpu_poll: one entry per gpu poll with one slot per card, aligned by
         # index (read_gpus sorts by card name, and the card set does not change under us). VRAM in particular
         # is a number people ask us to prove by hand -- the soak runs log it to a side file to show a leak is
@@ -1658,6 +1666,43 @@ class Hub:
             return self.eng.get(rid)
         return self.rec.get(rid)
 
+    def slow_point(self, cur, cap, t0):
+        """One point of the hour-long waveforms.
+
+        The rate is the interval's, not the instant's: generated and prompt tokens differenced against the
+        previous point, KV growth the same way. A 1 s window sampled once every 15 s would show the gaps between
+        the beats instead of the trend -- which is the exact complaint this whole change is about. The per-stream
+        rate divides by the mean running across the interval, taken from the fast ring (which has a sample every
+        poll), not by whatever this poll happened to see.
+        """
+        base = self.slowhist[-1] if self.slowhist else None
+        dt = (t0 - base["at"]) if base and t0 > base["at"] else None
+        kvn = next((n for n in KV_USED if cur.get(n)), None)
+        gnow = (cur.get("generation_tokens_total") or [0.0, 0.0, 0])[0]
+        pnow = (cur.get("prompt_tokens_total") or [0.0, 0.0, 0])[0]
+        kvnow = (cap * cur[kvn][1]) if (cap and kvn) else None
+        runs = [h.get("running") for h in self.hist if h.get("at", 0) > (base["at"] if base else 0)]
+        runs = [r for r in runs if isinstance(r, (int, float))]
+        runm = (sum(runs) / len(runs)) if runs else (cur.get("num_requests_running") or [0, 0.0, 0])[1]
+        gen = (gnow - base["c"]["gen"]) / dt if (base and dt) else None
+        prompt = (pnow - base["c"]["prompt"]) / dt if (base and dt) else None
+        kvrate = ((kvnow - base["c"]["kv"]) / dt) if (base and dt and kvnow is not None
+                                                     and base["c"]["kv"] is not None) else None
+        # A counter that went backwards is an engine restart inside the interval: the difference is not a rate,
+        # and a rate of -100 million tok/s is a number nobody can act on. None, so the waveform draws a gap.
+        # The KV-growth series is NOT guarded that way: a negative there is the pool draining as requests
+        # finish, which is what that series is for.
+        gen = None if (gen is not None and gen < 0) else gen
+        prompt = None if (prompt is not None and prompt < 0) else prompt
+        return {"at": t0,
+                "gen_tok_s": gen,
+                "prompt_tok_s": prompt,
+                "stream_tok_s": (gen / runm) if (gen is not None and runm) else None,
+                "kv_tok_s": kvrate,
+                "kv_used_pct": (100.0 * cur[kvn][1]) if kvn else None,
+                "running": runm,
+                "c": {"gen": gnow, "prompt": pnow, "kv": kvnow}}
+
     def poll(self):
         while True:
             t0 = time.time()
@@ -1674,6 +1719,10 @@ class Hub:
                     if not self.avgring or t0 - self.avgring[-1]["at"] >= AVG_STEP:
                         self.avgring.append(avg_sample(cur, t0))
                     payload["avg"] = trailing(list(self.avgring), cur, t0)
+                    if not self.slowhist or t0 - self.slowhist[-1]["at"] >= SLOW_STEP:
+                        self.slowhist.append(self.slow_point(cur, cap, t0))
+                    payload["history_slow"] = list(self.slowhist)
+                    payload["slow_step_s"] = SLOW_STEP
                     payload["upstream"] = self.cfg["upstream"]
                     payload["reachable"] = True
                     payload["health"] = self.health

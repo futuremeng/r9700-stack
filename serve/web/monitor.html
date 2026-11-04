@@ -48,6 +48,25 @@
        every latency histogram are credited when a request FINISHES, so the prefill card shows its live
        estimate as the number and names the exact figure beside it. No waveforms here -- they are all in the
        row below, where the four series can be compared against one another. -->
+  <!-- which window the four numbers below answer to. Default is the 15 min mean, not the poll: measured on this
+       box one poll read 9.9 tok/s of generation and the quarter hour around it 51.7, and the page used to print
+       only the 9.9. "this poll" stays one click away and its number stays in every card's second line, because
+       "is it stuck right now" is a question a 15 min mean cannot answer. -->
+  <div class="winbar">
+    <span class="small">Rates over</span>
+    <button class="st-btn" id="win-live" type="button" aria-pressed="false"
+            title="The gap between two engine polls (about a second here). Exact for that instant, and a coin toss
+on a busy launch: a 1 s window can sit entirely inside a prefill, or entirely between two steps.">this poll</button>
+    <button class="st-btn" id="win-1m" type="button" aria-pressed="false"
+            title="Deltas of the engine's cumulative counters over the last minute. Exact for that minute.">1 min</button>
+    <button class="st-btn" id="win-15m" type="button" aria-pressed="false"
+            title="Deltas of the engine's cumulative counters over the last quarter hour. The default: on a launch
+where a request runs 17-50 s, this is the shortest window that stops being a sample of one request.">15 min</button>
+    <button class="st-btn" id="win-1h" type="button" aria-pressed="false"
+            title="Deltas of the engine's cumulative counters over the last hour. Goes quiet-by-omission if the
+sidecar has only been up a few minutes - the label says what was averaged.">1 h</button>
+    <span class="small" id="win-note">—</span>
+  </div>
   <section class="grid grid--4 grid--rates">
     <div class="card">
       <div class="label">Decode · one stream</div>
@@ -89,8 +108,20 @@ engine polls, so a rate is at most that old -- plus this snapshot's age.">—</d
   </section>
 
   <!-- the trends: every series the sidecar keeps a history for, in one row, over the same span. Each caption
-       carries last / peak / average so the shape has numbers attached, and the span is named because the ring
-       is fixed in POINTS, not seconds: what a point costs is the poll interval. -->
+       carries last / peak / average so the shape has numbers attached. Two rings: one point per poll (the last
+       90 points) and one point per 15 s over an hour, whose rates are taken OVER the interval rather than
+       sampled at its end. The span in the caption comes from the samples' own timestamps, not from points x
+       poll, because the two rings are spaced differently. -->
+  <div class="winbar">
+    <span class="small">Trends over</span>
+    <button class="st-btn" id="trend-fast" type="button" aria-pressed="false"
+            title="One point per engine poll. This is where a stuck step, a restart or one huge prefill shows up
+as a shape.">90 s</button>
+    <button class="st-btn" id="trend-slow" type="button" aria-pressed="false"
+            title="One point per 15 s for the last hour, each point the rate over its interval. Answers "what has
+the box looked like this hour"; it cannot show a single stuck step.">1 h</button>
+    <span class="small" id="trend-note">—</span>
+  </div>
   <section class="grid grid--4 grid--trends">
     <div class="card">
       <div class="label">Decode · one stream</div>

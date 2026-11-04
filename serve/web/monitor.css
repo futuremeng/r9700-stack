@@ -32,6 +32,10 @@ section{margin:18px 0}
 .filters{display:flex;gap:8px}
 /* a toggle button has to show its state: aria-pressed is where the JS keeps it (Follow newest, Pause) */
 .st-btn[aria-pressed="true"]{border-color:var(--st-accent);color:var(--st-accent);font-weight:600}
+/* the window pickers above the rate and trend rows: a label, the buttons, and a note that says what is
+   actually being shown (which window was chosen, and which one was used when the chosen one had not filled) */
+.winbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 8px}
+.winbar .st-btn{padding:4px 10px}
 #search{width:210px}
 .note{margin:14px 0 0;line-height:1.6}
 

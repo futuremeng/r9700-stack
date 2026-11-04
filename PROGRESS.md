@@ -2575,3 +2575,31 @@ finish in it -- measured, a 47 s span said 4,840 tok/s of prefill where ten-minu
 prints the five average lines and fails if a card claims an average the payload does not have, or prints `1h` over
 40 s of data. Verified live by running the standalone sidecar on :8099 beside the production serve -- the merged
 page takes the same code at the next restart, and the serve was not restarted for this. Details in notes/webui.md.
+
+## 2026-11-04 (later): the headline rate becomes an average, and the waveforms gain an hour
+
+The trailing averages went in beside the live number -- and the live number stayed the big one, which is the number a
+reader looks at. So the fix went the rest of the way: the four rate cards answer to a **window picker** (this poll /
+1 min / 15 min / 1 h, default **15 min**), and the four waveforms pick between the 90-point ring (one point per poll)
+and a new hour ring (240 points, one per 15 s).
+
+Why 15 min and not 1 min: a request on this launch runs 17-50 s of wall time, so a 1 min window is still a sample of
+one or two requests. In the same minute, `1m` said 30 tok/s, `15m` said 52, and the poll said 13 -- a 4x spread across
+the width of a page glance. The poll is not removed, it is demoted: every card's second line carries it (`poll 13`),
+and the poll is the only thing that shows a step of 905 ms sitting inside a long prefill while the span says 103 ms.
+
+The rules: a window is only offered once it has **filled** (80% of its width), and if the chosen one has not, the page
+shows the widest that has and says so ("1 h has not filled yet - showing 1 min (65 s of counters)"); young spans are
+labelled with what they averaged (`90s`, `2m`) everywhere, including the second line; and caption spans come from the
+samples' own timestamps, because `points x poll` was true of one ring and a lie about the other. The hour ring takes
+its rate over the interval (deltas of cumulative counters, mean running across the interval for the per-stream
+divide), gives None when a counter went backwards inside it -- a restart is a gap in the waveform, not a spike of
+-100 million tok/s -- and does NOT guard the KV-growth series that way, because a negative there is the pool draining,
+which is what that series is for.
+
+`render-monitor.mjs` now derives which window the page should have settled on, pulls the first number out of each
+headline and fails if it is not that window's value, fails if a headline is printing this poll under a 15 min label
+when the two differ by more than 25%, fails if an averaged headline does not carry `poll <value>`, and presses both
+trend buttons to make sure the source ring actually changed. Handlers are attached by id, not by a `querySelectorAll`
+sweep, so the stub DOM can press them. Details in notes/webui.md; the production serve was left running and picks the
+whole thing up at its next restart -- the standalone sidecar on :8099 is where it is live today.

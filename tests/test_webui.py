@@ -15,6 +15,7 @@ Run: ~/venv-r9700/bin/python3 tests/test_webui.py      (also: pytest tests/test_
 import json
 import http.client
 import os
+from collections import deque
 import re
 import shutil
 import tempfile
@@ -1820,6 +1821,40 @@ ck("a family the base snapshot does not have is a dash, not a division by the wh
    f"itl {_p['itl_ms']} gen {_p['generation_tok_s']}")
 ck("the payload carries all three spans so the page can label what it has and wait for the rest",
    sorted(s.get("avg", {})) == ["15m", "1h", "1m"], str(sorted(s.get("avg", {}))))
+
+# --- the hour-long waveforms -----------------------------------------------------------------------
+# A point every 15 s, each holding the rate OVER that interval. Sampling a 1 s window once every 15 s would draw a
+# heartbeat and miss the work between the beats -- which is the same mistake the trailing averages exist to fix.
+class _Slow:
+    slowhist, hist = deque(maxlen=W.SLOW_KEEP), []
+    slow_point = W.Hub.slow_point
+
+_sh = _Slow()
+_p1 = _sh.slow_point(_cur(200.0), 1_000_000, 200.0)
+ck("the first point has no rate to report (there is no interval yet)",
+   _p1["gen_tok_s"] is None and _p1["running"] == 6.0 and _p1["c"]["gen"] == 8000.0, str(_p1)[:160])
+_sh.slowhist.append(_p1)
+_sh.hist = [{"at": 188.0, "running": 4.0}, {"at": 199.0, "running": 8.0}]      # 4 and 8 running in the interval
+_p2 = _sh.slow_point(_cur(215.0), 1_000_000, 215.0)
+ck("a point's rate is the interval's delta, not a sample of one poll",
+   abs(_p2["gen_tok_s"] - 40.0) < 1e-9 and abs(_p2["prompt_tok_s"] - 7000.0) < 1e-6, str(_p2)[:200])
+ck("and its per-stream rate divides by the mean running ACROSS the interval (4 and 8 running -> 6)",
+   abs(_p2["running"] - 6.0) < 1e-9 and abs(_p2["stream_tok_s"] - 40.0 / 6.0) < 1e-9,
+   f"running {_p2['running']} stream {_p2['stream_tok_s']}")
+ck("the KV-growth series is the same interval difference of the gauge",
+   abs(_p2["kv_tok_s"] - 0.0) < 1e-6 and abs(_p2["kv_used_pct"] - 40.0) < 1e-9, str(_p2)[:200])
+_sh.slowhist.clear()
+_sh.slowhist.append({"at": 300.0, "gen_tok_s": 1.0, "prompt_tok_s": 1.0, "kv_tok_s": 1.0, "kv_used_pct": 1.0,
+                     "running": 1.0, "c": {"gen": 9e9, "prompt": 9e9, "kv": 9e9}})   # a counter ahead of now
+_back = _sh.slow_point(_cur(315.0), 1_000_000, 315.0)
+ck("counters that went backwards (an engine restart inside the interval) read None, not a negative rate",
+   _back["gen_tok_s"] is None and _back["stream_tok_s"] is None and _back["prompt_tok_s"] is None,
+   str(_back)[:200])
+ck("but the KV-growth series is not guarded that way: a negative there is the pool draining, which is its use",
+   _back["kv_tok_s"] is not None and _back["kv_tok_s"] < 0, str(_back["kv_tok_s"]))
+ck("the payload carries the slow ring and says how far apart its points are, capped like every other ring",
+   len(s.get("history_slow", [])) <= W.SLOW_KEEP and s.get("slow_step_s") == W.SLOW_STEP,
+   f"{len(s.get('history_slow', []))} pts, step {s.get('slow_step_s')}")
 
 print("PASS" if fail == 0 else "FAIL", f"({fail} failing)")
 sys.exit(1 if fail else 0)

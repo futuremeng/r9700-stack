@@ -234,7 +234,7 @@ serves (`/v1/*`, `/metrics`) is untouched apart from `GET /`, which the plugin r
 
 ## Tests
 
-`tests/test_webui.py` (336 checks, no GPU and no network needed) and `tests/test_webui_plugin.py`
+`tests/test_webui.py` (343 checks, no GPU and no network needed) and `tests/test_webui_plugin.py`
 (32 checks; the record store and the stat logger run anywhere, the routes need FastAPI, and vLLM's own
 route-replacement tier runs only where vLLM imports — `LD_LIBRARY_PATH=~/opt/openmpi/usr/lib/x86_64-linux-gnu
 ~/venv-r9700/bin/python tests/test_webui_plugin.py`). Three more cover the parts that are not the sidecar:
@@ -1072,3 +1072,47 @@ missing family, payload shape) and `tests/render-monitor.mjs`, which now prints 
 card claims an average the payload has, or prints `1h` over a span of 40 s. Verified against a live serve by running
 the standalone sidecar (`serve/webui.py --port 8099`) next to the running one - the merged page picks the same code up
 at the next restart of the serve, which was not restarted for this.
+
+### The headline defaults to the quarter hour, and the waveforms gain an hour (2026-11-04, same day)
+
+The averages landed next to the live number, and the live number stayed the headline. That was half the fix: a
+reader looks at the big number, and on this box the big number was still a 1 s coin toss. So the four rate cards now
+answer to a **window picker** (this poll / 1 min / 15 min / 1 h, default **15 min**, kept in `localStorage`), and the
+four waveforms pick between two rings (90 points at one per poll, or 240 points at one per 15 s for an hour).
+
+Why 15 min rather than 1 min: a request here runs 17-50 s of wall time, so a 1 min window is still largely a sample of
+one or two requests. Measured in the same minute, `1m` said 30 tok/s and `15m` said 52, and the poll at that instant
+said 13. The poll is never removed: every card's second line carries it (`poll 13`), because "is it stuck right now"
+is a question a quarter-hour mean cannot answer -- and a step of 905 ms in the poll against 103 ms over the span is
+exactly the kind of thing that only the poll shows.
+
+The rules the picker follows:
+
+- **A span has to have filled.** A window counts as usable at 80% of its width. Ask for 1 h on a sidecar that has been
+  up for nine minutes and you get the widest span that HAS filled, and the note says so: "1 h has not filled yet -
+  showing 1 min (65 s of counters)". The failure mode it prevents is an hour's label over nine minutes of ring.
+- **Every span stays labelled with what it averaged.** Young spans print `90s`, `2m`, never the name they asked for,
+  and the same rule runs in the second line.
+- **The caption span comes from the samples' timestamps, not `points x poll`.** That formula was true of one ring and a
+  lie about the other: the two are spaced 15 s differently.
+
+The hour ring (`slow_point`, `SLOW_STEP = 15 s`, `SLOW_KEEP = 240`) takes its rate **over the interval** - generated
+and prompt tokens differenced against the previous point, KV growth the same way - because a 1 s window sampled once
+every 15 s would draw a heartbeat and miss the work between the beats. Its per-stream rate divides by the mean running
+across the interval (taken from the fast ring, which has a sample every poll), not by whatever this poll saw. A
+counter that went backwards inside the interval gives None, so the waveform draws a gap rather than a spike of
+-100,000,000 tok/s; the KV-growth series is deliberately NOT guarded that way, because a negative there is the pool
+draining as requests finish, which is what that series is for.
+
+Checked by `node tests/render-monitor.mjs`, which now works out which window the page should have settled on, pulls
+the first number out of each headline and fails if it is not that window's value, fails if a headline prints this
+poll under a 15 min label when the two differ by more than 25%, fails if a card whose headline is an average does not
+carry `poll <value>`, and presses both trend buttons and fails if the source ring does not change. The handlers are
+attached by id (`$("win-15m")`) rather than by a `querySelectorAll` sweep, because the stub DOM has no
+`querySelectorAll` - a control the harness cannot press is a control it cannot check.
+
+One test bug fixed on the way: the pinned-PCIe-panel check asserted "repainted with nothing changed" without checking
+whether anything had changed. The panel's own content moves between repaints (`quiet 7 min` becomes `quiet 8 min`, an
+AER counter lands), so rewriting those lines is correct, and the check failed twice against a live box for the right
+behaviour. It now counts writes that wrote **the value already there** and fails only on those, which is what
+"rewrites lines it did not have to" was trying to say.

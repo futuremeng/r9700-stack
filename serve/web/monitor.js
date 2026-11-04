@@ -4,6 +4,11 @@
 let records = [], status = null, selected = null, detail = null, pane = "input", stampOf = "";
 let detailSig = "", follow = true;                    // follow: show the newest row nobody clicked on yet
 let paused = false, actionError = "";
+// Which window the four headline rates answer to, and which ring the four waveforms draw. Defaults are the
+// averaged ones: measured on this box one 1 s poll read 9.9 tok/s of generation while the quarter hour around it
+// read 51.7, and a page that prints only the first number teaches the reader to read it as the level.
+let rateWin = localStorage.getItem("r9k.rateWin") || "15m";
+let trendWin = localStorage.getItem("r9k.trendWin") || "fast";
 let lastOk = 0, lastErr = "";                // when a tick last got an answer, and why the last one did not
 
 const active = (r) => !["completed", "error", "disconnected"].includes(r.state);
@@ -338,73 +343,120 @@ function renderStatus(s) {
   // vLLM observes that histogram when the request FINISHES. The two agree once a request ends.
   const big = (id, v, unit) =>
     { $(id).innerHTML = `${isnum(v) ? fmt(v, 1) : "—"}<span class="unit">${unit}</span>`; };
-  big("rate-stream", rate.stream_tok_s_live, "tok/s");
+  // -- which window the four numbers answer to ---------------------------------------------------
+  // The default is the 15 min mean. Measured here: one 1 s poll read 9.9 tok/s of generation with six streams
+  // running and another, a minute later in a gap, read 0 - while the quarter hour around them was 51.7. Printing
+  // only the poll number teaches a reader to treat it as the level, which is the complaint the window picker
+  // exists to answer. The poll stays one click away AND in every card's second line, because "is it stuck right
+  // now" is not a question a 15 min mean can answer. A chosen span that has not filled yet falls back to the
+  // widest span that HAS, and the note says so: an hour's label over four minutes of ring is the failure mode.
+  const AVG_WIDE = { "1m": 60, "15m": 900, "1h": 3600 };
+  const WIN_NAME = { live: "this poll", "1m": "1 min", "15m": "15 min", "1h": "1 h" };
+  const fullSpans = (avg) => Object.keys(AVG_WIDE).filter((k) => avg[k] && !avg[k].reset
+    && isnum(avg[k].span_s) && avg[k].span_s >= AVG_WIDE[k] * 0.8);
+  const spans = fullSpans(s.avg || {});
+  const widest = spans.sort((a, b) => AVG_WIDE[b] - AVG_WIDE[a])[0];
+  const win = rateWin === "live" ? "live" : (spans.includes(rateWin) ? rateWin : (widest || "live"));
+  const A = win === "live" ? null : (s.avg || {})[win];
+  text("win-note", win === rateWin
+    ? `${WIN_NAME[win]}${A ? ` · ${Math.round(A.span_s)} s of counters` : ""} · each card's second line carries this poll and the other spans`
+    : `${WIN_NAME[rateWin]} has not filled yet - showing ${WIN_NAME[win]}`
+      + (A ? ` (${Math.round(A.span_s)} s of counters)` : ""));
+  ["live", "1m", "15m", "1h"].forEach((k) =>
+    $("win-" + k).setAttribute("aria-pressed", String(k === rateWin)));
+
+  // stream_tok_s_live is aggregate over running: the rate of the stream you are watching, available while it
+  // runs -- 1/itl (stream_tok_s) is not, because vLLM observes that histogram when the request FINISHES. Over a
+  // span, stream_tok_s divides by the MEAN running across it, which is the honest long-window version of the
+  // same number; decode_tok_s (generated tokens over the engine's own decode seconds) is the second opinion.
+  const streamV = A ? A.stream_tok_s : rate.stream_tok_s_live;
+  big("rate-stream", streamV, "tok/s");
   // Tokens per step reconciles the two clocks: the step clock and the per-accepted-token clock. The window
   // usually holds no histogram observation at all (vLLM observes one when a request FINISHES), so the
   // since-launch ratio fills in and gets labelled, rather than the clause vanishing whenever nothing ended.
   const sn = s.since || {};
-  const tpsW = rate.tokens_per_step;
+  const tpsW = A ? A.tokens_per_step : rate.tokens_per_step;
   const tpsS = isnum(sn.itl_ms) && isnum(sn.tpot_ms) ? sn.itl_ms / sn.tpot_ms : null;
-  text("rate-stream-note", isnum(rate.stream_tok_s_live)
-    ? `aggregate ÷ ${Math.round(live.running || 0)} running · this window`
-      + (isnum(rate.itl_ms) ? ` · step ${fmt(rate.itl_ms, 1)} ms` : "")
-      + (isnum(tpsW) ? ` × ${fmt(tpsW, 2)} tokens a step`
-        : isnum(tpsS) ? ` × ${fmt(tpsS, 2)} tokens a step (since launch)` : "")
-    : inflight ? "nothing generated in this window yet" : "nothing running");
-  big("rate-gen", rate.generation_tok_s, "tok/s");
-  text("rate-gen-note", isnum(rate.generation_tok_s)
-    ? `${fmt(rate.generation_tok_s * (rate.window_s || 1), 0)} tokens in ${fmt(rate.window_s || 0, 1)} s`
-      + (isnum(rate.requests_per_min) ? ` · ${fmt(rate.requests_per_min, 1)} req/min` : "")
-    : "generation_tokens_total, credited per step");
-  // Prefill, both numbers, always labelled. prompt_tok_s is the exact window rate but it lands when the
-  // request ends (measured: a 51,859-token prefill held the counter flat for 10 s, then one jump), so while
-  // a long prompt is running the number shown is the KV gauge's growth in tokens a second -- an estimate,
-  // measured to within ~6% of the truth on that prefill, and negative when finishing requests free blocks.
+  const stepV = A ? A.itl_ms : (isnum(rate.itl_ms) ? rate.itl_ms : (s.since || {}).itl_ms);
+  text("rate-stream-note", A
+    ? `aggregate ÷ ${fmt(A.running_mean || 0, 2)} mean running · ${WIN_NAME[win]} mean`
+      + (isnum(stepV) ? ` · step ${fmt(stepV, 1)} ms` : "")
+      + (isnum(tpsW) ? ` × ${fmt(tpsW, 2)} tokens a step` : "")
+      + (isnum(A.decode_tok_s) ? ` · the engine's own decode seconds say ${fmt(A.decode_tok_s, 1)}` : "")
+    : isnum(streamV)
+      ? `aggregate ÷ ${Math.round(live.running || 0)} running · this window`
+        + (isnum(rate.itl_ms) ? ` · step ${fmt(rate.itl_ms, 1)} ms` : "")
+        + (isnum(tpsW) ? ` × ${fmt(tpsW, 2)} tokens a step`
+          : isnum(tpsS) ? ` × ${fmt(tpsS, 2)} tokens a step (since launch)` : "")
+      : inflight ? "nothing generated in this window yet" : "nothing running");
+  const genV = A ? A.generation_tok_s : rate.generation_tok_s;
+  big("rate-gen", genV, "tok/s");
+  text("rate-gen-note", A
+    ? `${fmt((A.generation_tok_s || 0) * (A.span_s || 0), 0)} tokens across ${Math.round(A.span_s)} s`
+      + (isnum(A.requests_per_min) ? ` · ${fmt(A.requests_per_min, 2)} req/min` : "")
+      + (isnum(A.generation_tokens_mean) ? ` · ${fmt(A.generation_tokens_mean, 0)} tokens a request` : "")
+    : isnum(rate.generation_tok_s)
+      ? `${fmt(rate.generation_tok_s * (rate.window_s || 1), 0)} tokens in ${fmt(rate.window_s || 0, 1)} s`
+        + (isnum(rate.requests_per_min) ? ` · ${fmt(rate.requests_per_min, 1)} req/min` : "")
+      : "generation_tokens_total, credited per step");
+  // Prefill, both numbers, always labelled. Over a span there are two honest prefill speeds and they differ by
+  // the duty cycle: prompt tokens per second of the engine's own PREFILL time (how fast it chews when it is
+  // chewing) and per second of WALL time (how much chewing the box does in an hour). This launch runs ~7,900
+  // while prefilling and ~2,200 across the wall, and a card that showed only one of them answers a question
+  // nobody asked. While a long prompt is running the window's number is the KV gauge's growth in tokens a
+  // second -- an estimate, measured to within ~6% of the truth on a 51,859-token prefill, and negative when
+  // finishing requests free blocks.
   const kvr = isnum(rate.kv_tok_s) ? Math.max(0, rate.kv_tok_s) : null;
   const exact = isnum(rate.prompt_tok_s) && rate.prompt_tok_s > 0 ? rate.prompt_tok_s : null;
-  big("rate-prefill", exact ?? kvr, "tok/s");
-  text("rate-prefill-note", exact !== null
-    ? `exact, from prompt_tokens_total (credited at request end)`
-      + (kvr !== null ? ` · KV growth now ${fmt(kvr, 0)}` : "")
-    : kvr !== null ? "≈ estimated from KV growth · the counter credits at request end"
-      : "no prefill in this window");
-  big("rate-step", isnum(rate.itl_ms) ? rate.itl_ms : (s.since || {}).itl_ms, "ms");
-  text("rate-ttft", isnum((rate.ttft_ms ?? (s.since || {}).ttft_ms))
-    ? `first token ${ms(rate.ttft_ms ?? (s.since || {}).ttft_ms)}`
-      + (isnum(rate.ttft_ms) || !isnum((s.since || {}).ttft_ms) ? "" : " (since launch)")
+  const prefillV = A ? A.prefill_tok_s : (exact ?? kvr);
+  big("rate-prefill", prefillV, "tok/s");
+  text("rate-prefill-note", A
+    ? `while prefilling · ${WIN_NAME[win]} mean`
+      + (isnum(A.prompt_tok_s) ? ` · across the wall ${fmt(A.prompt_tok_s, 0)}` : "")
+      + (isnum(A.span_s) && A.span_s < 300 ? ` · only requests that finished inside ${Math.round(A.span_s)} s` : "")
+    : exact !== null
+      ? `exact, from prompt_tokens_total (credited at request end)`
+        + (kvr !== null ? ` · KV growth now ${fmt(kvr, 0)}` : "")
+      : kvr !== null ? "≈ estimated from KV growth · the counter credits at request end"
+        : "no prefill in this window");
+  big("rate-step", stepV, "ms");
+  const ttftV = A ? A.ttft_ms : (rate.ttft_ms ?? (s.since || {}).ttft_ms);
+  text("rate-ttft", isnum(ttftV)
+    ? `first token ${ms(ttftV)}`
+      + (A ? ` (${WIN_NAME[win]} mean)`
+           : (isnum(rate.ttft_ms) || !isnum((s.since || {}).ttft_ms) ? "" : " (since launch)"))
+      + (A && isnum(A.queue_ms) ? ` · queued ${ms(A.queue_ms)}` : "")
     : "no first-token observation in this window");
-  // -- the trailing averages ----------------------------------------------------------------------
-  // A 1 s poll answers "right now", and on this launch "right now" is a coin toss: measured 2026-11-04 with six
-  // streams in flight, one poll read 9.9 tok/s of generation and no prefill at all, while the ten minutes around
-  // it were 41 tok/s of generation and ~6,900 tok/s of prefill. These lines put the level next to the sample it
-  // came from. `span_s` is honoured: a page that has been open for two minutes labels a wide span with what was
-  // actually averaged, instead of printing an hour's number that is really 120 s.
-  const AVG_W = [["1m", 60], ["15m", 900], ["1h", 3600]];
-  const avgLine = (id, key, unit, dp) => {
+  // -- the spans this number is NOT, plus this poll ------------------------------------------------
+  // The card shows one window; these lines carry the rest, so a reader can see the spread instead of being told
+  // to trust the one number. `span_s` is honoured throughout: a span that has not filled is labelled with what
+  // was actually averaged (`90s`, `2m`), never with the name it asked for.
+  const spanName = (label, wide, span) => span < wide * 0.8
+    ? (span < 600 ? `${Math.round(span / 10) * 10}s` : `${Math.round(span / 60)}m`) : label;
+  const avgLine = (id, key, unit, dp, liveV) => {
     if (!$(id)) return;
     const parts = [];
     const said = new Set();
-    for (const [label, wide] of AVG_W) {
+    for (const [label, wide] of Object.entries(AVG_WIDE)) {
       const b = (s.avg || {})[label];
-      if (!b) continue;
+      if (!b || label === win) continue;
       if (b.reset) { parts.push(`${label} engine restarted`); continue; }
       const v = b[key];
       if (!isnum(v)) continue;
-      const span = isnum(b.span_s) ? b.span_s : wide;
-      const name = span < wide * 0.8
-        ? (span < 600 ? `${Math.round(span / 10) * 10}s` : `${Math.round(span / 60)}m`) : label;
+      const name = spanName(label, wide, isnum(b.span_s) ? b.span_s : wide);
       if (said.has(name)) continue;      // two spans resolve to the same window: say it once, not twice
       said.add(name);
       parts.push(`${name} ${fmt(v, dp)}`);
     }
-    text(id, parts.length ? `avg ${parts.join(" · ")} ${unit}`
-      : (s.avg ? `nothing to average in these spans yet` : "no trailing averages in this payload"));
+    if (win !== "live" && isnum(liveV)) parts.push(`poll ${fmt(liveV, dp)}`);
+    text(id, parts.length ? `${parts.join(" · ")} ${unit}`
+      : (s.avg ? `nothing else to show in these spans yet` : "no trailing averages in this payload"));
   };
-  avgLine("avg-stream", "stream_tok_s", "tok/s a stream", 1);
-  avgLine("avg-gen", "generation_tok_s", "tok/s all streams", 0);
-  avgLine("avg-prefill", "prefill_tok_s", "tok/s while prefilling", 0);
-  avgLine("avg-step", "itl_ms", "ms a step", 1);
-  avgLine("avg-kv", "kv_used_pct_mean", "% of the pool", 0);
+  avgLine("avg-stream", "stream_tok_s", "tok/s a stream", 1, rate.stream_tok_s_live);
+  avgLine("avg-gen", "generation_tok_s", "tok/s all streams", 0, rate.generation_tok_s);
+  avgLine("avg-prefill", "prefill_tok_s", "tok/s while prefilling", 0, exact ?? kvr);
+  avgLine("avg-step", "itl_ms", "ms a step", 1, rate.itl_ms);
+  avgLine("avg-kv", "kv_used_pct_mean", "% of the pool", 0, live.kv_used_pct);
 
   // Say how old the numbers are instead of letting the reader guess: the engine poll sets the window, the
   // snapshot age says how long this payload has been sitting, and the page refetches on the same beat.
@@ -583,7 +635,7 @@ function renderStatus(s) {
     // the pool GREW -- the rest are finished requests freeing blocks, and averaging them gave "avg -1,004
     // tok/s". The KV pool series keeps everything: an idle pool at 0% IS the value.
     const used = xs.filter(keep);
-    const spanS = (values.length * (s.poll_s || 0)).toFixed(0);
+    const spanS = histSpan;
     // The old whole message was that a series had no points, which left the reader to guess whether the box
     // was empty because
     // nothing is running, because the counter is dead, or because the page is broken. Say which, and name the
@@ -594,9 +646,19 @@ function renderStatus(s) {
         + (lo === null || !(top > lo) ? "" : ` · axis ${fmt(lo, 0)}..${fmt(top, 0)} ${unit}`)
       : `last ${fmt(xs[xs.length - 1], d)} · peak ${fmt(Math.max(...used), d)} · `
         + `avg ${fmt(used.reduce((x, y) => x + y, 0) / used.length, d)} ${unit}${label}`
-        + ` · ${used.length}/${values.length} pts over ${spanS} s`);
+        + ` · ${used.length}/${values.length} pts over ${histSpan}`);
   };
-  const hist = s.history || [];
+  // Two rings. The fast one is a point per engine poll for the last HIST points; the slow one is a point per
+  // SLOW_STEP (15 s) for an hour, and its rates are taken OVER the interval. The span in every caption comes
+  // from the samples' own timestamps: points x poll was true of one ring and a lie about the other.
+  const hist = trendWin === "slow" ? (s.history_slow || []) : (s.history || []);
+  const histSec = hist.length > 1 ? Math.max(0, Math.round(hist[hist.length - 1].at - hist[0].at)) : 0;
+  const histSpan = histSec >= 120 ? `${Math.round(histSec / 60)} min` : `${histSec} s`;
+  $("trend-fast").setAttribute("aria-pressed", String(trendWin === "fast"));
+  $("trend-slow").setAttribute("aria-pressed", String(trendWin === "slow"));
+  text("trend-note", trendWin === "slow"
+    ? `15 s a point · ${hist.length} pts · back ${histSpan} · each point is the rate over its interval`
+    : `one point per ${isnum(s.poll_s) ? s.poll_s.toFixed(1) : "?"} s poll · ${hist.length} pts · back ${histSpan}`);
   trend("stream-spark", "stream-spark-note", hist.map((h) => h.stream_tok_s), "tok/s", 1,
         { lo: 0, hi: "peak",
           empty: "no stream running, so a per-stream rate has no denominator" });
@@ -617,7 +679,7 @@ function renderStatus(s) {
   spark($("kv-spark"), hist.map((h) => h.kv_used_pct), { baseLo: 0, baseHi: 100 });
   $("kv-spark").dataset.tone = kv > 95 ? "danger" : kv > 85 ? "warn" : "ok";
   text("kv-spark-note", isnum(live.kv_tokens)
-    ? `${fmt(live.kv_tokens, 0)} tokens in the pool · ${(hist.length * (s.poll_s || 0)).toFixed(0)} s back`
+    ? `${fmt(live.kv_tokens, 0)} tokens in the pool · ${histSpan} back`
       + (kv > 85 ? ` · ${kv > 95 ? "at the limit" : "nearly full"}` : "")
     : "pool size not in /metrics");
 
@@ -878,6 +940,22 @@ $("auth").onsubmit = async (ev) => {
 document.addEventListener("need-key", () => { if ($("auth").hidden) $("auth").hidden = false; });
 $("search").oninput = list;
 $("filter").onchange = list;
+// The two window pickers. Handlers by id rather than a querySelectorAll sweep, so the stub-DOM harness can
+// click them: it has no querySelectorAll, and a control the harness cannot press is a control it cannot check.
+["live", "1m", "15m", "1h"].forEach((k) => {
+  $("win-" + k).onclick = () => {
+    rateWin = k;
+    try { localStorage.setItem("r9k.rateWin", k); } catch (e) { /* private mode: the choice just does not stick */ }
+    if (status) renderStatus(status);
+  };
+});
+[["fast", "fast"], ["slow", "slow"]].forEach(([id, w]) => {
+  $("trend-" + id).onclick = () => {
+    trendWin = w;
+    try { localStorage.setItem("r9k.trendWin", w); } catch (e) { /* as above */ }
+    if (status) renderStatus(status);
+  };
+});
 $("follow").onclick = () => {                      // clicking a row pins it; this unpins
   follow = !follow;
   $("follow").setAttribute("aria-pressed", String(follow));

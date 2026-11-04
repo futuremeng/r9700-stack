@@ -350,14 +350,16 @@ the tree that plugin was loaded from - today `vLLM 0.32.0 · plugin 0.4.0 · 953
 the tree has uncommitted edits, and the same facts as a row in About. "Is the live serve the new one?" used to cost
 an ssh and a look at the launch log; now it is a glance, and the string survives into the screenshot someone sends.
 
-The rates are shown twice on purpose: the big number is the poll window (1 s on this box), and under it the same
-figure averaged over the last minute, quarter hour and hour. That is not decoration - on a launch with six streams
-and 90 k-token prompts a single poll is a coin toss. Measured: one poll read 9.9 tok/s of generation and no prefill
-at all, while the ten minutes around it were 41 tok/s of generation, 7,820 tok/s of prefill per request and ~19 tok/s
-per stream. The spans are deltas of the engine's cumulative counters, not means of the 1 s samples - averaging those
-would weight an idle second the same as a second with six streams running. A span the page has not had time for is
-labelled with what it actually averaged (`90s`, `2m`) instead of waiting for the hour to fill, and a span that
-contains an engine restart says so rather than reporting a negative rate.
+The headline rates default to a **15 minute mean**, not the poll, and the window is selectable (this poll / 1 min /
+15 min / 1 h). That is not decoration - on a launch with six streams and 90 k-token prompts a single poll is a coin
+toss. Measured: one poll read 9.9 tok/s of generation and no prefill at all, another caught in a gap read 0, while the
+quarter hour around them was 51.7 tok/s of generation and 7,893 tok/s of prefill. Each card still carries this poll in
+its second line, because "is it stuck right now" is a question a 15 min mean cannot answer. The spans are deltas of the
+engine's cumulative counters, not means of the 1 s samples - averaging those would weight an idle second the same as a
+second with six streams running - and a span the page has not had time for is labelled with what it actually averaged
+(`90s`, `2m`) rather than borrowing the name it asked for. The waveforms get the same treatment: 90 points at one per
+poll, or an hour at one point per 15 s, each of those points the rate over its interval rather than a sample of one
+poll.
 
 The Requests card splits the waiting queue the way the engine labels it: `N waiting · M for scheduling capacity ·
 K deferred`, and the split is the whole point on this model. Eight ~30,000-token prompts measured holding
