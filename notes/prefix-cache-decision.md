@@ -211,6 +211,10 @@ Two things that fell out of that probe and matter more than the probe itself:
 
 ## One open number: MTP acceptance dropped, and it is not yet explained
 
+**Resolved the same day, below ("It was traffic: the fixed-prompt gate answers it").** The numbers in this section
+were written while the question was open and are kept as the record of what was measured and what was inferred --
+they are not the current answer.
+
 40 minutes after the flip, on live traffic (engine counters, not the Monitor's window maths):
 
 | | drafts | accepted / draft | pos 0 | pos 1 |
@@ -233,6 +237,57 @@ What separates them is the standing gate, whose prompts are fixed: `bench/qualit
 recorded 1.44 accepted per draft with the cache off; run it on this launch and compare. Until that is done, the
 honest summary is: acceptance is 11% lower for reasons not yet pinned, and every other measured number moved the
 right way by a lot (generation 3.7x, TTFT 40x, 80.4% of prompt tokens not computed, preemptions still 0).
+
+### It was traffic: the fixed-prompt gate answers it (2026-11-04, 14:54)
+
+Run the gate twice back to back on the cache-on launch and diff the engine's spec-decode counters around each run
+(`vllm:spec_decode_num_drafts_total`, `..._accepted_tokens_total`, `..._accepted_tokens_per_pos_total`):
+
+| the same gate, same prompts | drafts | accepted / draft | pos 0 | pos 1 | prompt tokens arriving as a cache hit |
+|---|---:|---:|---:|---:|---:|
+| cache-off launch, this gate (older record) | -- | **1.44** | -- | -- | 0% (cache off) |
+| cache-on, run 1 | 1,836 | **1.644** | 89.8% | 74.6% | 70.6% |
+| cache-on, run 2 (warmer prefixes) | 2,327 | **1.612** | 88.4% | 72.8% | 81.0% |
+| cache-on, run 3 (same 13 calls, prefixes hot) | 1,658 | **1.702** | 91.4% | 78.8% | 90.8% |
+| cache-on, the same gate at **100** questions | 13,240 | **1.713** | -- | -- | 87.0% |
+
+Three things follow, and none of them needs the live windows that confused the question:
+
+- **Acceptance is not lower with the cache on; on identical prompts it is higher than the cache-off launch's own
+  gate number** (1.64 against 1.44). Whatever the live 1.28-1.36 was, it was the requests, not the configuration.
+- **Warm prefixes do not cost acceptance.** Going 70.6% -> 81.0% cached on the *same* prompts moved accepted per
+  draft by **-2.0%**, and the windows were clean: 13 of the 14 journal rows in run 1 were the gate's own requests.
+  So `mamba_cache_mode=align` is not silently throwing MTP siblings away. `prefix_match_unit` plus
+  `enable_mamba_shared_prefix_checkpoint` stay unexplored as *latency/capacity* levers; the acceptance argument for
+  them is gone.
+- **Quality is unchanged by the flip and by the router experiment on this gate**: GSM8K 10/10 and needles 3/3
+  (3,828 / 15,196 / 30,354 tokens), three runs. Ten questions is an anecdote, so the gate was re-run at **100**:
+  **97/100 (97.0%)**, needles 3/3, 107 journal rows in the window of which 103 were the gate's own, preemptions 0.
+  The fp8 A/B's 800-question arms measured 96.0 and 95.6 -- a different subset size, so that reads as *no
+  regression*, not as +1%. That same run is the strongest acceptance number here: **1.713 accepted per draft over
+  13,240 drafts**, 87.0% of prompt tokens arriving as cache hits.
+- **The baseline is the weak side of the comparison, and it is named as such.** The 1.44 on the cache-off row came
+  from the 10-question gate; 1.713 is the 100-question one, so those two are not like for like. What *is* like for
+  like is runs 1-3: the same 13 calls, prefixes going 70.6% -> 81.0% -> 90.8% cached, acceptance 1.644 -> 1.612 ->
+  1.702. Acceptance does not fall as the cache gets warmer; and if the cache-off launch is ever re-measured, run it
+  at 100 so the headline numbers match.
+
+Note what this does **not** settle. The launch under test had `R9K_ROUTER_MAX_M=4` (the crash discriminator,
+notes/launch-methodology.md section 12), so the MoE gate ran on hipBLASLt for the 5-8 row shapes. That changes
+which kernel computes the router -- different summation order, same bf16 -- and cannot be excluded as an influence
+on acceptance without another pair of runs. It is not a likely one at 1.64-1.71 vs 1.44, but the claim on record is
+"cache on, acceptance fine", not "router cap changes nothing".
+
+Re-run recipe (no new tool; the counters are the engine's own):
+
+```
+# snapshot -> run -> snapshot, and diff. A window is trustworthy when its journal rows are almost all the gate's:
+# the 100-question run put 107 rows in the log and 103 of them were the gate's own calls.
+nice -n 19 python3 bench/quality.py 100 8           # 10 is the fast anecdote; 100 is the number
+curl -s http://127.0.0.1:8080/metrics | grep -E '^vllm:spec_decode_num_(drafts|draft_tokens|accepted_tokens)' \
+  | grep -v created
+# accepted per draft = delta(accepted_tokens) / delta(drafts); per-position ratios come from ..._per_pos_total
+```
 
 ## Re-running this
 
