@@ -268,3 +268,44 @@ A second, quieter effect of a hard stop: the engine pane dies by SIGKILL, so the
 (`no server running on /tmp/tmux-1000/default`) -- the session does not linger in a dead state, and `tmux ls` is not
 a way to tell "stopped" from "crashed". What answers that question is the log's last lines plus
 `rocm-smi --showpids` (and, on a crash, the four ranks that held ~32 GB each after the API server left -- §9).
+
+## 12. A crash discriminator that lives in an env var: the test config, named and revertible
+
+**Why this one exists.** Two `hipErrorIllegalAddress` deaths on 2026-11-04 (07:53 with the prefix cache off, 14:01
+with it on) share one signature: the driver names `r9k_router_gemm_kernel<8, 2, true>` as the faulting kernel, and
+the crashed step is a decode step of **6 rows** (2 streams x (1 + 2 MTP drafts)), deep context (up to 203,257 computed
+tokens), 0 preempted, KV usage 16-27%. `MT=8` is exactly the instantiation the C++ dispatcher picks for M in 5..8, so
+the shape and the faulting instantiation agree. The discriminator: `R9K_ROUTER_MAX_M` (r9700_vllm/router.py, default
+8) caps the rows our gate kernel takes; at 4, an M=6 step falls back to hipBLASLt while M<=4 stays on ours. If the
+crashes stop or move to another kernel, the fault is in that instantiation's path; if they persist in another kernel,
+ours is the reporter and not the corrupter -- which is what vLLM's own error text suggests ("CUDA kernel errors might
+be asynchronously reported at some other API call"). Cost, measured and written in router.py's own docstring: our gate
+is ~5 us, hipBLASLt's tile ~19.6 us, 51 calls per decode step, so only steps wider than 4 rows pay ~0.75 ms.
+
+**It is a test, and it is named as one.** tmux session `r9700-native-TEST-routermaxm4`, log
+`~/logs/TEST-routermaxm4-1104-1412.log`. The proof that the box is actually running it -- not that a variable was
+typed -- is two commands, and both must answer:
+
+    tr '\0' \n < /proc/$(pgrep -f 'vll[m] serve' | head -1)/environ | grep '^R9K_ROUTER_MAX_M='
+    grep "r9k router GEMM installed" ~/logs/TEST-routermaxm4-*.log | tail -1
+
+which on this launch printed `R9K_ROUTER_MAX_M=4` and `... installed on 1 gates (M <= 4, split 2)` -- against the
+crashed launch's `(M <= 8, split 2)`. The engine's own config is unchanged by it (`enable_prefix_caching True`,
+`block_size 832`, `num_gpu_blocks 1242`, pool 977,726), so the experiment moves one knob and nothing else.
+
+**Revert is a relaunch, not an edit.**
+
+    STOP=1 bash serve/native-flashnext.sh
+    tmux new-session -d -s r9700-native-flashnext \
+      'MAXLEN=262144 NSEQ=32 NBT=8192 WEBUI=same LOG=/home/jiulu/logs/kvf8b-152626.log bash /home/jiulu/r9700-stack/serve/native-flashnext.sh 2>&1 | tee -a /home/jiulu/logs/kvf8b-152626.log'
+
+and it is proved the same way: the new log must say `(M <= 8, split 2)` and `/proc/<pid>/environ` must have no
+`R9K_ROUTER_MAX_M`.
+
+**The gap this exposed in the gate.** `tools/recipe-check.py` compares knobs the *engine measures* -- `max_model_len`,
+`max_num_seqs`, `max_num_batched_tokens`, `kv_cache_dtype`, `enable_prefix_caching`, `num_speculative_tokens`. It
+answers "PRODUCTION recipe" for this test launch, correctly and uselessly: an env var that changes which kernel runs
+is invisible to it, and env is exactly where most of this stack's experiments live (`R9K_*`, and the two crashes
+happened with `R9K_ROUTER_MAX_M` unset, i.e. the default 8). So §8's rule -- a test config is named, logged, and
+reverted by relaunching the untouched command -- is what protects us today, and closing that gap means making the
+recipe record the R9K_ names it actually exported and having recipe-check compare them too.
