@@ -219,7 +219,7 @@ TP4, MTP-3. Except where a row names another launch, this is the launch that run
 | | |
 |---|---:|
 | KV cache at MAXLEN=262,144 | **540,202 tokens**; vLLM: `Maximum concurrency for 262,144 tokens per request: 2.06x` |
-| the same launch with an **fp8 e4m3 main KV** (the default since 2026-11-03: 12 full-attention layers quantized, the QSA side caches left bf16) | **1,009,899-1,021,931 tokens**, `3.85-3.90x`; attention block size 880 instead of 448; prefill **2,614 / 7,886 / 9,702 / 8,965 / 8,282 tok/s at 485 / 1,976 / 7,792 / 31,131 / 77,733 tokens** (bf16: 2,586 / 7,938 / 9,705 / 8,928 / 8,252 -- flat); 32 in flight, 1,200-token waves **1,789 / 1,796** (bf16 1,817 / 1,831) and 300-token waves 1,511-1,563 (bf16 1,594-1,640), and that 1.5-4% is MTP acceptance -- 2.55 against 2.61 tokens a step -- not the kernel, which measures 7-11% faster; GSM8K 800 @8 **96.0 against 95.6**, HumanEval 164 **98.17 against 96.95** (McNemar b=2, c=0, p=0.50), needle intact cold and warm to 250,078 tokens: [notes/kv-fp8-qsa.md](notes/kv-fp8-qsa.md) |
+| the same launch with an **fp8 e4m3 main KV** (the default since 2026-11-03: 12 full-attention layers quantized, the QSA side caches left bf16) | **1,009,899-1,021,931 tokens**, `3.85-3.90x`; attention block size 880 instead of 448; prefill **2,614 / 7,886 / 9,702 / 8,965 / 8,282 tok/s at 485 / 1,976 / 7,792 / 31,131 / 77,733 tokens** (bf16: 2,586 / 7,938 / 9,705 / 8,928 / 8,252 -- flat); 32 in flight, 1,200-token waves **1,789 / 1,796** (bf16 1,817 / 1,831) and 300-token waves 1,511-1,563 (bf16 1,594-1,640), and that 1.5-4% is MTP acceptance under the bench's own traffic (2.55 against 2.61 tokens a step; real traffic on this launch runs 2.33) -- not the kernel, which measures 7-11% faster; GSM8K 800 @8 **96.0 against 95.6**, HumanEval 164 **98.17 against 96.95** (McNemar b=2, c=0, p=0.50), needle intact cold and warm to 250,078 tokens: [notes/kv-fp8-qsa.md](notes/kv-fp8-qsa.md) |
 | KV cache at MAXLEN=32,768 (same launch shape) | 497,588 tokens: raising context 8x made the pool **bigger**, because the sizing run is bounded by `NBT`, not by MAXLEN |
 | prompt processing at 60k / 120k / 180k | 8,672-8,742 / 8,062-8,064 / 7,416-7,436 tok/s, each tier sent twice back to back with no prefix cache to help it |
 | time to first token at 60k / 120k / 180k | 6.87-6.93 / 14.89 / 24.22-24.28 s, needle found at 60,061 / 120,066 / 180,070 tokens |
@@ -319,11 +319,48 @@ its request finishes, so a 60-second span that has long prefills running but not
 to land inside it. Over spans longer than a request's wall time the same quantity sits at 7,700 — which is what the
 counters say too. It is kept here, labelled, rather than dropped.
 
+**Why this collapses at three or four streams while the benchmark holds 57.6 tok/s at thirty-two.** It is not fan-out
+and not attention depth — it is that under real traffic most of the engine's seconds sit inside steps that carry a
+**prefill chunk**, and a decoding stream advances exactly one acceptance per step no matter what that step costs.
+The engine counts its own steps: `vllm:iteration_tokens_total` held 229,625 records over this launch summing to
+110,983,408 tokens, which is `prompt_tokens_total` plus `generation_tokens_total` to the last token — so **99.2% of
+the tokens this box processed were prompt tokens**, one generated token costing 123 prompt tokens. In 8,192-token
+units that is 13,439 chunks, **5.9% of steps**, and the two unit prices that fall out of the journal's interval
+unions (4.97 h with something in flight) are **~1.0 s for a step carrying a chunk and 20.6 ms for one that does
+not** — 75% of the box's busy seconds are prefill steps, and one chunk is worth **49 decode steps** (27 of the fat
+32-row ones).
+
+| | the bench wave (32 × 1,200-token prompts) | real traffic (prompt p50 52,083) |
+|---|---|---|
+| prefill work | 38,400 tokens = **4.7 chunk steps**, paid once as a ramp | 6–7 chunk steps per arriving request, ~2.5 arrivals a minute |
+| decode steps per stream | ~471 (1,200 generated ÷ 2.55, the bench's own acceptance) | ~138 (median 322 ÷ 2.33) |
+| steps polluted by prefill | ~1% | ~4% at three-to-four in flight, ~8% at five-to-six |
+| what a stream's step costs | **13.0 ms** alone, **37.1 ms at 32 rows** (bench's own step timing) | **57 ms** at three-to-four, 98 ms at five-to-six |
+| rate | **57.6 tok/s a stream** | **41.0**, and 23.9 at five-to-six |
+
+Read it as rates divided by step times and the ordering stops being mysterious. This launch accepts 501,271 of
+376,433 drafts — a mean acceptance length of **2.33 tokens a step**, the first term in everything below. A stream
+alone runs 2.33 tokens per **14.4 ms** = 162 tok/s, against the 13.0 ms step the bench times for one stream; the
+measured 41.0 at three-to-four is 2.33 tokens per **57 ms**, and 57 ms is what **~4% one-second steps** buys
+(0.036 × 1.0 + 0.964 × 0.022). Going from one to thirty-two *decode* rows moves a measured step from 13.0 ms to
+37.1 ms — a factor 2.9 — while prefill injection moves it 4–7×. The bench's own timing corroborates the share: its median step at 32 rows is 37.1 ms, but 57.6 tok/s at its own 2.55
+tokens a step implies a **45.5 ms mean**, and solving `f × 1.0 + (1−f) × 0.0371 = 0.0455` gives **f = 0.9%** — what
+4.7 chunk steps against ~471 decode steps says. And the fan-out inside a chunk step is why the wave survives spending
+20% of its seconds there while this box spends 75%: a chunk step still advances every decoding stream once, so it
+yields 32 × 2.33 = **75 tokens** in the wave but only **3.9** live (382,167 drafts across those 229,625 steps —
+1.66 streams decoding per step). What is ruled out, with the counters that say so:
+preemption (`num_preemptions_total` 0, all 1,600 journal rows at `preemptions: 0`), the KV pool (15–30% over the
+spans, `waiting_by_reason` capacity 0 and deferred 0 — the queue is never a memory wall here), fp8 (paired arms:
+1,792 against 1,823 aggregate, 1.55 against 1.60 accepted per draft), acceptance length (1.33 per draft here against
+1.55–1.62 in the bench arms, worth a few percent) and context depth (162 alone at 20–80k against 186.7 at 32k uncapped, ~13%). The full census, the arithmetic that
+closes it against measurements it was not fitted to, and the trap that makes a 5-second version of this fit wrong:
+[notes/context-262k.md](notes/context-262k.md).
+
 - **The cliff is between two and three streams, and it is scheduling, not kernels.** Two to three in flight drops a
-  stream from 115 to 41 tok/s. With `NBT=8192` and prompts of 50–170k, a third long prompt turns engine steps into
-  ~1 s prefill chunks (measured on the earlier launch: step p50 951 ms), and every stream is credited its accepted
-  tokens once per step. The knob that addresses it is `--long-prefill-token-threshold`, not anything in the decode
-  path — see [notes/context-262k.md](notes/context-262k.md).
+  stream from 115 to 41 tok/s, and the step census above is the reason: with `NBT=8192`, a third long prompt
+  injects 6–7 one-second steps per arrival (measured on the earlier launch: step p50 951 ms), and every stream is
+  credited its accepted tokens once per step however long that step ran. The knob that addresses it is
+  `--long-prefill-token-threshold`, not anything in the decode path — see [notes/context-262k.md](notes/context-262k.md).
 - **Single-stream decode barely cares about context on this model.** Alone (nothing else sharing the box during its
   decode), generating ≥200 tokens: **182.6 tok/s** under 20k prompt, **164.6** at 20–80k, **150.0** at 80–160k,
   **156.5** above 160k — a 262k context costs one stream ~13%, because decode here streams MoE weights and

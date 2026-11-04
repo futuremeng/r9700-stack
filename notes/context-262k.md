@@ -374,6 +374,91 @@ in KV dtype, and the mix is the dominant term. Saying "real traffic got faster" 
 wrong. The controlled comparison is the paired arms: pool 540,202 → 1,009,899 tokens, 32-stream aggregate 1,823 →
 1,792, prefill flat to ±0.5%, acceptance 1.60 → 1.55 per draft.
 
+## Why real traffic decodes slower at three streams than the bench does at thirty-two (2026-11-04, 02:2x)
+
+The two numbers that provoke the question: `bench/probe32.sh` at 32 in flight gives **57.6 tok/s per stream**
+(1,792 aggregate, MTP=2), while the real-traffic bands above give **41.0 tok/s at three-to-four** and **23.9 at
+five-to-six**. Lower fan-out, worse per-stream rate. The explanation is not row count and not attention depth;
+it is that under real traffic most of the engine's time sits inside steps that carry a prefill chunk, and a
+decoding stream advances exactly one acceptance per step whatever that step costs.
+
+**The step census (counters, this launch at 10.6 h).** `vllm:iteration_tokens_total` is one record per engine step
+and its sum is exactly the tokens the engine handled: count 229,625 records, sum 110,983,408 tokens, which is
+`prompt_tokens_total` 110,091,658 + `generation_tokens_total` 891,750 to the last token. So:
+
+- **99.2% of the tokens this box processed were prompt tokens.** One generated token cost 123 prompt tokens.
+- Prompt work in 8,192-token units: 110,091,658 / 8,192 = **13,439 chunk-equivalents**, i.e. **5.9% of step
+  records** carry prefill work.
+- Time, from the journal's interval unions (not the per-request sums, which overlap): 4.97 h with something in
+  flight out of a 10.62 h span (47%), of which queue+prefill spans cover 4.05 h and decode spans 3.18 h --
+  overlapping, because one request's prefill runs inside another's decode.
+
+**Two unit prices, and they close the books.** Take a chunk-bearing step at ~1.0 s and a step without one at
+20.6 ms:
+
+| step kind | count | unit | total |
+|---|---:|---:|---:|
+| carries an 8,192-token prefill chunk | 13,439 | 1.0 s | 13,439 s |
+| no prefill in it | 216,186 | 20.6 ms | 4,453 s |
+| | 229,625 | mean 78 ms | **17,892 s = 4.97 h** -- the journal's union |
+
+75% of the box's busy seconds are prefill steps, and one chunk step is worth **49 ordinary decode steps**
+(1.0 s / 20.6 ms), or 27 of the fat 32-row ones. Those two prices were not fitted to that total alone -- they sit
+right next to two independent measurements. This launch accepts 501,271 of 376,433 drafts, a mean acceptance length
+of **2.33 tokens a step**, so the 162 tok/s a lone stream gets is **14.4 ms a step** -- and the benchmark suite
+times a step (its "ITL" is a step time, not a per-token latency) at **13.0 ms with one stream**, 20.8 ms with eight
+and **37.1 ms with thirty-two**. That median is not the mean, and the difference is the mechanism showing through:
+the fp8 arm's 1,792 aggregate is 56.0 tok/s a stream, and at its own 2.55 accepted tokens a step that is a **45.5 ms
+mean step** -- 23% above its 37.1 ms median. Solving f x 1.0 + (1-f) x 0.0371 = 0.0455 gives **f = 0.9% of the
+wave's steps carrying a chunk**, which is exactly what 4.7 chunk steps against ~471 decode steps says. The bench
+wave and the live box agree on the unit prices and differ in f by a factor of six in steps (0.9% against 5.9%) and
+four in seconds (20% of the wave's seconds inside chunk steps against 75% of the box's).
+
+**And the fan-out inside the chunk step is why 20% is survivable and 75% is not.** A chunk step is not a wasted
+step -- it still advances every decoding stream once. In the wave that yields 32 x 2.33 = **75 tokens per second of
+stall**; live, the engine runs 382,167 drafts across 229,625 steps, i.e. **1.66 streams decoding per step**, so the
+same one-second step yields **3.9 tokens**. The bench is not lucky in having cheap prefills -- its prefills cost the
+same ~1.0 s each -- it is lucky in having 32 streams to pay for them, and in paying them before the decode starts.
+
+**What that does to a stream.** Its rate is (accepted tokens per step) divided by (its mean step time), and 2.33 is
+the first term all the way through this launch. Alone: 162 tok/s = 2.33 / **14.4 ms**. At three-to-four in flight the
+measured 41.0 tok/s implies **57 ms a step**, which is what **~4% of its steps being ~1 s steps** buys
+(0.036 x 1.0 + 0.964 x 0.022 = 0.057). At five-to-six, 23.9 tok/s implies 98 ms, about 8%. Meanwhile going from one
+stream to 32 *decode* rows moves the measured step only 13.0 -> 37.1 ms, a factor of 2.9. Prefill injection is worth
+4-7x; concurrency inside decode is worth 2.9x. That is the whole gap.
+
+**And why the bench does not see it.** A `probe32` wave is 32 requests x 1,200 prompt tokens = 38,400 prompt tokens
+= **4.7 chunk steps in the whole wave**, paid once as a ramp before the streams settle; each stream then gets
+~471 decode steps (1,200 generated at the bench's own 2.55 a step) to amortize them, and every one of those steps advances all 32 streams. Real
+traffic injects 6-7 chunk steps per arriving request (p50 prompt 52,083) at ~2.5 arrivals a minute into requests
+that own only ~138 decode steps of their own (median 322 generated tokens). Same engine, same kernels, different
+injection rate.
+
+**Ruled out, with the counters that say so.** Preemption: `vllm:num_preemptions_total` 0, and all 1,600 journal
+rows for this boot carry `preemptions: 0`. KV pressure: pool mean 15-30% over the spans, peak 45%, and
+`num_requests_waiting_by_reason` shows capacity 0 / deferred 0 -- the queue is never a memory wall here. fp8: the
+paired arms measured 1,823 -> 1,792 aggregate and 1.60 -> 1.55 accepted per draft, two orders of magnitude short of
+4-7x. Acceptance: this launch accepts 1.33 per draft, so 2.33 tokens a step; the bench arms sit at 1.55-1.62, so
+acceptance explains a few percent, not a factor of four. Context depth: 162 tok/s alone
+at 20-80k against 186.7 at 32k uncapped, ~13%.
+
+**A measurement trap on the way, kept because it is how this could go wrong.** The obvious first move is to fit
+those two unit prices from 5-second buckets of `iteration_tokens_total` against `prompt_tokens_total`. It does not
+work: prompt tokens credit when a request ENDS, so a bucket's prompt total says where requests finished, not
+where the prefills ran -- the fit came out with f = 0 buckets costing 165 ms a step, which is nonsense. The same
+quantity measured over a 150 s window says 36% of steps carried a chunk; over the launch it says 5.9%. Both are
+true at their own timescale; only the launch-level counters and the interval unions can be reconciled, which is
+why the decomposition above is built from those and then checked against the two rates it was not fitted to.
+
+**What can be done about it, and what it costs.** `--long-prefill-token-threshold` (+ `_adaptive`) is a fairness
+knob, not a throughput one: six 30k requests behind a 250k one go 40.3-55.8 s -> 7.8-27.7 s with the wall clock
+unchanged (55.9 vs 56.8 s), while three 250k prefills in parallel push the pool to 99.1% and cost 22% -- so it
+stays off and the cliff stays where the mechanism puts it. Lower `NBT` would shorten each stall and interleave
+more finely, at the cost of prompt throughput (9,702 tok/s at NBT 8,192 is why it is 8,192). `MTP=3` buys
+single-stream latency (197.6 against 179.8) and costs 18% of aggregate at 32 in flight. Turning prefix caching
+back on is the one lever that removes prompt work rather than redistributing it, and it is off on purpose for the
+262k recipe (notes/kv-fp8-qsa.md and the 262k tables above).
+
 ## Why the GLM-5.3-Flash 262k failure did not repeat here
 
 [release-v0.3.7.md](release-v0.3.7.md) records GLM-5.3-Flash TP8 coming up at 262k and then dying inside

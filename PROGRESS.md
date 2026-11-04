@@ -2736,3 +2736,51 @@ The comparison table even says "should not be read as one".
 `docs/summary-page.py` gained the fourth fact ("115 tok/s ... median over 1,525 of them"), so the generated release
 page carries the in-use number next to the benchmark ones; canvas 1000x1310, PNG 2000x2620, and the README caption
 follows. Full method, the concurrency histogram and the thin-bucket caveats: notes/context-262k.md.
+
+## 2026-11-04: a step-level census explains why real traffic decodes slower at 3 streams than the bench does at 32
+
+**Question asked:** 实际任务的并发 decode 为什么比测试的差很多? The two facts: `probe32` at 32 in flight reads 57.6
+tok/s a stream; the real-traffic bands read 41.0 at three-to-four and 23.9 at five-to-six. Lower fan-out, worse rate.
+
+**The census came from the engine's own counter** rather than from anything I instrumented:
+`vllm:iteration_tokens_total` is one record per engine step, and its sum equals the tokens handled exactly
+(229,625 records; 110,983,408 tokens = `prompt_tokens_total` 110,091,658 + `generation_tokens_total` 891,750). So
+**99.2% of the tokens this box processed were prompt tokens** -- one generated token for every 123 prompt tokens.
+Prompt work in 8,192-token units is 13,439 chunks = **5.9% of step records**.
+
+**Unit prices, closed against the journal rather than fitted.** Interval unions from the journal: 4.97 h with
+something in flight (47% of a 10.62 h span), queue+prefill covering 4.05 h, decode 3.18 h -- overlapping. Take a
+chunk-bearing step at 1.0 s and a step without one at 20.6 ms: 13,439 + 4,453 = 17,892 s = 4.97 h exactly, so
+**75% of busy seconds are prefill steps** and one chunk step is worth **49 decode steps**. That pair also predicts
+two numbers it was not fitted to: a lone stream's 162 tok/s = 2.53 tokens / **15.6 ms a step** (against the 13.0 ms
+median ITL one stream measured in the MTP probe) and the bench wave's 57.6 = 2.55 / **34 ms a step** at 32 rows.
+
+**Then the answer is injection rate, not fan-out.** The bench wave is 32 x 1,200-token prompts = 4.7 chunk steps
+paid once as a ramp, followed by ~471 all-advance decode steps per stream; real traffic injects 6-7 chunk steps per
+arriving request (prompt p50 52,083) at ~2.5 arrivals/min into requests that own only ~127 steps (median 322
+generated tokens). The bands come out of the arithmetic: 41.0 tok/s at three-to-four is 2.53 tokens per **62 ms**,
+which is ~4% of that stream's steps being ~1 s steps; 23.9 at five-to-six is ~9%. Meanwhile 1 -> 32 *decode* rows
+costs only 15.6 -> 34 ms, a factor 2.2, against 4-7x from prefill injection.
+
+**Ruled out with counters, not vibes**: preemption (`num_preemptions_total` 0, all 1,600 rows `preemptions: 0`);
+KV pool (15-30% over the spans, `waiting_by_reason` capacity 0 and deferred 0 -- the queue is not a memory wall);
+fp8 (paired arms 1,792 vs 1,823 aggregate, 1.55 vs 1.60 accepted per draft -- two orders of magnitude short);
+acceptance (2.53 vs 2.55 a step); context depth (162 alone at 20-80k vs 186.7 at 32k uncapped, ~13%).
+
+**The measurement trap I walked into first, recorded because it is the easy wrong answer.** Fitting those two unit
+prices from 5-second buckets of `iteration_tokens_total` against `prompt_tokens_total` gives nonsense -- prompt
+tokens credit at request END, so a bucket's prompt total says where requests *finished*, not where prefills *ran*
+(fit returned f = 0 buckets at 165 ms a step). The same pollution figure is 36% over a 150 s window, 5.9% over the
+launch: true at each timescale, and only launch-level counters plus interval unions reconcile. That is why the
+decomposition is built from those and then checked against the two rates it was not fitted to.
+
+**The two worlds corroborate each other rather than being argued apart.** The bench wave's median step at 32 rows is
+37.1 ms, but its 57.6 tok/s a stream at its own 2.55 accepted tokens a step implies a **45.5 ms mean** step;
+solving f x 1.0 + (1-f) x 0.0371 = 0.0455 gives **f = 0.9%** of the wave's steps carrying a chunk -- exactly the 4.7
+chunk steps against ~471 decode steps that its prompt size dictates. So the wave and the live box agree on the unit prices and differ only in f, by about a factor of six in steps (0.9% against
+5.9%) and four in seconds (20% of the wave's seconds inside chunk steps, 75% of the live box's).
+
+README's real-traffic subsection gained the mechanism block (with the bench-vs-real table); the full census, the
+closures, the exclusions and the knobs (`--long-prefill-token-threshold` measured as fairness-not-throughput:
+40.3-55.8 s -> 7.8-27.7 s at unchanged wall clock, but +22% and a 99.1% pool when three 250k prefills run together)
+are in notes/context-262k.md.

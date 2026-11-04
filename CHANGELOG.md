@@ -1,4 +1,28 @@
 # Changelog
+## why real traffic decodes slower at three streams than the bench does at thirty-two, measured a step at a time
+
+- **A step census from the engine's own counter** (`vllm:iteration_tokens_total` is one record per step, and its sum
+  is exactly the tokens handled): 229,625 steps summing to 110,983,408 tokens = `prompt_tokens_total` +
+  `generation_tokens_total` to the last token. So **99.2% of the tokens this box processed were prompt tokens** — one
+  generated token costing 123 prompt tokens.
+- **Two unit prices that close the books**: prompt work is 13,439 chunks of 8,192 (**5.9% of steps**), and
+  reconciling them with the journal's interval unions (4.97 h with something in flight out of 10.62 h) gives
+  **~1.0 s for a step carrying a chunk and 20.6 ms for one that does not** — 13,439 s + 4,453 s = 17,892 s = the
+  union exactly, so **75% of busy seconds are prefill steps**, and one chunk is worth **49 decode steps**. The same
+  pair predicts two numbers it was not fitted to: a lone stream's 162 tok/s (2.53 tokens per 15.6 ms) and the bench
+  wave's 57.6 at 32 rows (2.55 per **34 ms**).
+- **The gap is injection, not fan-out**: the bench wave pays 4.7 chunk steps once as a ramp, then 471 all-advance
+  steps per stream, while real traffic injects 6–7 chunk steps per arrival into requests that only have ~127 steps
+  of their own. The measured bands fall out of the arithmetic — 41.0 tok/s at three-to-four is 2.53 tokens per 62 ms,
+  which is ~4% one-second steps; 23.9 at five-to-six is ~9%. Going 1 → 32 *decode* rows only costs 15.6 → 34 ms
+  (2.2x), against 4-7x from prefill injection.
+- **Ruled out with counters**: preemption (`num_preemptions_total` 0, 1,600 rows at `preemptions: 0`), the KV pool
+  (15-30% means, capacity/deferred waits 0), fp8 (1,792 against 1,823 aggregate; 1.55 against 1.60 accepted per
+  draft), acceptance length (2.53 against 2.55), context depth (162 at 20-80k against 186.7 at 32k, ~13%).
+- **A trap worth recording**: fitting these prices from 5-second buckets fails, because `prompt_tokens_total` credits
+  at request END — the fit produced f = 0 buckets at 165 ms a step. The same quantity is 36% over a 150 s window and
+  5.9% over the launch; only launch-level counters plus interval unions reconcile.
+
 ## the README now carries the speed this box runs at, not only the speed it is benched at
 
 - **Ten hours of real traffic on the fp8 launch** (1,568 completed requests, 29% of the wall clock busy, prompts p50
