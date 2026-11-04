@@ -796,7 +796,7 @@ def sidecar(mode="proxy", key="", keep=50, journal=None):
     jp = journal or f"/tmp/r9700-webui-journal-{mode}-{next(_jsid)}.jsonl"
     if journal is None:
         Path(jp).unlink(missing_ok=True)                    # a named journal is reused on purpose
-    cfg = {"port": 0, "upstream": f"http://127.0.0.1:{up_port}", "mode": mode, "key": key, "poll": 0.2,
+    cfg = {"port": 0, "bind": "127.0.0.1", "upstream": f"http://127.0.0.1:{up_port}", "mode": mode, "key": key, "poll": 0.2,
            "keep": keep, "meta": "", "gpus": str(fake), "pci": str(pnodevs), "journal": jp, "smi": None,
            "timeout": 10.0, "verbose": False, "version": "test"}
     hub, srv = W.build(cfg)
@@ -1634,6 +1634,34 @@ def _localenv():
 ck("this box's machine-local env exists, binds 0.0.0.0, and lives outside the repo",
    _localenv().exists() and "HOST=0.0.0.0" in _localenv().read_text() and not str(_localenv()).startswith(ROOT),
    str(_localenv()))
+# The Monitor's sidecar has the same problem as the engine: the repo default is loopback (0f64838 -- /api/* carries
+# the engine config and the request records), and this box reads the Monitor from other machines. The choice is
+# written in the machine-local file, not in the repo, and both launchers read that file the same way.
+_wsh = open(os.path.join(ROOT, "serve/webui.sh")).read()
+ck("the sidecar's bind is resolved flag -> machine-local file -> repo default, and passed explicitly on the "
+   "command line so the running process states its own bind",
+   'LOCAL_ENV=${LOCAL_ENV:-$HOME/.config/r9700-stack/native.env}' in _wsh
+   and 'BIND=${WEBUI_BIND:-${R9K_WEB_BIND:-127.0.0.1}}' in _wsh and 'ARGS+=(--bind "$BIND")' in _wsh
+   and "bind $BIND" in _wsh)
+ck("a fact meant for a child process is sourced with set -a, in BOTH launchers",
+   # Sourcing alone only makes shell variables. Measured the same day: a sidecar restarted from a hand-typed
+   # command that sourced the file came up on 127.0.0.1:8099 while the file said 0.0.0.0, because webui.py reads
+   # R9K_WEB_BIND out of the ENVIRONMENT as its --bind default.
+   'set -a; . "$LOCAL_ENV"; set +a' in _wsh and 'set -a; . "$LOCAL_ENV"; set +a' in lfsrc)
+ck("this box's file states both bind addresses -- the engine's and the Monitor's",
+   all(k in _localenv().read_text() for k in ("HOST=0.0.0.0", "R9K_WEB_BIND=0.0.0.0")), str(_localenv()))
+_dr = subprocess.run(["bash", os.path.join(ROOT, "serve/webui.sh")], capture_output=True, text=True, timeout=120,
+                     env={**os.environ, "DRY": "1", "WEBUI_PORT": "8099"})
+ck("DRY=1 previews the sidecar command line, and neither starts nor kills anything",
+   _dr.returncode == 0 and "--bind 0.0.0.0" in _dr.stdout and "nothing started, nothing stopped" in _dr.stdout,
+   (_dr.stdout + _dr.stderr)[:240])
+_dr2 = subprocess.run(["bash", os.path.join(ROOT, "serve/webui.sh")], capture_output=True, text=True, timeout=120,
+                      env={**os.environ, "DRY": "1", "WEBUI_PORT": "8099", "LOCAL_ENV": "/nonexistent-box.env"})
+ck("with no machine-local file the preview falls back to the repo default, loopback",
+   "--bind 127.0.0.1" in _dr2.stdout and "--bind 0.0.0.0" not in _dr2.stdout, (_dr2.stdout)[:240])
+ck("and the sidecar actually running on this box is bound the way the file says, not by accident",
+   "0.0.0.0:8099" in subprocess.run(["ss", "-ltn"], capture_output=True, text=True, timeout=30).stdout,
+   "ss -ltn | grep 8099")
 ck("the decision note answers the measurement that turned the cache off instead of ignoring it",
    all(k in _nd for k in ("5056943", "285 ms", "ITEMS=0,66,152", "How it landed")),
    [k for k in ("5056943", "285 ms", "ITEMS=0,66,152", "How it landed") if k not in _nd])
@@ -1748,6 +1776,60 @@ ck("no API key is ever written into a pasteable block",
    [m.group(0) for m in re.finditer(r"api_key.{0,40}", abjs)][:2])
 ck("the checkpoint path is on the page but says it is not a model name",
    'Weights live at' in abjs and "not a name a client can ask for" in abjs)
+# "What is this box configured to?" has three answers, and the About page has to show all three: the recipe the
+# launcher recorded, the config the engine resolved, and the environment these processes actually hold. Listing
+# them under one heading would hide the disagreement `tools/recipe-check.py` exists to turn into an exit code.
+# The environment part is a whitelist by construction: a running serve's os.environ is hundreds of names, one of
+# which may be a credential, and this page is served on every interface of this box.
+_ev = W.env_vars({"VLLM_LOG_STATS_INTERVAL": "10", "R9K_WEB_BIND": "0.0.0.0", "WEBUI_PORT": "8099",
+                  "VLLM_ROCM_USE_AITER": "1", "PYTHONPATH": "/x", "PATH": "/bin",
+                  "R9K_WEB_KEY": "sup3rs3cr3t"})
+ck("the env block lists the knobs that change the page's numbers or reach the box, and none of the rest",
+   _ev.get("VLLM_LOG_STATS_INTERVAL") == "10" and _ev.get("R9K_WEB_BIND") == "0.0.0.0"
+   and _ev.get("WEBUI_PORT") == "8099" and _ev.get("VLLM_ROCM_USE_AITER") == "1"
+   and "PYTHONPATH" not in _ev and "PATH" not in _ev,
+   str(sorted(_ev))[:200])
+ck("a credential is listed as set with its value withheld, and its value appears nowhere in the block",
+   "~R9K_WEB_KEY" in _ev and _ev["~R9K_WEB_KEY"] == "" and "sup3rs3cr3t" not in json.dumps(_ev), str(_ev)[:200])
+with tempfile.TemporaryDirectory() as _td:
+    _fp = Path(_td) / "native.env"
+    _fp.write_text("# a comment\nHOST=0.0.0.0\nR9K_WEB_BIND=0.0.0.0\nR9K_WEB_KEY=hush\nnot-a-line\n")
+    _ef = W.env_file(str(_fp))
+    ck("the machine-local env file is parsed: comments dropped, credential masked, value never leaked",
+       _ef["exists"] and _ef["vars"].get("HOST") == "0.0.0.0" and _ef["vars"].get("~R9K_WEB_KEY") == ""
+       and "not-a-line" not in _ef["vars"] and "hush" not in json.dumps(_ef), str(_ef)[:200])
+    _ef2 = W.env_file(str(Path(_td) / "absent.env"))
+    ck("a missing env file says so, rather than an empty list that reads as a file with nothing in it",
+       _ef2["exists"] is False and bool(_ef2["error"]) and _ef2["vars"] == {}, str(_ef2)[:160])
+ck("a printed command line keeps a key's FLAG and withholds only its value, in both spellings",
+   W.argv_line(["vllm", "serve", "--api-key", "hunter2", "--key=abc", "m"])
+   == "vllm serve --api-key <withheld> --key=<withheld> m", W.argv_line(["vllm", "--key", "x"]))
+_st2 = hub.api("/api/status")                        # the Hub's own payload, not an HTTP round trip
+ck("the payload carries the env block, the process's own command line, and the address it listens on",
+   "env" in _st2 and "argv" in _st2 and "file" in _st2["env"] and _st2["env"]["mode"] == "proxy"
+   and _st2.get("bind") == "127.0.0.1" and "port" in _st2, str(_st2.get("env"))[:200])
+_lbl = ('vllm:cache_config_info{model_name="Qwen3.8",block_size="832",num_gpu_blocks="1242",'
+        'a_fork_label_nobody_reads="yes",kv_cache_size_tokens="977726"} 1.0\n')
+_c2, _k2, _i2 = W.parse_metrics(METRICS2 + _lbl)
+ck("a label this build publishes that no card reads still reaches the page, and the curated config stays "
+   "WANT-filtered (a page that reads whatever label appears is a page whose meaning moves when vLLM renames one)",
+   _i2["_all"].get("a_fork_label_nobody_reads") == "yes"
+   and "a_fork_label_nobody_reads" not in _i2
+   and _i2.get("block_size") == _i2["_all"].get("block_size"), str(_i2)[:220])
+ck("the About page lists all three sources, says which is which, and never prints a withheld value",
+   all(i in abhtml for i in ('id="facts-config"', "facts-cfgall", "facts-env", "facts-envfile",
+                             "env-file-note", "config-card"))
+   and "what the launcher asked for" in abjs and "value withheld" in abjs
+   and "set -a" in abjs and "no machine-local env file" in abjs)
+# The two absences have to be two sentences. A payload with no env block at all (an in-process plugin started
+# before the card existed) used to render as "there is no machine-local env file at undefined", which sent someone
+# looking for a file that was never missing -- the build was old, not the box unconfigured.
+ck("an absent env block and an absent env file are different sentences on the About page",
+   "predates the card" in abjs and "no machine-local env file at" in abjs and "!env.pid && !efile.path" in abjs)
+ck("About has a render harness of its own, so a ReferenceError in one section is not discovered by eye",
+   (Path(ROOT) / "tests" / "render-about.mjs").is_file()
+   and "facts-cfgall" in (Path(ROOT) / "tests" / "render-about.mjs").read_text()
+   and "predates the card" in (Path(ROOT) / "tests" / "render-about.mjs").read_text())
 # Measured with litellm 1.106.6 against this serve: the pasted snippet as first written returned
 # content=None, because every one of max_tokens went into reasoning. The snippet reads both fields, and the
 # parser name only reaches the page through the recipe file -- so the ARGS line and the meta line have to

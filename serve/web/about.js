@@ -79,6 +79,49 @@ function render() {
       : typeof meta[k] === "object" ? JSON.stringify(meta[k]) : String(meta[k])]));
   }
 
+  // Configuration and environment, as THREE lists that are allowed to disagree, each naming where it came from:
+  // the recipe file is what the launcher recorded for the engine, the engine's labels are what the engine
+  // resolved, and the environment / machine-local file are what these processes actually hold. Merging them into
+  // one list would hide the disagreement, and `tools/recipe-check.py` exists to turn that disagreement into an
+  // exit code. A sidecar's `MAXLEN` proves nothing about the engine, which is why the process rows say which
+  // process they are. Nothing on this card defines anything: it reports.
+  const env = s.env || {}, efile = env.file || {}, all = c._all || {};
+  // A name whose value looks like a credential is listed with its value withheld, so "not printed" is never read
+  // as "not set". The payload marks those with a leading ~; the page says it in words instead.
+  const envrow = ([k, v]) => (k.startsWith("~")
+    ? [k.slice(1), "set · value withheld", null]
+    : [k, v, 1]);
+  const envRows = Object.entries(env.vars || {}).map(envrow);
+  const fileRows = Object.entries(efile.vars || {}).map(envrow);
+  facts($("facts-config"), [
+    ["This process", env.pid ? `${env.mode === "merged" ? "inside the serve" : "sidecar process"}`
+      + ` · pid ${env.pid}` : null],
+    ["Its command line", s.argv || null, 1],
+    ["Listening on", s.bind ? `${s.bind}:${s.port ?? "?"}` : null],
+    ["Machine-local env file", efile.path || null, 1],
+    ["The three lists below", "recipe = what the launcher asked for · engine config = what the engine resolved · "
+      + "env and file = what the processes hold. They can disagree, and recipe-check is the check that does."],
+  ]);
+  $("cfg-all-n").textContent = `(${Object.keys(all).length} labels)`;
+  facts($("facts-cfgall"), Object.entries(all).sort().map(([k, v]) => [k, String(v), 1]));
+  $("env-proc-n").textContent = `(${envRows.length} whitelisted names set)`;
+  facts($("facts-env"), envRows);
+  $("env-file-n").textContent = `(${fileRows.length} lines)`;
+  facts($("facts-envfile"), fileRows);
+  text("env-file-note", !env.pid && !efile.path
+    // "No env block in the payload" and "no env file on disk" are different sentences, and the second one is what
+    // the page used to say about the first: an in-process plugin started before this card existed serves a payload
+    // with no env block at all, and "there is no file at undefined" sent someone looking for a file that was never
+    // missing. The fix is to name which case it is, and to say what makes the difference -- a restart.
+    ? "This page's payload carries no environment block, so this build predates the card: an in-process plugin "
+      + "started before it existed. Restart the serve to get one (the files themselves are unchanged)."
+    : efile.exists
+    ? "The launchers source this file with `set -a` before their own defaults, so these reach the child processes "
+      + "and not only the script. The repo keeps its defaults in the repo; what lives here is a fact about this "
+      + "box (notes/launch-methodology.md section 10)."
+    : `There is no machine-local env file at ${efile.path}, so every default in the repo is in force. `
+      + (efile.error ? `(${efile.error})` : ""));
+
   facts($("facts-host"), [
     ["Hostname", host.hostname],
     ["CPU", host.cpu ? `${host.cpu}${host.threads ? `, ${host.threads} threads` : ""}` : null],

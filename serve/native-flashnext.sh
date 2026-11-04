@@ -15,7 +15,12 @@ PY=$VENV/bin/python3
 # launch instead of being remembered by whoever last typed the command. LOCAL_ENV= overrides the path.
 # notes/launch-methodology.md section 10.
 LOCAL_ENV=${LOCAL_ENV:-$HOME/.config/r9700-stack/native.env}
-if [ -f "$LOCAL_ENV" ]; then . "$LOCAL_ENV"; echo "local env: $LOCAL_ENV"; fi
+if [ -f "$LOCAL_ENV" ]; then
+  # `set -a` so the file's facts reach the child processes as well as this script: sourcing alone only makes shell
+  # variables, and anything a child reads from the environment (serve/webui.py's R9K_WEB_BIND default, for one)
+  # would silently keep its own default. serve/webui.sh sources the same file the same way.
+  set -a; . "$LOCAL_ENV"; set +a; echo "local env: $LOCAL_ENV"
+fi
 : ${HOST:=127.0.0.1}
 # stock ROCm 7.2-era vLLM wheels link OpenMPI; on a box without root we unpacked the runtime debs locally
 OPENMPI=${OPENMPI:-$HOME/opt/openmpi/usr/lib/x86_64-linux-gnu}

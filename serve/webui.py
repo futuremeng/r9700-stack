@@ -88,6 +88,92 @@ WANT = ("model_name", "model_compiler", "tensor_parallel_size", "pipeline_parall
         # cache_config.block_size into it before the platform raises the attention block (the boot log's "Setting
         # attention block size to 832 tokens"), so 16 is an ordering artifact and NOT something to divide 832 by.
         "hash_block_size", "enable_mamba_shared_prefix_checkpoint")
+
+# --------------------------------------------------------------------------------- configuration, as listed
+# What the About page prints as "the configuration this box runs in". A whitelist, not os.environ: the question
+# the card answers is "which settings change the numbers on this page, and how is the box reached", and a full
+# dump buries those under PYTHONPATH, VIRTUAL_ENV and whatever the last shell exported -- and it is exactly the
+# shape of thing that leaks a credential into a page that is served on every interface here.
+ENV_PREFIX = ("VLLM_", "R9K_WEB_", "R9700_WEBUI_", "R9700_", "WEBUI_")
+ENV_NAMES = ("LOCAL_ENV", "HOST", "PORT", "MODEL", "DEVICES", "GPUS", "TP", "MAXLEN", "NSEQ", "NBT", "UTIL",
+             "KVDTYPE", "MTP", "PREFIX_CACHE", "CG_SIZES", "EAGER", "OFFLOAD_GB", "ATTN", "REASONING",
+             "TOOLCALL", "FOLD", "AR_QUANT", "HC_FP8", "HC_FP8_DECODE", "FP8_BLOCK", "FP8_QA",
+             "TARGET_LMHEAD", "DRAFT_LMHEAD", "MTP_QUANT_ROWS", "EXTRA", "LOG", "JOURNAL", "JOURNAL_ATTACH",
+             "META", "POLL_S", "KEEP", "SMI", "PCI", "OPENMPI", "LD_LIBRARY_PATH", "HF_HOME",
+             "TORCHINDUCTOR_CACHE_DIR", "CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES")
+# A name that looks like a credential is listed as set, with its value withheld -- so "not printed" is never
+# mistaken for "not set". The tilt prefix on the key is the page's marker for "present, value withheld".
+ENV_SECRET = re.compile(r"KEY|TOKEN|SECRET|PASS|CRED|AUTH", re.I)
+
+
+def env_vars(src):
+    """The whitelisted part of one environment, as {name: value}, with credential names marked `~name`: """
+    out = {}
+    for k, v in src.items():
+        if ENV_SECRET.search(k):
+            out["~" + k] = ""
+        elif k in ENV_NAMES or str(k).startswith(ENV_PREFIX):
+            out[k] = v
+    return dict(sorted(out.items()))
+
+
+def env_file(path):
+    """The machine-local env file the launchers source (notes/launch-methodology.md section 10), parsed. It is
+    read when the payload is built, so an operator who edits it sees the page agree with the file on the next
+    poll. Same masking rule as the process environment; a file that is not there says so rather than showing
+    an empty list, because "no such file" and "file with nothing in it" are different answers."""
+    try:
+        raw = Path(path).read_text()
+    except OSError as e:
+        return {"path": path, "exists": False, "error": e.strerror or str(e), "vars": {}}
+    out = {}
+    for ln in raw.splitlines():
+        ln = ln.strip()
+        if not ln or ln.startswith("#") or "=" not in ln:
+            continue
+        k, _, v = ln.partition("=")
+        k, v = k.strip(), v.strip().strip('"').strip("'")
+        if ENV_SECRET.search(k):
+            out["~" + k] = ""
+        else:
+            out[k] = v
+    return {"path": path, "exists": True, "error": None, "vars": dict(sorted(out.items()))}
+
+
+def env_block(mode):
+    """Everything the About page is allowed to say about configuration, and where each part came from.
+
+    The distinction the block exists to keep: on the merged page (`mode == "merged"`) the process environment IS
+    the serve's environment, while on a sidecar page it is the sidecar's -- and `MAXLEN` sitting in a sidecar's
+    env proves nothing about the engine. The recipe block (`meta`) is what the launcher recorded for the engine,
+    and the labels block (`config._all`) is what the engine says it resolved. All three are listed, labelled,
+    and allowed to disagree: `tools/recipe-check.py` is the tool that turns a disagreement into an exit code.
+    Nothing measured or decided lives here -- this block reports, it does not define.
+    """
+    return {"pid": os.getpid(), "mode": mode, "vars": env_vars(os.environ),
+            "file": env_file(os.environ.get("LOCAL_ENV")
+                             or str(Path.home() / ".config" / "r9700-stack" / "native.env"))}
+
+
+def argv_line(argv=None):
+    """This process's own command line, safe to print. The key FLAG stays visible with its value withheld: a
+    restart line that silently drops --key starts a serve the operator cannot reach, and a line that prints the
+    key puts it on a page served on every interface of this box."""
+    out, masked = [], False
+    for a in (sys.argv if argv is None else argv):
+        if masked:
+            out.append("<withheld>")
+            masked = False
+            continue
+        for flag in ("--key", "--api-key"):
+            if a.startswith(flag + "="):
+                a = f"{flag}=<withheld>"
+                break
+            if a == flag:
+                masked = True
+                break
+        out.append(a)
+    return " ".join(out)
 # The metric names move between vLLM releases: 0.32 renamed gpu_cache_usage_perc to kv_cache_usage_perc and
 # carries the per-output-token histogram as request_time_per_output_token_seconds (inter_token_latency_seconds
 # alongside it). Read whichever of the build publishes -- and say null when it publishes none.
@@ -132,7 +218,7 @@ def parse_metrics(text):
     because "one rank's KV pool is full" is the sentence that matters. Buckets are skipped: _sum and
     _count are the two numbers any mean we want comes out of. Also returned: the KV pool geometry,
     which in vLLM is only readable as metric labels, and the model name from those same labels."""
-    out, cap, info = {}, None, {}
+    out, cap, info, allb = {}, None, {}, {}
     for line in text.splitlines():
         if not line.startswith("vllm:"):
             continue
@@ -175,8 +261,14 @@ def parse_metrics(text):
                 if kvn:                       # the pool's real capacity, which on a hybrid model is not
                     cap = int(kvn.group(1))   # blocks x block_size
         for k, v in LBL.findall(labels):
+            # Every label the build publishes goes into `_all` so the About page can list what exists, not only
+            # what these pages read; the WANT filter stays, because the cards and the checks are written against
+            # the curated set and a page that reads whatever label happens to appear is a page that changes
+            # meaning when vLLM renames something.
+            allb.setdefault(k, v)
             if k in WANT and info.get(k) in (None, ""):
                 info[k] = v
+    info["_all"] = allb
     return out, cap, info
 
 
@@ -1992,6 +2084,16 @@ class Hub:
                     payload["smi_error"] = self.smi_error
                     payload["meta"] = self.meta
                     payload["meta_src"] = self.cfg["meta"] or None
+                    # Rebuilt every poll on purpose: the machine-local env file is a file an operator edits while
+                    # the box is up, and a page that cached it at start would be a page that disagrees with the
+                    # file it names.
+                    payload["env"] = env_block(self.cfg["mode"])
+                    payload["argv"] = argv_line()
+                    # The address the process is actually listening on, from its own config rather than from a
+                    # guess: on this box the bind is a machine-local fact, and a page that prints a URL it hopes
+                    # is the one that answers is the page that sends people to a port nothing is on.
+                    payload["bind"] = self.cfg.get("bind")
+                    payload["port"] = self.cfg.get("port")
                     payload["poll_s"] = self.cfg["poll"]
                     payload["key_needed"] = self.key_needed or bool(self.cfg["key"])
                     payload["merged"] = self.eng is not None     # `is not None`, not bool(): an empty

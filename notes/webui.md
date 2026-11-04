@@ -1584,3 +1584,51 @@ the factors and never states them.
 
 The engine's own page (8080, in-process plugin) picks the fields up at its next restart; the sidecar has them now.
 The page's sentence is guarded by `isnum()`, so a payload without them stays silent rather than inventing a duty.
+
+## About now lists the configuration, as three sources that are allowed to disagree (2026-11-04)
+
+"What is this box configured to?" has three different answers, and a page that shows one of them is a page that
+gets asked again. The new card prints all three, each labelled with where it came from:
+
+- **recipe** (`meta`) -- what the launcher recorded when the serve was started: `maxlen`, `nbt`, `nseq`,
+  `prefix_cache`, `host`, `kvdtype`, `mtp`, the cudagraph sizes, the fork's own `hc_fp8` / `ar_quant` switches.
+- **engine config** (`config._all`) -- every label the running build publishes on its info metrics, not only the
+  ones the cards read. On the live cache-on launch that is **46 labels against the 15 curated**, and the ones the
+  cards never showed are exactly the ones people ask about: `mamba_cache_mode`, `prefix_match_unit`,
+  `prefix_caching_hash_algo`, `prefix_cache_retention_interval`, `kv_cache_max_concurrency`, `kv_cache_layout`,
+  `sliding_window`, `use_replayssm`. The WANT filter stays for the cards and the checks -- a page that reads
+  whatever label happens to appear is a page whose meaning moves when vLLM renames one -- but `_all` is listed, so
+  a fork knob nobody mapped is at least visible.
+- **environment** -- the whitelisted part of the process's own environment, plus the machine-local env file
+  (`LOCAL_ENV`, default `~/.config/r9700-stack/native.env`) parsed from disk each poll, so the page agrees with the
+  file an operator just edited. The process rows also say *which process* they describe: on the merged page the
+  environment is the serve's, on a sidecar page it is the sidecar's, and `MAXLEN` in a sidecar's env proves nothing
+  about the engine.
+
+Two rules the card keeps. **A whitelist, not `os.environ`**: a running serve's environment is hundreds of names,
+and this page is served on every interface of the box -- the card lists what changes the page's numbers or how the
+box is reached (`VLLM_*`, `R9K_WEB_*`, `R9700_*`, `WEBUI_*`, and the launcher's named knobs), and nothing else. **A
+credential is named, never printed**: a name matching `KEY|TOKEN|SECRET|PASS|CRED|AUTH` shows as
+`set · value withheld`, so "not printed" cannot be misread as "not set"; the same rule applies to the process's own
+command line, which the card also prints (it is the restart line) with `--api-key`/`--key` values replaced by
+`<withheld>` while the flag stays visible -- a restart line that drops the flag starts a serve the operator cannot
+reach. The live check in `tests/test_webui.py` asserts the withheld value appears nowhere in the block.
+
+The disagreement between the three lists is the point: `tools/recipe-check.py` is the tool that turns one into an
+exit code, and the card is the place it can be seen before being typed.
+
+### About has a render harness now, and it found something on the first run
+
+`tests/render-about.mjs` runs `serve/web/about.js` unmodified in a stub DOM against a live payload or a saved one
+(`tests/render-about.mjs http://127.0.0.1:8099`, or a `/api/status` JSON file). About had no such thing before: the
+suite parsed the file and pinned its strings, which catches a syntax error but not a ReferenceError, and a
+ReferenceError in one section leaves that section empty with no error on screen -- the failure mode recorded above
+for the Monitor's `${unit}`.
+
+On its first run it flagged the merged page on `:8080`: the card renders, but its environment and label sections are
+empty, because **the in-process plugin in that serve was started before this card existed** and its payload carries
+no `env`, no `argv`, no `config._all`. That is a real difference between the two pages on this box, and it is the
+kind that is invisible from the source tree: the files on disk are current, the running process is not. It also
+turned into a wording rule -- the page must not say *"there is no machine-local env file at undefined"* about a
+payload that has no env block at all. "No env block" means the build is old; "no file" means this box never had one;
+the page says which, and what closes the gap is a restart, not a file.

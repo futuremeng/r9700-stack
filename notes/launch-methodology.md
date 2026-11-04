@@ -227,3 +227,26 @@ recipe of the serve that was actually running, so a cache-off engine's About pag
 `recipe-check.py`'s meta-against-engine agreement became a lie until a restart. `DRY` now writes nothing and starts
 nothing; `METAONLY=1` is the deliberate version of the same write, for refreshing the recipe file of a launch that
 is already up or was started by hand.
+
+### The same rule covers the Monitor's sidecar, and sourcing has a trap in it (2026-11-04)
+
+`0f64838` made the sidecar bind loopback by default -- `/api/*` carries the engine's config, the request records and
+the kernel-log summary, so a default of `0.0.0.0` was an exposure no caller asked for. This box reads the Monitor
+from other machines for the same reason it binds `:8080` openly, so the choice goes in the same machine-local file
+as `R9K_WEB_BIND=0.0.0.0`; `serve/webui.sh` now sources that file too and passes the resolved value explicitly
+(`WEBUI_BIND` -> `R9K_WEB_BIND` -> `127.0.0.1`), which keeps the running process's bind address readable in its own
+command line instead of inferred from which env happened to be set.
+
+The trap: **sourcing a file makes shell variables, not environment variables.** `serve/webui.py` reads `R9K_WEB_BIND`
+out of the *environment* as its `--bind` default, so a launcher that sources the file and does not pass `--bind`
+inherits `127.0.0.1` anyway. Measured, not guessed: a sidecar restarted from a hand-typed command that sourced the
+file came up on `127.0.0.1:8099` while the file said `0.0.0.0`. Both launchers now source with `set -a; . file;
+set +a`, and `serve/webui.sh` passes `--bind "$BIND"` explicitly on top of that, so the fact works whether the
+process is started by the launcher, by the engine launcher's `WEBUI=same` path, or by hand.
+
+`DRY=1 bash serve/webui.sh` was added with it, for the same reason the engine launcher has one: `webui.sh` used to
+run its `pkill` before doing anything else, so a command meant only to print the sidecar line would take down the
+sidecar it was printing -- and its 1 m / 15 m / 1 h windows restart from empty, which is a state change with
+visible consequences on the page. The checks in `tests/test_webui.py` run the preview for real: with this box's file
+it must print `--bind 0.0.0.0`, with `LOCAL_ENV=/nonexistent-box.env` it must print `--bind 127.0.0.1`, and the
+sidecar that is actually running must be listening on the address the file claims (`ss -ltn`).

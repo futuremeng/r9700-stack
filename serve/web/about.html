@@ -50,6 +50,24 @@
         not what the engine inferred from them.</p>
     </section>
 
+    <section class="card" id="config-card">
+      <span class="card-title">Configuration and environment</span>
+      <dl class="facts" id="facts-config"></dl>
+      <details id="cfg-all" open>
+        <summary>Engine config — every label this build publishes <output id="cfg-all-n"></output></summary>
+        <dl class="facts" id="facts-cfgall"></dl>
+      </details>
+      <details id="env-proc" open>
+        <summary>Environment of this process <output id="env-proc-n"></output></summary>
+        <dl class="facts" id="facts-env"></dl>
+      </details>
+      <details id="env-file" open>
+        <summary>Machine-local env file <output id="env-file-n"></output></summary>
+        <dl class="facts" id="facts-envfile"></dl>
+        <p class="small note" id="env-file-note"></p>
+      </details>
+    </section>
+
     <section class="card">
       <span class="card-title">This machine</span>
       <dl class="facts" id="facts-host"></dl>

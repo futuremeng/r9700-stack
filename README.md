@@ -374,6 +374,16 @@ stream-second**, against **25 summed** over the wall seconds of the same window,
 160-200 tok/s and `shared ×1.0` (serialized traffic — which is why stream-seconds and the union of decoding seconds
 are the same 119.1 s there).
 
+**About lists the configuration, as three sources that are allowed to disagree.** The recipe file (what the launcher
+asked for), the engine's own labels (what it resolved: **46 published against the 15 the cards read**, so
+`mamba_cache_mode`, `prefix_match_unit`, `prefix_caching_hash_algo` and the rest are at least visible), and the
+environment: a **whitelist** of `VLLM_*`/`R9K_WEB_*`/`R9700_*`/`WEBUI_*`/launcher names -- not `os.environ`, because
+this page is served on every interface of the box -- plus the machine-local `~/.config/r9700-stack/native.env`
+parsed each poll, so the page agrees with the file an operator just edited. A name that looks like a credential is
+listed as `set · value withheld`, in the env block and in the printed command line alike (`--api-key <withheld>`,
+flag kept, because a restart line that drops the flag starts a serve nobody can reach). The card says which process
+it is describing: a sidecar's `MAXLEN` proves nothing about the engine.
+
 The 1 min prefill figure is low **because of the metric, not the box**: `prompt_tokens_total` credits a prompt when
 its request finishes, so a 60-second span that has long prefills running but not finished credits only what happened
 to land inside it. Over spans longer than a request's wall time the same quantity sits at 7,700 — which is what the
@@ -649,6 +659,9 @@ What the page's own JavaScript renders can be checked against a live serve witho
 tests/render-monitor.mjs` runs `serve/web/monitor.js` unmodified in a stub DOM and prints the cards and the request
 rows. That covers the JS and the payloads it is fed (a per-request card borrowing an engine-wide number, a real 0
 printed as a dash, a token count scaled wrong); it does not cover CSS, fonts or layout, which need a real browser.
+`node tests/render-about.mjs` does the same for the About page -- and on its first run it caught a real difference:
+the merged page's new configuration card renders empty sections because the in-process plugin in that serve predates
+the card, which is invisible from the source tree.
 The figure above is covered too: `tests/test_readme.py` checks that every number in its caption is a number the
 drawn figure actually contains, so the caption cannot drift from the poll it claims to describe.
 
