@@ -250,6 +250,9 @@ Run the gate twice back to back on the cache-on launch and diff the engine's spe
 | cache-on, run 2 (warmer prefixes) | 2,327 | **1.612** | 88.4% | 72.8% | 81.0% |
 | cache-on, run 3 (same 13 calls, prefixes hot) | 1,658 | **1.702** | 91.4% | 78.8% | 90.8% |
 | cache-on, the same gate at **100** questions | 13,240 | **1.713** | -- | -- | 87.0% |
+| production config (`M<=8`), 100 questions, **genuinely cold** | 12,421 | **1.740** | 92.9% | 81.1% | 1.4% |
+| production config, 100 questions, warm | 12,411 | **1.726** | 92.4% | 80.2% | 78.5% |
+| production config, 10 questions, hot | 1,325 / 1,408 | **1.715 / 1.716** | 92.3% | 79.2% | 91.0% |
 
 Three things follow, and none of them needs the live windows that confused the question:
 
@@ -272,11 +275,41 @@ Three things follow, and none of them needs the live windows that confused the q
   1.702. Acceptance does not fall as the cache gets warmer; and if the cache-off launch is ever re-measured, run it
   at 100 so the headline numbers match.
 
-Note what this does **not** settle. The launch under test had `R9K_ROUTER_MAX_M=4` (the crash discriminator,
+Note what this does **not** settle -- at the time it was written; the next subsection closes it. The launch under
+test had `R9K_ROUTER_MAX_M=4` (the crash discriminator,
 notes/launch-methodology.md section 12), so the MoE gate ran on hipBLASLt for the 5-8 row shapes. That changes
 which kernel computes the router -- different summation order, same bf16 -- and cannot be excluded as an influence
 on acceptance without another pair of runs. It is not a likely one at 1.64-1.71 vs 1.44, but the claim on record is
 "cache on, acceptance fine", not "router cap changes nothing".
+
+### The router-cap confound, excluded (same day, after reverting)
+
+The caveat above was closed by reverting to the production recipe (`M <= 8`, the launch of 23:47 proved it: boot log
+`installed on 48 gates (M <= 8, split 2)`, no `R9K_ROUTER_MAX_M` in `/proc/<pid>/environ`, and `recipe-check` back to
+exit 0 with the environment compared) and running the same gate on it:
+
+| same gate, two configs | accepted / draft | prompt tokens arriving as a cache hit |
+|---|---:|---:|
+| `R9K_ROUTER_MAX_M=4` (hipBLASLt at 5-8 rows), 10 questions hot | 1.702 | 90.8% |
+| production `M <= 8` (our kernel at 5-8 rows), 10 questions hot | **1.715 / 1.716** | 91.0% |
+| `R9K_ROUTER_MAX_M=4`, 100 questions | 1.713 | 87.0% |
+| production `M <= 8`, 100 questions warm | **1.726** | 78.5% |
+
+The kernel choice moves accepted per draft by **+0.8% and +0.8%** at matched cache warmth -- inside the spread of
+repeating the same run twice (1.715 against 1.716). The confound is gone: the acceptance conclusion stands on the
+production configuration.
+
+That pair also gave the missing end of the warmth series, because a restarted engine starts with an empty prefix
+cache: **a genuinely cold 100-question run accepts 1.740 at 1.4% cached**, against 1.726 warm (78.5%) and 1.715-1.716
+hot (91.0%). Across a 90-point swing in cache hits, acceptance moves 1.4%. That is the cleanest form of the answer to
+the original question: **prefix caching and acceptance are independent on this box, in both router configurations.**
+
+One thing the cold/warm pair exposed, kept because it is the kind of thing that gets forgotten: on the **same 100
+questions at temperature 0**, the cold run scored **97.0%** and the warm run **99.0%** -- two answers flipped. Cached
+prefix reuse is therefore not bit-identical to recomputing the prompt (different accumulation order in the resumed
+blocks), and at n=100 two flips is noise-level -- the same magnitude as the fp8 A/B's 96.0 against 95.6 -- but it is
+why "cold" and "warm" runs of a quality gate are not the same measurement, and a quality claim that matters should
+say which one it is.
 
 Re-run recipe (no new tool; the counters are the engine's own):
 

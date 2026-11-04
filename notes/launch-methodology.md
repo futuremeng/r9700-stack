@@ -339,3 +339,36 @@ which is the correct verdict: **the box is running a test config**, and now the 
 `meta=None`: the recipe file on disk predates this change and has no `env` block, and it is deliberately not
 refreshed with `METAONLY=1` here -- `METAONLY` records the environment of the shell that runs it, and re-recording
 a launch I did not start would write a recipe that never happened.
+
+### §12 result: 9 h 37 min clean at the cap, then the revert -- proved the same way it was set
+
+The test launch (`R9K_ROUTER_MAX_M=4`, session `r9700-native-TEST-routermaxm4`, log
+`TEST-routermaxm4-1104-1412.log`) ended at **9 h 37 m** of uptime carrying real traffic:
+
+- `illegal memory access` lines in its log: **0**. `EngineDeadError`: **0**. Preemptions: **0**.
+- 329,983 drafts, **1.317 accepted per draft** on live traffic, 49,419,968 prompt tokens arriving as cache hits.
+- boot lines: each rank logs the install **twice** -- `installed on 48 gates (M <= 4, split 2)` at 23:48 and
+  `installed on 1 gates` about a minute later. That is not a regression: the first pass is the target model's 48
+  MoE gates, the second is the MTP draft model, which has one. `tail -1` on that log says "1 gates" and reads as
+  though almost nothing was replaced -- grep for all of them.
+
+Against the two deaths at the default cap -- one ~6 h into its launch, one 29 min into its launch -- 9 h 37 min of
+real traffic without a fault is **suggestive and not proof**: the crash was rare, traffic differed, and moving the
+cap also moves which kernel touches the router logits. What it does buy is the next step, should the fault return
+at `M <= 8`: `AMD_SERIALIZE_KERNEL=3`, which the driver itself suggests, names the faulting kernel instead of the
+first innocent reader that trips over the poisoned page.
+
+The revert is a relaunch of the untouched production command, exactly as §12 prescribes, and its proof is the same
+two commands that proved the test (which is the point of writing them down):
+
+    (23:47) boot log:  ... installed on 48 gates (M <= 8, split 2)
+           tr '\0' \n < /proc/<pid>/environ | grep '^R9K_ROUTER_MAX_M='   -> no match
+           tools/recipe-check.py                                         -> PRODUCTION recipe, exit 0
+
+and it is the first launch whose recipe file carries the environment: `env` is a 15-name object, with no
+`R9K_ROUTER_MAX_M` in it. So the gate's answer no longer depends on remembering which experiment was running --
+the recipe and the process disagree or they do not.
+
+Restating the obvious because it is the part experiments erode: reverting **re-exposes** the default `M <= 8` path.
+If the fault comes back in `r9k_router_gemm_kernel<8, 2, true>`, the discriminator did not discriminate, and the
+next move is serialization, not another cap.
