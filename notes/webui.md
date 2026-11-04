@@ -1314,3 +1314,58 @@ step family wins when present, that the request family stands in when it is not,
 than 0, and that `decode_time_s` / `decode_time_req_s` / `decode_time_pct` are fed. `tests/render-monitor.mjs` requires
 the `wall N` figure to still be on the page against `avg[win].generation_tok_s`, and requires the share suffix whenever
 a decode-time rate is shown.
+
+### Borrowed from Strata: the prefill numerator counts READ tokens, and a card never invents a zero (2026-11-04)
+
+Read through `~/Strata` (a different stack: llama.cpp-style engine, its own server/monitor/CLI) to see how it keeps the
+same numbers. Its accounting is worth describing because it is the same problem solved from the other side -- its
+primitives are per-request *seconds*, not engine-wide counters.
+
+**Primitives.** The engine's DONE line gives each request `prompt_ms` (time reading the prompt), `decode_ms` (time
+generating), `generated`, `prompt_tokens`, `reused` (prompt tokens the prefix cache already held) and the draft counters.
+`serve/server.py:4556` starts a `totals` dict and `:6332-6335` adds each finished request into it: `requests,
+prompt_tokens, reused, output_tokens, prompt_ms, decode_ms`.
+
+**Three rates, and the card says which one it is** (`serve/web/app.js`, pinned by `serve/test_speed_average.py`):
+
+| state | value shown | label |
+|---|---|---|
+| generating | `_tok_s()` -- a **2 s sliding window** (`RATE_WINDOW_S = 2.0`) of `(time, generated)` samples per request, ring of 32, falling back to the whole-request mean when the window span is under `RATE_MIN_SPAN_S = 0.25` s; **summed across parallel requests**; `0.0` while nothing generates | `Decode now` |
+| **reading (prefilling)** | **the run average**, not a diluted live value | `Decode · run average` |
+| idle | `output_tokens / (decode_ms/1000)` since server start | `Decode · run average` |
+| no totals | the last request's own speed | `Decode last request` |
+| nothing at all | `null` | `Decode` |
+
+The API monitor page's `averageDecodeSpeed(rows)` is the same idea over the kept rows -- `Σ predicted_n / Σ predicted_ms`
+-- and its test asserts the *reason*: "a plain mean of the two (about 38) would let the short one count as much as the
+long one". Requests with no timings or one token are dropped. `strata_cli/overview.py:run_average_speed` documents it as
+"never an invented zero".
+
+**What we took.**
+
+- **Prefill's numerator is READ tokens.** Strata: `prompt_tokens - reused`. Ours now: `prompt_tokens_total -
+  prefix_cache_hits_total`, in the span (`prefill_tok_s`), in the poll (`prompt_read_tok_s`) and on the engine-state
+  line (`N prompt tok/s read`). vLLM credits cached prefix tokens to `prompt_tokens_total`, so with the cache on a
+  rate over credited tokens is high by the hit rate. `PREFIX_CACHE=0` on this recipe, so read == credited today and
+  the live numbers did not move (`7,177 tok/s` read, `wall 6,180` unchanged); the field pair
+  `prefill_tok_s` / `prefill_tok_s_credited` exists so the day the cache goes back on, the difference is visible
+  rather than implied. When hits are non-zero the prefill card's note line gains `· N% cache` (22 characters, inside
+  the tightest slot's 24); with the cache off it says nothing, so it is not printed.
+- **The zero discipline.** A span with no decode seconds has no decode rate. The card shows a dash, `poll · no decode
+  step`, `poll · nothing credited` -- the same refusal in the same three places.
+
+**What stayed different, on purpose.** Strata has no wall-second aggregate at all: its headline decode rate is always
+per decode time, and concurrency shows up as *summing per-request live rates across slots* rather than as a diluted
+denominator. That is the right choice for its world (one box, usually one or a few requests, a prefix cache it wants to
+use). On this box the wall figure is the story -- 99.2% of the tokens processed were prompt tokens -- so `wall 24.4 ·
+14.7% dec` stays next to the decode-time headline, with the share line making the two comparable
+(24.4 / 166 = 0.147 = the decode share).
+
+**Also noted, not copied.** Its Prometheus shim publishes the *seconds* as counters (`llamacpp:prompt_seconds_total`,
+`llamacpp:tokens_predicted_seconds_total`) so the scraping side chooses the denominator, and resets a bucket per scrape
+to match how llama.cpp's dashboards read those gauges. The vLLM-shaped names it synthesizes include
+`vllm:inter_token_latency_seconds`, observed as `decode_s / (output_tokens - 1)` **weighted by `output_tokens - 1`** --
+"the engine reports the decode time, not each token's". vLLM's own ITL is one observation per *step*, which is why our
+decode denominator uses its `_sum` and checks it against `request_decode_time_seconds` (0.08% apart on this launch).
+Its `vllm:num_requests_running` help text says "Requests reading their prompt or generating" -- the same gauge
+semantics that took the per-stream average off our headline.

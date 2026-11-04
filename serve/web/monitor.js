@@ -376,9 +376,18 @@ function renderStatus(s) {
        + "neither is idle time. `wall N` beside it is the same tokens over the span's wall seconds, and `N% dec` "
        + "is what share of the span was decode time -- the ratio of the two rates IS that share. Live example "
        + "(2026-11-04): 68.8 tok/s of decode time against 20.1 over wall, with 29% decode seconds and 83% of the "
-       + "span holding somebody's prefill. The waveform next to it is drawn on the wall basis, because a "
+       + "span holding somebody's prefill. A span with no decode seconds has NO number here, not a 0 -- the "
+       + "same rule Strata's cards follow ('never an invented zero'). "
+       + "The waveform next to it is drawn on the wall basis, because a "
        + "decode-time waveform has no denominator in a window that was all prefill.",
-    prefill: "Prompt tokens per second of the engine's own prefill time - how fast it chews when it is chewing. "
+    prefill: "READ tokens per second of the engine's own prefill time -- how fast it chews when it is chewing. "
+           + "READ, deliberately: vLLM credits cached prefix tokens to prompt_tokens_total, so with the prefix "
+           + "cache on, credited tokens would count work the engine never did and the rate would be high by the "
+           + "hit rate; the numerator here is prompt_tokens_total - prefix_cache_hits_total, and `N% cache` says "
+           + "how much came out. Today the cache is off on this recipe (PREFIX_CACHE=0), so read and credited are "
+           + "the same number. The same rule is what `prompt_read_tok_s` and `prefill_tok_s_credited` carry. "
+           + "Strata's run average does the same subtraction (`prompt_tokens - reused`, serve/web/app.js). "
+           + "Prompt tokens per second of the engine's own prefill time - how fast it chews when it is chewing. "
            + "The wall-clock figure is lower by the duty cycle: this launch runs ~7,900 while prefilling and "
            + "~2,200 across the wall. Over a span the histogram-backed figures count only requests that finished "
            + "inside it, which matters when the span is shorter than a request's wall time.",
@@ -524,12 +533,21 @@ function renderStatus(s) {
   // ~2,200. While a long prompt is running the window's number is the KV gauge's growth in tokens a second --
   // an estimate, measured within ~6% on a 51,859-token prefill, negative when finishing requests free blocks.
   const kvr = isnum(rate.kv_tok_s) ? Math.max(0, rate.kv_tok_s) : null;
-  const exact = isnum(rate.prompt_tok_s) && rate.prompt_tok_s > 0 ? rate.prompt_tok_s : null;
+  // READ tokens, not credited ones: with the prefix cache on, vLLM counts cached prefix tokens in
+  // prompt_tokens_total, and a rate built on them is not a read speed. The poll's exact fallback therefore follows
+  // the same rule as the span (prompt_read_tok_s), so a switch of basis cannot happen between the headline and
+  // the spans line.
+  const exact = isnum(rate.prompt_read_tok_s) && rate.prompt_read_tok_s > 0 ? rate.prompt_read_tok_s
+              : isnum(rate.prompt_tok_s) && rate.prompt_tok_s > 0 ? rate.prompt_tok_s : null;
   const prefillV = A ? A.prefill_tok_s : (exact ?? kvr);
   big("rate-prefill", prefillV, "tok/s");
-  slot("note-prefill", A ? `${WIN_NAME[win]} \u00b7 wall ${knum(A.prompt_tok_s || 0)}`
-                         : exact !== null ? "exact \u00b7 credits at end"
-                           : kvr !== null ? "\u2248 from KV growth" : "no prefill in window", TT.prefill);
+  // `N% cache` only appears when the engine actually served from cache: with PREFIX_CACHE=0 (this recipe) it would
+  // be a permanent `0% cache` saying nothing, and every character in a slot is budgeted.
+  slot("note-prefill", A && isnum(A.prefix_hit_pct) && A.prefix_hit_pct > 0
+       ? `wall ${knum(A.prompt_tok_s || 0)} \u00b7 ${knum(A.prefix_hit_pct, 0)}% cache`
+       : A ? `${WIN_NAME[win]} \u00b7 wall ${knum(A.prompt_tok_s || 0)}`
+         : exact !== null ? "exact \u00b7 credits at end"
+           : kvr !== null ? "\u2248 from KV growth" : "no prefill in window", TT.prefill);
   slot("spans-prefill", spanList("prefill_tok_s"), TT.spans);
   // Three different states, and "poll 0.0" was lying about which one it was: nothing credited in the window is
   // not the same measurement as a prefill running at zero tokens a second. prompt_tokens_total credits when a
@@ -676,11 +694,12 @@ function renderStatus(s) {
     + (isnum(live.preemptions_total) ? ` · ${Math.round(live.preemptions_total)} since launch` : "")
     + (live.swapped ? ` · ${Math.round(live.swapped)} swapped` : ""));
   $("gen-toks").textContent = isnum(rate.generation_tok_s) ? fmt(rate.generation_tok_s, 1) : "—";
-  text("prompt-toks", `${isnum(rate.prompt_tok_s) ? fmt(rate.prompt_tok_s, 0) : "—"} prompt tok/s`
+  text("prompt-toks", `${isnum(rate.prompt_read_tok_s) ? fmt(rate.prompt_read_tok_s, 0) : "—"} prompt tok/s read`
     // vLLM credits prompt_tokens_total when a request FINISHES: a long prefill reads 0 for its whole duration
     // and then lands in one window (measured: 180,066 tokens showed as 89,580 tok/s in a single 2 s poll).
     // The live signal during a prefill is the KV pool bar, not this line.
     + " (credited at request end)"
+    + (isnum(live.prefix_hit_pct) && live.prefix_hit_pct > 0 ? ` · ${fmt(live.prefix_hit_pct, 1)}% served from cache` : "")
     + (isnum(rate.requests_per_min) ? ` · ${fmt(rate.requests_per_min, 1)} req/min` : ""));
   // vLLM observes a latency histogram when a request FINISHES, so a window holds no observation at all
   // while a long one is in flight. The cumulative ratio is not a window mean: the page says which it shows.

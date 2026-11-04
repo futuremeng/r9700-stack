@@ -2841,3 +2841,36 @@ Tests: the ring fixture is now self-consistent (20 steps a second at 30 ms with 
 the denominator can't be satisfied by an arbitrary sum), step-family preference and request-family fallback are pinned,
 flat counters yield None, and `tests/render-monitor.mjs` fails if the `wall N` figure or the share suffix goes missing.
 Both harness runs (:8099 sidecar, :8080 production) pass.
+
+## 2026-11-04: read ~/Strata for its accounting, and took two rules from it (read tokens; no invented zero)
+
+**What Strata does** (llama.cpp-style stack; `serve/server.py`, `serve/web/app.js`, `serve/web/monitor.js`,
+`strata_cli/overview.py`, pinned by `serve/test_speed_average.py`). Its primitives are **per-request seconds** from the
+engine's DONE line (`prompt_ms`, `decode_ms`, `generated`, `prompt_tokens`, `reused`) accumulated into a `totals` dict.
+Its Decode card is state-aware: generating → `_tok_s()` (2 s sliding window per request, ring of 32, summed across
+parallel slots, 0.0 while idle); **reading (prefilling) → the run average, not a diluted live value**; idle →
+`output_tokens ÷ decode_ms` ("Decode · run average"); no totals → the last request; nothing → `null`. Its API page
+computes `Σ predicted_n ÷ Σ predicted_ms`, and the test states the reason: "a plain mean of the two (about 38) would let
+the short one count as much as the long one".
+
+**Rule 1, implemented: the prefill numerator is READ tokens.** Strata uses `prompt_tokens - reused`; we now use
+`prompt_tokens_total - prefix_cache_hits_total` in the span (`prefill_tok_s`), the poll (`prompt_read_tok_s`), the
+per-span counts (`prompt_read_tokens`) and the state line (`N prompt tok/s read`), with `prefill_tok_s_credited` kept
+alongside. vLLM credits cached prefix tokens to `prompt_tokens_total`, so with the cache on the credited figure is high
+by the hit rate. `PREFIX_CACHE=0` here, so live numbers did not move (prefill 7,177 tok/s, `wall 6,180`); the day the
+cache goes back on, the difference shows as `· N% cache` on the prefill note slot (22 chars, inside the 24 budget) and
+`N% served from cache` on the state line.
+
+**Rule 2, already ours but now stated on the card: never an invented zero.** A span with no decode seconds has no decode
+rate -- a dash, plus `poll · no decode step` / `poll · nothing credited` in the poll slots.
+
+**What stayed different on purpose.** Strata never divides by wall seconds; concurrency is expressed by summing
+per-request live rates. On this box the wall figure is the story (99.2% of the tokens processed were prompt), so
+`wall 24.4 · 14.7% dec` stays beside the decode-time headline, the share line making the pair comparable. Also noted and
+not copied: its Prometheus shim publishes *seconds* as counters and synthesizes `vllm:inter_token_latency_seconds` per
+token gap weighted by `output_tokens-1` ("the engine reports the decode time, not each token's") -- vLLM's own ITL is per
+step, which is why our decode denominator uses the `_sum`, cross-checked against `request_decode_time_seconds` (0.08%
+apart here).
+
+Tests: the ring fixture now carries a 10% cache hit rate (read 6,300/s vs 7,000 credited) and pins both figures plus the
+poll-level subtraction; the render harness still passes against the sidecar and against production.

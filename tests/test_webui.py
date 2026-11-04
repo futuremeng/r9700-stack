@@ -1276,6 +1276,13 @@ ck("the payload keeps the per-record figures the new card and its waveform read"
    and open(os.path.join(ROOT, "serve/webui.py")).read().count("gen_per_step") >= 4)
 ck("the step card reconciles the step rate with the token rate (xN tokens a step, five characters in a slot)",
    "rate.tokens_per_step" in monjs and "\\u00d7${tps.toFixed(2)}" in monjs and "tokens a step" in monjs)
+ck("one poll's read rate subtracts the cached prefix tokens too",
+   abs(st["rate"]["prompt_read_tok_s"]
+       - ((cur2["prompt_tokens_total"][0] - prev["prompt_tokens_total"][0])
+          - (cur2["prefix_cache_hits_total"][0] - prev["prefix_cache_hits_total"][0])) / 10.0) < 1e-9,
+   str(st["rate"]["prompt_read_tok_s"]))
+ck("and the page says so when the cache is serving: `N% cache` in the prefill card's note slot",
+   "% cache`" in monjs and "prompt_read_tok_s" in monjs and "prompt tok/s read" in monjs)
 ck("the prefill rate names which of its two numbers is showing",
    "from KV growth" in monjs and "exact \\u00b7 credits at end" in monjs)
 ck("the page says how old its numbers are (the sentence is the slot's title, in the markup and in what the page "
@@ -1787,7 +1794,9 @@ def _cur(t, run=6):
             "spec_decode_num_drafts_total": ser(100.0 * t),
             "spec_decode_num_accepted_tokens_total": ser(150.0 * t),
             "spec_decode_num_draft_tokens_total": ser(200.0 * t),
-            "prefix_cache_queries_total": ser(0.0), "prefix_cache_hits_total": ser(0.0),
+            # a cache that hits on 10% of the prompt tokens: read is then 6,300 a second while 7,000 are credited,
+            # and the prefill rate must follow the READ number
+            "prefix_cache_queries_total": ser(7000.0 * t), "prefix_cache_hits_total": ser(700.0 * t),
             # the iteration RECORD counter: 50 records a second, each carrying 28 tokens (7,000 prompt + 40
             # generated over 50 records) -- the fixture's own version of a prefill-heavy launch
             "iteration_tokens_total_count": ser(50.0 * t), "iteration_tokens_total_sum": ser(1400.0 * t),
@@ -1801,8 +1810,15 @@ _avg = W.trailing(_snaps, _cur(124.0), 124.0)["1m"]
 ck("a span rate is the delta of the cumulative counter over the span",
    abs(_avg["generation_tok_s"] - 40.0) < 1e-9 and abs(_avg["prompt_tok_s"] - 7000.0) < 1e-6, str(_avg)[:200])
 ck("the two speeds the box is judged on, token-weighted from the engine's own seconds",
-   abs(_avg["prefill_tok_s"] - 7000.0) < 1e-6 and abs(_avg["decode_tok_s"] - 40.0 / 0.6) < 1e-9,
-   f"prefill {_avg['prefill_tok_s']} decode-time {_avg['decode_tok_s']}")
+   abs(_avg["prefill_tok_s"] - 6300.0) < 1e-6 and abs(_avg["decode_tok_s"] - 40.0 / 0.6) < 1e-9,
+   f"prefill-read {_avg['prefill_tok_s']} decode-time {_avg['decode_tok_s']}")
+# The prefill rate counts what was READ. vLLM credits cached prefix tokens to prompt_tokens_total, so a rate over
+# credited tokens is not a read speed -- it is high by the hit rate. Strata's run average subtracts `reused` for
+# the same reason (serve/web/app.js), and both numbers are kept here so the difference is visible, not implied.
+ck("the prefill rate's numerator is read tokens (credited minus cache hits), with the credited version alongside",
+   abs(_avg["prompt_read_tokens"] - 6300.0 * 64.0) < 1e-6 and abs(_avg["prefill_tok_s_credited"] - 7000.0) < 1e-6
+   and abs(_avg["prefix_hit_pct"] - 10.0) < 1e-9,
+   f"read {_avg['prompt_read_tokens']} credited/s {_avg['prefill_tok_s_credited']} hit {_avg['prefix_hit_pct']}%")
 # The decode rate's divisor is DECODE time, so prefill chewing cannot drag it down; the wall rate above is the
 # figure that does, and the share line is the ratio between them. Both families are reported so the reader can
 # see which seconds were counted.
@@ -1845,7 +1861,8 @@ ck("every field the span is asked to report is fed by a name the ring actually s
         "itl_ms", "tpot_ms", "stream_tok_s_hist", "ttft_ms", "queue_ms", "e2e_ms", "prefill_ms", "decode_ms",
         "prompt_tokens_mean", "generation_tokens_mean", "tokens_per_step", "accept_pct", "accepted_per_draft",
         "running_mean", "waiting_mean", "kv_used_pct_mean", "generation_tokens", "prompt_tokens", "records",
-        "gen_per_step", "drafts_per_step", "decode_time_s", "decode_time_pct", "decode_time_req_s")),
+        "gen_per_step", "drafts_per_step", "decode_time_s", "decode_time_pct", "decode_time_req_s",
+        "prompt_read_tokens", "prefill_tok_s_credited", "prefix_hit_pct")),
    str({k: _avg.get(k) for k in _avg if _avg.get(k) is None})[:220])
 
 _bad = _cur(124.0); _bad["generation_tokens_total"] = [10.0, 10.0, 1]      # the engine restarted inside the span

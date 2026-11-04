@@ -552,7 +552,10 @@ waveform next to it plots generated tokens **per iteration record** (2.6–2.8 o
 tok/s. The second decode card divides by **decode time, not wall time**: prompt chewing is not in the denominator, and
 the seconds it counts come from `inter_token_latency_seconds_sum` (430,954 observations summing to within 0.08% of
 `request_decode_time_seconds_sum`, which is what licenses calling either one decode seconds; the step family is
-preferred because it grows every decode step instead of only when a request finishes). It reads **166 tok/s** against
+preferred because it grows every decode step instead of only when a request finishes) — and the prefill rate's numerator is **read** tokens, `prompt_tokens_total − prefix_cache_hits_total`,
+because vLLM counts cached prefix tokens as prompt tokens and a rate over them is high by the hit rate (the cache is
+off on this recipe, so the two are equal today, and `prefill_tok_s_credited` keeps the difference visible if that
+changes — the same subtraction Strata's run average makes with `prompt_tokens − reused`). It reads **166 tok/s** against
 `wall 24.4 · 14.7% dec` on its note line — and 24.4 / 166 = 0.147, the share of the span that held a stream in its
 decode phase, is printed beside it so the pair reads as a ratio instead of a contradiction. What used to sit in that first slot was the aggregate divided by the running gauge, and it was the most misread
 number on the page: the gauge counts a request in the middle of a chunked prefill as running, so the divisor includes

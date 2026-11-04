@@ -255,8 +255,10 @@ for (const [id, avgKey, rateKey] of [["rate-gen", "decode_tok_s", "decode_tok_s"
   // The prefill card's live number is the KV-growth estimate whenever the counter has not credited yet, so both
   // are legitimate live values. A gauge the engine omits entirely (nothing ran in the window) is not a value to
   // compare against, so it drops out of the list rather than turning the comparison into NaN.
+  // The prefill card's live number is the KV-growth estimate whenever the counter has not credited yet, and its
+  // exact figure is the READ rate (credited minus cache hits), so all three are legitimate live values.
   const wants = (id === "rate-prefill" && winShown === "live"
-    ? [want, STAT?.rate?.kv_tok_s] : [want]).filter((v) => typeof v === "number" && isFinite(v));
+    ? [want, STAT?.rate?.kv_tok_s, STAT?.rate?.prompt_read_tok_s] : [want]).filter((v) => typeof v === "number" && isFinite(v));
   // A live rate sampled a second apart is not the same number: on a box that idles between requests, 2.0 tok/s
   // and 3.0 tok/s are one second of traffic apart, and a ratio test at three significant figures fails on it.
   // Span values stay tight (0.02) because a span delta is stable across that gap; a live one gets an absolute

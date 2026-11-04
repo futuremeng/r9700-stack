@@ -1,4 +1,24 @@
 # Changelog
+## the prefill rate counts tokens the engine actually read (a rule borrowed from Strata)
+
+- **Numerator: `prompt_tokens_total - prefix_cache_hits_total`**, everywhere the prefill speed is computed -- span
+  (`prefill_tok_s`), poll (`prompt_read_tok_s`), the engine-state line (`N prompt tok/s read`), and the per-span counts
+  (`prompt_read_tokens`). vLLM credits cached prefix tokens to `prompt_tokens_total`, so with the prefix cache on a rate
+  over credited tokens overstates read throughput by the hit rate. `PREFIX_CACHE=0` on this recipe, so live numbers did
+  not move today; `prefill_tok_s_credited` keeps the two visible side by side for the day that changes.
+- **The card says when the cache is serving**: the prefill note line gains `· N% cache` when hits are non-zero
+  (22 characters, inside the 24-character tightest slot), and the engine-state line gains `N% served from cache`.
+  Printed nothing when the cache is off, because a permanent `0% cache` spends a budgeted character to say nothing.
+- **No invented zeros**, the way Strata's cards put it: a span with no decode seconds shows a dash, and the poll lines
+  already say `poll · no decode step` / `poll · nothing credited`.
+- **Why Strata is worth reading** (full note in notes/webui.md): its primitives are per-request seconds from the engine's
+  DONE line, its idle card shows the token-weighted run average instead of the last request, its live rate is a 2 s
+  sliding window summed across parallel slots, it falls back to the run average *while prefilling* rather than showing a
+  diluted live number, and its prefill numerator is `prompt_tokens - reused`. A test pins the weighting argument: "a
+  plain mean of the two ... would let the short one count as much as the long one".
+- **Tests**: the ring fixture now carries a 10% cache hit rate (read 6,300/s against 7,000 credited) and the checks pin
+  `prefill_tok_s` to the read figure, `prefill_tok_s_credited` to the credited one, and the poll-level subtraction.
+
 ## the decode rate's denominator stops counting prompt chewing
 
 Follow-up to the counts change: the summed decode card still read 15-20 tok/s, and the question was what its time basis

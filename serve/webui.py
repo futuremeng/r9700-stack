@@ -305,7 +305,14 @@ def trailing(snaps, cur, t0, spans=AVG_SPANS):
         iters = dn("iteration_tokens_total_count")
         dgrams = dn("spec_decode_num_draft_tokens_total")
         hitq, hits = dn("prefix_cache_queries_total"), dn("prefix_cache_hits_total")
-        reset = any(v is not None and v < 0 for v in (gen, pre, drafts, iters, dtm, dtl))
+        # What the engine READ, not what the prompt was called. vLLM credits cached prefix tokens to
+        # prompt_tokens_total, so with the prefix cache on, prompt_tokens / prefill_seconds is not a read speed:
+        # it counts tokens that were never read and overstates it by the hit rate. Strata's run average uses
+        # `prompt_tokens - reused` for exactly this reason (serve/web/app.js), and says so on the card. On this
+        # recipe the cache is off on purpose (PREFIX_CACHE=0), so read == credited today; the distinction is here
+        # so that turning the cache back on cannot quietly inflate the number.
+        read = None if pre is None else pre - (hits or 0.0)
+        reset = any(v is not None and v < 0 for v in (gen, pre, drafts, iters, dtm, dtl, hits))
         itl, tpot = first(ITL_STEP), first(TPOT)
         genps = gen / span_s if gen is not None else None
         runmean = (sum(run) / len(run)) if run else None
@@ -329,7 +336,11 @@ def trailing(snaps, cur, t0, spans=AVG_SPANS):
             # The two speeds the box is actually judged on, token-weighted and exact over the span: prompt tokens
             # per second of prefill time, and generated tokens per second of decode time. The engine's own
             # prefill/decode seconds, not wall time -- which is why they stay readable while the queue moves.
-            "prefill_tok_s": (pre / pt) if (pre is not None and pt) else None,
+            # READ tokens per second of prefill time. The credited version stays alongside it so a reader (or a
+            # future us) can see what the cache took out, the same way the decode rate reports both families.
+            "prefill_tok_s": (read / pt) if (read is not None and pt) else None,
+            "prefill_tok_s_credited": (pre / pt) if (pre is not None and pt) else None,
+            "prompt_read_tokens": None if reset else read,
             # Generated tokens per second of DECODE time: prompt chewing is not in the denominator, so this is
             # "how fast it decodes when it is decoding". Measured on the live launch, 68.8 tok/s against 20.1
             # summed over the span's wall seconds -- the gap is that only 29% of those seconds held a stream in
@@ -411,6 +422,9 @@ def derive(cur, prev, dt, cap, info, mode, kept, hist):
     rate = {"window_s": dt, "requests": nrec if have else None, "requests_per_min": per(nrec),
             "generation_tokens": d("generation_tokens_total") if have else None,
             "generation_tok_s": gen_rate, "prompt_tok_s": per(d("prompt_tokens_total")),
+            # the same correction for one poll: cached tokens were not read (see trailing())
+            "prompt_read_tok_s": per(d("prompt_tokens_total") - d("prefix_cache_hits_total")),
+            "prompt_read_tokens": (d("prompt_tokens_total") - d("prefix_cache_hits_total")) if have else None,
             # Per poll: generated tokens per second of DECODE time in this window. d(ITL_sum) is 0 when no decode
             # step ran (a window that was all prefill, or idle) -- then there is no denominator, which is a fact
             # about the window rather than a rate of 0.
