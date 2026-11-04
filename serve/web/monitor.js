@@ -586,14 +586,28 @@ function renderStatus(s) {
   const prefillV = A ? A.prefill_stream_tok_s : (exact ?? kvr);
   big("rate-prefill", prefillV, "tok/s");
   // `N% cache` only appears when the engine actually served from cache: with PREFIX_CACHE=0 (this recipe) it would
-  // be a permanent `0% cache` saying nothing, and every character in a slot is budgeted.
+  // be a permanent `0% cache` saying nothing, and every character in a slot is budgeted. Asked on 2026-11-04
+  // whether the caches were in effect, and the answer was not on this page: a missing cache clause reads the same:
+  // feature is OFF, on-and-missed, or not measured at all (asked 2026-11-04: "are the caches in effect?"). The
+  // engine states the state (`config
+  // .enable_prefix_caching`, which is what its own boot line prints), so OFF is now said in words -- and only OFF:
+  // a build that publishes neither that config nor the counters keeps the silence, which is the one case where
+  // silence is honest. It shares the line with the fan-out clause rather than both being printed: `wall 4,316
+  // cache off` fits the 24-character budget, `wall 4,316 cache off ×2.0 prefilling` does not.
+  const pcState = String(((s.config || {}).enable_prefix_caching ?? "")).toLowerCase();
+  const pcOff = pcState === "false" || pcState === "0";
+  const fan = A && isnum(A.prefill_streams) && A.prefill_streams > 1.05;
   slot("note-prefill", A && isnum(A.prefix_hit_pct) && A.prefix_hit_pct > 0
        ? `wall ${dnum(A.prompt_tok_s || 0)} \u00b7 ${dnum(A.prefix_hit_pct, 0)}% cache`
        : A ? `wall ${dnum(A.prompt_tok_s || 0)}`
-             + (isnum(A.prefill_streams) && A.prefill_streams > 1.05
-                ? ` \u00b7 \u00d7${dnum(A.prefill_streams, 1)} prefilling` : "")
+             + (fan ? ` \u00b7 \u00d7${dnum(A.prefill_streams, 1)} prefilling`
+                    : pcOff ? ` \u00b7 cache off` : "")
          : exact !== null ? "exact \u00b7 credits at end"
-           : kvr !== null ? "\u2248 from KV growth" : "no prefill in window", TT.prefill);
+           : kvr !== null ? "\u2248 from KV growth" : "no prefill in window",
+       TT.prefill + (pcOff ? " This launch runs with the prefix cache OFF (the recipe's `--no-enable-prefix-caching`): "
+         + "every prompt token here is computed, and the counters show it -- `local_cache_hit` stays at 0. The About "
+         + "page states the same fact as a config line. When it is ON, the clause on this line becomes the share of "
+         + "prompt tokens the engine skipped." : ""));
   slot("spans-prefill", spanList("prefill_stream_tok_s"), TT.spans);
   // Three different states, and "poll 0.0" was lying about which one it was: nothing credited in the window is
   // not the same measurement as a prefill running at zero tokens a second. prompt_tokens_total credits when a

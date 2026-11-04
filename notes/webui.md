@@ -1249,6 +1249,25 @@ free blocks, and its caption used to read `now -172,106 · avg 7,939` under a ca
 `now draining 172,106`, with the average moved to the title (both together are 32 characters against a budget of
 24); the sign is still in the drawn waveform, which autoscales through zero for exactly this reason.
 
+**The page could not answer "are the caches in effect?" (2026-11-04).** The prefill note line printed a cache
+percent only when the engine had served hits, which is right (`0% cache` on a `PREFIX_CACHE=0` launch is a
+permanent nothing), but a *missing* clause reads identically whether the feature is off, on-and-missed, or
+unmeasured. The engine publishes the state itself - `config.enable_prefix_caching`, the same string its boot line
+prints - so the line now says `wall 6,691 · cache off`, and says nothing when a build publishes neither the config
+nor the counters, which is the only case where silence is honest. It shares the slot with the fan-out clause rather
+than both printing: `wall 4,316 cache off` fits the 24-character budget, `wall 4,316 cache off ×2.0 prefilling`
+does not. The tooltip carries the whole sentence and the counter that proves it (`prompt_tokens_by_source` with
+`local_cache_hit` at 0). `tests/render-monitor.mjs` asserts the agreement against a live payload: config says off →
+the line must say so and must not print a percent; config says on → it must not claim off.
+
+And for whoever reads the crash logs next: the compile cache is keyed by config, so a test config leaves a second
+key behind. `~/vllm-native-cache/torch_compile_cache` holds `a2db778b4c` (the production recipe, 11-03) and
+`3ed99c1a7e` (the `PREFIX_CACHE=1` boot, 07:30 the next morning) - 4.2 MB, 16 files each. The relaunch after the
+revert wrote **nothing** into that tree and logged `reconstructed serializable fn from standalone compile
+artifacts. num_artifacts=50 num_submods=50` on all four ranks: warm reuse, 117 s to `init engine` against 181 s on
+the cold boot the day before. Reverting a config is cheap here, not free, and residue like this belongs in the same
+note that records the revert.
+
 A wording bug the digit change exposed: the prefill card's this-poll slot fell back to `poll 1s` when nothing had
 been credited, which reads like a duration wearing a unit. It says `poll · nothing in 1s` now - the same fact, with
 the fact that it is an absence stated in words. The `%` on the pool's spans line had the same shape of bug: it was

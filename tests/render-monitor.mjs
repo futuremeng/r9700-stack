@@ -408,6 +408,30 @@ for (const id of SLOTS) {
     process.exitCode = 1;
   }
 }
+// Whether the prefix cache is ON is a property of the launch, and the page has to answer it: a silent cache
+// clause reads the same whether the feature is off, on-and-missed, or unmeasured. So the engine's own config line
+// (the same string its boot line prints) drives the copy -- and when it says OFF, the slot must say so and must not
+// print a hit percent, because 0% of nothing is not a measurement.
+{
+  const pc = String(((STAT.config || {}).enable_prefix_caching ?? "")).toLowerCase();
+  const line = t("note-prefill");
+  console.log(`\nprefix cache (engine config): ${pc || "not published"} -- note line: ${line}`);
+  if (pc === "false" || pc === "0") {
+    if (!/cache off/.test(line)) {
+      console.log(`BAD  the engine says the prefix cache is off and the prefill note line does not say so (${line})`);
+      process.exitCode = 1;
+    }
+    if (/% cache/.test(line)) {
+      console.log(`BAD  a cache percent printed while the feature is off (${line})`); process.exitCode = 1;
+    }
+  } else if (pc === "true" || pc === "1") {
+    if (/cache off/.test(line)) {
+      console.log(`BAD  the note line claims the cache is off while the engine says it is on (${line})`);
+      process.exitCode = 1;
+    }
+  }
+}
+
 // The trend rings: 90 s of per-poll points, or an hour of 15 s interval rates. The caption's span has to come
 // from the samples, not from points x poll, which is the thing that would otherwise quietly lie.
 console.log("\ntrend source");

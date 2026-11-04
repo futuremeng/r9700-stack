@@ -2175,6 +2175,16 @@ ck("the pool-draining case is named in words instead of a signed rate under a pr
 ck("a unit on a spans line belongs to each number, so a span that has reset does not inherit one",
    'spanAll("kv_used_pct_mean", ["1m"], "%")' in monjs and "${dnum(v)}${unit}" in monjs
    and ") %`" not in monjs)
+ck("whether the prefix cache is ON is stated, from the engine's own config -- not left to the reader to infer "
+   "from a clause that may or may not appear",
+   'const pcState = String(((s.config || {}).enable_prefix_caching ?? "")).toLowerCase()' in monjs
+   and 'const pcOff = pcState === "false" || pcState === "0"' in monjs
+   and "` cache off`" not in monjs and "cache off" in monjs
+   and "This launch runs with the prefix cache OFF" in monjs
+   and '["Prefix caching", yesno(c.enable_prefix_caching)]' in (WEB / "about.js").read_text())
+ck("and the state is only claimed when the engine published it: an unknown config keeps the silence, not an "
+   "invention",
+   monjs.count("pcOff") == 3 and "pcState === \"unknown\"" not in monjs)
 ck("a poll window with nothing credited says so in words, not as a bare duration like `poll 1s`",
    'nothing in ${Math.round((rate.window_s || 0) * 10) / 10}s' in monjs)
 ck("and the old always-wraps note class is gone, so nothing outside the slot mechanism re-wraps",
