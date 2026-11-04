@@ -93,15 +93,18 @@ const fmt = (n, d = 0) => (isnum(n) ? n.toLocaleString("en-US", {minimumFraction
 const seconds = (n) => (isnum(n) ? (n >= 100 ? `${(n / 60).toFixed(1)} min` : `${n.toFixed(2)} s`) : "—");
 const ms = (n) => (isnum(n) ? (n >= 1000 ? `${(n / 1000).toFixed(2)} s` : `${n.toFixed(n < 10 ? 2 : 1)} ms`) : "—");
 
-// A number whose WIDTH changes moves the layout, so the slot lines use this instead of fmt(): at most five
-// characters whatever the value is - no decimals past 100, thousands as "k" past 10,000. "13" to "13,570" is a
-// 40x swing in value and one character in width, which is the difference between a number that changed and a
-// page that re-wrapped. Values where the digits matter (token counts in the detail panel, request rows) still
-// use fmt(): this is for the lines that repaint every poll, not for the ones a reader quotes into a report.
-const knum = (n, d = 1) => !isnum(n) ? "—"
-  : Math.abs(n) >= 1e6 ? `${(n / 1e6).toFixed(2)}M`
-  : Math.abs(n) >= 10000 ? `${(n / 1000).toFixed(1)}k`
-  : fmt(n, Math.abs(n) >= 100 ? 0 : Math.max(1, Math.min(d, 1)));
+// The number the reader sees, printed as the number: grouped with thousands separators, decimals only below 100.
+// This used to abbreviate ("7.4k" for 7,428, "4.8M" for 4,800,000) to keep a slot's WIDTH stable, on the theory
+// that a line which changes length re-wraps the card and jiggles the grid. Asked on 2026-11-04 to put the digits
+// back, and the trade is worth naming: the width discipline now lives in the COPY (each slot line carries one
+// number, and the labels are short by construction) and in tests/render-monitor.mjs, which measures the longest
+// string every slot can print at the narrowest 4-up card and fails the slot when it does not fit. Abbreviating a
+// rate the reader is being told to compute with was the worse failure: "7.4k" for a prefill rate of 7,428 hid the
+// number the tooltip right next to it explains.
+const dnum = (n, d = 1) => !isnum(n) ? "—"
+  : Number.isInteger(n) ? fmt(n)                    // 0 is "0", not "0.0"; a gauge reading 2 is 2
+  : Math.abs(n) >= 100 ? fmt(Math.round(n))
+  : fmt(n, Math.max(1, Math.min(d, 2)));
 const pct = (n, d = 1) => (isnum(n) ? `${n.toFixed(d)}%` : "—");
 const gb = (bytes, d = 1) => (isnum(bytes) ? (bytes / 2 ** 30).toFixed(d) : "—");
 const clock = (t) => (isnum(t) ? new Date(t * 1000).toLocaleTimeString() : "—");

@@ -1368,9 +1368,11 @@ ck("the decode card's headline is DECODE output per DECODE second, and its label
    and "decode_tok_s" not in monhtml)
 ck("the wall-second sum is NOT dropped: it sits on the note line labelled 'summed', with the fan-out as the "
    "multiplier that reaches it from the headline",
-   'slot("note-gen", isnum(wallV) && isnum(streamsV)' in monjs
+   'slot("note-gen", isnum(wallV)' in monjs
    and "A.generation_tok_s : rate.generation_tok_s" in monjs
-   and "summed \\u00d7" in monjs and "% dec" not in monjs)
+   and "summed`" in monjs and "\\u00d7${streamsV" in monjs and "% dec" not in monjs,
+   "the multiplier is now conditional (it has no denominator before the first decode step), but the summed "
+   "figure never goes to a dash with it: wall seconds always exist")
 ck("the card's spans line and poll line stay on the headline's basis (no silent switch to the wall sum mid-card), "
    "and a poll with no decode step says so instead of a 0",
    'spanList("decode_stream_tok_s")' in monjs and 'spanList("generation_tok_s")' not in monjs
@@ -1430,7 +1432,7 @@ ck("an empty waveform says why in the series' own terms, not 'no series yet'",
    '"no series yet"' not in monjs
    and "no records this window" in monjs and "0 streams" in monjs and "did not grow" in monjs
    and "nothing generated" in monjs
-   and "drawn on a ${knum(lo)}..${knum(top)} axis" in monjs)
+   and "drawn on a ${dnum(lo)}..${dnum(top)} axis" in monjs)
 ck("a peak axis is never computed as Math.max() of nothing (which is -Infinity)",
    'Math.max(...xs, 0)' in monjs and "isFinite(lo) || !isFinite(hi)" in (WEB / "common.js").read_text())
 # The per-card cards: busy and VRAM as waveforms on honest axes (0..100, and 0..the card's own VRAM), and
@@ -1586,7 +1588,7 @@ ck("the brief line only reads: one /health GET, no request bodies, nothing echoe
 ck("the cards line says busy % is coarse here, with the observed spread",
    "busy % is coarse here" in monjs and "amdgpu sysfs" in monjs)
 ck("each waveform carries the level and the spread, in two slots that never wrap",
-   'avg ${knum' in monjs and 'peak ${knum' in monjs
+   'avg ${dnum' in monjs and 'peak ${dnum' in monjs
    and all(f'id="{i}"' in monhtml for i in ("perstep-note1", "perstep-note2", "gen-note1", "gen-note2",
                                              "prefill-note1", "prefill-note2", "running-note1", "running-note2",
                                              "kv-note1", "kv-note2")))
@@ -2157,9 +2159,24 @@ ck("the rate row is three slots per card and the trend row two, so the two rows 
    and len(re.findall(r'id="poll-[a-z]+"', _wh)) == 4
    and len(re.findall(r'id="(perstep|gen|prefill|running)-note[12]"', _wh)) == 8,
    f"{len(re.findall(chr(34) + 'id=' + chr(34) + 'note-', _wh))} note slots")
-ck("numbers in those slots go through knum(), which caps their width (5 characters: 999.9 / 16.2k / 1.01M)",
-   "const knum = " in (open(os.path.join(ROOT, "serve/web/common.js")).read())
-   and "knum(" in _mjs2 and _mjs2.count("knum(") >= 12, f"{_mjs2.count('knum(')} uses in monitor.js")
+_cjs2 = open(os.path.join(ROOT, "serve/web/common.js")).read()
+ck("numbers in those slots are printed as DIGITS (dnum): grouped by thousands, no kilo or mega anywhere",
+   "const dnum = " in _cjs2 and "knum" not in _cjs2 and _mjs2.count("dnum(") >= 12 and "knum(" not in _mjs2
+   and "1e6)" not in _cjs2.split("const pct")[0] and "10000 ?" not in _cjs2,
+   f"{_mjs2.count('dnum(')} uses in monitor.js; a k/M branch in common.js would put 16.2k back")
+ck("an integer prints as an integer, so a measured 0 is 0 and two streams are 2 (not 0.0 and 2.0)",
+   "Number.isInteger(n) ? fmt(n)" in _cjs2)
+ck("the width discipline moved from the formatter into the copy, and the harness measures the copy: no slot may "
+   "abbreviate, and no slot may print a bare signed number",
+   '/\\d(?:[.,]\\d+)?[kM]\\b/' in open(os.path.join(ROOT, "tests/render-monitor.mjs")).read()
+   and 'shows a bare signed number' in open(os.path.join(ROOT, "tests/render-monitor.mjs")).read())
+ck("the pool-draining case is named in words instead of a signed rate under a prefill label",
+   'now draining ${dnum(-last, d)}' in monjs and 'const drain = last < 0 && !keep(last)' in monjs)
+ck("a unit on a spans line belongs to each number, so a span that has reset does not inherit one",
+   'spanAll("kv_used_pct_mean", ["1m"], "%")' in monjs and "${dnum(v)}${unit}" in monjs
+   and ") %`" not in monjs)
+ck("a poll window with nothing credited says so in words, not as a bare duration like `poll 1s`",
+   'nothing in ${Math.round((rate.window_s || 0) * 10) / 10}s' in monjs)
 ck("and the old always-wraps note class is gone, so nothing outside the slot mechanism re-wraps",
    "small--avg" not in _wc and "small--avg" not in _wh)
 

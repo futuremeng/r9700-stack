@@ -352,7 +352,7 @@ function renderStatus(s) {
   // 44 the widest. A line that says "13 tok/s" and later "13,570 tok/s while prefilling" changes how many lines
   // the card needs, which changes the height of the whole grid row, which moves every card under it: the page
   // jiggles once a second and a reader stops trusting a number they see change. So the copy is short by
-  // construction, knum() keeps a number to five characters whatever it is, and anything longer that a reader
+  // construction, and anything longer that a reader needs lives in the title.
   // needs lives in the title. (Not verified as pixels - there is no browser on this box; the arithmetic above
   // is the same one docs/monitor-cards.py and tests/test_readme.py use, and the harness fails a slot whose
   // text is longer than the widest 4-up card can hold.)
@@ -419,7 +419,7 @@ function renderStatus(s) {
         + "product stays consistent with each other. Spans are immune: they divide by the ring's own timestamps.",
   };
   const big = (id, v, unit) =>
-    { $(id).innerHTML = `${isnum(v) ? knum(v) : "\u2014"}<span class="unit">${unit}</span>`; };
+    { $(id).innerHTML = `${isnum(v) ? dnum(v) : "\u2014"}<span class="unit">${unit}</span>`; };
   // -- which window the four numbers answer to ---------------------------------------------------
   // The default is the 15 min mean: measured here, one 1 s poll read 9.9 tok/s with six streams running and
   // another, a minute later in a gap, read 0, while the quarter hour around them was 51.7. Printing only the
@@ -456,16 +456,16 @@ function renderStatus(s) {
       const name = spanName(label, wide, isnum(b.span_s) ? b.span_s : wide);
       if (said.has(name)) continue;      // two spans resolve to the same window: say it once, not twice
       said.add(name);
-      parts.push(`${name} ${knum(v)}`);
+      parts.push(`${name} ${dnum(v)}`);  // unitless on purpose: the card label and the headline carry it
     }
     return parts.join(" \u00b7 ") || "\u2014";
   };
-  // Every span, including the one the headline is showing: for a card with no headline of this quantity (the
-  // pool), the full set is the point.
   // Every span, including the one the headline is showing -- for a card with no headline of this quantity (the
   // pool), the full set is the point. `skip` drops spans whose mean would only repeat what is already on the
   // card: the pool's headline IS its current value, so a 1-minute mean of it is the same number rounded.
-  const spanAll = (key, skip = []) => {
+  // A filled span prints `15m 11.1%`: `unit` belongs to each NUMBER, not to the line, because the line can also
+  // read `15m reset` and a unit hung on the end of that would be a unit on nothing.
+  const spanAll = (key, skip = [], unit = "") => {
     const parts = [], said = new Set();
     for (const [label, wide] of Object.entries(AVG_WIDE)) {
       if (skip.includes(label)) continue;
@@ -477,14 +477,15 @@ function renderStatus(s) {
       const name = spanName(label, wide, isnum(b.span_s) ? b.span_s : wide);
       if (said.has(name)) continue;
       said.add(name);
-      parts.push(`${name} ${knum(v)}`);
+      parts.push(`${name} ${dnum(v)}${unit}`);
     }
     return parts.join(" \u00b7 ") || "\u2014";
   };
 
-  // The spans, with counts instead of rates: "15m +31k \u00b7 1h +89k". Two, not three -- at a 5-character number
-  // cap three spans is 29 characters and the tightest 4-up slot holds 24, and the rule this page follows is that
-  // a slot is cut to the budget and the full sentence goes in the title, never that the line is allowed to wrap.
+  // The spans, with counts instead of rates: "15m +1,180 \u00b7 1h +22,600". Two, not three, and the harness
+  // measures it: with the digits written out, three signed counts are 30 characters and the tightest 4-up slot
+  // holds 24. The rule this page follows is that a slot is cut to the budget and the full sentence goes in the
+  // title, never that the line is allowed to wrap.
   const spanSigned = (key, skip = ["1m"]) => {
     const parts = [], said = new Set();
     for (const [label, wide] of Object.entries(AVG_WIDE)) {
@@ -496,7 +497,7 @@ function renderStatus(s) {
       const name = spanName(label, wide, isnum(b.span_s) ? b.span_s : wide);
       if (said.has(name)) continue;
       said.add(name);
-      parts.push(`${name} +${knum(v)}`);
+      parts.push(`${name} +${dnum(v)}`);
     }
     return parts.join(" \u00b7 ") || "\u2014";
   };
@@ -521,13 +522,13 @@ function renderStatus(s) {
   // "tok out", because on this launch the pool's 1.01M tokens and this launch's 1.00M generated tokens sit two
   // cards apart and differ by 1%. The unit has to say which million it is.
   big("rate-gentot", sn.generation_tokens_total, "tok out");
-  slot("note-gentot", isnum(sn.prompt_tokens_total) ? `vs ${knum(sn.prompt_tokens_total)} in` : "\u2014",
+  slot("note-gentot", isnum(sn.prompt_tokens_total) ? `vs ${dnum(sn.prompt_tokens_total)} in` : "\u2014",
        TT.gentot + spanAll("generation_tokens").replace(/(\w+) (\S+)/g, "$1 +$2"));
   slot("spans-gentot", spanSigned("generation_tokens"), TT.spans);
   // "none credited", not "+0.0": in this window the counter moved nothing, which for a count is a fact about the
   // window (the engine was prefilling), not a measurement of zero tokens a second.
   slot("poll-gentot", isnum(rate.generation_tokens) && rate.generation_tokens > 0
-       ? `poll +${knum(rate.generation_tokens)} tok` : `poll \u00b7 none credited`, TT.poll);
+       ? `poll +${dnum(rate.generation_tokens)} tok` : `poll \u00b7 none credited`, TT.poll);
 
   // Decode, on the basis the user of this page actually asks for: total decode output over total DECODE time --
   // generated tokens divided by the stream-seconds the engine's decode families report (inter_token_latency and
@@ -545,15 +546,25 @@ function renderStatus(s) {
   const wallV = A ? A.generation_tok_s : rate.generation_tok_s;
   const streamsV = A ? A.decode_streams : rate.decode_streams;
   big("rate-gen", perS, "tok/s");
-  slot("note-gen", isnum(wallV) && isnum(streamsV)
-       ? `${knum(wallV, 1)} summed \u00d7${streamsV < 10 ? streamsV.toFixed(2) : knum(streamsV, 1)}`
-       : "\u2014", TT.gen);
+  // The summed figure and the fan-out have different denominators, so they can be missing separately. Wall
+  // seconds always exist, so a wall-second rate of 0 is a MEASUREMENT and stays on the line; decode stream-seconds
+  // do not exist until a decode step has been measured, and then the multiplier is what has no denominator -- it
+  // goes out and the sentence says which one it was, instead of the whole slot going to a dash (the harness fails
+  // a printed dash where a measured zero belongs).
+  slot("note-gen", isnum(wallV)
+       ? `${dnum(wallV, 1)} summed` + (isnum(streamsV)
+           ? ` \u00d7${streamsV < 10 ? streamsV.toFixed(2) : dnum(streamsV, 1)}` : "")
+       : "\u2014",
+       TT.gen + (isnum(wallV) && !isnum(streamsV)
+         ? " No multiplier: this window contains no decode step, so there are no decode stream-seconds to divide "
+         + "by. The summed figure has a different denominator -- wall seconds -- and it is a measurement of 0, so "
+         + "it is printed as one." : ""));
   slot("spans-gen", spanList("decode_stream_tok_s"), TT.spans);
   // A poll with no decode step gets the sentence ALONE: `poll · no decode step · 0.0 req/m` measured 33 characters
   // against the tightest 4-up slot's 24 (the harness flags it), and an arrival rate is not the missing denominator.
   slot("poll-gen", isnum(rate.decode_stream_tok_s)
-       ? `poll ${knum(rate.decode_stream_tok_s)}`
-         + (A && isnum(A.requests_per_min) ? ` \u00b7 ${knum(A.requests_per_min, 1)} req/m` : "")
+       ? `poll ${dnum(rate.decode_stream_tok_s)}`
+         + (A && isnum(A.requests_per_min) ? ` \u00b7 ${dnum(A.requests_per_min, 1)} req/m` : "")
        : `poll \u00b7 no decode step`, TT.poll);
 
   // Prefill, both honest speeds. Read prompt tokens per second of REQUEST-prefill time (the engine's own
@@ -577,10 +588,10 @@ function renderStatus(s) {
   // `N% cache` only appears when the engine actually served from cache: with PREFIX_CACHE=0 (this recipe) it would
   // be a permanent `0% cache` saying nothing, and every character in a slot is budgeted.
   slot("note-prefill", A && isnum(A.prefix_hit_pct) && A.prefix_hit_pct > 0
-       ? `wall ${knum(A.prompt_tok_s || 0)} \u00b7 ${knum(A.prefix_hit_pct, 0)}% cache`
-       : A ? `wall ${knum(A.prompt_tok_s || 0)}`
+       ? `wall ${dnum(A.prompt_tok_s || 0)} \u00b7 ${dnum(A.prefix_hit_pct, 0)}% cache`
+       : A ? `wall ${dnum(A.prompt_tok_s || 0)}`
              + (isnum(A.prefill_streams) && A.prefill_streams > 1.05
-                ? ` \u00b7 \u00d7${knum(A.prefill_streams, 1)} prefilling` : "")
+                ? ` \u00b7 \u00d7${dnum(A.prefill_streams, 1)} prefilling` : "")
          : exact !== null ? "exact \u00b7 credits at end"
            : kvr !== null ? "\u2248 from KV growth" : "no prefill in window", TT.prefill);
   slot("spans-prefill", spanList("prefill_stream_tok_s"), TT.spans);
@@ -589,9 +600,9 @@ function renderStatus(s) {
   // request ENDS, so a 90 k-token prompt in flight has credited nothing, and the only number that moves while
   // it runs is the KV gauge's growth - labelled as the estimate it is.
   slot("poll-prefill",
-       exact !== null ? `poll ${knum(exact)}` + (kvr !== null && kvr > 0 ? ` \u00b7 KV ${knum(kvr)}` : "")
-     : kvr !== null && kvr > 0 ? `poll \u2248${knum(kvr)}`
-     : (rate.window_s || 0) < 3 ? `poll ${Math.round((rate.window_s || 0) * 10) / 10}s`
+       exact !== null ? `poll ${dnum(exact)}` + (kvr !== null && kvr > 0 ? ` \u00b7 KV ${dnum(kvr)}` : "")
+     : kvr !== null && kvr > 0 ? `poll \u2248${dnum(kvr)}`
+     : (rate.window_s || 0) < 3 ? `poll \u00b7 nothing in ${Math.round((rate.window_s || 0) * 10) / 10}s`
      : "poll \u00b7 nothing credited",
        TT.poll + (exact !== null || (kvr !== null && kvr > 0) ? ""
        : " prompt_tokens_total credits when a request ends, so a long prefill still in flight has credited "
@@ -603,7 +614,11 @@ function renderStatus(s) {
   slot("note-step", isnum(ttftV) ? `1st ${ms(ttftV)}` + (isnum(qV) ? ` \u00b7 q ${ms(qV)}` : "")
                                  : "no first token yet", TT.step);
   slot("spans-step", spanList("itl_ms"), TT.spans);
-  slot("poll-step", `poll ${knum(rate.itl_ms)} ms` + (isnum(tps) ? ` \u00b7 \u00d7${tps.toFixed(2)}` : ""),
+  // "no step", not "— ms": a unit after a dash claims a measurement whose value the reader cannot see, which is
+  // the same mistake as `15m reset %` on the pool line. The window had no step to time, and the slot says that.
+  slot("poll-step", isnum(rate.itl_ms)
+     ? `poll ${dnum(rate.itl_ms)} ms` + (isnum(tps) ? ` \u00b7 \u00d7${tps.toFixed(2)}` : "")
+     : `poll \u00b7 no step`,
        TT.poll + (isnum(tps) ? ` \u00d7${tps.toFixed(2)} is tokens a step (step time over per-output-token time): `
                               + "one engine step turns into that many tokens with speculation. "
                               + (isnum(tpsW) ? "Measured over this window." : "Since launch - this window holds no "
@@ -791,12 +806,24 @@ function renderStatus(s) {
       return;
     }
     // Two slots, never one wrapped line: the level on the first, the spread and the sampling on the second.
-    // Both are written to fit the tightest 4-up card (the arithmetic is in notes/webui.md), so the height of
-    // this row does not depend on how many digits the engine happens to be reporting.
-    slot(n1, `now ${knum(xs[xs.length - 1], d)} \u00b7 avg ${knum(used.reduce((x, y) => x + y, 0) / used.length, d)}`,
-         title + ` (peak ${knum(Math.max(...used), d)} over ${histSpan})`);
-    slot(n2, `peak ${knum(Math.max(...used), d)} \u00b7 ${used.length}/${values.length} \u00b7 ${histSpan}`,
-         title + (lo !== null && top > lo ? ` The waveform is drawn on a ${knum(lo)}..${knum(top)} axis.` : ""));
+    // Both are written to fit the tightest 4-up card (tests/render-monitor.mjs measures the longest string every
+    // slot can print, and the budget is 24 characters at 12 px), so the height of this row does not depend on how
+    // many digits the engine happens to be reporting. With the digits written out rather than abbreviated, the
+    // ring's own span -- which the trend caption above the sparkline already states -- came out of this line.
+    const last = xs[xs.length - 1];
+    const avg = used.reduce((x, y) => x + y, 0) / used.length;
+    // A negative newest sample in the KV-growth series is the pool FREEING blocks as requests finish, not prefill
+    // running backwards. With the digits written out, a leading minus in front of 172,106 is something the reader
+    // has to decode on a line that repaints every second, so the drain is named instead -- and the average moves
+    // into the title for that case, because `now draining 172,106 · avg 7,939` is 32 characters and the budget is
+    // 24. The sign is still in the drawn waveform, which autoscales through zero for exactly this reason.
+    const drain = last < 0 && !keep(last);
+    slot(n1, drain ? `now draining ${dnum(-last, d)}`
+                   : `now ${dnum(last, d)} \u00b7 avg ${dnum(avg, d)}`,
+         title + ` (avg ${drain ? dnum(avg, d) + ", " : ""}peak ${dnum(Math.max(...used), d)} over ${histSpan})`);
+    slot(n2, `peak ${dnum(Math.max(...used), d)} \u00b7 ${used.length}/${values.length}`,
+         title + ` (${used.length} of ${values.length} points kept, over ${histSpan}.`
+         + (lo !== null && top > lo ? ` The waveform is drawn on a ${dnum(lo)}..${dnum(top)} axis.` : "") + ")");
   };
   const TREND_T = {
     perstep: "Generated tokens per engine record, summed over streams -- never a per-stream mean. It is the "
@@ -849,12 +876,12 @@ function renderStatus(s) {
   spark($("kv-spark"), hist.map((h) => h.kv_used_pct), { baseLo: 0, baseHi: 100 });
   $("kv-spark").dataset.tone = kv > 95 ? "danger" : kv > 85 ? "warn" : "ok";
   slot("kv-note1", isnum(live.kv_tokens)
-    ? `${knum(live.kv_tokens)} tok \u00b7 ${kv.toFixed(0)}% \u00b7 ${histSpan}`
+    ? `${dnum(live.kv_tokens)} tok \u00b7 ${kv.toFixed(0)}%`
     : "pool size not in /metrics",
-    `The pool this launch was given, how full it is now, and how far back the waveform reaches. ` +
+    `The pool this launch was given, and how full it is now (the waveform reaches back ${histSpan}). ` +
     (kv > 85 ? "Above 85% is tight, above 95% is the limit: a request that needs blocks the pool cannot give is "
               + "preempted and re-prefilled from scratch." : ""));
-  slot("kv-note2", `${spanAll("kv_used_pct_mean", ["1m"])} %`,
+  slot("kv-note2", spanAll("kv_used_pct_mean", ["1m"], "%"),
     "Mean pool used over each span, from the same gauge the waveform draws. The ring cannot answer whether the "
     + "pool has been tight all afternoon; these can. A span labelled shorter than its name is the whole ring so far.");
 

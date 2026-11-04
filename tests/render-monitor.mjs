@@ -279,7 +279,9 @@ for (const [id, avgKey, rateKey] of [["rate-gen", "decode_stream_tok_s", "decode
 }
 // The decode card that shows a COUNT: the whole claim of that card is that it is the engine's own cumulative
 // counter, summed over streams, with no division anywhere -- so the number on screen has to BE that counter.
-// knum() caps the width (1.01M for 1,012,345), which is a third-of-a-percent rounding, so the tolerance is 0.5%.
+// dnum() rounds a rate to the nearest integer (1,012,345 prints as 1,012,345 but 21.49 prints as 21), so the
+// comparison against the engine's own counter needs an absolute tolerance as well as a ratio: on a 3 tok/s
+// afternoon, rounding alone is a third of the value.
 {
   const want = STAT?.since?.generation_tokens_total;
   const got = firstNum(html("rate-gentot"));
@@ -341,7 +343,8 @@ for (const [id, key, rateKey] of [["spans-gentot", "generation_tokens", "generat
                                   ["spans-prefill", "prefill_stream_tok_s", "prompt_tok_s"],
                                   ["spans-step", "itl_ms", "itl_ms"]]) {
   const line = t(id) || "";
-  // spans-gentot shows two spans, not three: at knum's five-character cap three counts are 29 characters and the
+  // spans-gentot shows two spans, not three: with the digits written out three signed counts are 30 characters and
+  // the
   // tightest 4-up slot holds 24 (the arithmetic is in notes/webui.md), so 1m lives in the title instead.
   const shown = Object.entries((STAT?.avg || {})).filter(([l, b]) => isnum(b?.[key]) && l !== winShown
               && !(id === "spans-gentot" && l === "1m"));
@@ -376,11 +379,30 @@ const SLOTS = [...readFileSync(path.join(WEB, "monitor.html"), "utf8")
   .matchAll(/class="([^"]*)"[^>]*?\bid="([^"]+)"/g)]
   .filter(([, cls]) => cls.split(/\s+/).includes("slot")).map(([, , id]) => id);
 console.log(`\nslots (the tightest 4-up card holds ${TIGHT} characters at ${FS} px; the widest holds ${WIDEST})`);
+// Two invariants over the whole slot set, checked while printing rather than in one pass afterwards:
+//  * a number is printed as a NUMBER. dnum() used to abbreviate ("7.4k" for 7,428) to hold the width, and asked
+//    on 2026-11-04 the digits came back: the width is now held by the copy and measured here. A slot that prints
+//    "12.3k" or "4.8M" is a regression against that request, whatever function produced it, so the check is on
+//    the rendered text rather than on which helper the page calls.
+//  * a negative in a rate caption is the one thing a reader most misreads. The KV-growth series goes negative
+//    when finished requests free blocks, which is a fact about the pool, not a prefill running backwards; the
+//    caption says "now draining N" instead of "now -N" and the sign stays in the drawn waveform.
+const ABBREV = /\d(?:[.,]\d+)?[kM]\b/;
 for (const id of SLOTS) {
   const line = t(id);
   if (line === null) { console.log(`BAD  no slot called ${id} was written`); process.exitCode = 1; continue; }
   const flag = line.length > TIGHT ? `  ${line.length > WIDEST ? "BAD" : "wide"} (${line.length} > ${TIGHT})` : "";
   console.log(`  ${(id + "              ").slice(0, 16)} ${line}${flag}`);
+  const ab = line.match(ABBREV);
+  if (ab) {
+    console.log(`BAD  ${id} abbreviates a number ("${ab[0]}"); the page prints digits and holds its width by copy`);
+    process.exitCode = 1;
+  }
+  if (/-\d/.test(line) && !/draining|saved|\u2212/.test(line)) {
+    console.log(`BAD  ${id} shows a bare signed number ("${line.match(/-\d[^ \u00b7]*/)[0]}") where the caption `
+                + `should say what is negative about it`);
+    process.exitCode = 1;
+  }
   if (line.length > WIDEST) {
     console.log(`       it does not fit the WIDEST card either -- this one wraps, and the card's height moves`);
     process.exitCode = 1;

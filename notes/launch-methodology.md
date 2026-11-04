@@ -174,3 +174,21 @@ its prompt is actually shared, and a `PREFIX_CACHE=0` recipe stays the right def
 series (notes/kv-fp8-qsa.md). The number worth remembering is the shape: for identical-prefix traffic the cache
 does not redistribute prompt work, it **removes** it -- which is the one lever the step census in
 notes/context-262k.md says the scheduler's fairness knobs cannot reach.
+
+## 9. A death during measurement: 2026-11-04 07:53
+
+The production serve died on its own, mid-traffic, and the Monitor noticed before anyone did (the sidecar's
+`upstream not answering` notice is what sent me to the log).
+
+- **Signature:** `torch.AcceleratorError: CUDA error: an illegal memory access was encountered`
+  (`hipErrorIllegalAddress`) in `Worker_TP0`, then `EngineDeadError`, then a 500 to the client whose stream was
+  open. Not an OOM: the scheduler dump says 2 running requests, `kv_cache_usage=0.156`, 0 preempted, and the step
+  was six scheduled tokens (two requests, MTP `[-1, -1]`) at 36,260 and 111,044 computed tokens. A 111k-deep
+  decode step, so the same deep-context decode region §6 of these notes and notes/bug-mes-invalidate-tlbs.md live
+  in. Nothing about the config had changed: `tools/recipe-check.py` re-run against the relaunch exits 0.
+- **What the guard bought:** the API server was gone but the four ranks were still holding 32 GB of VRAM each
+  (`rocm-smi --showpids`, `pgrep -cf 'VLLM[::]'` = 4), which is exactly why the launcher refuses instead of
+  trying. `STOP=1` cleared them; the same command came back healthy in 168 s.
+- **What was NOT the cause:** the prefix-cache test config had already been reverted and the test session killed
+  (§8) 20 minutes earlier; the traffic in flight was real client traffic from 192.168.1.x, and the journal shows no
+  test wave at 07:53. Recorded so the next reader does not blame the experiment that happened to be nearby.

@@ -1219,12 +1219,43 @@ The same grid arithmetic `docs/monitor-cards.py` and `tests/test_readme.py` use:
 
 Two things followed:
 
-- `knum()` caps a changed number's **width**, not just its precision: `999.9`, `16.2k`, `1.01M` - at most five
-  characters, so a digit count can never change the length of a sentence around it.
+- `dnum()` prints a number as a number: digits grouped by thousands, decimals only below 100, and an integer
+  printed without a `.0` (`0` is `0`, a gauge reading of two streams is `2`).
 - `tests/render-monitor.mjs` reads the slot list out of `monitor.html` (so it cannot drift from the markup),
   prints what the live page renders into each one, and fails on any slot over the **widest** budget (44). It
   flags any slot over the **tightest** (24) as wide. Writing the copy to fit 24 characters is what makes the
   ellipsis something the reader should never see.
+
+**Digits, not abbreviations (2026-11-04).** This function used to be `knum()` and capped a changed number's width
+instead: `999.9`, `16.2k`, `1.01M` - never more than five characters, so a digit count could not change the length
+of the sentence around it. Asked to put the numbers back - "prefill 那里" was showing `7.4k` for a rate of 7,428,
+which hides the very figure the tooltip next to it explains - the abbreviation went away everywhere on the page:
+`1,009,899 tok · 16%`, `vs 4,074,190 in`, `wall 4,316`, `poll 108 · 1.8 req/m`.
+
+The width problem was real, so it did not just disappear: it moved out of the formatter and into the **copy**, where
+the harness can measure it. Three lines gave up their tail to pay for it -
+
+| slot | was | is |
+|---|---|---|
+| `kv-note1` | `1,009,899 tok · 37% · 90s` | `1,009,899 tok · 37%` (the ring's span is in the trend caption already, and in the title) |
+| `*-note2` (the four waveforms) | `peak 22,886 · 74/90 · 90s` | `peak 22,886 · 74/90` (25 characters was over the 24 budget) |
+| `note-gen` | `18.7 summed ×0.93` | unchanged, but the multiplier now drops out on its own when the window has no decode stream-seconds, instead of the whole line going to a dash |
+
+and two invariants were added to `tests/render-monitor.mjs`, checked against the **rendered text** rather than
+against which helper the page calls, so they hold whatever produces the string: no slot may print a `k`/`M`
+abbreviation (`/\d(?:[.,]\d+)?[kM]\b/`), and no slot may show a bare signed number. The second one is not
+hypothetical - the prefill waveform is drawn on the KV pool's growth, which goes negative when finishing requests
+free blocks, and its caption used to read `now -172,106 · avg 7,939` under a card labelled prefill. It now reads
+`now draining 172,106`, with the average moved to the title (both together are 32 characters against a budget of
+24); the sign is still in the drawn waveform, which autoscales through zero for exactly this reason.
+
+A wording bug the digit change exposed: the prefill card's this-poll slot fell back to `poll 1s` when nothing had
+been credited, which reads like a duration wearing a unit. It says `poll · nothing in 1s` now - the same fact, with
+the fact that it is an absence stated in words. The `%` on the pool's spans line had the same shape of bug: it was
+appended to the whole line, so a span that has reset rendered as `15m reset %`. Units belong to each number
+(`15m 14.7% · 1h reset`), because a unit on the word `reset` is a unit on nothing - and the step card's this-poll
+slot, which printed `poll — ms` when the window held no step at all, now prints `poll · no step` for the same
+reason: a unit after a dash claims a measurement whose value the reader cannot see.
 
 `kv-note2` was 31 characters - `1m 25.9 · 15m 30.6 · 13m 30.6 %` - and is now `15m 30.6 · 13m 30.6 %`: the pool's
 headline *is* its current value, so a one-minute mean of it is the same number rounded.
@@ -1306,7 +1337,8 @@ which histogram family is the honest one is still true -- they simply do not get
 **Harness.** `tests/test_webui.py` asserts the new fields are fed by names the ring stores, that no per-stream rate
 reaches a headline or a waveform (`A.stream_tok_s`, `h.stream_tok_s`, `rate.stream_tok_s_live` are all absent from
 `monitor.js`), and that the trend/rate rows still have the same slot shape with the new names.
-`tests/render-monitor.mjs` checks the count card against the engine's own counter (within knum's 0.5% rounding) and
+`tests/render-monitor.mjs` checks the count card against the engine's own counter (within `dnum`'s rounding to the
+nearest integer) and
 that it carries a token unit, not a per-second one -- and its live comparison now allows an absolute 1 token/s as
 well as a ratio, because on a box that idles between requests 2.0 and 3.0 tok/s are one second of traffic apart.
 Both pass against the sidecar (`:8099`, new payload) and against the production serve (`:8080`, whose payload predates
