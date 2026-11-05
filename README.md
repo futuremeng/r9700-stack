@@ -400,7 +400,9 @@ the cost is 3.5% of the KV pool plus 60 s of boot ([notes/multimodal-input.md](n
 `--limit-mm-per-prompt` only counts images, so `MM_MAX_PIX` caps what **one** may cost: the checkpoint's own default
 is 16,777,216 px = 16,384 image tokens, and an uncapped 2,560 × 6,236 screenshot arrived as **15,664 prompt tokens**.
 The default cap (4,194,304 px ≈ 4,096 tokens) brings that to 4,123, and per-request `mm_processor_kwargs` are
-refused by default, so it is a ceiling a client cannot lift.
+refused by default, so it is a ceiling a client cannot lift. The About page answers the whole question in one card
+(now: what the live serve accepts from its own argv, what the recipe recorded as effective limits, the knobs that
+choose them, and 1,024 px per image token as the basis) because the engine's config cannot answer it at all.
 
 The 1 min prefill figure is low **because of the metric, not the box**: `prompt_tokens_total` credits a prompt when
 its request finishes, so a 60-second span that has long prefills running but not finished credits only what happened

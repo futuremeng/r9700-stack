@@ -191,3 +191,40 @@ Reverted and proved again: argv carries `--language-model-only` and neither `--l
 tokens; `tools/recipe-check.py` exit 0 naming all three flags as matching. A size cap is a **flag**, so the flag
 face of the gate is what catches it — and `MM_MAX_PIX`/`MM_MIN_PIX` are in `OPERATOR_KNOBS`, so the shell that asks
 the question cannot move the answer.
+
+## Where the box answers this today: the About page's Image input card
+
+`/about` has a card for it, because the engine cannot answer it: **0** of the labels the engine publishes mention
+multimodal (`mmLabels` in `serve/web/about.js` counts them, and the card prints that count, so if a future vLLM
+starts publishing the limits the card says so instead of staying silent).
+
+Two rows, and they name their witness:
+
+- **The running serve accepts** — read from the live process's argv, which the merged plugin publishes: today
+  `no images, no video (--language-model-only)`. On a **sidecar** page this row changes to "whose command line this
+  is: the sidecar's … it proves nothing about what the serve accepts", because a sidecar holds its own argv. Same
+  rule as the Configuration card: a sidecar's `MAXLEN` is not the engine's.
+- **The recipe file records** — the *effective* values, not the nominal ones: `off · no image can be sent at all`,
+  or `on · image 2, video 0 · one image up to 4,194,304 px (~4,096 tokens), floor 65,536 px`, plus the knobs
+  (`MM_IMAGE=… MM_VIDEO=… MM_MAX_PIX=… MM_MIN_PIX=…`) so the page can say what `MM=1` would do without implying it
+  is on.
+
+`px per image token: 1,024 (patch 16 x merge 2 = 32 px a side)` is printed because a pixel cap is not a cost until
+the token basis is next to it. That row is the one static claim on the card — it comes from this checkpoint's
+`preprocessor_config.json`, and it says so.
+
+**One stale row to be honest about:** the granular keys (`mm_image`, `mm_max_pix`, …) land in the recipe file from
+the launch *after* this change. The launch running when this was written records only `mm` and `mm_limits`, so its
+card says `off` and stops there rather than inventing the rest. Refreshing it by hand (`METAONLY=1`) would record
+the environment of the shell that ran it, which is exactly how a recipe file starts lying, so it was not refreshed.
+
+Two things the fixture work taught, both kept in `tests/render-about.mjs`:
+
+- A saved payload can be the bare `/api/status` JSON or the page's own `{status: …, host: …}` dump. Reading
+  `FIX.status` in one place and `FIX` in another made a fixture render an **empty** status: the page came up with
+  blank cards and the checker was inspecting a different object from the one the page saw. Now `PAY` is normalized
+  once and both the page stub and the checks use it.
+- `/api/host` is a **separate endpoint**; a bare `/api/status` payload saved from the merged serve does not contain
+  it. Handing the fixture a 404 for it blanked the whole page (only `error` and `updated` rendered), which is also
+  a fact about the page: it treats a 404 on that endpoint as fatal. File mode now answers `{}` for a fixture with
+  no host block; URL mode still passes the real 404 through so the page's behaviour stays visible.

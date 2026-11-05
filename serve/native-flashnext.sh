@@ -249,6 +249,13 @@ if [ "${WEBUI:-0}" = 1 ] || [ "${WEBUI:-}" = same ]; then
       hc_fp8_decode="${R9K_HC_FP8_DECODE:-1}" fp8_block="${R9K_FP8_BLOCK:-block}" fp8_qa="${R9K_FP8_QA:-1}" \
       target_lmhead="${R9K_TARGET_LMHEAD:-mxfp4}" draft_lmhead="${R9K_DRAFT_LMHEAD:-mxfp4}" \
       mtp_quant_rows="${R9K_MTP_QUANT_ROWS:-}" mm="$MM" \
+      mm_effective="$([ "$MM" = 1 ] && echo "on" || echo "off")" \
+      mm_image="$([ "$MM" = 1 ] && echo "$MM_IMAGE" || echo 0)" \
+      mm_video="$([ "$MM" = 1 ] && echo "$MM_VIDEO" || echo 0)" \
+      mm_max_pix="$([ "$MM" = 1 ] && echo "$MM_MAX_PIX" || echo 0)" \
+      mm_min_pix="$([ "$MM" = 1 ] && echo "$MM_MIN_PIX" || echo 0)" \
+      mm_max_tok="$([ "$MM" = 1 ] && echo "$((MM_MAX_PIX / 1024))" || echo 0)" \
+      mm_if_on="MM_IMAGE=${MM_IMAGE} MM_VIDEO=${MM_VIDEO} MM_MAX_PIX=${MM_MAX_PIX} MM_MIN_PIX=${MM_MIN_PIX}" \
       mm_limits="$([ "$MM" = 1 ] && echo "image ${MM_IMAGE}, video ${MM_VIDEO}, max ${MM_MAX_PIX} px (~$((MM_MAX_PIX / 1024)) tokens each)" \
                      || echo "image 0, video 0 (--language-model-only)")" \
       env="$(r9k_env_json)" extra="${EXTRA:-}"

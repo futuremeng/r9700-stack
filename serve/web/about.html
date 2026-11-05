@@ -68,6 +68,15 @@
       </details>
     </section>
 
+    <!-- Image input gets its own card because the engine cannot testify to it: no vllm:* label says whether the
+         serve came up --language-model-only. So the card answers from the live process's argv (what the running
+         serve accepts) and from the recipe file (what this box's launcher recorded), and says which is which. -->
+    <section class="card" id="mm-card" hidden>
+      <span class="card-title">Image input</span>
+      <dl class="facts" id="facts-mm"></dl>
+      <p class="small note" id="mm-note"></p>
+    </section>
+
     <section class="card">
       <span class="card-title">This machine</span>
       <dl class="facts" id="facts-host"></dl>

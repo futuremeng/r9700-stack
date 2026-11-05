@@ -18,6 +18,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.join(HERE, "..", "serve", "web");
 const ARG = process.argv[2] || "http://127.0.0.1:8099";
 const FIX = ARG.endsWith(".json") ? JSON.parse(readFileSync(ARG, "utf8")) : null;
+// A saved payload may be the bare /api/status JSON or one wrapped in {status: ..., host: ...} (what the page's own
+// dump writes). Normalize once, so the PAGE and the CHECKS below are looking at the same object -- reading
+// `FIX.status` in one place and `FIX` in another is how a fixture silently renders as an empty status.
+const PAY = FIX ? (FIX.status || FIX) : null;
 const BASE = FIX ? "" : ARG.replace(/\/$/, "");
 
 class El {
@@ -67,7 +71,12 @@ const ctx = {
   fetch: async (u, o) => {
     if (!FIX) return globalThis.fetch(BASE + u, o);
     const p = String(u).split("?")[0];
-    const body = p === "/api/status" ? FIX.status : p === "/api/host" ? FIX.host : null;
+    // /api/host is a separate endpoint: the merged serve answers it, and a bare /api/status payload saved from one
+    // does not carry the block. In file mode that means 'no host facts in this fixture', not 'the endpoint is down',
+    // so hand back an empty object. URL mode still passes the real 404 through, which is what caught the page's
+    // habit of treating one as fatal.
+    const body = p === "/api/status" ? PAY
+      : p === "/api/host" ? ((FIX && (FIX.host ?? (PAY ? {} : null))) ?? null) : null;
     if (body === null) return { ok: false, status: 404, json: async () => ({ error: "not in fixture" }) };
     return { ok: true, status: 200, json: async () => body };
   },
@@ -83,7 +92,7 @@ const $ = (id) => byId.get(id) || new El("div", id);
 const t = (id) => ($(id).textContent || "").trim();
 await new Promise((r) => setTimeout(r, 3000));                // Node's own timer: let one load land
 
-const S = FIX ? FIX.status : await (await globalThis.fetch(`${BASE}/api/status`)).json();
+const S = PAY ?? await (await globalThis.fetch(`${BASE}/api/status`)).json();
 const all = Object.keys(((S.config || {})._all) || {});
 const efile = ((S.env || {}).file) || {}, evars = Object.keys((S.env || {}).vars || {});
 const shown = [...byId.values()].filter((e) => e.textContent).map((e) => e.id).filter(Boolean);
@@ -124,6 +133,36 @@ if (noEnv) {
     B("a payload with no env block is explained as a missing file instead of as an old build");
   }
 } else if (!S.argv && S.argv !== "") B("the page had no command line to show, and no row saying why");
+
+// Image input card. The engine publishes no multimodal label, so the page has exactly two witnesses -- the live
+// process's argv and the recipe file -- and each row must say which one it is. On a sidecar the argv belongs to the
+// sidecar, so the page must not claim it answers what the serve accepts.
+console.log("\nimage input card:");
+console.log("  " + t("facts-mm").replace(/ {2,}/g, " | "));
+console.log("  note: " + t("mm-note").slice(0, 160));
+const mmtxt = t("facts-mm");
+if (!mmtxt && (S.argv || (S.meta || {}).mm_effective)) {
+  B("the payload can answer the image-input question and the card is blank");
+}
+if (mmtxt) {
+  if (S.mode === "merged") {
+    if (!/The running serve accepts/.test(mmtxt)) B("the merged page never says what the serve accepts");
+    if (!/--language-model-only|image\(s\)/.test(mmtxt)) B("the live row answers neither mm state");
+  } else if (/The running serve accepts/.test(mmtxt)) {
+    B("a sidecar page claims to know what the serve accepts, reading its own command line");
+  } else if (!/proves nothing about what the serve accepts/.test(mmtxt)) {
+    B("a sidecar page does not say that its own argv says nothing about the serve");
+  }
+  if (!/px per image token/.test(mmtxt)) B("the px-per-token basis is missing, so a pixel cap is not a cost");
+  if (!/label\(s\) in the config block/.test(mmtxt)) B("the card does not say the engine config is silent here");
+  if (Number((S.meta || {}).mm_max_pix) > 0 && !/tokens/.test(mmtxt)) {
+    B("a size cap is printed without its token cost, which is the number that actually matters");
+  }
+}
+if (S.mode === "merged" && (S.meta || {}).mm_effective === "off" && !/no images, no video/.test(mmtxt)) {
+  B("the recipe says mm is off and the live row does not say so");
+}
+if (!t("mm-note")) B("mm-note is empty -- the measured / not-measured boundary never renders");
 
 const bar = t("error");
 if (bar) { console.log("\nPAGE NOTICE:", bar); bad++; }

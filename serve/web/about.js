@@ -122,6 +122,74 @@ function render() {
     : `There is no machine-local env file at ${efile.path}, so every default in the repo is in force. `
       + (efile.error ? `(${efile.error})` : ""));
 
+  // Image input gets its own card because the engine cannot testify to it: none of the labels the engine publishes
+  // say whether the serve came up --language-model-only. Two witnesses remain, printed apart on purpose: the live
+  // process's argv (what the running serve actually accepts) and the recipe file (what this box's launcher recorded
+  // for the launch). A serve started by a test config and a recipe file from another tree is exactly the
+  // disagreement the Configuration card above refuses to merge.
+  const argv = s.argv || "";
+  const argvTok = (f) => {            // a flag's value in a command line, JSON values taken whole
+    const i = argv.indexOf(f);
+    if (i < 0) return null;
+    let j = i + f.length;
+    while (j < argv.length && argv[j] === " ") j++;
+    if (argv[j] === "{") {
+      let d = 0, k = j;
+      for (; k < argv.length; k++) {
+        if (argv[k] === "{") d++;
+        else if (argv[k] === "}") { d--; if (!d) { k++; break; } }
+      }
+      return argv.slice(j, k);
+    }
+    const m = argv.slice(j).match(/^\S+/);
+    return m ? m[0] : null;
+  };
+  const jsonof = (t) => { try { return t ? JSON.parse(t) : null; } catch (e) { return null; } };
+  const lim = jsonof(argvTok("--limit-mm-per-prompt")), mmk = jsonof(argvTok("--mm-processor-kwargs"));
+  const mmLabels = Object.keys(all).filter((k) => /(^|_)(mm|vision)(_|$)|modal|image|video/i.test(k)).length;
+  const live = !argv
+    ? "not in this payload: an in-process page older than the argv line is answering. Restart the serve to get one."
+    : argv.includes("--language-model-only")
+      ? "no images, no video (--language-model-only)"
+      : lim
+        ? `${lim.image ?? "?"} image(s), ${lim.video ?? "?"} video(s) per prompt`
+          // A limit on the COUNT is not a limit on the COST: the checkpoint's own size default is
+          // longest_edge 16,777,216 px = 16,384 image tokens (patch 16 x merge 2 = 1,024 px per token), which is
+          // how one screenshot arrived at 15,664 prompt tokens. So "no cap" is said out loud rather than assumed.
+          + (mmk && mmk.size ? ` · one image up to ${num(mmk.size.longest_edge)} px (~${
+              num(Math.round(Number(mmk.size.longest_edge) / 1024))} tokens)`
+            : " · no size cap passed: the checkpoint's own default is 16,777,216 px (~16,384 tokens an image)")
+        : "images allowed; the limit is not in the command line this page can see";
+  $("mm-card").hidden = !argv && !meta.mm_effective;
+  // A sidecar holds its own command line, not the serve's, so on a sidecar page the argv row cannot answer what the
+  // engine accepts -- same rule the Configuration card states (a sidecar's MAXLEN proves nothing about the engine).
+  facts($("facts-mm"), [
+    [s.mode === "merged" ? "The running serve accepts" : "Whose command line this is",
+      s.mode === "merged" ? live
+        : `the sidecar's, pid ${(s.env || {}).pid || "?"} — it proves nothing about what the serve accepts. `
+          + "Open the merged page on the serve's own port for the serve's argv; the recipe row below is shared."],
+    ["The recipe file records", meta.mm_effective
+      ? `${meta.mm_effective}` + (meta.mm_image === undefined ? ""
+        : ` · image ${meta.mm_image}, video ${meta.mm_video}`
+          + (Number(meta.mm_max_pix) > 0
+            ? ` · one image up to ${num(meta.mm_max_pix)} px (~${num(meta.mm_max_tok)} tokens), floor `
+              + `${num(meta.mm_min_pix)} px`
+            : " · no image can be sent at all")) : null],
+    ["The knobs that choose it", meta.mm_if_on
+      ? `MM=${meta.mm ?? "0"} · ${meta.mm_if_on} · MM=0 is this tree's default` : null],
+    // Not payload-derived, and labelled as what it is: the arithmetic that turns pixels into prompt tokens comes
+    // from this checkpoint's preprocessor_config.json (patch_size 16, merge_size 2).
+    ["px per image token", "1,024 (patch 16 x merge 2 = 32 px a side) — from this checkpoint's preprocessor_config.json"],
+    ["What the engine's config says", `${mmLabels} label(s) in the config block mention multimodal: the engine is `
+      + "silent about this, so it is a flag, and recipe-check comparing the launcher against the live argv is the "
+      + "check that can see it"],
+  ]);
+  text("mm-note", "Measured on this box (notes/multimodal-input.md): one 2,560 x 6,236 screenshot arrived as "
+    + "15,664 prompt tokens uncapped and 4,123 with the size cap; drawn text down to 28 px in a canvas that size "
+    + "still read correctly at the cap; per-request mm_processor_kwargs are refused, so the cap is a ceiling a "
+    + "client cannot lift. Not measured: images under concurrency (every probe so far was one request at a time on "
+    + "an idle box), photographs, video.");
+
   facts($("facts-host"), [
     ["Hostname", host.hostname],
     ["CPU", host.cpu ? `${host.cpu}${host.threads ? `, ${host.threads} threads` : ""}` : null],

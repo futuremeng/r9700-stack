@@ -1836,6 +1836,15 @@ for _mm, _want in ((None, "image 0, video 0 (--language-model-only)"),
     _mv = json.loads(Path(_mp).read_text()) if Path(_mp).exists() else {}
     ck(f"the recipe file states the mm limits the serve actually has (MM={_mm or 'off'})",
        str(_mv.get("mm")) == (_mm or "0") and _mv.get("mm_limits") == _want, str(_mv.get("mm_limits")))
+    # Granular, and EFFECTIVE rather than nominal: mm_image=4 while the flag keeps the limit at 0 is the same class
+    # of lie as the old mm_limits string, and the About page renders whatever the recipe says.
+    ck(f"and it records the mm knobs separately, as effective values (MM={_mm or 'off'})",
+       _mv.get("mm_effective") == ("on" if _mm else "off")
+       and _mv.get("mm_image") == (_mm and "2" or "0") and _mv.get("mm_video") == "0"
+       and _mv.get("mm_max_pix") == (_mm and "4194304" or "0")
+       and _mv.get("mm_max_tok") == (_mm and "4096" or "0")
+       and "MM_IMAGE=2" in (_mv.get("mm_if_on") or "") and "MM_MAX_PIX=4194304" in (_mv.get("mm_if_on") or ""),
+       str({k: _mv.get(k) for k in ("mm_effective", "mm_image", "mm_max_pix", "mm_max_tok", "mm_if_on")}))
     Path(_mp).unlink(missing_ok=True)
 ck("a launch line's flags parse with their JSON values intact",
    rc.parse_flags(_REAL_CMD).get("--speculative-config", "").startswith('{"method"')
@@ -1885,6 +1894,30 @@ else:
        "UNPROVABLE" in _r.stdout and "every launch flag" not in _r.stdout, _r.stdout[:200])
     Path(_fmm).unlink(missing_ok=True)
     Path(_fna).unlink(missing_ok=True)
+    # The mm-ON state of this page has never been read by a human, because reaching it means launching mm. So build
+    # the payload that state produces and run the real page against it -- the harness is the only thing that catches
+    # a ReferenceError leaving the card blank.
+    _mfp = "/tmp/r9700-mm-page-payload.json"
+    _mmfix = dict(_live_st)
+    _mmfix["argv"] = (_live_st.get("argv") or "").replace(
+        "--language-model-only",
+        '--limit-mm-per-prompt {"image": 2, "video": 0} '
+        '--mm-processor-kwargs {"size": {"longest_edge": 4194304, "shortest_edge": 65536}}')
+    _mmfix["meta"] = {**(_live_st.get("meta") or {}), "mm": "1", "mm_effective": "on", "mm_image": "2",
+                      "mm_video": "0", "mm_max_pix": "4194304", "mm_min_pix": "65536", "mm_max_tok": "4096",
+                      "mm_if_on": "MM_IMAGE=2 MM_VIDEO=0 MM_MAX_PIX=4194304 MM_MIN_PIX=65536"}
+    Path(_mfp).write_text(json.dumps(_mmfix))
+    if __import__("shutil").which("node"):
+        _nr = subprocess.run(["node", f"{ROOT}/tests/render-about.mjs", _mfp],
+                             capture_output=True, text=True, timeout=300)
+        ck("the About page run for real against an mm-ON payload says both caps: how many images and what one may cost",
+           "2 image(s), 0 video(s) per prompt" in _nr.stdout and "4,194,304 px" in _nr.stdout
+           and "4,096 tokens" in _nr.stdout and _nr.returncode == 0, (_nr.stdout or _nr.stderr)[-300:])
+        ck("and it does not claim text-only once the flag is gone",
+           "no images, no video" not in _nr.stdout, _nr.stdout[-200:])
+    else:
+        ck("mm-ON page render (no node on this box - skipped)", True)
+    Path(_mfp).unlink(missing_ok=True)
 ck("the page publishes its own R9K_ namespace so a stale serve cannot hide the switch (the gate falls back to it "
    "when /proc is not its own process)",
    '"R9K_"' in open(os.path.join(ROOT, "serve/webui.py")).read()
