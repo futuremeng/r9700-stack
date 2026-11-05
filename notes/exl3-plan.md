@@ -616,3 +616,137 @@ single-stream step ~15-16 ms (~115-125 tok/s prose), four streams ~26-28 ms (~29
   52.9-60.4 per stream at four (v0.4.0: 31.5), prose = code as expected without speculation; divergence 22 / 24 / 22, GSM8K
   99 / 100. wo_a on EXL3 vs bf16 at these widths: 83.3 vs 80.5 single, 59.8-60.4 vs 58.0-58.3 at four -> EXL3 stays the default.
   The launcher is restored (commit after a9ec6a9) and the drafter runs are repeated as REL2.
+
+### Where the time goes on v0.4.1 (2026-11-04 00:03-00:37 UTC; notes/exl3-ledger.md section Z2; rank 0, GPU time a step)
+Single-stream default step **19.11 ms** (v0.4.0 25.42) = 105.3 tok/s on the ledger workload at 2.01 accepted tokens; four streams
+**32.26 ms** (40.0) = 247.7 aggregate; true 6-row verify 21.74 ms (97 tok/s), true 24-row 43.48 (186 aggregate). Still GPU-bound:
+kernels 17.75 / 31.12 ms, gaps <= 1.4 / 1.1 ms; launches 1,865 -> 1,132 (T = 6), 2,082 -> 1,318 (T = 24). What moved: the all-gather
+4.05 -> 0.19 ms (C), which is also why adaptive verification now wins at one stream (105 vs 97; v0.4.0 74 vs 81); GEMVs + wo_a + casts
+3.3 -> 2.27 ms at T = 6 and 8.8 -> 4.63 at 24 rows (D: the launches removed; the kernels run at 248-267 GB/s, wo_a 166); B's FFN front
+48 launches / 1.43 ms, a plain layer 32 -> 18 launches. What did not: **the 81 all-reduces cost the same at rank 0 (5.24 ms at T = 6,
+64.6 us a call) -- the one-kernel all-reduce is 23.2 us (minimum over ranks) and ~3.4 ms a step is rank 0 waiting for slower ranks,
+mostly on the post-MoE call (68 us vs 25 after attention): uneven expert load across the expert-parallel ranks. At 24 rows 152.8 us
+a call vs a 73 us minimum = 6.5 ms a step: the largest row, unowned (rank-skew upper bound: ~15.7 ms step, ~128 tok/s).** Two
+things that should have run and did not: C's fused MoE combine ("fusion skipped ... runner shape changed" on all 43 runners: the
+`cfg.tp_size == 8` check -- under --enable-expert-parallel the MoE config has tp_size 1, ep_size 8; ~0.9 ms at 1-4 rows) and B's
+markov head under the default adaptive verification (stock's five GEMVs + argmax 0.67 ms + adaptive's f32 GEMM 0.62 ms run instead;
+B's kernel runs only with ADAPTIVE=false; the decline is in dsv4_glue._markov_why_not). Expert tier unchanged (2.38 / 3.80 / 7.18 /
+12.52 ms at 2-4 / 6 / 9-16 / 24 rows). v0.4.2 package ceilings: A2 ~-2.3 ms at 24 rows (+ the 8-stream shape); F ~-1.2 ms at T = 6,
+-3.2 at 24 (14.9 MB of attention GEMVs a layer at 450 GB/s = 33 us vs 63); G -1.1 to -1.9 ms at 24 rows (kernel part only);
+C2 (combine gate) ~-0.9; B2 (markov under adaptive + the f32 GEMM) ~-0.5; **new H3: expert-parallel load skew** (replicas of hot
+experts / a routing-histogram placement; vLLM's EPLB as the reference) is the biggest remaining item.
+
+### v0.4.2 results, package CB2 (2026-11-04 04:04-04:16 UTC; clean tree v0.4.1 + CB2; `~/ds41/exl3/CB2/a1/run.log`)
+- **Root causes.** The fused MoE combine was skipped on all 43 runners because `exl3_combine.install` required `tp_size == 8`; under
+  `--enable-expert-parallel` the pinned vLLM's MoE parallel config is tp 1 / ep 8 and still all-reduces over the eight-rank group, so
+  the tail C's kernel replaces is the same. B's markov kernel declined under adaptive verification because this pack carries
+  `mtp.2.confidence_head.proj.weight`: with adaptive on, stock enables the confidence head and disables the acceptance estimator;
+  the "adaptive f32 GEMM" of the ledger (0.62 ms) is stock's confidence projection (cat([hidden, w1[prev]]) -> f32 [5376 -> 1] ->
+  sigmoid), not the estimator.
+- **Fixes.** `_eight_rank_reduce` accepts (tp 8, ep 1) or (tp 1, ep 8); skips now log the failing check. The markov hook serves the
+  adaptive path with a one-launch confidence tail (`r9k_dsv4_markov_conf`: f64 dot, one f32 rounding, f32 sigmoid; 300 -> 7.8 us;
+  probabilities within 1e-6 of stock's, i.e. inside stock's own summation error; `R9K_DSV41_MARKOV_CONF=stock` is bit-exact).
+- **Server (defaults, adaptive on):** both hooks engaged on 40 + 3 runners, "fused into the ar8 one-kernel all-reduce (first call
+  T=2)", 0 skips. Ledger workload step **18.07 ms** (v0.4.1 19.11) at one stream, **31.25** (32.26) at four. spectune prose x1
+  **98.1** tok/s (MAL 1.74), x4 54-59 per stream (188-219 aggregate); code x1 **208** (4.45), x4 106-107 (393-395 aggregate).
+  divergence 23 / 24 / 24, GSM8K 98 / 100. Committed on v042.
+
+### v0.4.2 results, package H3 (expert-parallel rank skew; 2026-11-04 02:50-06:34 UTC; notes/exl3-ep-skew.md; commit bc34a56)
+- **What the wait is.** Z2's per-rank traces, matched call by call: the segment before the post-MoE all-reduce skews across the
+  eight ranks exactly as much as the expert tier does (to 0.01-0.02 ms); the slow-tier rank is the late rank in 93-98 % of calls.
+  Tier skew 2.20 / 2.97 / 4.25 / 6.22 ms a step at 2-4 / 6 / 9-16 / 24 rows. The slow rank moves from call to call (every rank
+  is hottest in 9-16 % of calls; the drafter's rank 6 is the exception at 52-60 %); the part a static placement can reach is
+  0.5 ms at one stream and 1.3 at four, the rest is per-step routing noise. The tier's cost on a rank fits as distinct experts +
+  rows (R2 0.99) from a routing recorder (`bench/ds41/epskew/epskew_ext.py`, a device ring buffer the HIP graphs replay).
+- **Remedies costed** (`skew_place.py` on 12 prose + 12 code recorded prompts): (a) a load-time placement map from the routing
+  histogram, 0 memory: model -0.62 ms held-out at one stream / -1.60 at four; a map trained on one domain does nothing (or a
+  little harm) on the other. (b) replicas with a per-step least-loaded copy: -0.24 / -0.43 more at 8 copies a layer for 0.49 GiB
+  a rank (the worst card has ~0.86 GiB free at KVMEM 1.7; 16 / 32 copies do not fit). (c) stock EPLB: unsupported for
+  Exl3MoEMethod, load-blind replica choice, simulated worse than the static map. (d) overlapping the post-MoE all-reduce with
+  the next layer: impossible, the hc seam consumes the all-reduced output.
+- **Shipped: `R9K_EXL3_EP_MAP`** (`r9700_vllm/moe/exl3_placement.py`, a wrapper on `Exl3MoEMethod.create_weights` that maps
+  the per-rank local experts through the JSON map at load; same experts, same weights, nothing in the forward path).
+  Measured A/B on the clean v0.4.1 + H3 tree: ledger step **19.11 -> 18.52 ms** at one stream, **32.43 -> 31.41** at four;
+  post-MoE all-reduce 86 -> 70 us; spectune prose x1 94.4 -> 100.5 tok/s, prose x4 214.8 -> 222, code x4 372.5 -> 391.9;
+  divergence 24 / 23 / 23, GSM8K 98. Not bit-identical to the linear layout (each rank's bf16 partial sum groups the picks
+  differently). On by default in `serve/ds41-exl3.sh` (`EP_MAP=`, empty restores the linear placement); the map
+  `bench/ds41/epskew/map-ds41-v041-prose-code.json` was trained on prose + code at one stream and should be regenerated from
+  the served mix (`run_skew.sh TAG hist:...` + `skew_place.py`, ~15 min of card time).
+- **Left after the map:** ~1.9 ms a step at one stream / ~2.9 at four of per-step routing noise; shrinks only with fewer bytes a
+  distinct expert (A2 / F) or replicas chosen for free in the tier prologue (A2's prologue + 0.5 GiB a rank).
+
+### v0.4.2 results, package A2 (48-token r9k expert tier; 2026-11-03 20:xx - 11-04 12:57 UTC; notes/exl3-drafter-heisenbug.md)
+- **Package A's kernel was never the cause of the drafter collapse.** On a clean v0.4.1 tree plus 3f2167a's four tier files the
+  server is fine at cap 48 (MAL 1.69-1.89 / 4.2-4.4). The collapse reproduces only on the 3f2167a base (C + B + A, before D),
+  and there v0.4.1's OWN tier with nothing changed but the scratch reserved for 48 rows breaks the same way; a 64 MiB pad after
+  the scratch hides it; eager is fine. ~16 launches (one hypothesis each) excluded the tier, every plugin scratch, counters,
+  collectives, weights, the shared-experts stream, markov / mhc / route hooks: it is computed at run time inside the drafter's
+  layers.0 MoE at T = 5 from a bit-identical input, in particular graph-pool layouts only. Parked as task 71; mitigation
+  `bench/ds41/drafter_selftest.py` (SELFTEST=1 in the launcher; MAL from /metrics; exit 1 below 1.3 prose / 3.0 code).
+- **The tier (kernels/r9k_moe_exl3.hip, exl3_decode.py):** A's kernel (slot cap 512, compacted grouping, batched rotation,
+  2-row groups above 8 tokens) plus a `k_rot` input-rotation pre-pass above XR_T = 8 tokens (each local slot's gate / up
+  input rotated once into an [S, 2, H] f16 scratch instead of in every k_gu block; entry point `r9k_moe_exl3_decode_xr`, the
+  old one kept). Same ops in the same order. Cap R9K_EXL3_MOE_R9K_M 48 (scratch sized once). Card 5, graph replay, us a layer,
+  v0.4.1 -> A2: T=1 39.9 -> 37.6; T=2 66.7 -> 64.0; T=4 101.2 -> 98.3; T=6 134.8 -> 128.5 (the 120 target not met: the
+  per-group trellis stream at 4-5 groups dominates, P / KS launch geometry does not move it); T=24 532 -> 391; T=48 2,333
+  (fused tier) -> 700; drafter T=5 82.4 -> 81.2, T=20 272 -> 239, T=40 1,016 -> 343.
+- **Tests:** tests/test_exl3_moe_r9k.py (lazy f32 reference so EP 8 runs under 1 GiB; groups at every T 1..48; a "warm"
+  routing; `check_server_sequence()` = target warm-up then the exact drafter geometry 128 / 16 local / top-3 / K=4, both
+  rotation paths, graphs at 5-48): ALL OK on card 5 (`~/ds41/exl3/A2/testF.log`).
+- **Server acceptance** (tree tF = `git archive v042` + the four files, launcher defaults, `~/ds41/exl3/A2/acc.out`):
+  NSEQ 4: self-test prose 1.71 / code 3.46; spectune prose x1 **104-105 tok/s** (MAL 1.79-1.82), x4 234 aggregate (one rep
+  137); code x1 **208-210** (4.24), x4 **411-412** aggregate; divergence 22 / 24 / 24; GSM8K 98. NSEQ 8: self-test 1.64 / 4.08;
+  prose x1 102.8, x4 191.5; strict sanity 9 streams 0 bad of 45, 16 streams 0 of 80; 10-min 8-client 200-28k soak 128 ok,
+  0 errors, 3,149 prompt tok/s; self-test after the soak unchanged. The 8-stream spectune raised an IndexError (more streams
+  than prompts; fixed in spectune.py, to be measured at the gate). Launcher: NSEQ 8 supported, default stays 4.
+
+### v0.4.2 results, package G (split-path eight-rank all-reduce 160 KiB - 2 MiB; 2026-11-04; `~/ds41/exl3/G/{mb,final1.log,accG.out}`)
+- **Targets not met** (240 KiB 76.7 -> 67.1 us, target 50; 480 KiB 122.5 -> 116.3, target 90; 1 MiB 230 -> 202, target 150).
+- **What limits the fabric** (microbenchmarks): each switch's uplink moves ~14 GB/s each way (reads and writes do not share it);
+  one GPU reading host memory reaches 13.4 GB/s with >= 2 blocks of 1024 threads (the old trace's 3 GB/s was not a per-lane
+  request limit); pair traffic stays inside the switch (~12 GB/s each way); ~2.7 us a flag hop GPU -> GPU through host memory.
+  Copy engines lose (15-20 us latency, ~12 GB/s); push vs local root complex no difference; wider loads no gain; each rank
+  owning 1/8 is already the current kernel. The old path is not link-bound (floor ~27 us at 240 KiB): the time is two dependent
+  host round trips plus per-sub-step release / poll latency.
+- **Built: the "hub" path** (`r9k_ar8_hub` kernel + one CPU reducer thread a rank in kernels/r9k_ar.hip; `_setup_hub` / `_hub` in
+  r9700_vllm/comm/r9k_ar8.py; routing (128 KiB, 1536 KiB], agreed over the group). Pair reduce-scatter and pair all-gather stay
+  peer-to-peer; the quartet sum runs on CPU threads over the pinned host pools, chunk by chunk behind per-chunk flags; 1 S up +
+  1 S down a switch with one host hop instead of two; same two roundings in the same order, **bit-identical to the fused split
+  kernel** (18 bf16 sizes + fp16 / fp32, 2 ulp of the reference, identical across ranks; mixed bursts and graph replay pass).
+  Quiet box, graphs, best of 3, us: 160 KiB 59.9 -> 51.5, 240 KiB 76.7 -> 67.1, 480 KiB 122.5 -> 116.3, 1000 KiB 230 -> 202,
+  1280 KiB 283 -> 255; GLM 16 / 48 / 160 x 6144: 65.8 / 146 / 399 -> 57.1 / 131 / 408. With the CPU sum skipped 240 KiB is still
+  61.8, so the CPU costs ~6 us; the rest is the pair-sum role publishing chunks at ~6 GB/s a rank plus quartet skew.
+- **Server:** DeepSeek NSEQ 4 on v042 + G: prose x1 104.8-105.1 (v042 104-105), x4 231.8 (234); code x1 218.6 at MAL 4.46
+  (208-210 at 4.24: the acceptance length, not the collective), x4 422-428 (411); self-test ok; divergence 20 / 24 / 24; GSM8K 97
+  (1 truncated). GLM TP8 A/B same tree, hub on / off: decode mean 107.7 / 107.1, 8 streams 174 / 172, **16 streams 220 / 228**,
+  prefill 3,149 / 3,148, strict sanity 0 / 0 bad of 150, GSM8K 250 97.6 / 98.0 %.
+- **Risk:** each rank runs a CPU reducer thread that spins while calls arrive (then polls every 20 us); with TPR=4 (32 spinning
+  threads on 32 vCPUs) calls took ~4 ms. **Shipped opt-in (`R9K_AR8_HUB=1`), default off:** v0.4.1's fused split path is
+  untouched and remains the default; tests/test_ar8.py exercises the hub by default (HUB=0 tests the fused path). A segv in
+  the test (pools freed while reducer threads still read them) is fixed by holding the pools at module scope and joining the
+  threads at exit. Next (v0.4.3): batch the pair-sum publishes or publish from a separate flag block; no design measured here
+  reaches 50 us at 240 KiB on this fabric.
+
+### v0.4.2 results, package F (EXL3 decode GEMV latency chain, NB2=4; card 7, graph replay, cold ring; `~/ds41/exl3/F/{full-base,full-g,num-g}.log`)
+- **Trace of one launch** (wall_clock64 a block, `tests/test_exl3_gemv.py ONLY=trace`, -DR9K_GEMV_TRACE): graph-node floor 3.54 us
+  for a tiny kernel; wq_b (3.28 MB) v0.4.1 -> F: block start skew 0.76 -> 0.44, x / suh load + rotation 1.24 -> 1.48 (one trellis
+  k-tile in flight), stream 5.08 -> 4.04, partials store + fence 0.40 -> 0.36, arrival atomic 0.24, epilogue 2.0-2.2 -> 1.72 (fence
+  0.28 + partial loads 0.76 + LDS slice-sum / Hadamard / store 0.68), kernel end ~10.2 -> ~9.5. v0.4.1's per-matrix chunking put
+  fused_wqa_wkv at 360 blocks x 136 VGPRs (not all resident; blocks starting 14-19 us late). 450 GB/s does not fit: wq_b <= 7.5 us
+  minus the node leaves 4 us for 3.28 MB (above peak); fused <= 13 minus the node leaves ~9.5 and the stream alone is 8.2 at ~640 GB/s.
+- **Changes:** SHARED_KS planner (one chunk count a launch; fused 360 -> 280 blocks; most of the M = 1 gain); early trellis loads
+  (R9K_GEMV_PI=1) behind an LDS-only barrier (deeper prefetch worse: PI=4 +1-2 us, PI=8 +4-5); split epilogue for row tiles M <= 4
+  (R9K_GEMV_FSPLIT_M=4; slower at 6-8 rows, so D's code above 4 and the whole WMMA path are verbatim); scalar load bases 136 -> 85
+  VGPRs. Dropped: a rolling 4-8 tile register pipeline, BLOCKS 96 / 288, QB=8.
+- **NB2=4 crash:** the WMMA kernel's static transpose buffers (6 KiB a 128-column tile, 24 KiB at NB2=4) were not in the LDS budget;
+  `ks_for` allowed a 49 KiB chunk -> HSA_STATUS_ERROR_INVALID_ALLOCATION (exit 139). Fix: `_lds_mma(nb2) = min(50 KiB, 63 KiB - nb2 x
+  6 KiB)` and the launcher refuses with -1 above 64 KiB. main_proj us at 16 / 24 / 48 rows: NB2=1 434 / 508 / 786, NB2=2 245 / 285 /
+  404, **NB2=4 180 / 221 / 298**; attention shapes NB2=2 best (NB2=4 0-7 % slower). Default 4 when k >= 8192, else 2.
+- **Timing (us, v0.4.1 -> F) at M = 1 / 2 / 4 / 6 / 8 / 24 / 48:** fused_wqa_wkv 18.9 -> 15.1 / 19.2 -> 16.0 / 19.9 -> 18.1 / 24.0 ->
+  22.0 / 26.5 -> 24.6 / 45.1 -> 45.0 / 65.2 -> 65.4; drafter fused K6 20.2 -> 17.0 ... 66.6 -> 67.1; wq_b 11.3 -> 10.9 ... 36.8 ->
+  36.9; wo_a 12.1 -> 10.1 / 12.4 -> 10.9 / 12.7 -> 12.5 / 14.7 -> 15.4 / 16.1 -> 16.4 / 27.8 -> 28.0 / 38.0; wo_b 11.1 -> 11.1 ...;
+  main_proj 106.7 -> 108.2 at 1 row, 286 -> 221 at 24, 404 -> 299 at 48; synthetic layer of 4 linears 53.5 -> 47.3 at 1 row.
+  Projection a step: -0.28 ms at M = 1-2, -0.04 at 4-8, -0.07 / -0.09 at 24 / 48 (main_proj).
+- **Tests:** full test_exl3_gemv.py ALL OK (decode == reconstruct bit for bit; rms gates; stacked parts; apply r9k vs exllamav3;
+  wo_a hook; graph replay x2 == eager). New: ONLY=trace section, a graph-floor probe, a read-only cache flush. Knobs:
+  R9K_EXL3_GEMV_SHARED_KS (1); compile-time R9K_GEMV_PI (1), _QB (4), _FSPLIT (1), _FSPLIT_M (4). Server acceptance: the v0.4.2 gate.

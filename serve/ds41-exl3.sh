@@ -7,12 +7,15 @@
 # on VM100 they land in $HOME/ds41, which is mounted at /ds41 when that directory exists.
 # 120 V feed: run `bash ~/gpu-offset.sh -500` before any eight-card launch (2x2200 W PSUs, 8-card prefill trips the SCMP).
 # Defaults (notes/exl3-serving.md): HIP graphs, DSpark drafter k=5 with adaptive verification, MAXLEN 32768, NSEQ 4,
-# NBT 2048, KVMEM 1.7 GiB (= 329,008 KV tokens), PYTORCH_ALLOC_CONF=expandable_segments:True, capture sizes 1,2,4 + 6 x 1..4.
-# Long context: MAXLEN=131072 KVMEM=0.8 (313,831 KV tokens, needles retrieved at 126.7k; notes/exl3-serving.md section 3).
+# NBT 2048, KVMEM 2.0 GiB (= 387,069 KV tokens), PYTORCH_ALLOC_CONF=expandable_segments:True, capture sizes 1,2,4 + 6 x 1..4.
+# Long context: MAXLEN=131072 KVMEM=1.0 (392,289 KV tokens = three full-length requests; needles retrieved at 120k and
+# 128.5k, 0.49-0.52 GiB free on the worst card; KVMEM=0.8 = 313,831 tokens for margin; notes/exl3-serving.md section 3b).
 # DSPARK=1 (default) adds the checkpoint's DSpark drafter (mtp.{0,1,2}, block 5); DSPARK=0 for a plain run.
-# NSEQ above 4 is NOT supported on this release: a 48-token step goes through exllamav3's fused MoE tier, which faults in
-# the engine warm-up (HSA memory aperture violation; notes/exl3-plan.md Phase 4 A). The 48-token r9k tier that launches it
-# broke the DSpark drafter in the server (1.01 accepted tokens a step) and is held back for v0.4.2.
+# NSEQ 8 is supported since v0.4.2 (package A2's 48-token r9k expert tier; before it a 48-token step went through exllamav3's
+# fused MoE tier, which faults in the engine warm-up). NSEQ=8 validated 2026-11-04: self-test, strict sanity at 9 and 16
+# streams, a 10-minute 8-client soak with 0 errors (notes/exl3-plan.md, v0.4.2 A2). The default stays NSEQ 4 (KVMEM 2.0 holds
+# ~11 full 32k requests; raise NSEQ for throughput at 5-8 streams). The 2026-11-03 drafter collapse blamed on the 48-token
+# tier is a graph-pool-layout latent bug (notes/exl3-drafter-heisenbug.md) that SELFTEST=1 (default) catches after every launch.
 # WARM=1 waits for the server and sends two short decodes and one prefill so the Triton JITs (~7-13 s) and the
 # drafter's first-step warm-up land before the first user request. (serve.sh starts the container detached and returns,
 # so the warm-up runs after it; the launcher used to exec serve.sh, which made WARM a no-op.)
@@ -35,6 +38,13 @@ fi
 # ALLOC_CONF: PYTORCH_ALLOC_CONF for the workers. Default expandable_segments:True: -470 MiB of VRAM a card (no
 # fragmentation of the load-time temporaries), same speed. ALLOC_CONF= (empty) drops it.
 ALLOC_CONF=${ALLOC_CONF-expandable_segments:True}
+# EP_MAP: expert-parallel placement map (package H3, v0.4.2, notes/exl3-ep-skew.md): which rank holds which of the 384 experts
+# a layer, chosen from recorded prose + code routing so the per-step expert load is more even across the eight ranks (the
+# post-MoE all-reduce waits on the slowest rank: -0.6 ms a step at one stream, -1.0 at four; same experts, same weights, not
+# bit-identical to the linear layout because each rank's bf16 partial sum groups the picks differently). EP_MAP= (empty)
+# restores the linear placement. The map pays only for traffic like the one it was built from; bench/ds41/epskew/ rebuilds it.
+EP_MAP=${EP_MAP-/opt/r9700/bench/ds41/epskew/map-ds41-v041-prose-code.json}
+[ -n "${EP_MAP}" ] && export R9K_EXL3_EP_MAP=$EP_MAP
 [ -n "${ALLOC_CONF}" ] && DOCKER_ARGS="${DOCKER_ARGS-} -e PYTORCH_ALLOC_CONF=$ALLOC_CONF"
 # MEMPROBE=1: memory audit hooks (bench/ds41/memprobe_ext.py as a stock --worker-extension-cls, dev endpoint
 # POST /collective_rpc); client bench/ds41/memprobe.py. Diagnostic only.
@@ -60,13 +70,15 @@ env \
   NBT=${NBT-2048} `                       # prefill chunk (3.4k tok/s warm prefill at 2048; every soak / needle / GSM8K
                                         # number in notes/exl3-serving.md ran 2048; the topk / candidate buffers and
                                         # the sparse-MLA prefill workspace scale with it)` \
-  KVMEM=${KVMEM-1.7} `                      # GiB a rank, fixed (vLLM's profile estimate is unreliable with load-time dequant):
-                                        # the largest budget whose launch survives the drafter's graph capture (2.0 and
-                                        # 2.2 run card 7 out of memory in the capture's dequant tier) and that keeps the
-                                        # worst card ~0.7 GiB free (sysfs) through a 4-stream prefill burst and the
-                                        # 15-minute soak (notes/exl3-serving.md section 3);
+  KVMEM=${KVMEM-2.0} `                      # GiB a rank, fixed (vLLM's profile estimate is unreliable with load-time dequant):
+                                        # v0.4.2: the heavy-expert dequant path runs in 4,096-row pieces with no per-call
+                                        # allocation (notes/exl3-serving.md section 3b), so the drafter's graph capture no
+                                        # longer needs ~0.5 GiB free: 2.0 survives capture (0.5 GiB free on the worst card
+                                        # during it) and keeps 0.75 GiB free through the 4-stream burst and the 15-minute
+                                        # soak (v0.4.1's 1.7 left 0.86); 2.2 leaves 0.56 after the burst (section 3b);
                                         # ~193k KV tokens a GiB (fp8 SWA + compressed + indexer caches, replicated). For
-                                        # MAXLEN=131072 use KVMEM=0.8 (313,831 tokens; 1.0 leaves 0.2 GiB at 128k prompts, 1.5 fails capture).` \
+                                        # MAXLEN=131072 use KVMEM=1.0 (392,289 tokens; 0.49-0.52 GiB free at 128k prompts and the 100-125k soak;
+                                        # 0.8 = 313,831 tokens for margin; 1.2 leaves 0.32 GiB; 1.5 fails capture).` \
   KVDTYPE=${KVDTYPE-fp8} `                # fp8_ds_mla records (the ROCm V4.1 attention's layout; the probe ran it)` \
   EAGER=${EAGER-0} `                      # HIP graphs (EAGER=1 for debugging; graph capture 70 s with adaptive verification)` \
   PREFIX_CACHE=${PREFIX_CACHE-0} `        # off (ROCm keeps SWA replay off anyway; divergence.py needs it off)` \
@@ -88,4 +100,13 @@ for n, m in ((8, 96), (2500, 4), (8, 96)):     # decode (the DSpark verify path 
                                                   {"Content-Type": "application/json"}), timeout=600).read()
 print("warm-up done")
 PY
+fi
+# SELFTEST=1 (default) waits for the server (after WARM when set) and runs bench/ds41/drafter_selftest.py: one greedy prose
+# and one code request, MAL from /metrics. The launcher exits 1 (the server keeps running) below MAL 1.3 prose / 3.0 code,
+# i.e. the DSpark drafter accepting nothing while the target text stays sane (notes/exl3-drafter-heisenbug.md); exit 2 when
+# the server cannot be queried. SELFTEST=0 skips it; it is skipped with DSPARK=0 and DRYRUN=1.
+if [ "${SELFTEST:-1}" = 1 ] && [ "${DRYRUN:-0}" != 1 ] && [ "${DSPARK:-1}" = 1 ]; then
+  for i in $(seq 1 120); do curl -s "localhost:${PORT:-8080}/v1/models" >/dev/null 2>&1 && break; sleep 10; done
+  python3 "$ROOT/bench/ds41/drafter_selftest.py" "http://localhost:${PORT:-8080}" "${SERVED_NAME-DeepSeek-V4.1}" || {
+    echo "ds41-exl3.sh: drafter self-test FAILED (the server is still running; SELFTEST=0 skips the check)" >&2; exit 1; }
 fi

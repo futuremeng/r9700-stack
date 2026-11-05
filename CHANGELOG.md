@@ -1338,6 +1338,30 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   duration of a 600-token generation. The payload now carries `since` — the same ratios over the engine's whole
   run — and the page marks those numbers "(since launch)" instead of showing a dash it cannot justify.
 
+## [0.4.2] - 2026-11-04
+
+Release notes with the validation record: [notes/release-v0.4.2.md](notes/release-v0.4.2.md).
+
+### Added
+- **DeepSeek-V4.1-Flash at eight streams** (`NSEQ=8`): the r9k expert tier takes 48-token steps (`kernels/r9k_moe_exl3.hip`,
+  `moe/exl3_decode.py`; 24 rows 532 -> 391 us a layer, 48 rows 2,333 -> 700, the drafter at 40 rows 1,016 -> 343), validated with
+  strict sanity at 9 and 16 streams and a 10-minute 8-client soak. The default stays NSEQ 4.
+- **A drafter self-test after every DeepSeek launch** (`bench/ds41/drafter_selftest.py`, `SELFTEST=1`): acceptance length from
+  `/metrics`, exit 1 below 1.3 prose / 3.0 code. It guards a graph-pool-layout latent bug that leaves the DSpark drafter accepting
+  nothing in particular memory layouts (notes/exl3-drafter-heisenbug.md; v0.4.1 blamed the 48-token tier for it, wrongly).
+- **An expert placement map** (`moe/exl3_placement.py`, `R9K_EXL3_EP_MAP`, on by default in the launcher): a load-time re-assignment
+  of which rank holds which expert, from recorded routing, so the post-MoE all-reduce waits less on the slowest rank
+  (-0.6 ms a step at one stream, -1.0 at four).
+- Opt-in: a "hub" eight-rank all-reduce for 160 KiB - 1.5 MiB messages (`R9K_AR8_HUB=1`; 240 KiB 77 -> 67 us, bit-identical).
+
+### Changed
+- The fused MoE combine runs under expert parallel (v0.4.1's `tp_size == 8` guard skipped it on every runner) and the drafter's
+  markov head serves the adaptive-verification path with a one-launch confidence tail (300 -> 7.8 us): ledger step 19.11 -> 18.07 ms
+  at one stream. `KVMEM` default 2.0 GiB a rank at 32k (387,069 KV tokens; was 1.7 = 329,008) and 1.0 at 128k (392,289; was 0.8),
+  after the load-time dequant path moved to 4,096-row pieces. The EXL3 decode GEMV traced and trimmed (fused wqa / wkv 18.9 -> 15.1 us at one row, wo_a 12.1 -> 10.1; `R9K_EXL3_GEMV_SHARED_KS`); the NB2=4 crash on main_proj fixed (static LDS not budgeted) and NB2=4 the default there (404 -> 299 us at 48 rows). DeepSeek-V4.1-Flash on eight cards: prose **103.5 tok/s** single stream (v0.4.1 87-97), code **214.5** (202); 199-221 / 422 aggregate at four streams (179-212 / 368), 317 / 555 at eight; the cards draw 1.5-1.6 kW while decoding.
+- `bench/ds41/spectune.py` takes more streams than prompts; `notes/exl3-ledger.md` carries the v0.4.1 ledger; `notes/lsa-study.md`
+  (latent sparse attention: parked).
+
 ## [0.4.1] - 2026-11-03
 
 Release notes with the ledger and the validation record: [notes/release-v0.4.1.md](notes/release-v0.4.1.md).
