@@ -17,6 +17,9 @@ def single_decode(n=3):
         xs.append(ct/dt)
     return statistics.mean(xs)
 def aggregate(conc=8, max_tokens=200):
+    # the aggregate number alone hides what a client sees: with 32 streams in flight the box can read 1,500 tok/s
+    # while every one of those streams runs at 45. Report both: total completion tokens over the wave's wall time,
+    # and each request's own tokens over its own latency (queueing and TTFT included).
     res=[]; lock=threading.Lock()
     def worker(i):
         ct,pt,dt=call(f"Explain concept number {i}: describe tensor parallelism in depth.",max_tokens,no_think=True)
@@ -24,7 +27,11 @@ def aggregate(conc=8, max_tokens=200):
     t0=time.time(); ts=[threading.Thread(target=worker,args=(i,)) for i in range(conc)]
     [t.start() for t in ts]; [t.join() for t in ts]; wall=time.time()-t0
     total_tok=sum(c for c,_ in res)
-    return total_tok/wall, len(res)
+    return total_tok/wall, len(res), sorted(ct/dt for ct,dt in res)
+def _per_stream(xs):
+    if not xs: return "n/a"
+    med=statistics.median(xs)
+    return f"{med:.1f} tok/s a stream [{xs[0]:.1f}..{xs[-1]:.1f}]"
 def prefill(ctx_words):
     prompt=("data "*ctx_words).strip()+"\nSummarize the above in 3 words."
     ct,pt,dt=call(prompt,8,no_think=True)
@@ -34,6 +41,6 @@ if __name__=="__main__":
     print(f"[{tag}] warming up..."); call("hi",5,no_think=True)
     sd=single_decode(); print(f"[{tag}] single-stream decode: {sd:.1f} tok/s")
     for c in (4,8,16):
-        agg,n=aggregate(c); print(f"[{tag}] aggregate @{c} concurrent: {agg:.1f} tok/s ({n} ok)")
+        agg,n,stream=aggregate(c); print(f"[{tag}] aggregate @{c} concurrent: {agg:.1f} tok/s, {_per_stream(stream)} ({n} ok)")
     for w in (500,2000,8000):
         pf,pt=prefill(w); print(f"[{tag}] prefill ~{pt} tok: {pf:.0f} tok/s")
