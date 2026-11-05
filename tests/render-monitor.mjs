@@ -84,6 +84,7 @@ const document = {
 const store = () => { const m = new Map(); return { getItem: (k) => (m.has(k) ? m.get(k) : null),
   setItem: (k, v) => m.set(k, v), removeItem: (k) => m.delete(k) }; };
 
+let LAST_STATUS = null;
 const ctx = {
   // The host's AbortController/AbortSignal, deliberately: api() passes ctl.signal to fetch, and in live mode that
   // fetch is the real Node one -- a signal built from a class defined inside the vm would be rejected as the
@@ -94,10 +95,20 @@ const ctx = {
   isNaN, parseInt, parseFloat, isFinite, encodeURIComponent, decodeURIComponent, Intl,
   localStorage: store(), sessionStorage: store(),
   navigator: { clipboard: { writeText: async () => {} }, userAgent: "render-monitor" },
+  // The payload is kept as well as handed to the page: `let status` inside monitor.js is a lexical binding, not
+  // a property of the vm's global object, so the harness cannot read the page's own copy. A clone is the only
+  // way to see the body without consuming the response the page is about to read.
   fetch: async (u, o) => {
-    if (!FIX) return globalThis.fetch(BASE + u, o);
+    if (!FIX) {
+      const r = await globalThis.fetch(BASE + u, o);
+      if (String(u).split("?")[0] === "/api/status") {
+        try { LAST_STATUS = await r.clone().json(); } catch (e) { /* a page poll we did not need */ }
+      }
+      return r;
+    }
     const p = String(u).split("?")[0];
     const body = p === "/api/status" ? FIX.status : p === "/api/requests" ? FIX.requests : null;
+    if (p === "/api/status") LAST_STATUS = body;                  // the harness reads the same payload
     if (body === null) return { ok: false, status: 404, json: async () => ({ error: "not in fixture" }) };
     return { ok: true, status: 200, json: async () => body };
   },
@@ -139,32 +150,30 @@ console.log("\nslot map:", t("slot-map").replace(/\s+/g, " ").trim());
 // What the harness has to prove is the rule, not just the presence: a card at its rating renders a word and no
 // button (nothing to open), and only a card whose link came up short renders a button that carries its bus.
 const CARDS = (byId.get("gpus") || new El()).children;
+// The stub DOM has no real tree to query (querySelectorAll hands back slots, not descendants), so the badge is
+// read out of the innerHTML the card was built with -- the same string a browser would parse.
+const badge = (k) => {
+  const m = /<div class="gpu-link"[^>]*>([\s\S]*?)<\/div>/.exec(String(k.innerHTML || ""));
+  return m ? { html: m[0], text: m[1].replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim(),
+               tone: (/data-tone="([^"]*)"/.exec(m[0]) || [])[1] || "",
+               btn: /lk-btn/.test(m[0]) } : null;
+};
 console.log(`\ncards rendered: ${CARDS.length}`);
 for (const k of CARDS) {
-  const linkEl = (k.querySelectorAll(".gpu-link") || [])[0];
-  const btn = linkEl && (linkEl.innerHTML || "").includes("lk-btn");
-  console.log("  " + k.textContent.replace(/\s+/g, " ").trim().slice(0, 90)
-              + ` | link cell: ${linkEl ? (linkEl.textContent.trim() || "(empty)") : "none"}`
-              + `${btn ? " [button]" : ""} tone=${linkEl ? linkEl.dataset.tone || "-" : "-"}`);
+  const b = badge(k);
+  console.log("  " + k.textContent.replace(/\s+/g, " ").trim().slice(0, 78)
+              + ` | link: ${b ? `"${b.text}" tone=${b.tone || "-"}${b.btn ? " [button]" : ""}` : "no badge"}`);
 }
-const chains = (ctx.status && ctx.status.pcie) || [];      // the payload the page is drawing right now
+const chains = (LAST_STATUS && LAST_STATUS.pcie) || [];   // the payload the page just drew from
 const shortc = chains.filter((c) => c.degraded && !c.parked);
-const badCards = CARDS.filter((k) => {
-  const h = String(k.innerHTML || "");
-  const linkEl = (k.querySelectorAll(".gpu-link") || [])[0];
-  return linkEl && /lk-btn/.test(h) !== /data-bus=/.test(h);
-});
+const badCards = CARDS.filter((k) => { const b = badge(k); return b && (b.btn !== /data-bus=/.test(b.html)); });
 if (badCards.length) {
   console.log(`BAD  ${badCards.length} card(s) whose badge is a button without a bus to open, or the reverse`);
   process.exitCode = 1;
 }
 // An error count must not reach a card that holds its rating. The counters stay in the payload; the rendered
 // cell stays a word. This is the whole point of the change, so it is asserted on what the page draws.
-const noisy = CARDS.filter((k) => {
-  const linkEl = (k.querySelectorAll(".gpu-link") || [])[0];
-  return linkEl && /\bcorr\b/.test(linkEl.textContent || "")
-    && !(String(k.innerHTML || "").includes("lk-btn"));
-});
+const noisy = CARDS.filter((k) => { const b = badge(k); return b && /\bcorr\b/.test(b.text) && !b.btn; });
 if (noisy.length) {
   console.log(`BAD  ${noisy.length} card(s) print an AER count on a link that is not short`); process.exitCode = 1;
 }

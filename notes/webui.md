@@ -1726,3 +1726,18 @@ sized from the longest string each column carries, `test_webui.py`'s 2026-11-03 
 What replaced it asserts the rule rather than the layout — that a card at its rating renders a word and **no
 button**, that no card prints a `corr` count unless its badge is a button, and that `pci_gen` reads 2.5/5/8/16/32
 as Gen1…Gen5 with 0 as "no reading" rather than "Gen1".
+
+Proved on the live box, both pages (`node tests/render-monitor.mjs`): four cards print `Gen5 ×16`, tone unset, no
+button — and **slot 8 / `06:00.0`, the chain that carries 23 correctables since boot, prints none of them.** Then
+the same payload with one chain forced to `gen 4, short`: the card reads `Gen4 ×16 · 44 corr · 1 uncorr of Gen5`,
+tone `warn`, and its badge opens the account (chain, each port rated 32.0 GT/s ×16, `BadTLP 51 · NonFatalErr 3 ·
+Timeout 1`, `UnsupportedRequest 1 non-fatal`, rate, quiet, last event). Two harness facts learned doing it: the
+stub DOM's `querySelectorAll` hands back slots rather than descendants, so the badge is read out of the card's
+`innerHTML`; and `let status` in `monitor.js` is a lexical binding, not a global property, so the harness keeps a
+`clone()` of the `/api/status` response instead of reaching into the page.
+
+The one thing the change did not fix, named so it does not read as fixed: pointed at the **standalone sidecar**
+(`:8099`), the harness prints `BAD the header never named the engine`, because `stack_info()` finds no importable
+`r9700_vllm` in a sidecar running outside the serve's venv — the fields are absent by design and the header prints
+what is there. The merged page on the serve's own port (`:8080`) reads `vLLM 0.32.0 · plugin 0.4.2 · 4f4d1b2a` and
+exits 0. Point the harness at `:8080` when the header is the thing under test.
