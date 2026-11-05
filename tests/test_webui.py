@@ -463,14 +463,20 @@ _rs.finish(_r, "completed", 200)
 ck("a usage-less stream says its token count is a floor on deltas, with the characters beside it",
    _r["timings"]["tokens_are_estimate"] and "floor" in (_r["timings"].get("gen_basis") or "")
    and "2 streamed deltas over 11 characters" in _r["timings"]["gen_basis"], str(_r["timings"]))
-t0 = time.perf_counter()
-for i in range(20):
-    r1.finish(r1.start("/v1/chat/completions", "Qwen3.8", "{}", True), "completed", status=200)
-app_ms = (time.perf_counter() - t0) / 20 * 1e3
+_tr = []
+for _ in range(3):
+    t0 = time.perf_counter()
+    for i in range(20):
+        r1.finish(r1.start("/v1/chat/completions", "Qwen3.8", "{}", True), "completed", status=200)
+    _tr.append((time.perf_counter() - t0) / 20 * 1e3)
+app_ms = min(_tr)          # best of three: a latency floor, so interference is noise that only ever pushes UP
 # 2.0 ms measured on this box per journalled request. The bound is loose on purpose -- it is here to catch the
 # journal becoming a per-token cost or a stall, not to police disk jitter. Requests finish seconds apart; the
 # fsync is what makes the row survive a hard reset, which is the whole reason the file exists.
-ck("journal cost stays one fsync per finished request, not per token", app_ms < 25.0, f"{app_ms:.2f} ms each")
+# Best-of-three is not decoration: on 2026-11-05 this failed at 26.58 ms against the 25 ms bound with nothing in the
+# journal path changed, because a serve was booting next to it. A single sample measures the box, not the code.
+ck("journal cost stays one fsync per finished request, not per token", app_ms < 25.0,
+   f"{app_ms:.2f} ms each (three trials: {', '.join(f'{x:.1f}' for x in _tr)})")
 bad = W.Journal("/proc/definitely-not-writable/journal.jsonl", keep=5)
 ck("a journal that cannot be opened degrades to memory and says why, rather than breaking the serve",
    bad.f is None and bad.error and bad.append({"seq": 1}) is False and bad.replay() == [], str(bad.error))
@@ -1733,19 +1739,20 @@ ck("a serve that publishes no environment block is reported as unprovable, never
    and [d["key"] for d in rc.compare_env(None, _PE, {})] == ["env"])
 ck("the production answer does not depend on the shell that asked it: an exported MAXLEN or R9K_ name is stripped",
    "MAXLEN" in rc.OPERATOR_KNOBS and bool(rc.ENV_NS.match("R9K_ROUTER_MAX_M")))
-for _k, _v in (("MAXLEN", "999"), ("NBT", "1"), ("R9K_FOLD", "zzz"), ("R9K_ROUTER_MAX_M", "7")):
+for _k, _v in (("MAXLEN", "999"), ("NBT", "1"), ("R9K_FOLD", "zzz"), ("R9K_ROUTER_MAX_M", "7"), ("MM", "1")):
     os.environ[_k] = _v
 try:
     _ce = rc.clean_env({"ENVRECIPE": "1"})
     _pe_polluted, _cmd_polluted = rc.production_env(), rc.production_args()
 finally:
-    for _k in ("MAXLEN", "NBT", "R9K_FOLD", "R9K_ROUTER_MAX_M"):
+    for _k in ("MAXLEN", "NBT", "R9K_FOLD", "R9K_ROUTER_MAX_M", "MM"):
         del os.environ[_k]
 ck("an exported knob cannot move the PRODUCTION answer: the launcher is asked with a stripped environment, so the "
    "line and the env block come back as the tree has them",
    "MAXLEN" not in _ce and "R9K_ROUTER_MAX_M" not in _ce and "R9K_FOLD" not in _ce
    and _pe_polluted.get("R9K_FOLD") != "zzz" and "R9K_ROUTER_MAX_M" not in _pe_polluted
-   and f"--max-model-len 999" not in _cmd_polluted and "--max-num-batched-tokens 1 " not in _cmd_polluted,
+   and f"--max-model-len 999" not in _cmd_polluted and "--max-num-batched-tokens 1 " not in _cmd_polluted
+   and "--limit-mm-per-prompt" not in _cmd_polluted and "--language-model-only" in _cmd_polluted,
    f"{sorted(_ce)[:4]} / {sorted(_pe_polluted)[:6]} / {len(_cmd_polluted)}")
 _LAU = os.path.join(ROOT, "serve", "native-flashnext.sh")
 _metabefore = os.stat(os.path.expanduser("~/r9700-web-meta-8080.json")).st_mtime if \
@@ -1774,6 +1781,90 @@ ck("the recipe file records that block as an object, so the About page shows the
    isinstance(_mjv.get("env"), dict) and _mjv["env"].get("R9K_FOLD") == "1"
    and "R9K_ROUTER_MAX_M" not in _mjv["env"], str(_mjv.get("env"))[:200])
 Path(_mj).unlink(missing_ok=True)
+# The FLAGS are the third face of the recipe, and they are how the multimodal question gets answered: no vllm:*
+# label says whether the serve came up --language-model-only, and that flag decides what the box can be asked at
+# all. Measured 2026-11-04: an image request to this box answers 400 "At most 0 image(s) may be provided in one
+# prompt", the checkpoint carries vision_config + preprocessor_config.json + video_preprocessor_config.json, and
+# the boot log says "All limits of multimodal modalities supported by the model are set to 0, running in text-only
+# mode". So text-only is a flag we chose, not a limit of the weights -- and a gate that cannot see flags cannot see
+# that choice.
+# `_PROD_CMD` above is a hand-written fixture; the flag tests need the line this tree's launcher ACTUALLY echoes,
+# because the fixture predates the mm flag and a substring replace on a string that lacks the flag is a no-op that
+# would have made the "caught in both directions" check pass on equality.
+_REAL_CMD = rc.production_args()
+ck("text-only is the default in this tree, and it is a flag rather than a silence",
+   "--language-model-only" in _REAL_CMD and "--limit-mm-per-prompt" not in _REAL_CMD, _REAL_CMD[-140:])
+_mml = subprocess.run(["bash", _LAU], env=rc.clean_env({"MM": "1", "DRY": "1", "FORCE": "1", "PORT": "18099"}),
+                      capture_output=True, text=True, timeout=120).stdout
+_mml2 = subprocess.run(["bash", _LAU],
+                       env=rc.clean_env({"MM": "1", "MM_IMAGE": "2", "DRY": "1", "FORCE": "1", "PORT": "18099"}),
+                       capture_output=True, text=True, timeout=120).stdout
+ck("MM=1 swaps the text-only flag for real per-prompt limits, and MM_IMAGE is not decorative",
+   "--language-model-only" not in _mml and '--limit-mm-per-prompt {"image": 4, "video": 0}' in _mml
+   and '--limit-mm-per-prompt {"image": 2, "video": 0}' in _mml2, _mml[-120:])
+ck("the launcher writes mm and mm_limits into the recipe file (the next two checks read what it actually wrote)",
+   'mm="$MM"' in open(_LAU).read() and "mm_limits=" in open(_LAU).read())
+# and records it HONESTLY: with mm off, the limits are zero, not "image 4" -- a page that prints the limits the
+# launcher would have used while the flag keeps them at nothing is a page that lies about what the box accepts.
+for _mm, _want in ((None, "image 0, video 0 (--language-model-only)"), ("1", "image 2, video 0")):
+    _mp = "/tmp/r9700-mm-meta-honest.json"
+    Path(_mp).unlink(missing_ok=True)
+    _e = {"METAONLY": "1", "FORCE": "1", "WEBUI": "same", "WEBUI_META": _mp, "MM_IMAGE": "2"}
+    if _mm:
+        _e["MM"] = _mm
+    subprocess.run(["bash", _LAU], env=rc.clean_env(_e), capture_output=True, text=True, timeout=180)
+    _mv = json.loads(Path(_mp).read_text()) if Path(_mp).exists() else {}
+    ck(f"the recipe file states the mm limits the serve actually has (MM={_mm or 'off'})",
+       str(_mv.get("mm")) == (_mm or "0") and _mv.get("mm_limits") == _want, str(_mv.get("mm_limits")))
+    Path(_mp).unlink(missing_ok=True)
+ck("a launch line's flags parse with their JSON values intact",
+   rc.parse_flags(_REAL_CMD).get("--speculative-config", "").startswith('{"method"')
+   and rc.parse_flags(_REAL_CMD).get("--language-model-only") is None,
+   str(rc.parse_flags(_PROD_CMD).get("--speculative-config"))[:60])
+ck("an unchanged launch line deviates nowhere", rc.compare_flags(_REAL_CMD, _REAL_CMD) == [])
+ck("and the fixture line parses too (the gate runs on whatever line it is handed)",
+   rc.compare_flags(_PROD_CMD, _PROD_CMD) == []
+   and rc.parse_flags(_PROD_CMD).get("--no-enable-prefix-caching") is None)
+_flipped = _REAL_CMD.replace("--language-model-only", '--limit-mm-per-prompt {"image": 4, "video": 0}')
+ck("the replace actually changed the line (a no-op replace would make the next two checks vacuous)",
+   _flipped != _REAL_CMD and "--language-model-only" not in _flipped)
+_fg = {f: (x, y) for f, x, y in rc.compare_flags(_REAL_CMD, _flipped)}
+ck("turning images on is caught in BOTH directions: the added limit and the removed text-only flag",
+   set(_fg) == {"--language-model-only", "--limit-mm-per-prompt"}, sorted(_fg))
+ck("a bare flag that is absent is not 'the same as' a bare flag whose value is None -- presence is the comparison "
+   "(this is the bug that would have hidden the mm flip)",
+   _fg.get("--language-model-only") == (None, "not passed"), str(_fg.get("--language-model-only")))
+ck("box facts are not recipe deviations (host and port live in the machine-local env file)",
+   rc.compare_flags(_REAL_CMD, _REAL_CMD.replace("--port 8080", "--port 9090")) == [])
+ck("a flag only the live process has is named (someone added --swap-space by hand)",
+   [f for f, _, _ in rc.compare_flags(_REAL_CMD, _REAL_CMD + " --swap-space 16")] == ["--swap-space"])
+try:
+    import urllib.request as _ur
+    _live_st = json.loads(_ur.urlopen("http://127.0.0.1:8080/api/status", timeout=10).read())
+except Exception:
+    _live_st = None
+if _live_st is None:
+    ck("gate end-to-end on the live payload (no live serve right now - skipped)", True)
+else:
+    _fmm = "/tmp/r9700-recipe-flags-mm.json"
+    _s = dict(_live_st)
+    _s["argv"] = (_s.get("argv") or "").replace("--language-model-only",
+                                               '--limit-mm-per-prompt {"image": 4, "video": 0}')
+    Path(_fmm).write_text(json.dumps(_s))
+    _r = subprocess.run([sys.executable, f"{ROOT}/tools/recipe-check.py", _fmm],
+                        capture_output=True, text=True, timeout=180)
+    ck("gate: a live serve that was launched with images on gets flagged and exits 1",
+       _r.returncode == 1 and "launch flag(s) differ" in _r.stdout and "--limit-mm-per-prompt" in _r.stdout,
+       _r.stdout[:180])
+    _fna = "/tmp/r9700-recipe-flags-noargv.json"
+    Path(_fna).write_text(json.dumps({k: v for k, v in _live_st.items() if k != "argv"}))
+    _r = subprocess.run([sys.executable, f"{ROOT}/tools/recipe-check.py", _fna],
+                        capture_output=True, text=True, timeout=180)
+    ck("gate: a payload with no argv says the FLAGS ARE UNPROVABLE instead of claiming they match "
+       "(unprovable is not matching)",
+       "UNPROVABLE" in _r.stdout and "every launch flag" not in _r.stdout, _r.stdout[:200])
+    Path(_fmm).unlink(missing_ok=True)
+    Path(_fna).unlink(missing_ok=True)
 ck("the page publishes its own R9K_ namespace so a stale serve cannot hide the switch (the gate falls back to it "
    "when /proc is not its own process)",
    '"R9K_"' in open(os.path.join(ROOT, "serve/webui.py")).read()

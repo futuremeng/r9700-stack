@@ -253,7 +253,7 @@ traps: [notes/context-262k.md](notes/context-262k.md).
 
 Everything above this line was measured by sending requests on purpose: same prompt lengths, same `max_tokens`, and
 nothing else arriving while the meter runs. That is the right way to compare builds, and the wrong way to answer
-"what will my request get". The launch that runs today — the fp8 e4m3 main-KV one, `MAXLEN=262144 NSEQ=32 NBT=8192 PREFIX_CACHE=0 MTP=2`,
+"what will my request get". The launch that ran that night — the fp8 e4m3 main-KV one, `MAXLEN=262144 NSEQ=32 NBT=8192 PREFIX_CACHE=0 MTP=2`,
 started 2026-11-03 15:29 — keeps a **request journal** (`~/logs/requests-8080.jsonl`, one fsynced row per finished
 request, added to survive hard resets; timings and token counts only, no request bodies). At the ten-hour mark it
 held **1,568 completed requests**: 10.25 h of wall clock, of which **29%** had traffic in them. Prompts p50
@@ -386,6 +386,17 @@ test config `R9K_ROUTER_MAX_M=4` got named. Plus the machine-local
 listed as `set · value withheld`, in the env block and in the printed command line alike (`--api-key <withheld>`,
 flag kept, because a restart line that drops the flag starts a serve nobody can reach). The card says which process
 it is describing: a sidecar's `MAXLEN` proves nothing about the engine.
+
+**The gate has three faces now: measured knobs, environment, and launch flags.** Flags are the face the engine
+cannot testify to — no `vllm:*` label says whether the serve came up `--language-model-only` — and the merged
+plugin publishes the live process's own argv, so the launcher's line and the running process's line get compared
+token by token (`--host`, `--port` and `--served-model-name` excluded: box facts and client choices). Presence
+counts: a flag whose value is `None` and a flag that is absent are different answers, and the first draft of the
+comparison treated them alike, which would have hidden the exact flip it was written for. When the payload carries
+no argv (an in-process page older than the comparison), the gate says the flags are **UNPROVABLE** rather than
+counting them as matching. The flag that motivated this face is `--language-model-only`: this box is text-only
+because a flag says so, not because the weights cannot see — `MM=1` turns images on, they demonstrably work, and
+the cost is 3.5% of the KV pool plus 60 s of boot ([notes/multimodal-input.md](notes/multimodal-input.md)).
 
 The 1 min prefill figure is low **because of the metric, not the box**: `prompt_tokens_total` credits a prompt when
 its request finishes, so a 60-second span that has long prefills running but not finished credits only what happened

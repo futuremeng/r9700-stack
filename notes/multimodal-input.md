@@ -1,0 +1,133 @@
+# Multimodal input: is it on, what does it cost, and what did measuring it cost us
+
+Asked on 2026-11-04: *"目前的模型打开图像输入了吗?"* — is image input enabled on this model? The short answer is
+**no, and it is a flag we pass, not a limit of the weights.** The longer answer needed a launch, because the cost
+side was unknown and "it is probably fine" is the kind of sentence this repository keeps turning into a correction.
+
+## The three facts that answer the question
+
+1. **The running serve passes `--language-model-only`.** It is in the launch line (`serve/native-flashnext.sh`,
+   inside `ARGS=(…)`), and it is position 26 of the live process's argv — readable without touching the box:
+   `tr '\0' '\n' < /proc/$(pgrep -f 'vll[m] serve' | head -1)/cmdline | grep -n language`.
+2. **The engine says so twice at boot**:
+   `All limits of multimodal modalities supported by the model are set to 0, running in text-only mode`
+   (`model.py:951`), and `Disabled mm_prefix attention mode because multimodal inputs are configuration-disabled`
+   (`model.py:1008`). Note the wording of the second one: with images on, a different attention mode (`mm_prefix`)
+   is what would run.
+3. **An image request comes back 400 `At most 0 image(s) may be provided in one prompt. (parameter=image)`.** That
+   error is the measurable form of the flag: it says the *limit* is zero, not that the model cannot see.
+
+And the checkpoint disagrees with anyone who assumed the model is text-only: `config.json` carries `vision_config`,
+`image_token_id`, `vision_start_token_id`, `vision_end_token_id`, and the directory holds
+`preprocessor_config.json` **and** `video_preprocessor_config.json`. Architecture
+`Qwen4ExpForConditionalGeneration`. Images and video are in the weights; the flag is the only thing keeping them out.
+
+## The named test config (and its revert, proved)
+
+`MM=1 MM_IMAGE=2` in `serve/native-flashnext.sh` swaps `--language-model-only` for
+`--limit-mm-per-prompt {"image": 2, "video": 0}`. Run per notes/launch-methodology.md:
+
+- session `r9700-native-TEST-mm1`, log `~/logs/TEST-mm1-1105-0007.log`, geometry otherwise identical to production
+  (`MAXLEN=262144 NSEQ=32 NBT=8192`).
+- Reverted at 00:15 by relaunching the untouched production command, and proved four ways: the live argv contains
+  `--language-model-only` and not `--limit-mm-per-prompt`; an image request answers 400 `At most 0 image(s)` again;
+  the KV pool is back to **1,242 blocks / 977,726 tokens**; `tools/recipe-check.py` returns
+  `PRODUCTION recipe … every launch flag in the live argv matches`, exit 0.
+
+## What images cost, measured
+
+| | mm off (production) | mm on (`MM=1 MM_IMAGE=2`) |
+|---|---:|---:|
+| KV pool | 1,242 blocks / **977,726** tokens | 1,199 blocks / **943,875** tokens |
+| cost of the vision tower + encoder profiling | — | **−33,851 prompt tokens of KV, −3.5%** |
+| boot to `/health` 200 | ~200 s | ~260 s (**+60 s**) |
+| preemptions, illegal-access lines, `EngineDeadError` | 0 / 0 / 0 | **0 / 0 / 0** |
+| text gate (`bench/quality.py 10 8`), GSM8K / needles | 10/10, 100-question runs 97-99% / 3 of 3 | **10/10 / 3 of 3** |
+| accepted tokens per MTP draft on that gate | 1.715 / 1.716 (hot), 1.740 (genuinely cold) | **1.725** |
+
+So the answer to "does turning vision on slow the text path down" is: it takes 3.5% of the KV pool and 60 seconds of
+boot, and on identical fixed prompts the decode side is indistinguishable (1.725 inside the 1.715-1.740 band of the
+same gate with images off). It does not corrupt the language path: no crash, no preemption, no acceptance loss.
+
+## What one image costs in prompt tokens
+
+This is the part worth knowing before pointing a client at it, because the number is not intuitive:
+
+| image | pixel size | `usage.prompt_tokens` |
+|---|---|---:|
+| question text alone | — | 68 |
+| a 360 × 140 rendered PNG (a four-digit number, drawn by PIL) | 360 × 140 | 135 (**+67**) |
+| same, two images in one request | 2 × 360 × 140 | 203 (**+135**, so 67.5 each) |
+| a repo documentation PNG | 1,200 × 654 | 824 |
+| a long screenshot from the model directory | **2,560 × 6,236** | **15,664** |
+
+A single tall screenshot is **15,664 prompt tokens** — 6% of a 262,144-token window — and the boot log says the
+encoder cache is `initialized with a budget of 16384 tokens`. One such image nearly fills the encoder cache, and
+`--limit-mm-per-prompt` caps *how many* images, not *how big*: cabling a client to this box means deciding a pixel
+budget (`--mm-processor-kwargs`) rather than trusting the default.
+
+Did it actually see? On drawn-number images, yes, including the ordering of two images:
+
+- one image, "what four-digit number is written here?" → **`4729`** (drawn 4729), 0.49 s wall, 77 tokens out;
+- two images, "both numbers, comma separated, in order" → **`4729, 1371`**, 1.52 s;
+- third image over the limit → 400 `At most 2 image(s)`, which is the limit doing its job;
+- a documentation screenshot → *"A dark-themed data visualization dashboard displaying tokenized text strings and
+  frequency bar charts"* — plausible, but this one is a judgement rather than a match, so it is recorded as weaker
+  evidence than the digits.
+
+**A trap for whoever writes the client**: with `--reasoning-parser qwen3`, a small `max_tokens` yields
+`content: ""` and `finish_reason: length`, because the reasoning tokens consume the whole budget. Four of the first
+probes looked like silent failures for exactly that reason. Read `reasoning_content` as well, or give the request a
+real budget.
+
+## Prefix caching and images: what the counters showed, and what is still unresolved
+
+Repeating an identical image request is the cheapest prefix-cache probe, and the answer came out block-shaped
+(`block_size` on this hybrid stack is **832**):
+
+| repeated 3 × | prompt tokens each | `prompt_tokens_cached_total` delta | reading |
+|---|---:|---:|---|
+| image alone | 824 | **0** | under one 832-token block: nothing reusable |
+| same image + ~1,300 tokens of text | 2,125 | 1,664 | 2 blocks |
+| text only | 1,359 | **0** | one full block, still nothing reused |
+| text only | 2,759 | 3,328 | 4 blocks over the three calls |
+| the 15,664-token screenshot | 15,664 | 42,432 | 51 blocks × 832 — every call, including the first, hit blocks left resident by an earlier probe |
+
+The honest summary: **reuse happens in whole 832-token blocks, and a prompt under roughly two blocks gets nothing.**
+The off-by-one is not fully modelled here — 1,359 tokens contains one full block and reused zero, while 2,125 reused
+two — so this is a measured table and not a rule. Anyone who needs the rule should read it out of the scheduler
+rather than infer it from three calls.
+
+## The one boot warning to keep an eye on
+
+`WARNING [speculator.py:243] Draft model R9kQwen4ExpMTP does not support external multimodal embeddings.
+Embeddings from the target model will not be passed …` Our MTP is internal, so this is about externally supplied
+embeddings, and nothing in the measurements above looks worse for it — but it is the line to re-read if an mm + MTP
+answer ever comes out wrong.
+
+## What is *not* claimed
+
+- No claim about vision **quality** on photographs: no photographs were available offline, and drawn digits plus one
+  plausible caption is a pipeline test, not a benchmark.
+- No claim about **video**: `video_preprocessor_config.json` exists and `MM_VIDEO` exists in the launcher, but the
+  limit was left at 0 and nothing was sent.
+- No claim that images are safe under **concurrency**: every probe above was one request at a time on an idle box.
+  Encoder steps interleaving with 32 concurrent deep-context decodes — the situation this box actually lives in —
+  is unmeasured, and that is the missing experiment before any client is pointed at `MM=1` in production.
+- No claim about the **`mm_prefix` attention mode** beyond the boot log's statement that it exists and is off today.
+
+## Reproduce
+
+```
+# what the flag does, without touching the box:
+DRY=1 bash serve/native-flashnext.sh | grep -m1 'launch:'
+DRY=1 MM=1 MM_IMAGE=2 bash serve/native-flashnext.sh | grep -m1 'launch:'
+# is the live serve the one this tree would start (flags included)?
+tools/recipe-check.py
+# is the running box answering image requests at all? (a 400 is the honest answer when it should not)
+# see the argv probe above, or POST one image and read the code
+```
+
+Decision as of 2026-11-05: **the default stays text-only.** `MM=1` is now a named, reversible switch that the gate
+can see, images demonstrably work, and the cost is 3.5% of the KV pool plus 60 seconds of boot. What is missing
+before production is the concurrency experiment, not the flag.

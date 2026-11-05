@@ -372,3 +372,50 @@ the recipe and the process disagree or they do not.
 Restating the obvious because it is the part experiments erode: reverting **re-exposes** the default `M <= 8` path.
 If the fault comes back in `r9k_router_gemm_kernel<8, 2, true>`, the discriminator did not discriminate, and the
 next move is serialization, not another cap.
+
+## 13. A recipe has three faces: measured knobs, environment, and launch flags
+
+`tools/recipe-check.py` used to compare two things: the engine's measured config labels, and the `R9K_*` /
+`R9700_*` environment. Both are blind to **flags**. Whether the serve came up `--language-model-only` or
+`--limit-mm-per-prompt {"image": 2, "video": 0}` appears in no `vllm:*` label, and it decides what the box can be
+asked and what the KV pool has to spare for the vision tower. A gate that cannot see flags cannot see that choice,
+so the launcher's `DRY=1` line is now compared against the live process's own argv (published by the merged plugin
+as `/api/status -> argv`) token by token.
+
+Three things that fell out of writing it:
+
+- **Presence is part of the comparison.** A bare flag parses to value `None`; a flag that is absent also reads as
+  `None` if you are careless. The first draft did exactly that, and it reported *one* deviation for the mm flip
+  where there are two: the added `--limit-mm-per-prompt` and the removed `--language-model-only`. Removing the
+  text-only flag is the change; losing it from the report is how a gate starts lying.
+- **Unprovable is not matching.** A payload with no argv (an in-process page older than this comparison) now prints
+  `the LAUNCH FLAGS ARE UNPROVABLE` instead of a clean line that quietly counted them as equal.
+- **`MM` is an operator knob, so it is stripped when the gate asks the launcher.** An ambient `MM=1` in the shell
+  that happens to run `recipe-check` must not move the production answer, same as an ambient `NBT`.
+
+The procedure for a test that changes a **flag** is the §8/§12 procedure plus two extra proofs, because a flag's
+effect is not visible in the config block:
+
+```
+DRY=1 bash serve/native-flashnext.sh | grep -m1 'launch:'          # what production would be
+DRY=1 MM=1 MM_IMAGE=2 bash serve/native-flashnext.sh | grep -m1 'launch:'   # what the test would be
+# ... launch the test under a TEST-named session and log, measure, then revert with the untouched command:
+STOP=1 bash serve/native-flashnext.sh
+tmux new-session -d -s r9700-native-flashnext 'MAXLEN=262144 NSEQ=32 NBT=8192 WEBUI=same LOG=<log> ' \
+  'bash $PWD/serve/native-flashnext.sh 2>&1 | tee -a <log>'
+# and prove the revert four ways, not one:
+/home/jiulu/venv-r9700/bin/python3 - <<'PY'
+import json, urllib.request
+a = json.load(urllib.request.urlopen("http://127.0.0.1:8080/api/status", timeout=30))["argv"]
+print("--language-model-only" in a, "--limit-mm-per-prompt" in a)
+PY
+# 2) behaviour: POST one image -- 400 "At most 0 image(s) may be provided" is the correct answer for text-only
+# 3) geometry: the KV pool came back (1,199 blocks / 943,875 tokens with vision, 1,242 / 977,726 without)
+# 4) tools/recipe-check.py -> "PRODUCTION recipe ... every launch flag in the live argv matches", exit 0
+```
+
+One test-writing trap worth keeping: the fixture launch line in `tests/test_webui.py` predates the mm flag, so
+`fixture.replace("--language-model-only", ...)` was a **no-op on a string that never contained it**, and the
+"caught in both directions" check would have compared a line against itself and passed. Any test that builds its
+input by mutating a string has to assert the mutation happened -- `ck("the replace actually changed the line", ...)`
+is now in the file for that reason.

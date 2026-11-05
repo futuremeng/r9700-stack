@@ -152,12 +152,31 @@ if [ "${ENVRECIPE:-0}" = 1 ]; then echo "env recipe: $(r9k_env_json)"; exit 0; f
 # launch if the running engine disagrees with this line.
 : ${PREFIX_CACHE:=1}
 
+# Text-only by default, and it is a choice rather than an accident: `--language-model-only` puts every multimodal
+# limit at 0 (the engine says so at boot: "All limits of multimodal modalities supported by the model are set to 0,
+# running in text-only mode", and an image request comes back 400 "At most 0 image(s) may be provided"). The
+# checkpoint does carry a vision tower (config.json has vision_config / image_token_id / vision_{start,end}_token_id,
+# and the directory has preprocessor_config.json and video_preprocessor_config.json), so this flag -- not the
+# weights -- is what keeps the box reading text.
+# Why text-only stays the default: every number in this repo (262k context, fp8 KV, NBT 8192, MTP-2, the R9K_*
+# kernels for MoE/GDN/QSA) was measured on the language path; the vision tower would take card memory out of the KV
+# pool (1,242 blocks / 977,726 tokens at util 0.97), boot enables a different attention mode (`mm_prefix`, disabled
+# today because mm is configuration-disabled), and mm + prefix caching + align has never been measured here.
+# MM=1 turns it on for a named test; MM_IMAGE / MM_VIDEO set the per-prompt limits. The live answer is not in the
+# engine's measured config, so tools/recipe-check.py compares the launch FLAGS: launcher truth against the live
+# process's own argv, published by the merged plugin in /api/status.
+: ${MM:=0}; : ${MM_IMAGE:=4}; : ${MM_VIDEO:=0}
+
 ARGS=(--served-model-name "${SERVED_NAME:-Qwen3.8}" --host "$HOST" --port "${PORT:-8080}"
       --tensor-parallel-size "${TP:-4}" --max-model-len "${MAXLEN}"
       --max-num-seqs "$NSEQ" --max-num-batched-tokens "$NBT"
       --gpu-memory-utilization "${UTIL:-$([ "${TP:-4}" = 4 ] && echo 0.97 || echo 0.94)}"
-      --reasoning-parser "${REASONING:-qwen3}" --tool-call-parser "${TOOLCALL:-qwen3_coder}" --enable-auto-tool-choice
-      --language-model-only)
+      --reasoning-parser "${REASONING:-qwen3}" --tool-call-parser "${TOOLCALL:-qwen3_coder}" --enable-auto-tool-choice)
+if [ "$MM" = 1 ]; then
+  ARGS+=(--limit-mm-per-prompt "{\"image\": ${MM_IMAGE}, \"video\": ${MM_VIDEO}}")
+else
+  ARGS+=(--language-model-only)
+fi
 [ "${OFFLOAD_GB:-0}" != 0 ] && ARGS+=(--cpu-offload-gb "$OFFLOAD_GB" --cpu-offload-params experts)
 [ -n "${KVDTYPE:-}" ] && ARGS+=(--kv-cache-dtype "$KVDTYPE")
 [ "$PREFIX_CACHE" = 0 ] && ARGS+=(--no-enable-prefix-caching)
@@ -219,7 +238,10 @@ if [ "${WEBUI:-0}" = 1 ] || [ "${WEBUI:-}" = same ]; then
       eager="${EAGER:-0}" log="$LOG" fold="${R9K_FOLD:-1}" ar_quant="${R9K_AR_QUANT:-1}" hc_fp8="${R9K_HC_FP8:-r9k}" \
       hc_fp8_decode="${R9K_HC_FP8_DECODE:-1}" fp8_block="${R9K_FP8_BLOCK:-block}" fp8_qa="${R9K_FP8_QA:-1}" \
       target_lmhead="${R9K_TARGET_LMHEAD:-mxfp4}" draft_lmhead="${R9K_DRAFT_LMHEAD:-mxfp4}" \
-      mtp_quant_rows="${R9K_MTP_QUANT_ROWS:-}" env="$(r9k_env_json)" extra="${EXTRA:-}"
+      mtp_quant_rows="${R9K_MTP_QUANT_ROWS:-}" mm="$MM" \
+      mm_limits="$([ "$MM" = 1 ] && echo "image ${MM_IMAGE}, video ${MM_VIDEO}" \
+                     || echo "image 0, video 0 (--language-model-only)")" \
+      env="$(r9k_env_json)" extra="${EXTRA:-}"
   fi
   if [ "${DRY:-0}" = 1 ] || [ "${METAONLY:-0}" = 1 ]; then
     [ "${DRY:-0}" = 1 ] && echo "  recipe file NOT written (preview): $META"
