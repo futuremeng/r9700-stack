@@ -397,6 +397,10 @@ no argv (an in-process page older than the comparison), the gate says the flags 
 counting them as matching. The flag that motivated this face is `--language-model-only`: this box is text-only
 because a flag says so, not because the weights cannot see — `MM=1` turns images on, they demonstrably work, and
 the cost is 3.5% of the KV pool plus 60 s of boot ([notes/multimodal-input.md](notes/multimodal-input.md)).
+`--limit-mm-per-prompt` only counts images, so `MM_MAX_PIX` caps what **one** may cost: the checkpoint's own default
+is 16,777,216 px = 16,384 image tokens, and an uncapped 2,560 × 6,236 screenshot arrived as **15,664 prompt tokens**.
+The default cap (4,194,304 px ≈ 4,096 tokens) brings that to 4,123, and per-request `mm_processor_kwargs` are
+refused by default, so it is a ceiling a client cannot lift.
 
 The 1 min prefill figure is low **because of the metric, not the box**: `prompt_tokens_total` credits a prompt when
 its request finishes, so a 60-second span that has long prefills running but not finished credits only what happened

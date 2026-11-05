@@ -64,7 +64,7 @@ OPERATOR_KNOBS = ("MAXLEN", "NSEQ", "NBT", "UTIL", "KVDTYPE", "MTP", "PREFIX_CAC
                   "EAGER", "AITER", "HWQ", "MWAITX", "OFFLOAD_GB", "ATTN", "REASONING", "TOOLCALL", "FORCE",
                   # MM chooses a launch FLAG, so an ambient MM=1 in the shell that asks the question must not move
                   # the production answer any more than an ambient NBT would.
-                  "MM", "MM_IMAGE", "MM_VIDEO")
+                  "MM", "MM_IMAGE", "MM_VIDEO", "MM_MAX_PIX", "MM_MIN_PIX")
 
 
 def clean_env(extra=None):

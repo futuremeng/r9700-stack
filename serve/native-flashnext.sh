@@ -166,6 +166,15 @@ if [ "${ENVRECIPE:-0}" = 1 ]; then echo "env recipe: $(r9k_env_json)"; exit 0; f
 # engine's measured config, so tools/recipe-check.py compares the launch FLAGS: launcher truth against the live
 # process's own argv, published by the merged plugin in /api/status.
 : ${MM:=0}; : ${MM_IMAGE:=4}; : ${MM_VIDEO:=0}
+# `--limit-mm-per-prompt` caps HOW MANY images, not how big they are, and on this checkpoint the default size cap is
+# enormous: preprocessor_config.json says size.longest_edge = 16,777,216 pixels (with shortest_edge = 65,536). With
+# patch 16 and merge 2, one image token covers 32x32 = 1,024 pixels, so that default is 16,384 image tokens per
+# image -- and boot agrees: "Encoder cache will be initialized with a budget of 16384 tokens". Measured on
+# 2026-11-05: a 2,560x6,236 screenshot arrived as 15,664 prompt tokens, 6% of a 262,144-token window, from one image.
+# MM_MAX_PIX is therefore the knob that bounds what an image can cost; 4,194,304 px is ~4,096 tokens, which keeps a
+# 1,200x654 documentation PNG (760 tokens) untouched and shrinks the giant screenshot to 4,059. MM_MIN_PIX is left at
+# the checkpoint's own shortest_edge (tiny images get upscaled to ~64 tokens).
+: ${MM_MAX_PIX:=4194304}; : ${MM_MIN_PIX:=65536}
 
 ARGS=(--served-model-name "${SERVED_NAME:-Qwen3.8}" --host "$HOST" --port "${PORT:-8080}"
       --tensor-parallel-size "${TP:-4}" --max-model-len "${MAXLEN}"
@@ -173,7 +182,8 @@ ARGS=(--served-model-name "${SERVED_NAME:-Qwen3.8}" --host "$HOST" --port "${POR
       --gpu-memory-utilization "${UTIL:-$([ "${TP:-4}" = 4 ] && echo 0.97 || echo 0.94)}"
       --reasoning-parser "${REASONING:-qwen3}" --tool-call-parser "${TOOLCALL:-qwen3_coder}" --enable-auto-tool-choice)
 if [ "$MM" = 1 ]; then
-  ARGS+=(--limit-mm-per-prompt "{\"image\": ${MM_IMAGE}, \"video\": ${MM_VIDEO}}")
+  ARGS+=(--limit-mm-per-prompt "{\"image\": ${MM_IMAGE}, \"video\": ${MM_VIDEO}}"
+         --mm-processor-kwargs "{\"size\": {\"longest_edge\": ${MM_MAX_PIX}, \"shortest_edge\": ${MM_MIN_PIX}}}")
 else
   ARGS+=(--language-model-only)
 fi
@@ -239,7 +249,7 @@ if [ "${WEBUI:-0}" = 1 ] || [ "${WEBUI:-}" = same ]; then
       hc_fp8_decode="${R9K_HC_FP8_DECODE:-1}" fp8_block="${R9K_FP8_BLOCK:-block}" fp8_qa="${R9K_FP8_QA:-1}" \
       target_lmhead="${R9K_TARGET_LMHEAD:-mxfp4}" draft_lmhead="${R9K_DRAFT_LMHEAD:-mxfp4}" \
       mtp_quant_rows="${R9K_MTP_QUANT_ROWS:-}" mm="$MM" \
-      mm_limits="$([ "$MM" = 1 ] && echo "image ${MM_IMAGE}, video ${MM_VIDEO}" \
+      mm_limits="$([ "$MM" = 1 ] && echo "image ${MM_IMAGE}, video ${MM_VIDEO}, max ${MM_MAX_PIX} px (~$((MM_MAX_PIX / 1024)) tokens each)" \
                      || echo "image 0, video 0 (--language-model-only)")" \
       env="$(r9k_env_json)" extra="${EXTRA:-}"
   fi

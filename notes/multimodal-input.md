@@ -131,3 +131,63 @@ tools/recipe-check.py
 Decision as of 2026-11-05: **the default stays text-only.** `MM=1` is now a named, reversible switch that the gate
 can see, images demonstrably work, and the cost is 3.5% of the KV pool plus 60 seconds of boot. What is missing
 before production is the concurrency experiment, not the flag.
+
+## Is there a size cap? (asked next, and the answer used to be "no")
+
+`--limit-mm-per-prompt` caps **how many** images a prompt may carry. It says nothing about what **one** image may
+cost, and the checkpoint's own default is enormous: `preprocessor_config.json` has
+
+```json
+"size": { "longest_edge": 16777216, "shortest_edge": 65536 }, "patch_size": 16, "merge_size": 2
+```
+
+With `patch 16 × merge 2`, one image token covers `32 × 32 = 1,024` pixels, so `longest_edge` is
+**16,777,216 px = 16,384 image tokens per image** — which is exactly the number in the boot line
+`Encoder cache will be initialized with a budget of 16384 tokens`. That is where the 15,664-token screenshot came
+from: nothing was capping it.
+
+`MM_MAX_PIX` (default `4194304` px ≈ 4,096 image tokens) now passes
+
+```
+--mm-processor-kwargs {"size": {"longest_edge": 4194304, "shortest_edge": 65536}}
+```
+
+vLLM folds that into the resize (`_get_vision_size`: `size.longest_edge` → `max_pixels`, `shortest_edge` →
+`min_pixels`, `factor = patch × merge = 32`). The arithmetic is predictable offline, and it matched: the
+2,560 × 6,236 canvas is predicted at 4,059 image tokens under the cap and 15,600 without, and the live
+`usage.prompt_tokens` read 4,123 and 15,664 — the ~64-token difference in both cases being the question text and
+the chat template.
+
+### Measured, on a named test config (`r9700-native-TEST-mmcap`, log `TEST-mmcap-1105-0043.log`, `MM=1 MM_IMAGE=2`)
+
+| | mm on, uncapped | mm on, capped at 4,096 tokens/image | production (mm off) |
+|---|---:|---:|---:|
+| boot encoder-cache budget | 16,384 tokens, 1 item profiled | **8,192 tokens, 2 items profiled** | — |
+| the 2,560 × 6,236 screenshot | **15,664** prompt tokens | **4,123** prompt tokens | refused (400) |
+| KV pool | 1,199 blocks / 943,875 | 1,188 blocks / 935,216 | 1,242 / 977,726 |
+
+- **The cap does not buy back KV.** 935,216 with the cap against 943,875 without it: slightly *less*, because the
+  encoder now profiles two items instead of one and the peak it reserves moves with that. Anyone hoping a smaller
+  image budget returns the 3.5% of the pool that vision took away should read this row again. What the cap bounds is
+  **what one image costs a prompt**, and the encoder cache — which is what protects a 262,144-token window from a
+  single screenshot.
+- **Detail survives at this cap, in the sizes tested.** Three 2,560 × 6,236 canvases (so the same rescale as the
+  screenshot: down to ~1,312 × 3,168) with a six-digit number drawn at **28 px, 48 px, 96 px** were all read
+  correctly: `308714`, `519264`, `740153`. The 28 px digits land at roughly 14 px after the cap's rescale, and the
+  model still got them. That is evidence the cap is not costing legibility at document-screenshot scale; it is not
+  evidence about a 6 pt font in a 4K dashboard.
+- **The cap is a ceiling, not a suggestion a client can lift.** A request carrying
+  `"mm_processor_kwargs": {"size": {"longest_edge": 16777216, ...}}` is refused:
+  `Per-request mm_processor_kwargs are disabled by default because they can change multimodal preprocessing
+  resource usage.` vLLM has a server flag to allow it; this stack does not use it, so the launch flag is the last
+  word. That is the right default for a shared box: a client should not be able to decide how much of the context
+  window its own image eats.
+- Worst case per request is now arithmetic rather than luck: `MM_IMAGE × MM_MAX_PIX / 1024` image tokens. The
+  default is `4 × 4,096 = 16,384` (6.2% of a 262,144 window); the test used `MM_IMAGE=2`, i.e. 8,192, which is why
+  its encoder budget read 8,192.
+
+Reverted and proved again: argv carries `--language-model-only` and neither `--limit-mm-per-prompt` nor
+`--mm-processor-kwargs`; the image request is back to 400 `At most 0 image(s)`; KV pool 1,242 blocks / 977,726
+tokens; `tools/recipe-check.py` exit 0 naming all three flags as matching. A size cap is a **flag**, so the flag
+face of the gate is what catches it — and `MM_MAX_PIX`/`MM_MIN_PIX` are in `OPERATOR_KNOBS`, so the shell that asks
+the question cannot move the answer.

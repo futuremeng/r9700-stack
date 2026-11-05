@@ -1799,14 +1799,34 @@ _mml = subprocess.run(["bash", _LAU], env=rc.clean_env({"MM": "1", "DRY": "1", "
 _mml2 = subprocess.run(["bash", _LAU],
                        env=rc.clean_env({"MM": "1", "MM_IMAGE": "2", "DRY": "1", "FORCE": "1", "PORT": "18099"}),
                        capture_output=True, text=True, timeout=120).stdout
+_mml3 = subprocess.run(["bash", _LAU],
+                       env=rc.clean_env({"MM": "1", "MM_MAX_PIX": "1048576", "DRY": "1", "FORCE": "1",
+                                         "PORT": "18099"}),
+                       capture_output=True, text=True, timeout=120).stdout
+_mmcmd = next((l for l in _mml.splitlines() if l.startswith("launch:")), "")[len("launch:"):]
+_mmcmd3 = next((l for l in _mml3.splitlines() if l.startswith("launch:")), "")[len("launch:"):]
 ck("MM=1 swaps the text-only flag for real per-prompt limits, and MM_IMAGE is not decorative",
    "--language-model-only" not in _mml and '--limit-mm-per-prompt {"image": 4, "video": 0}' in _mml
    and '--limit-mm-per-prompt {"image": 2, "video": 0}' in _mml2, _mml[-120:])
+# --limit-mm-per-prompt caps how MANY images a prompt may carry; it says nothing about what ONE image may cost.
+# The checkpoint's own default is longest_edge = 16,777,216 pixels = 16,384 image tokens (patch 16 x merge 2 ->
+# 1,024 px per token), and a 2,560x6,236 screenshot was measured arriving at 15,664 prompt tokens. So the size cap
+# is a separate flag, and it has to be visible in the launch line the same way.
+ck("MM=1 also caps how big an image may be, in pixels, with the token cost spelled out in the comment next to it",
+   '--mm-processor-kwargs {"size": {"longest_edge": 4194304, "shortest_edge": 65536}}' in _mml, _mml[-200:])
+ck("MM_MAX_PIX moves that cap (4,096 tokens/image is the default, not a constant someone has to remember)",
+   '{"size": {"longest_edge": 1048576, "shortest_edge": 65536}}' in _mml3, _mml3[-200:])
+ck("a changed size cap is a recipe deviation the gate names (it changes what every prompt token count means)",
+   [f for f, _, _ in rc.compare_flags(_mmcmd, _mmcmd3)] == ["--mm-processor-kwargs"],
+   str([f for f, _, _ in rc.compare_flags(_mmcmd, _mmcmd3)]))
+ck("and no size cap is passed when mm is off: an unused knob in the line is a knob that silently does nothing",
+   "--mm-processor-kwargs" not in _REAL_CMD)
 ck("the launcher writes mm and mm_limits into the recipe file (the next two checks read what it actually wrote)",
    'mm="$MM"' in open(_LAU).read() and "mm_limits=" in open(_LAU).read())
 # and records it HONESTLY: with mm off, the limits are zero, not "image 4" -- a page that prints the limits the
 # launcher would have used while the flag keeps them at nothing is a page that lies about what the box accepts.
-for _mm, _want in ((None, "image 0, video 0 (--language-model-only)"), ("1", "image 2, video 0")):
+for _mm, _want in ((None, "image 0, video 0 (--language-model-only)"),
+                   ("1", "image 2, video 0, max 4194304 px (~4096 tokens each)")):
     _mp = "/tmp/r9700-mm-meta-honest.json"
     Path(_mp).unlink(missing_ok=True)
     _e = {"METAONLY": "1", "FORCE": "1", "WEBUI": "same", "WEBUI_META": _mp, "MM_IMAGE": "2"}
