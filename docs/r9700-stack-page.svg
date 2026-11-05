@@ -1,12 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1310" viewBox="0 0 1000 1310" font-family="Outfit, 'DejaVu Sans', system-ui, sans-serif" role="img">
-<rect x="0" y="0" width="1000" height="1310" rx="0" fill="#0e1113" stroke="none"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1382" viewBox="0 0 1000 1382" font-family="Outfit, 'DejaVu Sans', system-ui, sans-serif" role="img">
+<rect x="0" y="0" width="1000" height="1382" rx="0" fill="#0e1113" stroke="none"/>
 <rect x="38.0" y="26.0" width="22.0" height="7.0" rx="3.5" fill="#34d399" stroke="none"/>
 <rect x="30.0" y="36.0" width="30.0" height="7.0" rx="3.5" fill="#34d399" stroke="none"/>
 <rect x="22.0" y="46.0" width="38.0" height="7.0" rx="3.5" fill="#34d399" stroke="none"/>
 <rect x="16.0" y="56.0" width="44.0" height="7.0" rx="3.5" fill="#34d399" stroke="none"/>
 <text x="78.0" y="58" font-size="34" font-weight="800" fill="#eef1f3">r9700-stack</text>
 <rect x="491.6" y="32" width="492.4" height="27" rx="13.5" fill="none" stroke="#34d399"/>
-<text x="502.6" y="52" font-size="14" fill="#34d399">v0.4.1 · 2026-11-03 · vLLM 0.32 line, nightly 2026-10-25</text>
+<text x="502.6" y="52" font-size="14" fill="#34d399">v0.4.2 · 2026-11-04 · vLLM 0.32 line, nightly 2026-10-25</text>
 <text x="16" y="78" font-size="14" fill="#8e979f">LLM inference on 2 to 8 AMD Radeon AI PRO R9700</text>
 <rect x="16" y="90" width="968" height="110" rx="12" fill="#161a1d" stroke="#2a3036"/>
 <text x="32" y="120" font-size="14" font-weight="700" fill="#34d399">01</text>
@@ -14,7 +14,7 @@
 <rect x="16" y="214" width="968" height="510" rx="12" fill="#161a1d" stroke="#2a3036"/>
 <text x="32" y="244" font-size="14" font-weight="700" fill="#34d399">02</text>
 <text x="32" y="262" font-size="14" font-weight="700" fill="#8e979f">WHAT RUNS</text>
-<rect x="16" y="738" width="968" height="424" rx="12" fill="#161a1d" stroke="#2a3036"/>
+<rect x="16" y="738" width="968" height="460" rx="12" fill="#161a1d" stroke="#2a3036"/>
 <text x="32" y="768" font-size="14" font-weight="700" fill="#34d399">03</text>
 <text x="32" y="786" font-size="14" font-weight="700" fill="#8e979f">HOW FAST</text>
 <text x="128" y="124" font-size="19" font-weight="600" fill="#eef1f3">a vLLM plugin plus HIP and Triton kernels for gfx1201 (RDNA4)</text>
@@ -70,9 +70,9 @@
 <text x="575.0" y="502" font-size="19" font-weight="700" fill="#eef1f3">DeepSeek-V4.1-Flash</text>
 <text x="575.0" y="522" font-size="14" fill="#f5b53d">552B MoE, EXL3 2.9 bpw</text>
 <text x="575.0" y="550" font-size="14" fill="#c7cdd3">·  384 routed experts, Engram tables</text>
-<text x="575.0" y="570" font-size="14" fill="#c7cdd3">   EXL3 GEMV + expert decode</text>
+<text x="575.0" y="570" font-size="14" fill="#c7cdd3">   EXL3 GEMV + 48-row expert decode</text>
 <text x="575.0" y="590" font-size="14" fill="#c7cdd3">   DSpark k=5 drafter, adaptive</text>
-<text x="575.0" y="610" font-size="14" fill="#c7cdd3">   329k-token KV pool at 32k</text>
+<text x="575.0" y="610" font-size="14" fill="#c7cdd3">   387k-token KV pool at 32k</text>
 <rect x="575.0" y="639" width="11" height="13" rx="2" fill="#f5b53d" stroke="none"/>
 <rect x="591.0" y="639" width="11" height="13" rx="2" fill="#f5b53d" stroke="none"/>
 <rect x="607.0" y="639" width="11" height="13" rx="2" fill="#f5b53d" stroke="none"/>
@@ -82,7 +82,7 @@
 <rect x="671.0" y="639" width="11" height="13" rx="2" fill="#f5b53d" stroke="none"/>
 <rect x="687.0" y="639" width="11" height="13" rx="2" fill="#f5b53d" stroke="none"/>
 <text x="709.0" y="652" font-size="15" font-weight="700" fill="#eef1f3">TP8 · 8 cards</text>
-<text x="575.0" y="672" font-size="14" fill="#8e979f">128k recipe retrieves at 126.7k</text>
+<text x="575.0" y="672" font-size="14" fill="#8e979f">128k recipe: 392k KV, three needles</text>
 <text x="128" y="768" font-size="15" font-weight="700" fill="#eef1f3">single-stream decode, tok/s</text>
 <text x="128" y="802" font-size="15" font-weight="700" fill="#eef1f3">Qwen3.8-Flash-Next</text>
 <text x="128" y="820" font-size="14" fill="#8e979f">TP4, four cards · 210 W gate</text>
@@ -104,10 +104,10 @@
 <text x="128" y="1036" font-size="14" fill="#8e979f">75-80 before v0.3.8's host-memory collective</text>
 <text x="128" y="1060" font-size="15" font-weight="700" fill="#eef1f3">DeepSeek-V4.1-Flash</text>
 <text x="128" y="1078" font-size="14" fill="#8e979f">TP8+EP, EXL3 · 8 cards, -500 MHz</text>
-<rect x="128" y="1088" width="242.4" height="18" rx="7" fill="#7b93ff" stroke="none"/>
-<text x="440" y="1104" font-size="26" font-weight="800" fill="#eef1f3">202</text>
+<rect x="128" y="1088" width="258.0" height="18" rx="7" fill="#7b93ff" stroke="none"/>
+<text x="440" y="1104" font-size="26" font-weight="800" fill="#eef1f3">215</text>
 <text x="496.8" y="1104" font-size="14" fill="#8e979f">tok/s</text>
-<text x="128" y="1122" font-size="14" fill="#8e979f">on code; 87-97 prose (v0.4.0: 158 code, 73)</text>
+<text x="128" y="1122" font-size="14" fill="#8e979f">on code; 104 prose (v0.4.1: 202, 87-97)</text>
 <text x="644" y="768" font-size="15" font-weight="700" fill="#eef1f3">aggregate · prefill · context</text>
 <text x="644" y="786" font-size="14" fill="#8e979f">the native box, uncapped</text>
 <text x="644" y="816" font-size="15" font-weight="700" fill="#eef1f3">1,792 tok/s</text>
@@ -116,20 +116,24 @@
 <text x="644" y="886" font-size="15" font-weight="700" fill="#eef1f3">9,702 tok/s</text>
 <text x="644" y="904" font-size="14" fill="#c7cdd3">reading a 7,792-token prompt on that</text>
 <text x="644" y="922" font-size="14" fill="#c7cdd3">same fp8 launch</text>
-<text x="644" y="956" font-size="15" font-weight="700" fill="#eef1f3">1,009,899 tokens</text>
-<text x="644" y="974" font-size="14" fill="#c7cdd3">KV pool at MAXLEN 262,144 with fp8 e4m3</text>
-<text x="644" y="992" font-size="14" fill="#c7cdd3">main KV, 540,202 at bf16; a needle found</text>
-<text x="644" y="1010" font-size="14" fill="#c7cdd3">at 250,078</text>
-<text x="644" y="1044" font-size="15" font-weight="700" fill="#eef1f3">115 tok/s</text>
-<text x="644" y="1062" font-size="14" fill="#c7cdd3">what a real request actually finishes</text>
-<text x="644" y="1080" font-size="14" fill="#c7cdd3">at, median over 1,525 of them on this</text>
-<text x="644" y="1098" font-size="14" fill="#c7cdd3">launch (162 tok/s with the box to</text>
-<text x="644" y="1116" font-size="14" fill="#c7cdd3">itself)</text>
-<text x="16" y="1186" font-size="14" fill="#8e979f">Each number names its machine: "210 W gate" is the release configuration (210 W a card, -42 mV, 32k); "the native</text>
-<text x="16" y="1204" font-size="14" fill="#8e979f">box" is one 4x R9700 box, uncapped. They are not comparable across.</text>
-<text x="16" y="1222" font-size="14" fill="#8e979f">The Flash-Next column is the fp8 e4m3 main-KV launch this box runs by default: the pool doubles (1,009,899 against</text>
-<text x="16" y="1240" font-size="14" fill="#8e979f">540,202 tokens) and GSM8K 800 reads 96.0 against 95.6 %, HumanEval 164 98.17 against 96.95.</text>
-<text x="16" y="1258" font-size="14" fill="#8e979f">v0.4.1 is the DeepSeek step: one-kernel eight-rank all-gather and all-reduce, decode glue, an EXL3 GEMV to 48 rows.</text>
-<text x="16" y="1276" font-size="14" fill="#8e979f">The 48-token expert tier that came with it was held back - in the server it left the drafter accepting nothing.</text>
-<text x="16" y="1294" font-size="14" fill="#8e979f">github.com/bkvargyas/r9700-stack</text>
+<text x="644" y="956" font-size="15" font-weight="700" fill="#eef1f3">935,216 tokens</text>
+<text x="644" y="974" font-size="14" fill="#c7cdd3">KV pool on this box's standing launch</text>
+<text x="644" y="992" font-size="14" fill="#c7cdd3">(MAXLEN 262,144, fp8 e4m3 main KV, image</text>
+<text x="644" y="1010" font-size="14" fill="#c7cdd3">inputs on): 1,009,899 without the vision</text>
+<text x="644" y="1028" font-size="14" fill="#c7cdd3">knobs, 540,202 at bf16; needle found at</text>
+<text x="644" y="1046" font-size="14" fill="#c7cdd3">250,078</text>
+<text x="644" y="1080" font-size="15" font-weight="700" fill="#eef1f3">115 tok/s</text>
+<text x="644" y="1098" font-size="14" fill="#c7cdd3">what a real request actually finishes</text>
+<text x="644" y="1116" font-size="14" fill="#c7cdd3">at, median over 1,525 of them on this</text>
+<text x="644" y="1134" font-size="14" fill="#c7cdd3">launch (162 tok/s with the box to</text>
+<text x="644" y="1152" font-size="14" fill="#c7cdd3">itself)</text>
+<text x="16" y="1222" font-size="14" fill="#8e979f">Each number names its machine: "210 W gate" is the release configuration (210 W a card, -42 mV, 32k); "the native</text>
+<text x="16" y="1240" font-size="14" fill="#8e979f">box" is one 4x R9700 box, uncapped. They are not comparable across.</text>
+<text x="16" y="1258" font-size="14" fill="#8e979f">The Flash-Next column is the fp8 e4m3 main-KV launch this box runs by default: the pool doubles (1,009,899 against</text>
+<text x="16" y="1276" font-size="14" fill="#8e979f">540,202 tokens; with image inputs on, as today's launch runs, 935,216) and GSM8K 800 reads 96.0 against 95.6 %,</text>
+<text x="16" y="1294" font-size="14" fill="#8e979f">HumanEval 164 98.17 against 96.95.</text>
+<text x="16" y="1312" font-size="14" fill="#8e979f">v0.4.2 is the DeepSeek step measured a launch at a time: a per-kernel ledger of the step, an eight-rank all-reduce</text>
+<text x="16" y="1330" font-size="14" fill="#8e979f">at 160 KiB-1.5 MiB, an expert placement map for the rank skew, the EXL3 GEMV trimmed, and the 48-token expert tier</text>
+<text x="16" y="1348" font-size="14" fill="#8e979f">released -- the drafter collapse that held it back in v0.4.1 was a graph-pool-layout latent bug, not that kernel.</text>
+<text x="16" y="1366" font-size="14" fill="#8e979f">github.com/bkvargyas/r9700-stack</text>
 </svg>

@@ -38,7 +38,7 @@ W, PAD = 1000, 16
 CHAR = 0.60                                              # em per glyph, as in docs/monitor-cards.py
 HEAD, BODY, SMALL = 19, 15, 14                           # SMALL is the floor: 14 px at the column's width
 
-VERSION, RELEASED, LINE_OF = "v0.4.1", "2026-11-03", "vLLM 0.32 line, nightly 2026-10-25"
+VERSION, RELEASED, LINE_OF = "v0.4.2", "2026-11-04", "vLLM 0.32 line, nightly 2026-10-25"
 TAGLINE = "LLM inference on 2 to 8 AMD Radeon AI PRO R9700"
 WHAT = "a vLLM plugin plus HIP and Triton kernels for gfx1201 (RDNA4)"
 BADGES = [("stock vLLM 0.32", 1), ("stock ROCm 10", 1), ("no fork", 0),
@@ -63,10 +63,10 @@ MODELS = [
      "one-kernel 8-rank collectives"),
     ("DeepSeek-V4.1-Flash", "552B MoE, EXL3 2.9 bpw", [
         "384 routed experts, Engram tables",
-        "EXL3 GEMV + expert decode",
+        "EXL3 GEMV + 48-row expert decode",
         "DSpark k=5 drafter, adaptive",
-        "329k-token KV pool at 32k"], 8,
-     "128k recipe retrieves at 126.7k"),
+        "387k-token KV pool at 32k"], 8,
+     "128k recipe: 392k KV, three needles"),
 ]
 
 # single-stream decode. Every row names its gate: the 210 W figures and the uncapped ones come from
@@ -78,7 +78,7 @@ BARS = [
     ("Qwen3.8-Flash-Next", "TP4, four cards", 225, "14.3-14.4 ms a step; best sample 228", GATE),
     ("Qwen3.8-27B-NVFP4", "TP2, two cards", 222, "4.5 tokens a step with the DFlash2 drafter", GATE),
     ("GLM-5.3-Flash", "TP8, eight cards", 100, "75-80 before v0.3.8's host-memory collective", GATE),
-    ("DeepSeek-V4.1-Flash", "TP8+EP, EXL3", 202, "on code; 87-97 prose (v0.4.0: 158 code, 73)", DSGATE),
+    ("DeepSeek-V4.1-Flash", "TP8+EP, EXL3", 215, "on code; 104 prose (v0.4.1: 202, 87-97)", DSGATE),
 ]
 
 # the column beside the bars: what the same four cards do in aggregate, and what the context costs.
@@ -86,7 +86,8 @@ BARS = [
 FACTS = [
     ("1,792 tok/s", "aggregate decode, 32 in flight, 1,200-token waves, fp8 main KV"),
     ("9,702 tok/s", "reading a 7,792-token prompt on that same fp8 launch"),
-    ("1,009,899 tokens", "KV pool at MAXLEN 262,144 with fp8 e4m3 main KV, 540,202 at bf16; a needle found at 250,078"),
+    ("935,216 tokens", "KV pool on this box's standing launch (MAXLEN 262,144, fp8 e4m3 main KV, image inputs "
+     "on): 1,009,899 without the vision knobs, 540,202 at bf16; needle found at 250,078"),
     ("115 tok/s", "what a real request actually finishes at, median over 1,525 of them on this launch "
      "(162 tok/s with the box to itself)"),
 ]
@@ -94,10 +95,12 @@ FACTS = [
 FOOT = ["Each number names its machine: \"210 W gate\" is the release configuration (210 W a card, -42 mV, 32k); "
         "\"the native box\" is one 4x R9700 box, uncapped. They are not comparable across.",
         "The Flash-Next column is the fp8 e4m3 main-KV launch this box runs by default: the pool doubles (1,009,899 "
-        "against 540,202 tokens) and GSM8K 800 reads 96.0 against 95.6 %, HumanEval 164 98.17 against 96.95.",
-        "v0.4.1 is the DeepSeek step: one-kernel eight-rank all-gather and all-reduce, decode glue, an EXL3 GEMV to "
-        "48 rows. The 48-token expert tier that came with it was held back - in the server it left the drafter "
-        "accepting nothing.",
+        "against 540,202 tokens; with image inputs on, as today's launch runs, 935,216) and GSM8K 800 reads 96.0 "
+        "against 95.6 %, HumanEval 164 98.17 against 96.95.",
+        "v0.4.2 is the DeepSeek step measured a launch at a time: a per-kernel ledger of the step, an eight-rank "
+        "all-reduce at 160 KiB-1.5 MiB, an expert placement map for the rank skew, the EXL3 GEMV trimmed, and the "
+        "48-token expert tier released -- the drafter collapse that held it back in v0.4.1 was a graph-pool-layout "
+        "latent bug, not that kernel.",
         "github.com/bkvargyas/r9700-stack"]
 
 warn, out = [], []
