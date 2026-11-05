@@ -1362,6 +1362,13 @@ def launch_hint(meta):
                      ("prefix_cache", "PREFIX_CACHE")):
         if meta.get(key) not in (None, ""):
             parts.append(f"{env}={meta[key]}")
+    # Multimodal is a launch choice too, and a restart command that drops it silently restores a text-only serve
+    # while the page is describing an image-enabled one. The recipe records the knobs in exactly the env form the
+    # launcher reads (`MM_IMAGE=… MM_VIDEO=… MM_MAX_PIX=… MM_MIN_PIX=…`), so the hint replays them.
+    if str(meta.get("mm")) == "1":
+        parts.append("MM=1")
+        if meta.get("mm_if_on"):
+            parts.append(meta["mm_if_on"])
     # `host` is deliberately NOT part of the hint even though the recipe file records it. The bind address is a
     # fact about the box, not about the launch, and it comes from the machine-local env the launcher sources
     # (~/.config/r9700-stack/native.env). A page that outlives the box must not hand out a hard-coded address as
@@ -1966,6 +1973,7 @@ class Hub:
         self.slotmap = []
         self.death, self.deaths = read_death(), None
         self.launch = None                                  # set below, once the meta file has been read
+        self.meta_mtime, self.meta_error = None, None
         self.key_needed, self.smi_error = False, None
         self.lock = threading.Lock()
         if self.death is not None:
@@ -1975,7 +1983,9 @@ class Hub:
         if cfg["meta"]:
             try:
                 self.meta = json.loads(Path(cfg["meta"]).read_text())
+                self.meta_mtime = os.stat(cfg["meta"]).st_mtime
             except (OSError, ValueError) as e:
+                self.meta_error = f"{cfg['meta']}: {e}"
                 print(f"webui: --meta {cfg['meta']} not read: {e}", file=sys.stderr)
         if self.meta:
             # The command that would bring THIS launch back, assembled from the parameters the launch recorded
@@ -1983,6 +1993,30 @@ class Hub:
             # after the meta read: built before it, the dict was empty and the page had no command to show
             # (measured: `launch: None` on the sidecar's first run with --meta passed).
             self.launch = launch_hint(self.meta)
+
+    def refresh_meta(self):
+        """Re-read the recipe file when it changes.
+
+        It used to be read once at startup, which outlived itself: a sidecar that survives a relaunch keeps
+        answering with the PREVIOUS launch's recipe. Measured on 2026-11-05 -- the merged page on :8080 reported 33
+        recipe keys including the multimodal ones, while the sidecar on :8099, reading the same path, reported 30
+        keys and no mm facts at all, because it had started before that launch. A page that reports a recipe has to
+        notice when the recipe is no longer the one on disk, and it has to say when the read fails.
+        """
+        p = self.cfg.get("meta")
+        if not p:
+            return
+        try:
+            m = os.stat(p).st_mtime
+            if m == self.meta_mtime:
+                return
+            meta = json.loads(Path(p).read_text())
+        except (OSError, ValueError) as e:
+            self.meta_error = f"{p}: {e}"
+            return
+        with self.lock:
+            self.meta, self.meta_mtime, self.meta_error = meta, m, None
+            self.launch = launch_hint(meta)
 
     def _read_deaths(self):
         """The death count, off the startup path (see Hub.__init__)."""
@@ -2059,6 +2093,9 @@ class Hub:
         while True:
             t0 = time.time()
             try:
+                # Before the metrics work, and outside the lock: the recipe file is one stat in the common case, and
+                # a page describing yesterday's recipe is the failure this prevents.
+                self.refresh_meta()
                 cur, cap, info = parse_metrics(self.metrics_text())
                 dt = (t0 - self.prev_t) if self.prev_t else None
                 with self.lock:
@@ -2089,6 +2126,11 @@ class Hub:
                     payload["smi_error"] = self.smi_error
                     payload["meta"] = self.meta
                     payload["meta_src"] = self.cfg["meta"] or None
+                    # When the recipe was written, and what went wrong reading it. A sidecar can outlive the launch
+                    # its recipe describes; the page has to be able to say WHICH launch it is describing, and a
+                    # failed read must not look like an empty recipe.
+                    payload["meta_mtime"] = self.meta_mtime
+                    payload["meta_error"] = self.meta_error
                     # Rebuilt every poll on purpose: the machine-local env file is a file an operator edits while
                     # the box is up, and a page that cached it at start would be a page that disagrees with the
                     # file it names.

@@ -419,3 +419,15 @@ One test-writing trap worth keeping: the fixture launch line in `tests/test_webu
 "caught in both directions" check would have compared a line against itself and passed. Any test that builds its
 input by mutating a string has to assert the mutation happened -- `ck("the replace actually changed the line", ...)`
 is now in the file for that reason.
+
+### §11 again, in the middle of documenting §11
+
+Restarting the Monitor sidecar, one shell line did: `kill <pid>`, then `pkill -f 'tee -a .../sidecar-8099[.]log'`,
+then the relaunch. The bracketed pattern did not match itself — but the **relaunch string later in the same command
+line** contained the unbracketed target text, so `pkill` matched the shell running the whole thing and the line died
+with status 143 halfway through: the sidecar was killed and never came back until the next command.
+
+The rule is not "use brackets", it is: **a pattern must not appear anywhere in the command line that carries it, and
+a process you know the pid of should be killed by pid.** Half-finished operational lines are worse than failed ones,
+because the state they leave (a dead Monitor, an apparent `0` in the listening-socket count) is a state someone has
+to discover.

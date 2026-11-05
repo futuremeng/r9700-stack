@@ -1635,3 +1635,36 @@ kind that is invisible from the source tree: the files on disk are current, the 
 turned into a wording rule -- the page must not say *"there is no machine-local env file at undefined"* about a
 payload that has no env block at all. "No env block" means the build is old; "no file" means this box never had one;
 the page says which, and what closes the gap is a restart, not a file.
+
+## The sidecar was describing a launch that had already ended (found while adding the Image input card)
+
+Two pages, one recipe file, different answers:
+
+```
+:8080 (merged, in-process plugin)  -> 33 recipe keys, multimodal ones included
+:8099 (sidecar, same --meta path)  -> 30 recipe keys, no mm facts at all
+```
+
+Not a parsing difference: `Hub.__init__` read the recipe **once at startup**, and the sidecar had been alive since
+before the serve it describes. So the About page's "How this box was launched" card — and now the Image input card —
+was reporting a recipe from an older launch, with nothing on the page saying so. Worse than an empty card: it was a
+*populated* card about a serve that no longer exists.
+
+The fix is three small things, all now covered by tests:
+
+- `Hub.refresh_meta()` runs at the top of every poll: one `stat`, and the file is re-read only when its mtime moved
+  (called before `with self.lock`, because `threading.Lock` is not reentrant and `poll()` takes it a few lines
+  later).
+- The payload carries `meta_mtime` and `meta_error`, and the launch card prints `written <time>` — so "which launch
+  is this page describing?" is answerable instead than assumed. A failed read sets `meta_error`; it never degrades
+  into an empty recipe, because "no recipe" and "could not read the recipe" are different claims.
+- `launch_hint` replays the multimodal knobs (`MM=1 MM_IMAGE=… MM_VIDEO=… MM_MAX_PIX=… MM_MIN_PIX=…`) when the
+  recipe says the launch had them. Before this, an image-enabled launch's restart command silently came back
+  text-only: the page would have been describing one serve and handing out the command for another.
+
+Proof on the live box (not a unit test only): after `touch ~/r9700-web-meta-8080.json`, `:8099`'s `meta_mtime` moved
+from `1793839620.29` to `1793840975.67` within one poll, and its key count matches `:8080` at 33.
+
+One honest gap: `:8080` still prints `meta_mtime: null`. The merged page is code that the **engine** imported at
+startup, so it updates when the serve restarts — not before. The card that could be refreshed (the sidecar) was
+restarted; the one that needs a serve restart is left to say nothing rather than something stale.

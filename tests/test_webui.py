@@ -15,6 +15,7 @@ Run: ~/venv-r9700/bin/python3 tests/test_webui.py      (also: pytest tests/test_
 import json
 import http.client
 import os
+import types
 from collections import deque
 import re
 import shutil
@@ -1915,9 +1916,55 @@ else:
            and "4,096 tokens" in _nr.stdout and _nr.returncode == 0, (_nr.stdout or _nr.stderr)[-300:])
         ck("and it does not claim text-only once the flag is gone",
            "no images, no video" not in _nr.stdout, _nr.stdout[-200:])
+        # The state nobody can produce on command without a second launch: a recipe that says images and a process
+        # that was started without them. The page must say the sentence rather than show two rows and hope.
+        _mf2 = "/tmp/r9700-mm-page-disagree.json"
+        _mmfix2 = dict(_mmfix)
+        _mmfix2["argv"] = _live_st.get("argv") or ""
+        _mmfix2["meta_mtime"] = __import__("time").time()
+        Path(_mf2).write_text(json.dumps(_mmfix2))
+        _nr2 = subprocess.run(["node", f"{ROOT}/tests/render-about.mjs", _mf2],
+                              capture_output=True, text=True, timeout=300)
+        ck("recipe says images, process says text-only: the card says they disagree and names the gate",
+           "Recipe and process disagree" in _nr2.stdout and _nr2.returncode == 0, (_nr2.stdout or "")[-260:])
+        ck("and the launch card says WHEN the recipe was written, so a stale page is a stale page out loud",
+           "written" in _nr2.stdout, _nr2.stdout[-160:])
+        Path(_mf2).unlink(missing_ok=True)
     else:
         ck("mm-ON page render (no node on this box - skipped)", True)
     Path(_mfp).unlink(missing_ok=True)
+# The recipe file used to be read once, at startup. A sidecar that outlives a relaunch therefore kept answering
+# with the PREVIOUS launch's recipe -- measured on 2026-11-05: :8080 reported 33 recipe keys including the
+# multimodal ones, :8099 reading the same path reported 30 and no mm facts, because it had started earlier. A page
+# that reports a recipe has to notice the recipe changing, and a failed read must not look like an empty recipe.
+_rp = "/tmp/r9700-recipe-refresh.json"
+_ns = types.SimpleNamespace(cfg={"meta": _rp}, meta={}, meta_mtime=None, meta_error=None,
+                            lock=threading.Lock(), launch=None)
+_ns.refresh_meta = W.Hub.refresh_meta.__get__(_ns)
+Path(_rp).write_text(json.dumps({"maxlen": "262144", "nseq": "32", "mm": "1", "mm_effective": "on",
+                                 "mm_if_on": "MM_IMAGE=2 MM_VIDEO=0 MM_MAX_PIX=4194304 MM_MIN_PIX=65536"}))
+_ns.refresh_meta()
+_before, _hint_on = dict(_ns.meta), _ns.launch
+Path(_rp).write_text(json.dumps({"maxlen": "262144", "nseq": "32", "mm": "0", "mm_effective": "off"}))
+os.utime(_rp, (time.time() + 2, time.time() + 2))
+_ns.refresh_meta()
+ck("a page notices the recipe file changed under it, instead of answering with the launch that was current at its startup",
+   _before.get("mm_effective") == "on" and _ns.meta.get("mm_effective") == "off" and _ns.meta_error is None
+   and bool(_ns.meta_mtime), f"{_before} -> {_ns.meta}")
+# The restart command is the dangerous one: a page describing an image-enabled launch that hands out a command
+# without MM=1 restores a different serve than the one it is talking about.
+ck("and the restart command it hands out replays the multimodal knobs, then drops them when the recipe does",
+   "MM=1 MM_IMAGE=2 MM_VIDEO=0 MM_MAX_PIX=4194304 MM_MIN_PIX=65536" in (_hint_on or "")
+   and "MM=1" not in (_ns.launch or "") and "MAXLEN=262144" in (_ns.launch or ""),
+   f"on: {_hint_on} | off: {_ns.launch}")
+_ns.cfg["meta"] = "/proc/definitely-not-a-recipe.json"
+_ns.refresh_meta()
+ck("a recipe that cannot be read is reported as an error, never as an empty recipe",
+   _ns.meta_error and _ns.meta.get("mm_effective") == "off", str(_ns.meta_error))
+Path(_rp).unlink(missing_ok=True)
+ck("the payload carries when the recipe was written, so the page can say WHICH launch it is describing",
+   'payload["meta_mtime"]' in open(os.path.join(ROOT, "serve/webui.py")).read()
+   and 'payload["meta_error"]' in open(os.path.join(ROOT, "serve/webui.py")).read())
 ck("the page publishes its own R9K_ namespace so a stale serve cannot hide the switch (the gate falls back to it "
    "when /proc is not its own process)",
    '"R9K_"' in open(os.path.join(ROOT, "serve/webui.py")).read()

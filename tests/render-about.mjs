@@ -111,6 +111,7 @@ for (const [id, why] of [["facts-config", "the process/argv/bind rows never rend
   if (!t(id)) B(`${id} is empty -- ${why}${noEnv ? " (payload has no env/config-extra block: stale build)" : ""}`);
 }
 console.log("\nconfiguration card:");
+console.log("  recipe file (launch card): " + t("launch-src"));
 console.log("  " + t("facts-config").replace(/ {2,}/g, " | "));
 console.log("  env file note: " + t("env-file-note"));
 console.log(`  engine labels listed: ${$("cfg-all-n").textContent} · env names: ${$("env-proc-n").textContent}`
@@ -163,6 +164,20 @@ if (S.mode === "merged" && (S.meta || {}).mm_effective === "off" && !/no images,
   B("the recipe says mm is off and the live row does not say so");
 }
 if (!t("mm-note")) B("mm-note is empty -- the measured / not-measured boundary never renders");
+// A recipe file and a running process can disagree about multimodal; the card has to name it rather than show two
+// rows and hope the reader diffs them.
+const mmDisagree = S.argv && (S.meta || {}).mm_effective
+  && (S.argv.includes("--language-model-only")) === (String(S.meta.mm_effective) === "on");
+if (mmDisagree && !/Recipe and process disagree/.test(mmtxt)) {
+  B("recipe and process disagree about images and the card stays silent");
+}
+if (!mmDisagree && /Recipe and process disagree/.test(mmtxt)) {
+  B("the card claims a disagreement the payload does not show");
+}
+// A sidecar can outlive the launch its recipe describes, so the launch card says when that recipe was written.
+if (S.meta_mtime && !/written/.test(t("launch-src"))) {
+  B("the launch card does not say which launch its recipe describes");
+}
 
 const bar = t("error");
 if (bar) { console.log("\nPAGE NOTICE:", bar); bad++; }

@@ -74,7 +74,12 @@ function render() {
   const keys = Object.keys(meta).sort();
   $("launch-card").hidden = !keys.length;
   if (keys.length) {
-    text("launch-src", s.meta_src || "--meta");
+    text("launch-src", (s.meta_src || "--meta")
+      // A sidecar can outlive the launch its recipe describes, so the card says which launch it is describing.
+      // Measured 2026-11-05: :8080 reported 33 recipe keys and :8099, same path, 30 -- the sidecar had been
+      // reading a recipe from before the serve it was describing.
+      + (s.meta_mtime ? ` · written ${stamp(s.meta_mtime)}` : "")
+      + (s.meta_error ? ` · read failed: ${s.meta_error}` : ""));
     facts($("facts-launch"), keys.map((k) => [k, Array.isArray(meta[k]) ? meta[k].join(", ")
       : typeof meta[k] === "object" ? JSON.stringify(meta[k]) : String(meta[k])]));
   }
@@ -177,6 +182,12 @@ function render() {
             : " · no image can be sent at all")) : null],
     ["The knobs that choose it", meta.mm_if_on
       ? `MM=${meta.mm ?? "0"} · ${meta.mm_if_on} · MM=0 is this tree's default` : null],
+    // The recipe and the process can disagree, and this card is where a reader would notice. Saying so, with the
+    // tool that turns it into an exit code, beats showing two rows and hoping.
+    ["Recipe and process disagree", argv && meta.mm_effective
+      && (argv.includes("--language-model-only") === (String(meta.mm_effective) === "on"))
+      ? `the recipe file says MM is ${meta.mm_effective} and the running process was launched the other way `
+        + "-- tools/recipe-check.py names this and exits 1 (notes/launch-methodology.md section 13)" : null],
     // Not payload-derived, and labelled as what it is: the arithmetic that turns pixels into prompt tokens comes
     // from this checkpoint's preprocessor_config.json (patch_size 16, merge_size 2).
     ["px per image token", "1,024 (patch 16 x merge 2 = 32 px a side) — from this checkpoint's preprocessor_config.json"],
