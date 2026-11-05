@@ -181,7 +181,14 @@ function render() {
               + `${num(meta.mm_min_pix)} px`
             : " · no image can be sent at all")) : null],
     ["The knobs that choose it", meta.mm_if_on
-      ? `MM=${meta.mm ?? "0"} · ${meta.mm_if_on} · MM=0 is this tree's default` : null],
+      ? `this launch: MM=${meta.mm ?? "0"} · ${meta.mm_if_on}`
+        // The default belongs to the launcher, not to this file. Hardcoding "MM=0 is this tree's default" here sat
+        // untested until the default flipped on 2026-11-05 and the page was still saying it -- so the default is now
+        // read from the recipe, and a recipe that predates the recording says so instead of inventing one.
+        + (meta.mm_default === undefined
+          ? " · this recipe does not record the tree's default, so this page does not state one"
+          : ` · this tree's default is MM=${meta.mm_default}, and the other value is one restart away`)
+      : null],
     // The recipe and the process can disagree, and this card is where a reader would notice. Saying so, with the
     // tool that turns it into an exit code, beats showing two rows and hoping.
     ["Recipe and process disagree", argv && meta.mm_effective

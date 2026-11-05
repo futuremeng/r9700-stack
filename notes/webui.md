@@ -1668,3 +1668,18 @@ from `1793839620.29` to `1793840975.67` within one poll, and its key count match
 One honest gap: `:8080` still prints `meta_mtime: null`. The merged page is code that the **engine** imported at
 startup, so it updates when the serve restarts — not before. The card that could be refreshed (the sidecar) was
 restarted; the one that needs a serve restart is left to say nothing rather than something stale.
+
+The gap closed itself with the next serve restart, which is what it was waiting for. After the machine reboot of
+2026-11-05 01:55 (engine `pid 3554`, sidecar `pid 5702`), both pages report the same recipe and the same stamp:
+40 recipe keys and `meta_mtime 1793843723.15` on `:8080` and `:8099`, `meta_error: null`; after
+`touch ~/r9700-web-meta-8080.json` both moved to `1793843940.10` inside one poll. Two facts on the same page kept
+separate while proving that: `:8080`'s argv contains the multimodal flags, `:8099`'s argv contains none — because
+`:8099`'s argv is the **sidecar's own** command line, which proves nothing about what the serve accepts. The card
+says so in words.
+
+And the reason the recipe keeps growing keys: a page that quotes a launcher fact must read it from the launcher.
+The Image input card's knobs row used to end in a hardcoded `MM=0 is this tree's default`, which was true when
+written, was untested, and outlived the default flipping to `MM=1`. The launcher now records `mm_default`, the page
+prints `this tree's default is MM=<value>`, and a recipe written before the key existed gets
+`this recipe does not record the tree's default, so this page does not state one` — see
+[multimodal-input.md](multimodal-input.md).

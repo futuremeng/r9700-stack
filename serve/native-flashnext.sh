@@ -169,7 +169,10 @@ if [ "${ENVRECIPE:-0}" = 1 ]; then echo "env recipe: $(r9k_env_json)"; exit 0; f
 # and MM=0 is the way back.
 # The live answer is not in the engine's measured config, so tools/recipe-check.py compares the launch FLAGS:
 # launcher truth against the live process's own argv, published by the merged plugin in /api/status.
-: ${MM:=1}; : ${MM_IMAGE:=4}; : ${MM_VIDEO:=0}
+# MM_DEFAULT exists as a name because the About page quotes this tree's default, and a page that hardcodes "MM=0" is
+# a page that quietly becomes a lie the day the default flips -- which it did on 2026-11-05. The recipe records the
+# default, so the page repeats what the launcher actually says.
+: ${MM_DEFAULT:=1}; : ${MM:=$MM_DEFAULT}; : ${MM_IMAGE:=4}; : ${MM_VIDEO:=0}
 # `--limit-mm-per-prompt` caps HOW MANY images, not how big they are, and on this checkpoint the default size cap is
 # enormous: preprocessor_config.json says size.longest_edge = 16,777,216 pixels (with shortest_edge = 65,536). With
 # patch 16 and merge 2, one image token covers 32x32 = 1,024 pixels, so that default is 16,384 image tokens per
@@ -253,6 +256,7 @@ if [ "${WEBUI:-0}" = 1 ] || [ "${WEBUI:-}" = same ]; then
       hc_fp8_decode="${R9K_HC_FP8_DECODE:-1}" fp8_block="${R9K_FP8_BLOCK:-block}" fp8_qa="${R9K_FP8_QA:-1}" \
       target_lmhead="${R9K_TARGET_LMHEAD:-mxfp4}" draft_lmhead="${R9K_DRAFT_LMHEAD:-mxfp4}" \
       mtp_quant_rows="${R9K_MTP_QUANT_ROWS:-}" mm="$MM" \
+      mm_default="$MM_DEFAULT" \
       mm_effective="$([ "$MM" = 1 ] && echo "on" || echo "off")" \
       mm_image="$([ "$MM" = 1 ] && echo "$MM_IMAGE" || echo 0)" \
       mm_video="$([ "$MM" = 1 ] && echo "$MM_VIDEO" || echo 0)" \

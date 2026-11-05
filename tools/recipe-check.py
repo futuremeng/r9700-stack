@@ -63,8 +63,10 @@ SECRET = re.compile(r"KEY|TOKEN|SECRET|PASS|CRED|AUTH", re.I)
 OPERATOR_KNOBS = ("MAXLEN", "NSEQ", "NBT", "UTIL", "KVDTYPE", "MTP", "PREFIX_CACHE", "CGSIZES", "EXTRA",
                   "EAGER", "AITER", "HWQ", "MWAITX", "OFFLOAD_GB", "ATTN", "REASONING", "TOOLCALL", "FORCE",
                   # MM chooses a launch FLAG, so an ambient MM=1 in the shell that asks the question must not move
-                  # the production answer any more than an ambient NBT would.
-                  "MM", "MM_IMAGE", "MM_VIDEO", "MM_MAX_PIX", "MM_MIN_PIX")
+                  # the production answer any more than an ambient NBT would. MM_DEFAULT is on the list because it is
+                  # the knob that decides what an unset MM means -- and the About page now quotes that default from
+                  # the recipe, so it has to be a knob the gate can see, not a second place to drift.
+                  "MM", "MM_DEFAULT", "MM_IMAGE", "MM_VIDEO", "MM_MAX_PIX", "MM_MIN_PIX")
 
 
 def clean_env(extra=None):

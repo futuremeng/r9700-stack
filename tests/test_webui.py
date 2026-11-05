@@ -1836,6 +1836,24 @@ ck("the launcher writes mm and mm_limits into the recipe file (the next two chec
    'mm="$MM"' in open(_LAU).read() and "mm_limits=" in open(_LAU).read())
 # and records it HONESTLY: with mm off, the limits are zero, not "image 4" -- a page that prints the limits the
 # launcher would have used while the flag keeps them at nothing is a page that lies about what the box accepts.
+_mmdef_m = re.search(r": \$\{MM_DEFAULT:=([^}]*)\}", Path(_LAU).read_text())
+_mmdef_src = _mmdef_m.group(1) if _mmdef_m else None
+ck("the launcher gives MM a NAMED default, because the About page quotes this tree's default out of the recipe and a "
+   "page that hardcodes one goes stale the day the default flips (it did, 2026-11-05)",
+   _mmdef_src is not None, str(_mmdef_m))
+
+
+def _dryline(extra):
+    return next((l for l in subprocess.run(["bash", _LAU], env=rc.clean_env({"DRY": "1", "FORCE": "1", "PORT": "18098",
+                                                                            **extra}),
+                                            capture_output=True, text=True, timeout=120).stdout.splitlines()
+                 if l.startswith("launch:")), "")
+
+
+_ck_unset = _dryline({})
+_ck_expl = _dryline({"MM": _mmdef_src or "0"})
+ck("an unset MM means exactly MM=<the default the recipe records> -- one source of truth, not two places to drift",
+   _ck_unset != "" and _ck_unset == _ck_expl, _ck_unset[-120:])
 for _mm, _want in (("0", "image 0, video 0 (--language-model-only)"),
                    (None, "image 2, video 0, max 4194304 px (~4096 tokens each)"),
                    ("1", "image 2, video 0, max 4194304 px (~4096 tokens each)")):
@@ -1853,6 +1871,7 @@ for _mm, _want in (("0", "image 0, video 0 (--language-model-only)"),
     # of lie as the old mm_limits string, and the About page renders whatever the recipe says.
     ck(f"and it records the mm knobs separately, as effective values (MM={_mm or 'default'})",
        _mv.get("mm_effective") == ("on" if _on else "off")
+       and _mv.get("mm_default") == _mmdef_src
        and _mv.get("mm_image") == ("2" if _on else "0") and _mv.get("mm_video") == "0"
        and _mv.get("mm_max_pix") == ("4194304" if _on else "0")
        and _mv.get("mm_max_tok") == ("4096" if _on else "0")
@@ -1935,7 +1954,8 @@ else:
     _mfp = "/tmp/r9700-mm-page-payload.json"
     _mmfix = dict(_live_st)
     _mmfix["argv"] = _mm_set(_live_st.get("argv") or "", True, n_img=2)
-    _mmfix["meta"] = {**(_live_st.get("meta") or {}), "mm": "1", "mm_effective": "on", "mm_image": "2",
+    _mmfix["meta"] = {**(_live_st.get("meta") or {}), "mm": "1", "mm_effective": "on", "mm_default": _mmdef_src,
+                      "mm_image": "2",
                       "mm_video": "0", "mm_max_pix": "4194304", "mm_min_pix": "65536", "mm_max_tok": "4096",
                       "mm_if_on": "MM_IMAGE=2 MM_VIDEO=0 MM_MAX_PIX=4194304 MM_MIN_PIX=65536"}
     Path(_mfp).write_text(json.dumps(_mmfix))
@@ -1947,6 +1967,21 @@ else:
            and "4,096 tokens" in _nr.stdout and _nr.returncode == 0, (_nr.stdout or _nr.stderr)[-300:])
         ck("and it does not claim text-only once the flag is gone",
            "no images, no video" not in _nr.stdout, _nr.stdout[-200:])
+        ck("and it states the tree's default as the recipe records it, not as this file remembers it",
+           f"this tree's default is MM={_mmdef_src}" in _nr.stdout, _nr.stdout[-200:])
+        # A recipe written before the default was recorded must not make the page guess. That is the state the live
+        # box is in right now: the card is honest about not knowing.
+        _mf3 = "/tmp/r9700-mm-page-nodefault.json"
+        _mmfix3 = dict(_live_st)
+        _mmfix3["meta"] = {k: v for k, v in (_live_st.get("meta") or {}).items() if k != "mm_default"}
+        Path(_mf3).write_text(json.dumps(_mmfix3))
+        _nr3 = subprocess.run(["node", f"{ROOT}/tests/render-about.mjs", _mf3],
+                              capture_output=True, text=True, timeout=300)
+        ck("a recipe that does not record the tree's default: the page says it will not state one, and states no "
+           "default of its own (the old hardcoded \"MM=0 is this tree's default\" outlived the flip it described)",
+           "does not record" in _nr3.stdout and "is this tree's default" not in _nr3.stdout
+           and _nr3.returncode == 0, _nr3.stdout[-240:])
+        Path(_mf3).unlink(missing_ok=True)
         # The state nobody can produce on command without a second launch: a recipe that says images and a process
         # that was started without them. The page must say the sentence rather than show two rows and hope.
         _mf2 = "/tmp/r9700-mm-page-disagree.json"

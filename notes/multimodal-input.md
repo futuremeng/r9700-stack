@@ -284,3 +284,23 @@ the Monitor is the instrument: `rate-gen` per wall second and `itl_ms` should be
 
 And one capacity number to keep straight: production's KV pool is now **935,216 tokens**, so the KV figures quoted
 throughout this repository for older launches (540,202 / 977,726) are history, not this launch.
+
+## A page that quotes the tree's default has to read it from somewhere (found on the post-reboot launch)
+
+The About card used to end its knobs row with a hardcoded `MM=0 is this tree's default`. That sentence was written
+when it was true, had no test asserting it, and survived the default flipping to `MM=1` -- the live page was still
+saying it an hour later. Same class of bug as the recipe file that was read once at startup: a fact copied into a
+place that never re-reads its source.
+
+So the launcher now has a name for it -- `: ${MM_DEFAULT:=1}` feeding `: ${MM:=$MM_DEFAULT}` -- and records
+`mm_default` in the recipe. `MM_DEFAULT` went into `OPERATOR_KNOBS` in `tools/recipe-check.py` for the same reason
+`MM` did: it decides what an unset `MM` means, so it is part of the recipe, not a comment. The page prints
+`this tree's default is MM=<recipe value>` when the recipe says so, and
+`this recipe does not record the tree's default, so this page does not state one` when it does not -- which is the
+state of the running launch right now, since its recipe was written before this change and will be rewritten by the
+next restart. No hand-refresh: `METAONLY=1` records the environment of the shell that runs it, and this shell is not
+the launch environment.
+
+Two checks keep the two ends joined: the recipe's `mm_default` must equal the launcher's own `:=` value, and the
+launch line for an unset `MM` must be byte-identical to the line for `MM=<that default>` -- one source of truth
+rather than a recorded default and an applied default that can drift apart.
