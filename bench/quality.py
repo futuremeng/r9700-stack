@@ -6,6 +6,8 @@ Prints accuracy and needle hits; exit 0. Deterministic (temperature 0) so two st
 """
 import concurrent.futures as cf
 import json
+import os
+import pathlib
 import random
 import re
 import sys
@@ -13,6 +15,7 @@ import time
 import urllib.request
 
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 100
+CACHE = pathlib.Path(os.environ.get("EVAL_CACHE", os.path.expanduser("~/.cache/r9keval")))
 CONC = int(sys.argv[2]) if len(sys.argv) > 2 else 8
 BASE = (sys.argv[3] if len(sys.argv) > 3 else "http://localhost:8080") + "/v1/chat/completions"
 MODEL = sys.argv[4] if len(sys.argv) > 4 else "Qwen3.8"
@@ -32,8 +35,16 @@ def last_number(t):
 
 
 def gsm8k():
-    url = "https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/test.jsonl"
-    rows = [json.loads(x) for x in urllib.request.urlopen(url, timeout=60).read().decode().splitlines()]
+    # the set is fetched once and read from disk after that, on the same cache bench/eval.py uses: a
+    # 100-question arm died mid-A/B on a 60 s GitHub fetch on 2026-11-03, and the cost of that is
+    # re-running the whole paired comparison.
+    CACHE.mkdir(parents=True, exist_ok=True)
+    f = CACHE / "gsm8k_test.jsonl"
+    if not f.exists():
+        f.write_bytes(urllib.request.urlopen(
+            "https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/test.jsonl",
+            timeout=60).read())
+    rows = [json.loads(x) for x in f.read_text().splitlines()]
     rows = rows[:N]
 
     def one(d):

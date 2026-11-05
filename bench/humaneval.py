@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
-import os, json, re, sys, gzip, io, urllib.request, subprocess, tempfile, os, time
+import os, json, pathlib, re, sys, gzip, io, urllib.request, subprocess, tempfile, time
 import concurrent.futures as cf
 BASE=os.environ.get("EVAL_BASE","http://localhost:8080")+"/v1/chat/completions"; MODEL=os.environ.get("EVAL_MODEL","Qwen3.8")
 TAG=sys.argv[1] if len(sys.argv)>1 else "run"
 N=int(sys.argv[2]) if len(sys.argv)>2 else 164
 CONC=8
+CACHE = pathlib.Path(os.environ.get("EVAL_CACHE", os.path.expanduser("~/.cache/r9keval")))
 def load():
-    url="https://raw.githubusercontent.com/openai/human-eval/master/data/HumanEval.jsonl.gz"
-    raw=urllib.request.urlopen(url,timeout=60).read()
-    return [json.loads(l) for l in gzip.decompress(raw).decode().splitlines()]
+    # the gate has to survive a GitHub that does not answer: a 100-question arm died on a 60 s
+    # fetch mid-A/B on 2026-11-03, and re-running the whole comparison is the cost. Same cache
+    # bench/eval.py already uses - the set is fetched once and read from disk after that.
+    CACHE.mkdir(parents=True, exist_ok=True)
+    f = CACHE / "HumanEval.jsonl.gz"
+    if not f.exists():
+        f.write_bytes(urllib.request.urlopen("https://raw.githubusercontent.com/openai/human-eval/master/data/HumanEval.jsonl.gz", timeout=60).read())
+    return [json.loads(l) for l in gzip.decompress(f.read_bytes()).decode().splitlines()]
 def gen(prompt):
     msg=("Complete the following Python function. Reply with the complete function "
          "in a single ```python code block, and nothing else.\n\n"+prompt)

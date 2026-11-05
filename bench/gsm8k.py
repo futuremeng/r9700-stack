@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
-import json, re, sys, time, urllib.request, concurrent.futures as cf
+import json, os, pathlib, re, sys, time, urllib.request, concurrent.futures as cf
 BASE="http://localhost:8080/v1/chat/completions"; MODEL="Qwen3.8"
 N=int(sys.argv[1]) if len(sys.argv)>1 else 200
 CONC=int(sys.argv[2]) if len(sys.argv)>2 else 8
+CACHE = pathlib.Path(os.environ.get("EVAL_CACHE", os.path.expanduser("~/.cache/r9keval")))
 def load_gsm8k():
-    url="https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/test.jsonl"
-    data=urllib.request.urlopen(url,timeout=60).read().decode().splitlines()
+    # the gate has to survive a GitHub that does not answer: a 100-question arm died on a 60 s
+    # fetch mid-A/B on 2026-11-03, and re-running the whole comparison is the cost. Same cache
+    # bench/eval.py already uses - the set is fetched once and read from disk after that.
+    CACHE.mkdir(parents=True, exist_ok=True)
+    f = CACHE / "gsm8k_test.jsonl"
+    if not f.exists():
+        f.write_bytes(urllib.request.urlopen("https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/test.jsonl", timeout=60).read())
+    data = f.read_text().splitlines()
     out=[]
     for line in data:
         d=json.loads(line); gt=d["answer"].split("####")[-1].strip().replace(",","")
