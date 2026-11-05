@@ -1,4 +1,20 @@
 # Changelog
+
+## one test had promoted a hand-started sidecar to a service: `:8099` stops being required
+
+`tests/test_webui.py` asserted `0.0.0.0:8099` in `ss -ltn`. That socket was a standalone Monitor someone had
+started by hand in an earlier session, so the suite decided how the box launches and failed when the process was
+stopped. This box's standing Monitor is the plugin **inside** the serve (`WEBUI=same`, the engine's own port);
+`serve/webui.sh` is opt-in.
+
+- The live-box check now proves the two things that do not depend on a remembered hand start: the **engine's**
+  port is bound the way the machine-local file says (`0.0.0.0:8080` from `HOST=0.0.0.0`), and any
+  `serve/webui.py --port N` that is running is bound the same way. Running none is the configuration.
+- Unchanged above it: the two `DRY=1` previews, which check what `webui.sh` would start with the file honoured and
+  with it absent (repo default: loopback).
+
+[notes/webui.md](notes/webui.md) — "The sidecar on `:8099` was not a service, and one test had made it one".
+
 ## the PCIe panel becomes one word on the card: Gen5, and the alarm goes with the panel
 
 Measured on this box through ordinary weight loads: **11.3–45.7 correctable AER counters a minute**, with every

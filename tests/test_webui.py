@@ -1688,9 +1688,21 @@ _dr2 = subprocess.run(["bash", os.path.join(ROOT, "serve/webui.sh")], capture_ou
                       env={**os.environ, "DRY": "1", "WEBUI_PORT": "8099", "LOCAL_ENV": "/nonexistent-box.env"})
 ck("with no machine-local file the preview falls back to the repo default, loopback",
    "--bind 127.0.0.1" in _dr2.stdout and "--bind 0.0.0.0" not in _dr2.stdout, (_dr2.stdout)[:240])
-ck("and the sidecar actually running on this box is bound the way the file says, not by accident",
-   "0.0.0.0:8099" in subprocess.run(["ss", "-ltn"], capture_output=True, text=True, timeout=30).stdout,
-   "ss -ltn | grep 8099")
+# Which bind a live process proves. The two DRY checks above prove what webui.sh WOULD start; this one proves what
+# the box is actually answering on. Changed on 2026-11-05: it used to demand `0.0.0.0:8099`, which was a sidecar
+# someone had started by hand -- so the test decided the box's launch, and failed the moment that hand-started
+# process was stopped. This box's standing Monitor is the one INSIDE the serve (WEBUI=same, on the engine's own
+# port); a standalone sidecar is opt-in. So: the engine's port must be bound the way the file says, and any
+# sidecar that happens to be running is checked too -- running none is the configuration, not a failure.
+_ss = subprocess.run(["ss", "-ltn"], capture_output=True, text=True, timeout=30).stdout
+ck("the port this box stands on is bound the way the machine-local file says (HOST=0.0.0.0 reaches the live socket)",
+   "0.0.0.0:8080" in _ss, "ss -ltn | grep 8080")
+_ps = subprocess.run(["ps", "-eo", "args"], capture_output=True, text=True, timeout=30).stdout
+_side = sorted({m.group(1) for m in re.finditer(r"serve/webui\.py --port (\d+)", _ps)})
+ck("and every standalone sidecar that IS running is bound the way the file says (running none is fine: the "
+   "standing Monitor is the plugin inside the serve, not a second port)",
+   all(f"0.0.0.0:{p}" in _ss for p in _side),
+   f"sidecars up: {_side or 'none'}; sockets: {[l.split()[-1] for l in _ss.splitlines() if ':80' in l][:4]}")
 ck("the decision note answers the measurement that turned the cache off instead of ignoring it",
    all(k in _nd for k in ("5056943", "285 ms", "ITEMS=0,66,152", "How it landed")),
    [k for k in ("5056943", "285 ms", "ITEMS=0,66,152", "How it landed") if k not in _nd])

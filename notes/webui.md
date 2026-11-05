@@ -1736,6 +1736,20 @@ stub DOM's `querySelectorAll` hands back slots rather than descendants, so the b
 `innerHTML`; and `let status` in `monitor.js` is a lexical binding, not a global property, so the harness keeps a
 `clone()` of the `/api/status` response instead of reaching into the page.
 
+### The sidecar on `:8099` was not a service, and one test had made it one
+
+While turning the box back up (2026-11-05) the standalone sidecar was left stopped — which is this box's standing
+shape: the Monitor it runs day to day is the plugin **inside** the serve (`WEBUI=same`, on the engine's own port),
+and `serve/webui.sh` is opt-in, started by hand for a specific job. `tests/test_webui.py` disagreed: it asserted
+`0.0.0.0:8099` in `ss -ltn`, so a hand-started process from an earlier session had quietly become a requirement,
+and the suite failed the moment that process went away — a test choosing the box's launch.
+
+It now asserts two facts that do not depend on anyone remembering a hand start: the **engine's** port is bound the
+way `~/.config/r9700-stack/native.env` says (`0.0.0.0:8080`, from `HOST=0.0.0.0` — the same file, the same
+`set -a` path the sidecar reads), and *any* `serve/webui.py --port N` that happens to be running is bound the same
+way. Running none is stated as the configuration rather than a failure. The two `DRY=1` previews just above it
+still check what `webui.sh` *would* start, machine-local file honoured and repo default (loopback) without one.
+
 The one thing the change did not fix, named so it does not read as fixed: pointed at the **standalone sidecar**
 (`:8099`), the harness prints `BAD the header never named the engine`, because `stack_info()` finds no importable
 `r9700_vllm` in a sidecar running outside the serve's venv — the fields are absent by design and the header prints
