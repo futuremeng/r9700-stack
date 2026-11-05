@@ -228,3 +228,59 @@ Two things the fixture work taught, both kept in `tests/render-about.mjs`:
   it. Handing the fixture a 404 for it blanked the whole page (only `error` and `updated` rendered), which is also
   a fact about the page: it treats a 404 on that endpoint as fatal. File mode now answers `{}` for a fixture with
   no host block; URL mode still passes the real 404 through so the page's behaviour stays visible.
+
+## The default flipped: images are ON from 2026-11-05 01:19
+
+`serve/native-flashnext.sh` now has `: ${MM:=1}`. `MM=0` is the way back and it is a restart, not a code change, and
+`tools/recipe-check.py` sees the choice because it compares launch **flags** (section 13 of
+notes/launch-methodology.md) -- nothing in `vllm:*` does.
+
+The claim "text-only stays the default" earlier in this file is superseded by this section. It was the right claim
+when the only numbers were the ones above; what changed the decision was having the cost measured, not new
+information about the benefit.
+
+### Measured on the production launch itself, not a test config
+
+| | images off (00:49 launch) | images on (01:19 launch) |
+|---|---:|---:|
+| KV pool | 1,242 blocks / **977,726** tokens | 1,188 blocks / **935,216** tokens (**-4.35%**) |
+| `Maximum concurrency for 262,144 tokens per request` | **3.73x** | **3.57x** |
+| boot to `/health` 200 | 200 s / 220 s | **200 s** |
+| encoder cache budget | -- (mm disabled) | **8,192 tokens, profiled with 2 image items** |
+
+Two things in that table correct earlier claims in this file:
+
+- **Boot cost was +60 s and is not.** mm-on has now been timed at 260 s and at 200 s; mm-off at 200 s and 220 s. The
+  spread swamps the difference, so the honest statement is "boot time does not move measurably".
+- **`MM_IMAGE=4` does not mean 4 images fit one step.** The encoder budget came up as 8,192 tokens with **2** items
+  profiled even though the cap allows 4 x 4,096. The bound is `max_num_batched_tokens` (8,192), not the mm limits:
+  you may *send* four images and the encoder will process them **two at a time**. That is a scheduling fact worth
+  knowing before anyone reads "image: 4" as "four images land in one step".
+
+### What the box does now, checked on production
+
+- one drawn number → **`4729`** (133 prompt tokens); two → **`4729, 1371`**; four →
+  **`1113, 2227, 3341, 4458`**, all correct, in order; a fifth → `400 At most 4 image(s) may be provided in one
+  prompt`, which is the count cap doing its job.
+- the 2,560 x 6,236 screenshot → **4,123 prompt tokens** (it was 15,664 uncapped) and a plausible caption.
+- the **reasoning-parser trap fired again**: the four-image probe first came back with `content: ""` at
+  `max_tokens=400`. With a 1,200-token budget it returned `finish_reason: stop`, 457 generated tokens and 1,188
+  characters of reasoning, and the right answer. Anything wiring images to this box must budget for reasoning or
+  read `reasoning_content`, or it will believe the model is blind.
+- the text path did not move: GSM8K 10/10, needles 3/3, **1.741 accepted tokens per MTP draft** (the same gate gives
+  1.715-1.740 with images off), decode 128.1 tok per stream-second, preemptions **0**.
+- the deep-context path did not move either, which matters because enabling mm switches on a different attention
+  mode: a **150,057**-token needle prompt took **19.33 s** to first token at **7,764 tok/s** prefill and the needle
+  hit; the same prompt again took **0.62 s** (241,004 tok/s, prefix cache). Those are the same numbers the
+  cache-on ladder in README reports for 150k (19.32 s, 7,768 tok/s), so mm has not touched them.
+
+### What this default is knowingly taking on
+
+**Images under concurrency are still unmeasured.** Every image number above is one request at a time. What has not
+been watched yet: encoder steps interleaving with a box already carrying 32 concurrent deep-context decodes, and
+whether `mm_prefix` (the mode that boots on with mm) changes decode-step timing under that load. The decode card on
+the Monitor is the instrument: `rate-gen` per wall second and `itl_ms` should be watched against the
+`15.5 ms / ~128 tok per stream-second` recorded here. If they move, `MM=0` and a restart is the whole rollback.
+
+And one capacity number to keep straight: production's KV pool is now **935,216 tokens**, so the KV figures quoted
+throughout this repository for older launches (540,202 / 977,726) are history, not this launch.

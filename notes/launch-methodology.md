@@ -397,8 +397,8 @@ The procedure for a test that changes a **flag** is the §8/§12 procedure plus 
 effect is not visible in the config block:
 
 ```
-DRY=1 bash serve/native-flashnext.sh | grep -m1 'launch:'          # what production would be
-DRY=1 MM=1 MM_IMAGE=2 bash serve/native-flashnext.sh | grep -m1 'launch:'   # what the test would be
+DRY=1 bash serve/native-flashnext.sh | grep -m1 'launch:'          # what production would be (images are ON)
+DRY=1 MM=0 bash serve/native-flashnext.sh | grep -m1 'launch:'     # the way back, and a test config of it
 # ... launch the test under a TEST-named session and log, measure, then revert with the untouched command:
 STOP=1 bash serve/native-flashnext.sh
 tmux new-session -d -s r9700-native-flashnext 'MAXLEN=262144 NSEQ=32 NBT=8192 WEBUI=same LOG=<log> ' \
@@ -409,8 +409,10 @@ import json, urllib.request
 a = json.load(urllib.request.urlopen("http://127.0.0.1:8080/api/status", timeout=30))["argv"]
 print("--language-model-only" in a, "--limit-mm-per-prompt" in a)
 PY
-# 2) behaviour: POST one image -- 400 "At most 0 image(s) may be provided" is the correct answer for text-only
-# 3) geometry: the KV pool came back (1,199 blocks / 943,875 tokens with vision, 1,242 / 977,726 without)
+# 2) behaviour: POST one image. With images ON it answers; with --language-model-only it must be 400
+#    "At most 0 image(s) may be provided in one prompt". The behaviour is the proof, not the flag string.
+# 3) geometry: the KV pool follows the choice -- measured 2026-11-05: 1,188 blocks / 935,216 tokens with the vision
+#    tower against 1,242 / 977,726 without, and `Maximum concurrency for 262,144 tokens per request` 3.57x vs 3.73x
 # 4) tools/recipe-check.py -> "PRODUCTION recipe ... every launch flag in the live argv matches", exit 0
 ```
 
@@ -419,6 +421,13 @@ One test-writing trap worth keeping: the fixture launch line in `tests/test_webu
 "caught in both directions" check would have compared a line against itself and passed. Any test that builds its
 input by mutating a string has to assert the mutation happened -- `ck("the replace actually changed the line", ...)`
 is now in the file for that reason.
+
+The trap then recurred in its mirror image, and this is why the file no longer mutates strings at all: when the
+**default flipped to images-on** (2026-11-05), every check that built a deviation with
+`.replace("--language-model-only", ...)` silently matched nothing again -- same bug, other direction. The tests now
+call one function, `_mm_set(line, on)`, which strips whichever multimodal form is present and appends the one being
+asked for, so the checks say what they mean whichever way the default is set, and a guard check asserts the flip
+actually changed the line.
 
 ### §11 again, in the middle of documenting §11
 

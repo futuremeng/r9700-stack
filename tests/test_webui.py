@@ -1740,7 +1740,7 @@ ck("a serve that publishes no environment block is reported as unprovable, never
    and [d["key"] for d in rc.compare_env(None, _PE, {})] == ["env"])
 ck("the production answer does not depend on the shell that asked it: an exported MAXLEN or R9K_ name is stripped",
    "MAXLEN" in rc.OPERATOR_KNOBS and bool(rc.ENV_NS.match("R9K_ROUTER_MAX_M")))
-for _k, _v in (("MAXLEN", "999"), ("NBT", "1"), ("R9K_FOLD", "zzz"), ("R9K_ROUTER_MAX_M", "7"), ("MM", "1")):
+for _k, _v in (("MAXLEN", "999"), ("NBT", "1"), ("R9K_FOLD", "zzz"), ("R9K_ROUTER_MAX_M", "7"), ("MM", "0")):
     os.environ[_k] = _v
 try:
     _ce = rc.clean_env({"ENVRECIPE": "1"})
@@ -1753,7 +1753,7 @@ ck("an exported knob cannot move the PRODUCTION answer: the launcher is asked wi
    "MAXLEN" not in _ce and "R9K_ROUTER_MAX_M" not in _ce and "R9K_FOLD" not in _ce
    and _pe_polluted.get("R9K_FOLD") != "zzz" and "R9K_ROUTER_MAX_M" not in _pe_polluted
    and f"--max-model-len 999" not in _cmd_polluted and "--max-num-batched-tokens 1 " not in _cmd_polluted
-   and "--limit-mm-per-prompt" not in _cmd_polluted and "--language-model-only" in _cmd_polluted,
+   and "--limit-mm-per-prompt" in _cmd_polluted and "--language-model-only" not in _cmd_polluted,
    f"{sorted(_ce)[:4]} / {sorted(_pe_polluted)[:6]} / {len(_cmd_polluted)}")
 _LAU = os.path.join(ROOT, "serve", "native-flashnext.sh")
 _metabefore = os.stat(os.path.expanduser("~/r9700-web-meta-8080.json")).st_mtime if \
@@ -1793,8 +1793,18 @@ Path(_mj).unlink(missing_ok=True)
 # because the fixture predates the mm flag and a substring replace on a string that lacks the flag is a no-op that
 # would have made the "caught in both directions" check pass on equality.
 _REAL_CMD = rc.production_args()
-ck("text-only is the default in this tree, and it is a flag rather than a silence",
-   "--language-model-only" in _REAL_CMD and "--limit-mm-per-prompt" not in _REAL_CMD, _REAL_CMD[-140:])
+ck("images are ON by default in this tree (2026-11-05), with a count cap and a size cap both in the line",
+   '--limit-mm-per-prompt {"image": 4, "video": 0}' in _REAL_CMD
+   and '--mm-processor-kwargs {"size": {"longest_edge": 4194304, "shortest_edge": 65536}}' in _REAL_CMD
+   and "--language-model-only" not in _REAL_CMD, _REAL_CMD[-200:])
+# MM=0 has to be a real state, not a comment: the default flipped, and the way back must be as checkable as the way
+# in -- one env name and a restart.
+_mmoff = subprocess.run(["bash", _LAU], env=rc.clean_env({"MM": "0", "DRY": "1", "FORCE": "1", "PORT": "18099"}),
+                        capture_output=True, text=True, timeout=120).stdout
+_mmoffcmd = next((l for l in _mmoff.splitlines() if l.startswith("launch:")), "")[len("launch:"):]
+ck("MM=0 puts --language-model-only back and passes no mm flags at all (an unused size cap would be a knob that silently does nothing)",
+   "--language-model-only" in _mmoff and "--limit-mm-per-prompt" not in _mmoff
+   and "--mm-processor-kwargs" not in _mmoff, _mmoff[-160:])
 _mml = subprocess.run(["bash", _LAU], env=rc.clean_env({"MM": "1", "DRY": "1", "FORCE": "1", "PORT": "18099"}),
                       capture_output=True, text=True, timeout=120).stdout
 _mml2 = subprocess.run(["bash", _LAU],
@@ -1821,12 +1831,13 @@ ck("a changed size cap is a recipe deviation the gate names (it changes what eve
    [f for f, _, _ in rc.compare_flags(_mmcmd, _mmcmd3)] == ["--mm-processor-kwargs"],
    str([f for f, _, _ in rc.compare_flags(_mmcmd, _mmcmd3)]))
 ck("and no size cap is passed when mm is off: an unused knob in the line is a knob that silently does nothing",
-   "--mm-processor-kwargs" not in _REAL_CMD)
+   "--mm-processor-kwargs" not in _mmoff)
 ck("the launcher writes mm and mm_limits into the recipe file (the next two checks read what it actually wrote)",
    'mm="$MM"' in open(_LAU).read() and "mm_limits=" in open(_LAU).read())
 # and records it HONESTLY: with mm off, the limits are zero, not "image 4" -- a page that prints the limits the
 # launcher would have used while the flag keeps them at nothing is a page that lies about what the box accepts.
-for _mm, _want in ((None, "image 0, video 0 (--language-model-only)"),
+for _mm, _want in (("0", "image 0, video 0 (--language-model-only)"),
+                   (None, "image 2, video 0, max 4194304 px (~4096 tokens each)"),
                    ("1", "image 2, video 0, max 4194304 px (~4096 tokens each)")):
     _mp = "/tmp/r9700-mm-meta-honest.json"
     Path(_mp).unlink(missing_ok=True)
@@ -1835,35 +1846,57 @@ for _mm, _want in ((None, "image 0, video 0 (--language-model-only)"),
         _e["MM"] = _mm
     subprocess.run(["bash", _LAU], env=rc.clean_env(_e), capture_output=True, text=True, timeout=180)
     _mv = json.loads(Path(_mp).read_text()) if Path(_mp).exists() else {}
-    ck(f"the recipe file states the mm limits the serve actually has (MM={_mm or 'off'})",
-       str(_mv.get("mm")) == (_mm or "0") and _mv.get("mm_limits") == _want, str(_mv.get("mm_limits")))
+    _on = _mm != "0"                      # the default is ON now, so "no MM set" belongs with "MM=1"
+    ck(f"the recipe file states the mm limits the serve actually has (MM={_mm or 'default'})",
+       str(_mv.get("mm")) == (_mm or "1") and _mv.get("mm_limits") == _want, str(_mv.get("mm_limits")))
     # Granular, and EFFECTIVE rather than nominal: mm_image=4 while the flag keeps the limit at 0 is the same class
     # of lie as the old mm_limits string, and the About page renders whatever the recipe says.
-    ck(f"and it records the mm knobs separately, as effective values (MM={_mm or 'off'})",
-       _mv.get("mm_effective") == ("on" if _mm else "off")
-       and _mv.get("mm_image") == (_mm and "2" or "0") and _mv.get("mm_video") == "0"
-       and _mv.get("mm_max_pix") == (_mm and "4194304" or "0")
-       and _mv.get("mm_max_tok") == (_mm and "4096" or "0")
+    ck(f"and it records the mm knobs separately, as effective values (MM={_mm or 'default'})",
+       _mv.get("mm_effective") == ("on" if _on else "off")
+       and _mv.get("mm_image") == ("2" if _on else "0") and _mv.get("mm_video") == "0"
+       and _mv.get("mm_max_pix") == ("4194304" if _on else "0")
+       and _mv.get("mm_max_tok") == ("4096" if _on else "0")
        and "MM_IMAGE=2" in (_mv.get("mm_if_on") or "") and "MM_MAX_PIX=4194304" in (_mv.get("mm_if_on") or ""),
        str({k: _mv.get(k) for k in ("mm_effective", "mm_image", "mm_max_pix", "mm_max_tok", "mm_if_on")}))
     Path(_mp).unlink(missing_ok=True)
-ck("a launch line's flags parse with their JSON values intact",
+ck("a launch line's flags parse with their JSON values intact, and a bare flag is present with value None",
    rc.parse_flags(_REAL_CMD).get("--speculative-config", "").startswith('{"method"')
-   and rc.parse_flags(_REAL_CMD).get("--language-model-only") is None,
+   and "--language-model-only" not in rc.parse_flags(_REAL_CMD)
+   and rc.parse_flags(_mmoffcmd).get("--language-model-only") is None,
    str(rc.parse_flags(_PROD_CMD).get("--speculative-config"))[:60])
 ck("an unchanged launch line deviates nowhere", rc.compare_flags(_REAL_CMD, _REAL_CMD) == [])
 ck("and the fixture line parses too (the gate runs on whatever line it is handed)",
    rc.compare_flags(_PROD_CMD, _PROD_CMD) == []
    and rc.parse_flags(_PROD_CMD).get("--no-enable-prefix-caching") is None)
-_flipped = _REAL_CMD.replace("--language-model-only", '--limit-mm-per-prompt {"image": 4, "video": 0}')
-ck("the replace actually changed the line (a no-op replace would make the next two checks vacuous)",
-   _flipped != _REAL_CMD and "--language-model-only" not in _flipped)
+# Multimodal can be written into a launch line two ways, and the default flipped on 2026-11-05 -- so a literal
+# `.replace("--language-model-only", ...)` would now match nothing and quietly make every check below vacuous. That
+# is the exact failure the guard under this block was written for, so the flip is a function instead.
+def _mm_line(n_img=4, pix=4194304):
+    return ('--limit-mm-per-prompt {"image": %d, "video": 0} '
+            '--mm-processor-kwargs {"size": {"longest_edge": %d, "shortest_edge": 65536}}' % (n_img, pix))
+
+
+_MM_RE = re.compile(r"--limit-mm-per-prompt \{[^}]*\} --mm-processor-kwargs \{[^}]*\}\}")
+
+
+def _mm_set(line, on, n_img=4, pix=4194304):
+    """The same launch line, with multimodal decided the given way: exactly one of the two forms is present."""
+    line = re.sub(r"\s{2,}", " ", _MM_RE.sub("", line.replace("--language-model-only", ""))).strip()
+    return f"{line} {_mm_line(n_img, pix)}" if on else f"{line} --language-model-only"
+
+
+_mm_live = "--language-model-only" not in _REAL_CMD
+_flipped = _mm_set(_REAL_CMD, not _mm_live)
+ck("flipping the multimodal default really changes the line (a no-op flip would make the next checks vacuous)",
+   _flipped != _REAL_CMD and ("--language-model-only" in _flipped) != ("--language-model-only" in _REAL_CMD),
+   _flipped[-160:])
 _fg = {f: (x, y) for f, x, y in rc.compare_flags(_REAL_CMD, _flipped)}
-ck("turning images on is caught in BOTH directions: the added limit and the removed text-only flag",
-   set(_fg) == {"--language-model-only", "--limit-mm-per-prompt"}, sorted(_fg))
+ck("a multimodal flip is caught in BOTH directions: the flag removed and the flags added",
+   {"--language-model-only", "--limit-mm-per-prompt", "--mm-processor-kwargs"} <= set(_fg), sorted(_fg))
 ck("a bare flag that is absent is not 'the same as' a bare flag whose value is None -- presence is the comparison "
    "(this is the bug that would have hidden the mm flip)",
-   _fg.get("--language-model-only") == (None, "not passed"), str(_fg.get("--language-model-only")))
+   _fg.get("--language-model-only") in [(None, "not passed"), ("not passed", None)],
+   str(_fg.get("--language-model-only")))
 ck("box facts are not recipe deviations (host and port live in the machine-local env file)",
    rc.compare_flags(_REAL_CMD, _REAL_CMD.replace("--port 8080", "--port 9090")) == [])
 ck("a flag only the live process has is named (someone added --swap-space by hand)",
@@ -1878,14 +1911,15 @@ if _live_st is None:
 else:
     _fmm = "/tmp/r9700-recipe-flags-mm.json"
     _s = dict(_live_st)
-    _s["argv"] = (_s.get("argv") or "").replace("--language-model-only",
-                                               '--limit-mm-per-prompt {"image": 4, "video": 0}')
+    # The live serve matches this tree (that is what a green gate means), so the deviation has to be manufactured by
+    # deciding multimodal the OTHER way than the tree does -- whichever way that is now.
+    _s["argv"] = _mm_set(_s.get("argv") or "", not _mm_live)
     Path(_fmm).write_text(json.dumps(_s))
     _r = subprocess.run([sys.executable, f"{ROOT}/tools/recipe-check.py", _fmm],
                         capture_output=True, text=True, timeout=180)
-    ck("gate: a live serve that was launched with images on gets flagged and exits 1",
-       _r.returncode == 1 and "launch flag(s) differ" in _r.stdout and "--limit-mm-per-prompt" in _r.stdout,
-       _r.stdout[:180])
+    ck("gate: a live serve launched with multimodal the other way gets flagged and exits 1",
+       _r.returncode == 1 and "launch flag(s) differ" in _r.stdout
+       and ("--limit-mm-per-prompt" in _r.stdout or "--language-model-only" in _r.stdout), _r.stdout[:180])
     _fna = "/tmp/r9700-recipe-flags-noargv.json"
     Path(_fna).write_text(json.dumps({k: v for k, v in _live_st.items() if k != "argv"}))
     _r = subprocess.run([sys.executable, f"{ROOT}/tools/recipe-check.py", _fna],
@@ -1900,10 +1934,7 @@ else:
     # a ReferenceError leaving the card blank.
     _mfp = "/tmp/r9700-mm-page-payload.json"
     _mmfix = dict(_live_st)
-    _mmfix["argv"] = (_live_st.get("argv") or "").replace(
-        "--language-model-only",
-        '--limit-mm-per-prompt {"image": 2, "video": 0} '
-        '--mm-processor-kwargs {"size": {"longest_edge": 4194304, "shortest_edge": 65536}}')
+    _mmfix["argv"] = _mm_set(_live_st.get("argv") or "", True, n_img=2)
     _mmfix["meta"] = {**(_live_st.get("meta") or {}), "mm": "1", "mm_effective": "on", "mm_image": "2",
                       "mm_video": "0", "mm_max_pix": "4194304", "mm_min_pix": "65536", "mm_max_tok": "4096",
                       "mm_if_on": "MM_IMAGE=2 MM_VIDEO=0 MM_MAX_PIX=4194304 MM_MIN_PIX=65536"}
@@ -1920,7 +1951,7 @@ else:
         # that was started without them. The page must say the sentence rather than show two rows and hope.
         _mf2 = "/tmp/r9700-mm-page-disagree.json"
         _mmfix2 = dict(_mmfix)
-        _mmfix2["argv"] = _live_st.get("argv") or ""
+        _mmfix2["argv"] = _mm_set(_mmfix["argv"], False)     # recipe says images, process was started without them
         _mmfix2["meta_mtime"] = __import__("time").time()
         Path(_mf2).write_text(json.dumps(_mmfix2))
         _nr2 = subprocess.run(["node", f"{ROOT}/tests/render-about.mjs", _mf2],

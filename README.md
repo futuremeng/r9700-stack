@@ -394,15 +394,22 @@ token by token (`--host`, `--port` and `--served-model-name` excluded: box facts
 counts: a flag whose value is `None` and a flag that is absent are different answers, and the first draft of the
 comparison treated them alike, which would have hidden the exact flip it was written for. When the payload carries
 no argv (an in-process page older than the comparison), the gate says the flags are **UNPROVABLE** rather than
-counting them as matching. The flag that motivated this face is `--language-model-only`: this box is text-only
-because a flag says so, not because the weights cannot see — `MM=1` turns images on, they demonstrably work, and
-the cost is 3.5% of the KV pool plus 60 s of boot ([notes/multimodal-input.md](notes/multimodal-input.md)).
+counting them as matching. The flag that motivated this face is the multimodal one: **images are ON by default since
+2026-11-05**, they were never impossible (the checkpoint carries a vision tower; `--language-model-only` was putting
+every limit at 0), and the choice is visible nowhere except the launch line, which is exactly why the flag face
+exists. `MM=0` is the way back — one env name and a restart. Cost, measured on the production launch:
+**977,726 → 935,216 KV tokens (-4.35%)**, `Maximum concurrency for 262,144 tokens per request` **3.73x → 3.57x**,
+boot unchanged (mm-on timed at 260 s and 200 s, mm-off at 200 s and 220 s — the spread swamps it).
 `--limit-mm-per-prompt` only counts images, so `MM_MAX_PIX` caps what **one** may cost: the checkpoint's own default
 is 16,777,216 px = 16,384 image tokens, and an uncapped 2,560 × 6,236 screenshot arrived as **15,664 prompt tokens**.
 The default cap (4,194,304 px ≈ 4,096 tokens) brings that to 4,123, and per-request `mm_processor_kwargs` are
-refused by default, so it is a ceiling a client cannot lift. The About page answers the whole question in one card
-(now: what the live serve accepts from its own argv, what the recipe recorded as effective limits, the knobs that
-choose them, and 1,024 px per image token as the basis) because the engine's config cannot answer it at all.
+refused by default, so it is a ceiling a client cannot lift. Note that `image: 4` does **not** mean four images in
+one step: the encoder cache came up at 8,192 tokens with 2 items profiled because `NBT=8192` bounds it — four may be
+sent, two are encoded at a time. What is still unmeasured, and is what the decode card should be watched against:
+**images under concurrency** (every image measurement so far is one request at a time, on a box that also carries
+32 deep-context streams). The About page answers the whole question in one card (what the live serve accepts, what
+the recipe recorded as effective limits, the knobs, and 1,024 px per image token as the basis) because the engine's
+config cannot answer it at all ([notes/multimodal-input.md](notes/multimodal-input.md)).
 
 The 1 min prefill figure is low **because of the metric, not the box**: `prompt_tokens_total` credits a prompt when
 its request finishes, so a 60-second span that has long prefills running but not finished credits only what happened

@@ -152,20 +152,24 @@ if [ "${ENVRECIPE:-0}" = 1 ]; then echo "env recipe: $(r9k_env_json)"; exit 0; f
 # launch if the running engine disagrees with this line.
 : ${PREFIX_CACHE:=1}
 
-# Text-only by default, and it is a choice rather than an accident: `--language-model-only` puts every multimodal
-# limit at 0 (the engine says so at boot: "All limits of multimodal modalities supported by the model are set to 0,
-# running in text-only mode", and an image request comes back 400 "At most 0 image(s) may be provided"). The
-# checkpoint does carry a vision tower (config.json has vision_config / image_token_id / vision_{start,end}_token_id,
-# and the directory has preprocessor_config.json and video_preprocessor_config.json), so this flag -- not the
-# weights -- is what keeps the box reading text.
-# Why text-only stays the default: every number in this repo (262k context, fp8 KV, NBT 8192, MTP-2, the R9K_*
-# kernels for MoE/GDN/QSA) was measured on the language path; the vision tower would take card memory out of the KV
-# pool (1,242 blocks / 977,726 tokens at util 0.97), boot enables a different attention mode (`mm_prefix`, disabled
-# today because mm is configuration-disabled), and mm + prefix caching + align has never been measured here.
-# MM=1 turns it on for a named test; MM_IMAGE / MM_VIDEO set the per-prompt limits. The live answer is not in the
-# engine's measured config, so tools/recipe-check.py compares the launch FLAGS: launcher truth against the live
-# process's own argv, published by the merged plugin in /api/status.
-: ${MM:=0}; : ${MM_IMAGE:=4}; : ${MM_VIDEO:=0}
+# Images are ON by default since 2026-11-05. MM=0 puts them back off, and that is a restart, not a code change.
+# What the flag does when off: --language-model-only puts every multimodal limit at 0 (boot says "All limits of
+# multimodal modalities supported by the model are set to 0, running in text-only mode", and an image request
+# answers 400 "At most 0 image(s) may be provided in one prompt"). Either way the checkpoint carries a vision tower
+# (config.json has vision_config / image_token_id / vision_{start,end}_token_id, and the directory has
+# preprocessor_config.json and video_preprocessor_config.json): it was the flag keeping the box text-only, never
+# the weights.
+# The measured cost of this default (notes/multimodal-input.md): the vision tower takes 33,851 prompt tokens of KV
+# (1,242 -> 1,199 blocks; 977,726 -> 943,875 tokens at util 0.97) and boot gains ~60 s. The text path did not move:
+# GSM8K 10/10, needles 3/3, and 1.725 accepted tokens per MTP draft against the 1.715-1.740 the same gate gives with
+# images off, with 0 preemptions and 0 crashes.
+# What is NOT measured, and is the risk this default takes on: images UNDER CONCURRENCY. Every probe so far was one
+# request at a time on an idle box, and boot enables a different attention mode (`mm_prefix`) when mm is on. So
+# encoder steps interleaving with 32 concurrent deep-context decodes is unmeasured here -- watch the first hours,
+# and MM=0 is the way back.
+# The live answer is not in the engine's measured config, so tools/recipe-check.py compares the launch FLAGS:
+# launcher truth against the live process's own argv, published by the merged plugin in /api/status.
+: ${MM:=1}; : ${MM_IMAGE:=4}; : ${MM_VIDEO:=0}
 # `--limit-mm-per-prompt` caps HOW MANY images, not how big they are, and on this checkpoint the default size cap is
 # enormous: preprocessor_config.json says size.longest_edge = 16,777,216 pixels (with shortest_edge = 65,536). With
 # patch 16 and merge 2, one image token covers 32x32 = 1,024 pixels, so that default is 16,384 image tokens per
