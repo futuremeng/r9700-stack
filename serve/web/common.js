@@ -254,8 +254,46 @@ function gpuCard(g, ghist = [], i = 0) {
       + "It is the sensor that separates these four cards, so read it both ways: against its limit and against "
       + "its neighbours"]);
   }
+  // The link this card hangs off, as one word: Gen5. It replaced the Monitor's own PCIe panel (2026-11-05),
+  // and the reason is a measurement, not a preference: on this box the AER counters move by the dozen through
+  // a weight load while every port keeps its full 32.0 GT/s, so the panel's colour meant "something counted"
+  // rather than "the wire got short". What someone acts on is a link that negotiated below what the ports on
+  // this chain are rated for, and that is a single number: the generation. So the card says Gen5 and is quiet,
+  // and only a short link raises its voice -- at which point the badge opens the full account (chain, counters
+  // by name, the window's deltas), because then the numbers are evidence for a decision rather than weather.
+  // Nothing here invents a state: no chain in the payload (an older sidecar) prints no badge at all.
+  const lk = g.link || null;
+  const rated = lk && isnum(lk.max_gen) ? lk.max_gen : null;
+  const busyCard = isnum(g.busy_pct) && g.busy_pct >= 25;      // the same "is work running" test the panel used
+  let link = "";
+  if (lk) {
+    const gt = (v) => (isnum(v) ? `Gen${v}` : "\u2014");
+    const txt = isnum(lk.gen) ? `${gt(lk.gen)} \u00d7${lk.width || "?"}` : "link \u2014";
+    // Parked (D3hot: this box sits there between launches) explains a short link without anything being wrong,
+    // so it is named in muted type and never coloured; a short link with work running is the fault case.
+    const tone = !lk.short || lk.parked ? "" : busyCard ? "danger" : "warn";
+    const why = lk.parked ? "parked (D3hot): idling its links on purpose"
+      : lk.short ? (busyCard ? "BELOW its rating while this card works" : "below its rating with nothing running")
+                 : "every port on this chain is at its rating";
+    const errs = lk.short && (lk.corr || lk.uncorr)
+      ? ` <span class="q">\u00b7 ${lk.corr} corr${lk.uncorr ? ` \u00b7 ${lk.uncorr} uncorr` : ""}</span>` : "";
+    const tip = `PCIe link: ${txt}`
+      + (rated && isnum(lk.gen) && lk.gen < rated ? `, the ports here are rated Gen${rated}`
+         : rated ? ` (rated Gen${rated})` : "")
+      + ` \u00b7 ${why}`
+      + (lk.short ? " \u00b7 click for the chain's full error account"
+         : ` \u00b7 ${lk.corr || 0} correctable / ${lk.uncorr || 0} uncorrectable since boot, not shown: a link at `
+           + "its rating is not a fault, and this box counts correctables by the dozen through a weight load. "
+           + "They stay in /api/status, the journal and tools/journal-pcie.py");
+    link = `<div class="gpu-link" data-tone="${tone}">`
+      + (lk.short
+         ? `<button type="button" class="lk-btn" data-bus="${esc(lk.bus)}" title="${esc(tip)}">${txt}${errs}</button>`
+         : `<span title="${esc(tip)}">${txt}</span>`)
+      + (lk.short && rated && isnum(lk.gen) ? ` <span class="q">of Gen${rated}</span>` : "") + `</div>`;
+  }
   d.innerHTML = `<b>${g.slot ? `slot ${esc(g.slot)}` : esc(g.name || g.card)}</b>`
     + `<span class="small">${[g.card && esc(g.card), where].filter(Boolean).join(" \u00b7 ")}</span>`
+    + link
     + `<div class="pct">${busy}</div>`
     + rows.map(([lab, title]) => `<div class="sparkrow"><span title="${title}">${lab}</span>`
         + `<div class="sparkline spark--gpu"></div></div>`).join("")

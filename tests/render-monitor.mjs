@@ -135,53 +135,68 @@ for (const [k, v] of Object.entries({
 // goes blank or wrong rather than throwing.
 console.log("\nslot map:", t("slot-map").replace(/\s+/g, " ").trim());
 
-for (const [label, id] of [["cards", "gpus"], ["pcie", "pcie"]]) {
-  const kids = (byId.get(id) || new El()).children;
-  console.log(`\n${label} cards rendered: ${kids.length}`);
-  for (const k of kids.slice(0, 2)) {
-    const waves = k.querySelectorAll(".spark--gpu").length;
-    console.log("  " + k.textContent.replace(/\s+/g, " ").trim().slice(0, 200) + ` [${waves} waves]`);
-  }
+// The card is the whole PCIe story now (2026-11-05): one badge per card saying the generation it negotiated.
+// What the harness has to prove is the rule, not just the presence: a card at its rating renders a word and no
+// button (nothing to open), and only a card whose link came up short renders a button that carries its bus.
+const CARDS = (byId.get("gpus") || new El()).children;
+console.log(`\ncards rendered: ${CARDS.length}`);
+for (const k of CARDS) {
+  const linkEl = (k.querySelectorAll(".gpu-link") || [])[0];
+  const btn = linkEl && (linkEl.innerHTML || "").includes("lk-btn");
+  console.log("  " + k.textContent.replace(/\s+/g, " ").trim().slice(0, 90)
+              + ` | link cell: ${linkEl ? (linkEl.textContent.trim() || "(empty)") : "none"}`
+              + `${btn ? " [button]" : ""} tone=${linkEl ? linkEl.dataset.tone || "-" : "-"}`);
 }
-
-// Grid rows are silent about their own shape: a row that emits six children into a seven-track grid does not
-// throw, it just starts a second line, and the panel reads as "the columns are ragged". So the child count is
-// asserted here, where it is cheap, rather than discovered by someone squinting at a screenshot.
-const PROWS = (byId.get("pcie") || new El()).children;
-const AREAS = ["p-slot", "p-drv", "p-chain", "p-link", "p-cnt", "p-who", "p-win"];
-const misshapen = PROWS.filter((r) => AREAS.some((a) => !String(r.innerHTML || "").includes(a)))
-  .map((r) => { const have = AREAS.filter((a) => String(r.innerHTML || "").includes(a));
-    return `${r.textContent.replace(/\s+/g, " ").trim().slice(0, 34)} -> ${have.length}/7 columns,`
-      + ` missing ${AREAS.filter((a) => !have.includes(a)).join(" ")}`; });
-if (misshapen.length) {
-  console.log("\nBAD PCIe GRID ROWS (each must fill all 7 grid areas):");
-  for (const m of misshapen) console.log("  " + m);
+const chains = (ctx.status && ctx.status.pcie) || [];      // the payload the page is drawing right now
+const shortc = chains.filter((c) => c.degraded && !c.parked);
+const badCards = CARDS.filter((k) => {
+  const h = String(k.innerHTML || "");
+  const linkEl = (k.querySelectorAll(".gpu-link") || [])[0];
+  return linkEl && /lk-btn/.test(h) !== /data-bus=/.test(h);
+});
+if (badCards.length) {
+  console.log(`BAD  ${badCards.length} card(s) whose badge is a button without a bus to open, or the reverse`);
   process.exitCode = 1;
-} else {
-  console.log(`\npcie grid: ${PROWS.length} rows, all filling the 7 areas (${AREAS.join(" ")})`);
 }
-// Pinning is a DELEGATED click on the rows container: the rows are rebuilt every second, so a handler -- or a
-// pinned panel -- attached to a row would not survive the tick. Drive it the way a click does, then read what
-// the panel says: those lines are the reason the detail is DOM text rather than a `title` tooltip.
-const PEL = byId.get("pcie"), DET = byId.get("pcie-detail");
-const click = (bus) => PEL.onclick && PEL.onclick({
+// An error count must not reach a card that holds its rating. The counters stay in the payload; the rendered
+// cell stays a word. This is the whole point of the change, so it is asserted on what the page draws.
+const noisy = CARDS.filter((k) => {
+  const linkEl = (k.querySelectorAll(".gpu-link") || [])[0];
+  return linkEl && /\bcorr\b/.test(linkEl.textContent || "")
+    && !(String(k.innerHTML || "").includes("lk-btn"));
+});
+if (noisy.length) {
+  console.log(`BAD  ${noisy.length} card(s) print an AER count on a link that is not short`); process.exitCode = 1;
+}
+console.log(`chains: ${chains.length} total, ${shortc.length} short (of which ${
+  chains.filter((c) => c.parked).length} parked)`);
+
+// Pinning is a DELEGATED click on the CARDS container: the cards are rebuilt every second, so a handler -- or a
+// pinned account -- attached to a card would not survive the tick. Drive it the way a click does, then read what
+// the account says: those lines are the reason the detail is DOM text rather than a `title` tooltip.
+const GPEL = byId.get("gpus"), DET = byId.get("pcie-detail");
+const click = (bus) => GPEL.onclick && GPEL.onclick({
   target: { closest: (sel) => (sel === "[data-bus]" ? { dataset: { bus } } : null) } });
-if (!PEL.onclick) {
-  console.log("BAD  #pcie has no delegated click handler, so the count cell cannot be opened"); process.exitCode = 1;
+if (!GPEL.onclick) {
+  console.log("BAD  #gpus has no delegated click handler, so a short link's badge cannot be opened");
+  process.exitCode = 1;
+} else if (!shortc.length) {
+  console.log("\nno chain is short, so no badge is a button -- nothing to pin (the healthy state, not a fault)");
 } else {
-  click("c6:00.0");
-  console.log(`\ndetail pinned on c6:00.0 -- hidden=${DET.hidden}, ${DET.children.length} blocks:`);
+  const bus = shortc[0].bus;
+  click(bus);
+  console.log(`\naccount pinned on ${bus} -- hidden=${DET.hidden}, ${DET.children.length} blocks:`);
   DET.children.forEach((c) => console.log("   |", c.textContent));
   if (DET.hidden || DET.children.length < 5) {
     console.log("BAD  pinning wrote no readable detail"); process.exitCode = 1;
   }
-  // Count DOM writes on the pinned lines, then paint again with nothing changed. A panel that rewrote every
+  // Count DOM writes on the pinned lines, then paint again with nothing changed. An account that rewrote every
   // line each second would destroy the text selection the reader is making -- which is the whole point of it.
   let detWrites = 0, sameWrites = 0;
   const proto = Object.getPrototypeOf(new El("i"));
   const dsc = Object.getOwnPropertyDescriptor(proto, "textContent");
   Object.defineProperty(proto, "textContent", { configurable: true, get: dsc.get,
-    // A write is only wasteful if it writes the value that is already there. The panel's own content moves
+    // A write is only wasteful if it writes the value that is already there. The account's own content moves
     // between repaints ("quiet 7 min" becomes "quiet 8 min", an AER counter lands), and rewriting THOSE lines
     // is correct -- an earlier version of this check asserted "nothing changed" without checking, and failed
     // against a link that put a BadTLP on the wire while it ran.
@@ -190,15 +205,12 @@ if (!PEL.onclick) {
   const marked = DET.children.filter((c) => c._det).length;
   await ctx.refresh();
   console.log(`repainted: ${detWrites} line write(s) across ${marked} pinned lines, ${sameWrites} of them the value that was already there`);
-  if (sameWrites > 0) { console.log("BAD  a pinned panel rewrites lines to the value they already hold"); process.exitCode = 1; }
-  click("c6:00.0");
-  console.log(`clicked the same chain again -> hidden=${DET.hidden}, children=${DET.children.length}`);
-  if (!DET.hidden) { console.log("BAD  unpinning left the panel open"); process.exitCode = 1; }
+  if (sameWrites > 0) { console.log("BAD  a pinned account rewrites lines to the value they already hold"); process.exitCode = 1; }
+  click(bus);
+  console.log(`clicked the same card again -> hidden=${DET.hidden}, children=${DET.children.length}`);
+  if (!DET.hidden) { console.log("BAD  unpinning left the account open"); process.exitCode = 1; }
   Object.defineProperty(proto, "textContent", dsc);
 }
-console.log(`\nPCIe note: ${t("pcie-note")}`);
-for (const k of (byId.get("pcie") || new El()).children.slice(0, 4))
-  console.log("  " + k.textContent.replace(/\s+/g, " ").trim());
 console.log(`\nrequest rows rendered: ${rows.length}`);
 for (const r of rows.slice(0, 6)) console.log("  " + r.textContent.replace(/\s+/g, " ").trim());
 // Which build this page belongs to: the header names the engine, the plugin and the commit, so a screenshot can

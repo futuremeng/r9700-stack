@@ -218,26 +218,17 @@ number above it means the two counters are not the pair this line thinks they ar
     </div>
   </section>
 
-  <!-- row 3: per-card state from the amdgpu sysfs: no ROCm runtime, nothing started on the card -->
+  <!-- per-card state from the amdgpu sysfs: no ROCm runtime, nothing started on the card. The link each card
+       hangs off is part of the card now (Gen5, or the generation it negotiated): the Monitor used to keep a
+       separate PCIe panel for it, and that panel printed AER counters every poll -- on this box they move by
+       the dozen through a weight load while every port keeps its full 32.0 GT/s, so the panel's alarm meant
+       "a counter moved" rather than "the wire went short". One word per card says the whole thing a decision
+       needs; a link under its rating is the state that gets coloured, and it opens the chain's account below. -->
   <section class="card gpus-card">
-    <div class="panel-bar"><h2>Cards</h2><span class="small" id="gpus-note">amdgpu sysfs · busy %, VRAM, temperature</span></div>
+    <div class="panel-bar"><h2>Cards</h2><span class="small" id="gpus-note">amdgpu sysfs · busy %, VRAM, temperature, link</span></div>
     <div class="small slot-map" id="slot-map" hidden></div>
     <div class="grid gpus" id="gpus"></div>
-  </section>
-
-  <!-- the link the cards hang off. Not throughput: the byte counters answer N/A on these cards, so this is
-       link state plus the kernel's AER error counters -- the evidence the reset storm wanted. Rows, not
-       waveforms, because both halves are static-or-eventual: the link sits at its maximum unless it
-       renegotiates (one value changing once), and the counters moved 0 times in 90 idle samples and 0 times
-       through an eight-stream burst, but ~12 times around two serve restarts. A curve of that is flat; an
-       event with a timestamp is the whole point. -->
-  <section class="card pcie-card">
-    <div class="panel-bar"><h2>PCIe</h2>
-      <span class="small" id="pcie-note">sysfs link state and AER counters</span>
-      <svg class="spark spark--pcie" id="pcie-spark" aria-label="AER events per second"></svg>
-    </div>
-    <div class="pcie-rows" id="pcie"></div>
-  <div class="pcie-detail" id="pcie-detail" hidden></div>
+    <div class="pcie-detail" id="pcie-detail" hidden></div>
   </section>
 
   <!-- timings the engine only reports as averages: the honest version of "queue wait per request" -->

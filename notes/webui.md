@@ -1683,3 +1683,46 @@ written, was untested, and outlived the default flipping to `MM=1`. The launcher
 prints `this tree's default is MM=<value>`, and a recipe written before the key existed gets
 `this recipe does not record the tree's default, so this page does not state one` — see
 [multimodal-input.md](multimodal-input.md).
+
+## The PCIe panel becomes one word on the card (2026-11-05)
+
+The panel had already been demoted once — from four cards of waveforms to one text row per chain, because both
+things it could report are static-or-eventual. That was not far enough. Asked "can it be quieter still", the answer
+this time was: **remove it, and put one word on the card.**
+
+What made the case was the rate, not the counts. Measured on this box through ordinary weight loads: **11.3–45.7
+correctable AER counters a minute**, with every port on every chain holding its full 32.0 GT/s ×16 the whole time.
+The panel coloured a chain whenever those counters moved, so on a healthy box at work the colour was on, always,
+and the one state that deserves colour — a link that negotiated *below what the ports above the card are rated
+for* — was indistinguishable from it. That is the failure mode the sparse-glyph step had already tried to fix, and
+the fix did not hold: a rate threshold still fires on weather.
+
+The new rule:
+
+* A card prints its **generation**: `Gen5 ×16`. `pci_gen` in `serve/webui.py` turns 32.0 GT/s into 5 (2.5 is Gen1,
+  each generation doubles; an unnamed rate is derived by doubling, a zero or unreadable rate is no generation at
+  all). The GT/s string is what nobody could read as "one generation short" without a datasheet open; it stays in
+  the tooltip and in the account.
+* A card that came up **short** says so and says what it fell short of: `Gen4 ×16 of Gen5`, or `Gen5 ×8 of Gen5`
+  for the x8-on-an-x16 case that a speed reading hid entirely (both come from `read_pcie`'s `degraded`, which
+  already checked width as well as speed).
+* Colour stays tied to work: a **parked** card (D3hot between launches — every chain on this box reads 2.5 GT/s
+  then) is named in muted type and never coloured; a short link on a card at ≥25% busy is the danger case.
+* **No error number is printed anywhere on the page unless that chain is short.** The counters are still read every
+  poll, still ride `/api/status` (`pcie`, `pcie_history`, `pcie_events`), still land in the journal, and are still
+  what `tools/journal-pcie.py` and `tools/aer-watch.py` read. What was removed is the alarm, not the evidence.
+* The account survives as the block under the Cards, opened from the badge of a short chain (`#gpus` carries the
+  delegated click, since the cards are rebuilt every tick). Nothing prints numbers for a chain nobody would act on.
+
+Mechanically: `link_facts(chains)` builds `{gen, max_gen, speed, width, max_width, short, parked, corr, uncorr,
+slot, chain}` per GPU endpoint and the poll attaches it as `g.link` — joined by chain, not by bus id, for the same
+reason the slot join is: the firmware names the slot at the card's switch upstream port (`c4:00`), not at the GPU
+endpoint (`c6:00.0`). A card with no chain in the payload gets no `link` key at all, so the page prints no badge
+rather than a dash it cannot justify. `slot_map` gained `gen`/`max_gen`/`short`/`parked` so the chassis line says
+`Gen5 ×16` in the same voice as the cards.
+
+The tests moved with it, and one class of them went away entirely: the PCIe grid arithmetic (seven named tracks
+sized from the longest string each column carries, `test_webui.py`'s 2026-11-03 section) had nothing left to size.
+What replaced it asserts the rule rather than the layout — that a card at its rating renders a word and **no
+button**, that no card prints a `corr` count unless its badge is a button, and that `pci_gen` reads 2.5/5/8/16/32
+as Gen1…Gen5 with 0 as "no reading" rather than "Gen1".

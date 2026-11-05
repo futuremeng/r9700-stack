@@ -32,108 +32,13 @@ function aerKind(k) {
   return { name: k.replace(/#(nf|ft)$/, ""), kind: ft ? "fatal" : nf ? "non-fatal" : "correctable" };
 }
 
-// A PCIe chain, as a ROW rather than a card of waveforms. Both things it can report are static-or-eventual:
-// the link sits at its maximum unless it renegotiates (one number, changing once), and the AER counters moved 0
-// times in 90 idle samples and 0 times through an eight-stream burst, but ~12 times around two serve restarts.
-// Curves of either are flat and read as a broken panel; totals plus an event with a timestamp say all a curve
-// would. Byte traffic is not collectable here (the counters answer N/A, and the PMU needs root or /dev/kfd).
-// "12 min" / "1.4 h": the span since a chain last moved is read as a duration, never as a raw second count.
+// The PCIe panel was removed on 2026-11-05: a link and an error count per chain moved onto the card
+// (gpuCard, g.link), and the error count stopped being printed at all unless a link negotiated below its
+// rating -- this box carries dozens of correctables a minute through a weight load at a full 32.0 GT/s,
+// so the panel's colour meant "a counter moved", not "the wire went short". What survives here is the
+// account itself (pcieDetailLines / paintPcieDetail), opened from a card whose link IS short, and the
+// `ago` helper it prints quiet spans with.
 const ago = (s2) => (s2 >= 5400 ? `${(s2 / 3600).toFixed(1)} h` : `${Math.round(s2 / 60)} min`);
-
-function pcieRow(c, phist = [], busyNow = false) {
-  const short = (b) => String(b || "").replace(/^0000:/, "");
-  const devs = c.devices || [];
-  const sum = (k) => devs.reduce((a, x) => a + (x[k] || 0), 0);
-  const named = {};
-  devs.forEach((x) => Object.entries(x.notable || {}).forEach(([k, v]) => { named[k] = (named[k] || 0) + v; }));
-  // Named counters are grouped by kind and the group is labelled once, because the kernel's own name is
-  // misleading on its own (`NonFatalErr` is a correctable counter) and per-name suffixes would be noise.
-  const cn = Object.entries(named).filter(([k]) => !/#(nf|ft)$/.test(k)).map(([k, v]) => `${k} ${v}`);
-  const un = Object.entries(named).filter(([k]) => /#(nf|ft)$/.test(k))
-    .map(([k, v]) => `${aerKind(k).name} ${v} ${aerKind(k).kind}`);
-  const at = (s2) => (s2.chains || []).find((x) => x.bus === c.bus) || null;
-  const last = phist.length ? at(phist[phist.length - 1]) : null;
-  const win = last && isnum(last.cor_d) ? last.cor_d + (last.nonfatal_d || 0) + (last.fatal_d || 0) : null;
-  const cor = sum("cor"), unc = sum("nonfatal") + sum("fatal");
-  const maxw = Math.max(...devs.map((x) => x.max_width || 0), 0);
-  const d = document.createElement("div");
-  d.className = "pcie-row";
-  // "quiet" is a measured state, not a guess: seconds since this watcher last saw a counter move on this chain
-  // (`quiet_s`, carried on the sidecar's history entries). This box's c6 chain sat at exactly 42 correctables
-  // for 42 minutes with the link at 32 GT/s after a load window ended at 09:00:03 -- a number that is not
-  // moving must not keep the colour of a number that is, or the colour stops being read. 300 s because during a
-  // real DMA window this chain errors several times a MINUTE (measured 11.5-45.7 per minute at weight load):
-  // five minutes of nothing is not a slow trickle, it is the absence of one. An unknown quiet clock (an older
-  // sidecar) counts as loud -- the dimming is allowed to turn itself off, never to invent calm.
-  const quiet = isnum(last?.quiet_s) ? last.quiet_s : null;
-  // The RATE is the criterion, not the time since the last event. That was measured into: the first version of
-  // this rule dimmed a chain only after 300 s without a counter move, and under the traffic this box actually
-  // carries (a ~100k-token prompt every ~20 s, one BadTLP every ~3 min) quiet_s never got past 300 -- the row
-  // stayed coloured essentially forever, which is the same failure as colouring a number that never moves. So:
-  //   digits + colour  -- this poll saw movement (a one-poll flash that something just happened), the rate over
-  //                       the trailing span is above 1/min (a weight-load window measured 11.3/min), or the rate
-  //                       is unknown (older sidecar: never invent calm);
-  //   info glyph       -- correctables exist but the span rate is at most 1/min. Numbers move to the title.
-  // `quiet_s` still belongs to the tooltip: it says how long the calm has been, which a rate cannot.
-  const rate = isnum(last?.rate_per_min) ? last.rate_per_min : null;
-  const span = Math.max(1, Math.round((last?.window_s || 300) / 60));
-  const justNow = (win ?? 0) > 0 || !!last?.reset;
-  const liveErrs = justNow || !last || rate === null || rate > 1;
-  const sparse = !!cor && !unc && !justNow && rate !== null && rate <= 1;
-  // Colour means "look here": a link below its maximum, or an uncorrectable error, is the danger; correctable
-  // errors are noted but not alarming on their own (they are correctable, and this box has them by the dozen).
-  // Two idle states are measured on this box, and neither should be painted as a fault: with the GPUs
-  // runtime-suspended (D3hot, no context open) EVERY chain drops to Gen1 (2026-11-03 03:00, all four at
-  // 2.5 GT/s x16); with a serve up and nothing served, three chains stay at 32 GT/s while the c6 chain's
-  // switch uplink has been sitting at 16 GT/s since this boot (60 s at 2 s, one distinct state, while
-  // card4's identical topology held 32 GT/s at the same moment). So the red is tied to work -- a sagging
-  // link with no card working is named in muted type and left for the note to put under load, because the
-  // alarm that fires at an idle box is the alarm that stops being read.
-  const sag = c.degraded && !c.parked && !busyNow;
-  d.dataset.tone = (c.degraded && !c.parked && busyNow) || unc ? "danger" : (cor && liveErrs) ? "warn" : "";
-  // Slot first, same as the card grid: the row is now findable by the number written on the chassis. `cardN`
-  // (the driver's per-boot name) and the BDF path follow, because the BDF is what the kernel's own AER and
-  // GHES records use, and the two have to be readable side by side to act on either.
-  // Every row emits the same seven children, in the same order, whether or not this card has a slot or a
-  // driver name: the grid has seven tracks, and a missing child shifts every later column into the wrong
-  // track -- which reads as "the columns are ragged" and not as "this card is unnamed".
-  d.innerHTML = `<b class="p-slot">${c.slot ? `slot ${esc(c.slot)}` : esc(c.card || short(c.bus))}</b>`
-    // Empty, never a placeholder word: an older build behind this page has no slot/pos in its payload, and a
-    // column that printed the literal word "driver" would read as data. The track stays, the cell stays blank.
-    // The driver name goes here only when the headline is a slot; with no slot in the payload the headline IS
-    // the driver name, and repeating it in the next column is the duplicate-column look people read as a bug.
-    + `<span class="small p-drv">${c.slot && c.card ? `${esc(c.card)}${isnum(c.pos) ? ` \u00b7 #${c.pos}` : ""}` : ""}</span>`
-    + `<span class="chain p-chain">${devs.map((x) => short(x.bdf)).join(" → ")}</span>`
-    + `<span class="link p-link" title="negotiated speed and width. A link below its maximum while the card
-      is running is the thing to notice; a parked card (D3hot) idles its links on purpose">`
-      + (isnum(c.speed) ? `${fmt(c.speed, 1)} GT/s ×${c.width}`
-                        + (c.degraded && maxw
-                           ? ` <span class="q">(${c.parked ? "parked, max ×"
-                              : sag ? "idle, max ×" : "max ×"}${maxw})</span>`
-                           : "") : "—") + `</span>`
-    // The glyph is drawn, not typed: the page's body font ships a Latin subset, so U+24D8 came back from the
-    // browser as a missing-glyph box (a "big question mark" at a glance) instead of an i-in-a-circle. An ASCII
-    // `i` inside a CSS circle needs no font support at all.
-    // The count cell is a BUTTON in every state that has numbers: the detail has to be openable, and a `title`
-    // tooltip cannot be selected, cannot be copied, and disappears the moment the pointer leaves. A chain with
-    // nothing raised stays a plain dash -- there is nothing there to open.
-    + `<span class="cnt p-cnt">${sparse
-        ? `<button type="button" class="p-glyph" data-bus="${esc(c.bus)}" title="quiet \u2014 click to keep the numbers open">i</button>`
-        : cor || unc
-        ? `<button type="button" class="p-info" data-bus="${esc(c.bus)}" title="click to keep this chain's full account open">${cor} corr${unc ? ` \u00b7 ${unc} uncorr` : ""}</button>`
-        : `<span class="q" title="no AER counter on this chain has moved since boot">\u2014</span>`}</span>`
-    + `<span class="who p-who" title="the non-zero AER counters on this chain: correctable ones are recovered by the
-      hardware, the others are not">${sparse ? "" : cn.length ? `<span class="q">corr</span> ${cn.join(" · ")}` : ""}`
-      + (sparse ? "" : un.length ? ` <span class="unc">${un.join(" · ")}</span>` : "") + `</span>`
-    + `<span class="win p-win" title="this poll's deltas; these counters are quiet unless something happens.
-      'quiet' counts how long this page has watched this chain with no counter moving -- it says nothing about
-      before this page opened, because counters we found already raised are not ours to date">`
-      + (win === null ? "<span class=\"q\">window —</span>"
-         : (cor && !liveErrs && quiet !== null)
-           ? `<span class="q">+0 · ${rate !== null && rate < 10 ? rate.toFixed(2) : rate}/min${quiet !== null ? ` · quiet ${ago(quiet)}` : ""}</span>`
-           : `+${win} this window`) + `</span>`;
-  return d;
-}
 
 // -- the notice bar -------------------------------------------------------------------------------
 function notice(message, info) {
@@ -709,7 +614,7 @@ function renderStatus(s) {
           + ` <span class="q">the script stops rather than starting on top of ranks that still hold the GPUs</span></div>`
           : "")
         + `<div class="rq-support">this page is the standalone Monitor${s.port ? ` on :${s.port}` : ""}. The cards,`
-        + ` the PCIe chains and slots, and the record of what ended the last boot come from sysfs and the kernel`
+        + ` their links and slots, and the record of what ended the last boot come from sysfs and the kernel`
         + ` log — none of them need the serve, so they keep reading while it is down.</div>`;
     }
   }
@@ -954,7 +859,16 @@ function renderStatus(s) {
     // under three streams, and 95-99% over long stretches of decode. It says roughly how hard the cards are
     // being worked; the precise answers are the rate waveforms above, and the VRAM wave for a leak.
     + " · busy % is coarse here (refused with nothing running, 0 stopped, ~25 idle, 46-100 under load)"
-    + (s.smi ? " + rocm-smi" : "") + (quiet ? ` · ${quiet} refusing sysfs reads` : "")
+    // The link word each card carries, and the rule that decides when it is more than one word. Said on the
+    // panel bar because what a reader would otherwise suspect is a missing sensor: the AER counters are read
+    // every poll and deliberately not printed while a link holds its rating.
+    + (s.pcie && s.pcie.length
+       ? ` · link shown per card: ` + (s.pcie.filter((c) => c.degraded && !c.parked).length
+          ? `${s.pcie.filter((c) => c.degraded && !c.parked).length} chain(s) below their rating`
+          : `all ${s.pcie.length} at their rating`)
+          + ` · AER counters are read every poll and printed only on a card whose link is short`
+       : " · no PCIe sysfs readable here, so cards show no link")
+    + (s.smi ? " + rocm-smi" : "") + (quiet ? ` \u00b7 ${quiet} refusing sysfs reads` : "")
     : "no amdgpu sysfs readable here");
   // The mapping line, in the machine's own numbering. Two naming systems are in play on this box and the page
   // has to keep both straight: the firmware's slot numbers (1, 3, 6, 8 here) and amdgpu's enumeration names
@@ -967,10 +881,13 @@ function renderStatus(s) {
     sm.innerHTML = smap.length
       ? `chassis order <span class="q">firmware slot numbers, not driver names</span> \u00b7 `
         + smap.map((m) => {
-            const link = isnum(m.speed) ? `${fmt(m.speed, 1)} GT/s \u00d7${m.width}` : "link unreadable";
-            const short_ = isnum(m.max_speed) && isnum(m.speed) && m.speed < m.max_speed
-              ? ` <span class="q">of ${fmt(m.max_speed, 0)}</span>` : "";
-            const errs = (m.corr || m.uncorr)
+            // One word for the link, and the rating named only when the link sits under it. Four "Gen5 x16"s
+            // in a row is the picture this box normally shows, and it used to cost four rows of
+            // "32.0 GT/s x16 0 corr" that read as noise.
+            const link = isnum(m.gen) ? `Gen${m.gen} \u00d7${m.width}` : "link unreadable";
+            const short_ = m.short && isnum(m.max_gen)
+              ? ` <span class="q">of Gen${m.max_gen}${m.parked ? ", parked" : ""}</span>` : "";
+            const errs = m.short && (m.corr || m.uncorr)
               ? ` <span class="q">${m.corr} corr${m.uncorr ? ` / ${m.uncorr} uncorr` : ""}</span>` : "";
             return `<b>#${m.pos} slot ${esc(m.slot != null ? m.slot : "?")}</b>`
               + ` <span class="q">${esc(m.card || "unnamed")}</span> GPU <code>${esc(m.bus)}</code>`
@@ -980,65 +897,19 @@ function renderStatus(s) {
         + ` (${esc((smap[0].slot_at || "n/a").replace(/^0000:/, ""))} for slot ${esc(smap[0].slot != null ? smap[0].slot : "?")}),`
         + ` not at the GPU endpoint</span>`
       : "";
-    sm.dataset.tone = smap.some((m) => isnum(m.max_speed) && isnum(m.speed) && m.speed < m.max_speed) ? "warn" : "";
+    // A parked chain (D3hot between launches, its links idling at Gen1) is not a fault, so it does not colour
+    // the line. Only a short link that is not parked does.
+    sm.dataset.tone = smap.some((m) => m.short && !m.parked) ? "warn" : "";
   }
-  // Cards and chains are ordered by the server (chassis order), not by enumeration order -- one order across
-  // Cards, PCIe rows and the About page, so a card number never means a different position in two places.
+  // Cards, chains and the About page are all ordered by the server (chassis order), not by enumeration order:
+  // one order across the cards, their links and the About page, so a card number never means a different
+  // position in two places. The link rides on the card itself (gpuCard reads g.link); the panel note above says
+  // when it says more than "Gen5".
   $("gpus").replaceChildren(...gpus.map((g) => gpuCard(g, s.gpus_history || [])));
-  // The PCIe chains get their own panel because they answer a different question than the cards: the cards say
-  // what the GPU did, this says whether the wire under it was clean. The wording has to stay honest about scope:
-  // this is not bandwidth, it is negotiated link state and the kernel's error counters.
-  const chains = s.pcie || [];
-  const phist = s.pcie_history || [];
-  const ev = s.pcie_events || [];
-  const shortb = (b) => String(b || "").replace(/^0000:/, "");
-  const tot = chains.reduce((a, c2) => a + (c2.devices || []).reduce((b, x) =>
-    b + (x.cor || 0) + (x.nonfatal || 0) + (x.fatal || 0), 0), 0);
-  // One spark for the whole box, because the only interesting shape here is "an event happened". It counts AER
-  // events per poll, so a spike is an event with a time that can be lined up against a stall; a flat line at
-  // its zero axis is the honest picture of a healthy link, and it sits on a known axis so "flat" reads as
-  // "zero", not as "no data".
-  const perPoll = phist.map((h) => (h.chains || []).reduce((a, x) => a + (isnum(x.cor_d) ? x.cor_d : 0)
-    + (isnum(x.nonfatal_d) ? x.nonfatal_d : 0) + (isnum(x.fatal_d) ? x.fatal_d : 0), 0));
-  // Is the box actually moving anything? That is what makes a sagging link worth colouring: measured on this
-  // box, 16 GT/s on the c6 chain at 3% busy (power management) and the same port at 32 GT/s under load.
-  const busyNow = ((status.live || {}).running || 0) > 0
-    || (status.gpus || []).some((g) => isnum(g.busy_pct) && g.busy_pct >= 25);
-
-  const pse = $("pcie-spark");
-  pse.replaceChildren();
-  pse.setAttribute("aria-label", "AER events per second, whole box");
-  spark(pse, perPoll, { baseLo: 0, baseHi: Math.max(...perPoll, 1) });
-  pse.dataset.tone = perPoll.some((v) => v > 0) ? "warn" : "";
-  const when = (t) => new Date((t || 0) * 1000).toLocaleTimeString([], { hour12: false });
-  text("pcie-note", chains.length
-    ? `${chains.length} link chain${chains.length > 1 ? "s" : ""} · sysfs, no root and no /dev/kfd · `
-      + `byte counters answer N/A on these cards, so this is link state and AER errors`
-      + ` · ${tot} error${tot === 1 ? "" : "s"} since boot`
-      + (s.pcie_events === undefined
-        ? " \u00b7 this serve's build does not report events \u2014 restart it for the timestamps"
-        : ev.length
-          ? ` \u00b7 last: ${ev.slice(0, 3).map((e) => { const { name, kind } = aerKind(e.kind);
-              return `${when(e.at)} ${shortb(e.bdf)} ${name}${kind === "correctable" ? "" : ` ${kind}`} +${e.n}`;
-            }).join(" \u00b7 ")}`
-          : " \u00b7 nothing moved while this page has been watching")
-      + (chains.some((c2) => c2.degraded && !c2.parked && busyNow) ? " · a link is below its maximum while work is running" : "")
-      + (chains.length && chains.every((c2) => c2.parked) ? " · cards parked: the links idle at Gen1 while nothing runs"
-        : chains.some((c2) => c2.degraded)
-          ? " \u00b7 a link is below its maximum with nothing running: parked chains always read that way"
-            + " \u00b7 if it is still short while cards work, that is a link fault" : "")
-      + (phist.some((h) => (h.chains || []).some((x) => x.reset))
-        ? " · counters were zeroed during the window" : "")
-    : "no PCIe sysfs readable here");
-  // A header row on the same grid: with seven columns of mono text, "which number is which" should not be
-  // something the reader has to infer from the panel title.
-  const phead = document.createElement("div");
-  phead.className = "pcie-row pcie-head";
-  phead.innerHTML = `<b class="p-slot">slot</b><span class="small p-drv">driver</span>`
-    + `<span class="chain p-chain">endpoint \u2192 root port</span><span class="link p-link">link</span>`
-    + `<span class="cnt p-cnt">errors since boot</span><span class="who p-who">which counters</span>`
-    + `<span class="win p-win">this window</span>`;
-  $("pcie").replaceChildren(phead, ...chains.map((c2) => pcieRow(c2, phist, busyNow)));
+  // There is no PCIe panel any more (2026-11-05). What it printed -- link, AER totals, which counters moved,
+  // this window's deltas -- either fits in one word on the card or stays in the account a short link opens
+  // below. The payload it drew on is still collected every poll (pcie, pcie_history, pcie_events) and still
+  // journaled, so tools/journal-pcie.py and the death review keep working with the panel gone.
   paintPcieDetail(s);
 }
 
@@ -1081,13 +952,17 @@ function pcieDetailLines(c, phist = []) {
       : `${rate.toFixed(2)} counters/min, measured over the ${span} min this serve has been up`);
   put("quiet", quiet === null ? "unknown" : `nothing has moved for ${ago(quiet)}`);
   put("last event", ev ? `${ev.bdf} ${ev.kind} +${ev.n} at ${new Date(ev.at * 1000).toLocaleTimeString()}`
-      : "no counter moved while this page has been open"
-      + " \u00b7 anything before the engine started belongs to aer-watch and journal-pcie.py, not to this page");
+      // "Nothing moved" and "this build does not report movements" are different facts, and the second one is
+      // not this page's to report as the first: an older sidecar has no event list at all.
+      : (status && status.pcie_events === undefined)
+        ? "this serve's build does not report events \u00b7 restart it for the timestamps"
+        : "no counter moved while this page has been open"
+        + " \u00b7 anything before the engine started belongs to aer-watch and journal-pcie.py, not to this page");
   put("watched", `${phist.length} sidecar samples \u00b7 this page's clock starts after the weights are loaded`);
   return L;
 }
 
-// A pinned block of real text, OUTSIDE the row container: #pcie is rebuilt every second, so anything inside it
+// A pinned block of real text, OUTSIDE the card grid: #gpus is rebuilt every second, so anything inside it
 // (and any handler attached to it) is thrown away each tick. Pinned state lives in `detailBus`, and the click
 // is delegated to the container for the same reason.
 let detailBus = null, detBuilt = null, detLines = [], detHead = null, detCopy = null;
@@ -1121,9 +996,10 @@ function paintPcieDetail(st) {
   });
 }
 
-// The rows are rebuilt every tick, so the handler lives on the container; a handler attached to a row would
-// vanish with it. Clicking the same chain again unpins it.
-$("pcie").onclick = (e) => {
+// The cards are rebuilt every tick, so the handler lives on the container; a handler attached to a card would
+// vanish with it. Only a chain that negotiated below its rating emits a `data-bus` badge, which is the state
+// whose account is worth reading. Clicking the same card again unpins it.
+$("gpus").onclick = (e) => {
   const b = e && e.target && e.target.closest ? e.target.closest("[data-bus]") : null;
   if (!b || !b.dataset || !b.dataset.bus) return;
   detailBus = detailBus === b.dataset.bus ? null : b.dataset.bus;

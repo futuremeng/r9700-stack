@@ -78,48 +78,24 @@ section{margin:18px 0}
 .tabs #copy{margin-left:auto}
 #content-note{margin-top:10px}
 
-/* PCIe: one row per chain, columns aligned so the eye scans the link column and stops when it is uniform.
-   Rows rather than cards of waveforms: link state only changes when a link renegotiates and the AER counters
-   are quiet unless something happens, so curves would be flat lines claiming space. A row that is entirely
-   correct says "clean" and costs one line. */
-.pcie-rows{display:grid;gap:5px;margin-top:10px}
-/* Seven columns, named once as areas and shared by the header row and every data row. The tracks are sized to
-   the longest string each one has to carry on this box (chain = "c6:00.0 -> c5:00.0 -> c4:00.0 -> c0:03.1",
-   link = "16.0 GT/s x16 (idle, max x16)", cnt = "144 corr . 0 uncorr since boot", who = "corr NonFatalErr 3 .
-   BadTLP 77 . Timeout 65"), and only the two text-heavy ones flex. That matters because a row that emits a
-   child with no track for it does not look wrong -- the extra child silently starts a second grid line, so a
-   panel that gained a "slot" label ended up with its window delta wrapping under the row instead of beside it. */
-.pcie-row{display:grid;gap:4px 10px;align-items:baseline;padding:3px 0;
-  border-top:1px solid var(--st-line-soft);
-  grid-template-columns:5.2em 7.4em minmax(16em,1.7fr) minmax(14.5em,auto) minmax(9.5em,auto) minmax(11.5em,1.5fr) 14.5em;
-  grid-template-areas:"slot drv chain link cnt who win"}
-/* The fixed tracks are sized from the longest string each column actually carries on this box, at the theme's
-   own sizes (--st-fs-base 16px is what the em tracks resolve against; chain/who are 11px mono, link/cnt/win
-   13px mono at ~0.6em per glyph):
-     chain  "c6:00.0 -> c5:00.0 -> c4:00.0 -> c0:03.1"  37 chars x 6.6px = 244px   -> 16em = 256px
-     link   "16.0 GT/s x16 (idle, max x16)"             29 chars x 7.8px = 226px   -> 14.5em = 232px
-     cnt    "144 corr . 0 uncorr since boot"            30 chars x 7.8px = 234px   -> 15em = 240px
-     win    "+0 this window"                           14 chars x 7.8px = 109px   ->  8.4em = 134px
-     drv    "unnamed . #12"                            13 chars x 6.5px =  85px   ->  7.4em = 118px
-     slot   "slot 6" (16px regular)                      6 chars x 8px  =  48px   ->  5.2em =  83px
-   chain and who are the flexible ones: a counter list ("corr NonFatalErr 3 . BadTLP 77 . Timeout 65" = 284px)
-   is allowed to wrap, a BDF path or a link speed should not be. Minimum row width is ~1255px + 60px of gaps, so
-   the single-line layout is only claimed above that -- guessing a breakpoint lower is how columns end up
-   wrapping mid-string. No browser exists on this box, so these are arithmetic, not a screenshot. */
-.p-slot{grid-area:slot}.p-drv{grid-area:drv}.p-chain{grid-area:chain}.p-link{grid-area:link}
-.p-cnt{grid-area:cnt}.p-who{grid-area:who}.p-win{grid-area:win}
-/* The sparse state: a chain that adds at most one AER counter a minute over the trailing hour shows an info
-   glyph instead of its numbers, with the numbers in the title. Small and muted, but it must still read as
-   "there is something here", so it keeps the muted ink rather than vanishing. */
-/* The count cell is a button in every state that has numbers (see pcieRow): the account has to be openable, and
-   a `title` tooltip cannot be selected or copied. The circle is DRAWN, not typed -- the body font ships a Latin
-   subset, so a code point like U+24D8 came back as the browser's missing-glyph box. */
-.p-info,.p-glyph{font:inherit;color:inherit;background:none;border:0;padding:0;margin:0;cursor:pointer;
-  text-align:right;text-decoration:underline dotted var(--st-line);text-underline-offset:3px}
-.p-glyph{display:inline-flex;align-items:center;justify-content:center;width:1.35em;height:1.35em;
-  border:1px solid var(--st-line);border-radius:50%;color:var(--st-ink-muted);
-  font:italic 11px/1 var(--st-font-mono);text-decoration:none}
-.p-info:hover,.p-glyph:hover{color:var(--st-ink);border-color:var(--st-ink-muted)}
+/* The link, on the card, as one word: Gen5. That word replaced a whole panel on 2026-11-05, and the reason is
+   a measurement: the panel coloured a chain whenever an AER counter moved, and this box carries dozens of
+   correctables a minute through a weight load with every port at its full 32.0 GT/s. Colour that fires on
+   weather stops being read. So a card says its generation and nothing else while the link holds its rating, and
+   only a link that negotiated below what the ports here are rated for gets the tone -- and with the tone, the
+   button that opens the chain's full account below the cards. */
+.gpu-link{margin-top:7px;font:13px var(--st-font-mono);color:var(--st-ink-soft)}
+.gpu-link .q{color:var(--st-ink-muted);font-size:11px}
+/* The badge is a button only in the state worth opening; a healthy "Gen5 x16" is text, not an affordance. */
+.gpu-link button.lk-btn{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;
+  text-decoration:underline dotted var(--st-line);text-underline-offset:3px}
+.gpu-link button.lk-btn:hover{color:var(--st-ink)}
+.gpu-link[data-tone="warn"]{color:var(--st-warn-text)}
+.gpu-link[data-tone="danger"]{color:var(--st-danger-text)}
+.gpu-link[data-tone="danger"] .q,.gpu-link[data-tone="warn"] .q{color:currentColor}
+
+/* The full account, opened from a short link's badge. It is a pinned block of real text (selectable, copyable)
+   rather than a table, because the person who opens it is about to paste it somewhere. */
 .pcie-detail{margin-top:8px;padding:9px 12px;border:1px solid var(--st-line);border-radius:var(--st-r-sm);
   background:var(--st-bg);white-space:pre-wrap;user-select:text}
 .pcie-detail[hidden]{display:none}                /* display:none beats [hidden] -- guard it, as everywhere */
@@ -127,32 +103,6 @@ section{margin:18px 0}
   font:600 12px var(--st-font);white-space:normal}
 .pcie-detail-head .chip{cursor:pointer}
 .pcie-detail-line{font:12px/1.6 var(--st-font-mono);color:var(--st-ink-soft)}
-/* The header carries the same areas, so it is a legend for the columns rather than a caption above a table
-   whose widths nobody promised. */
-.pcie-head{border-top:0;padding:0 0 3px;font-size:var(--st-fs-xs);color:var(--st-ink-muted);
-  text-transform:uppercase;letter-spacing:.06em}
-.pcie-head b{font-weight:600;color:var(--st-ink-muted)}
-.pcie-row:first-child{border-top:0}
-.pcie-row b{font-weight:700}
-.pcie-row .chain,.pcie-row .who{font:11px var(--st-font-mono);color:var(--st-ink-muted);overflow-wrap:anywhere}
-.pcie-row .who .unc{color:var(--st-danger-text);font-weight:700}
-.pcie-row .link,.pcie-row .cnt,.pcie-row .win{font-family:var(--st-font-mono);font-size:var(--st-fs-sm)}
-.pcie-row .cnt,.pcie-row .win{text-align:right}
-.pcie-row[data-tone=warn] b{color:var(--st-warn-text)}
-.pcie-row[data-tone=danger] b{color:var(--st-danger-text)}
-.pcie-row[data-tone=danger] .link{color:var(--st-danger-text)}
-.spark--pcie{margin-left:auto;width:min(180px,34%);height:26px;color:var(--st-ink-soft)}
-.spark--pcie[data-tone=warn]{color:var(--st-warn)}
-
-/* Two lines before anything gets squeezed into an unreadable column, and the split follows the reading order:
-   identity and the chain on the first, then what the link is doing and what the counters say. All seven areas
-   survive at every width -- a column that disappears is information that disappeared. */
-@media(max-width:1360px){.pcie-row{grid-template-columns:5.2em 7.4em minmax(14em,1.2fr) minmax(14.5em,1fr);
-  grid-template-areas:"slot drv chain link" "cnt cnt who win"}}
-@media(max-width:900px){.pcie-row{grid-template-columns:5.2em minmax(0,1fr) auto;
-  grid-template-areas:"slot drv win" "chain chain chain" "link cnt who"}
-  .pcie-row .who,.pcie-row .win{text-align:left}}
-
 @media(max-width:980px){.workspace{grid-template-columns:1fr}.requests{border-right:0;border-bottom:1px solid var(--st-line-soft);max-height:280px}
   .facts{grid-template-columns:repeat(2,minmax(0,1fr))}#search{width:160px}}
 
@@ -170,8 +120,9 @@ section{margin:18px 0}
              background: rgba(255, 255, 255, .04); border-radius: 4px; }
 .down-line[data-tone="danger"] { border-left-color: #ff5c5c; background: rgba(255, 92, 92, .07); }
 .down-line code { font-size: 12px; word-break: break-all; }
-.pcie-row .chip { font-size: 11px; opacity: .85; border: 1px solid #444; border-radius: 3px;
-                  padding: 0 5px; margin: 0 6px; }
+/* The chip buttons in the account's own head (Copy / Close). */
+.pcie-detail-head .chip { font-size: 11px; opacity: .85; border: 1px solid var(--st-line);
+                          border-radius: 3px; padding: 0 5px; }
 
 /* The chassis mapping line: two numbering systems on one row, so it is set smaller than the values and the
    firmware-side facts are the muted parts. */

@@ -978,6 +978,25 @@ def _read_str(path):
         return None
 
 
+def pci_gen(speed):
+    """Which PCIe generation a negotiated speed means: 32.0 GT/s is Gen5, so a card rated Gen5 that
+    negotiated 16.0 is running Gen4. The Cards panel prints this one number per card instead of the panel's
+    old "32.0 GT/s x16": a person deciding whether to reseat a card reads "Gen4 (max Gen5)", and does not
+    read "16.0" as "short by a generation" without a datasheet open. Rates the table does not name (a 64.0
+    Gen6 part, an odd training speed) are derived by doubling from Gen1 rather than answered as no generation
+    -- the page prints this word, and a missing word reads as a missing sensor. A zero or unreadable rate is
+    no generation at all: 0 GT/s is a sysfs read that failed, not Gen1."""
+    if not _num(speed) or not float(speed) > 0:
+        return None
+    g = {2.5: 1, 5.0: 2, 8.0: 3, 16.0: 4, 32.0: 5}.get(float(speed))
+    if g:
+        return g
+    n, rate = 1, 2.5
+    while rate < float(speed) and n < 8:
+        n, rate = n + 1, rate * 2
+    return n
+
+
 def _aer(path):
     """An aer_dev_* file: 'BadTLP 24' one per line. Totals split out, the rest kept only if non-zero --
     the full list is 23 counters wide and the ones that matter are the ones that moved.
@@ -1061,6 +1080,29 @@ def order_by_slot(gpus, chains):
     for i, ch in enumerate(chains, 1):
         ch["pos"] = i
     return gpus, chains
+
+
+def link_facts(chains):
+    """What each card needs to state its own link: the generation it negotiated, the rating of the ports above
+    it, whether it came up short, and the counters that are printed only when it did. Out of the poll loop on
+    purpose, so the parked / x8 / Gen1 cases are checkable against the fake sysfs tree without a poll thread."""
+    out = {}
+    for ch in chains:
+        devs = ch["devices"]
+        mxs = max([(d.get("max_speed") or 0) for d in devs]) or None
+        mxw = max([(d.get("max_width") or 0) for d in devs]) or None
+        out[ch["bus"]] = {
+            "gen": pci_gen(ch.get("speed")), "max_gen": pci_gen(mxs),
+            "speed": ch.get("speed"), "max_speed": mxs,
+            "width": ch.get("width"), "max_width": mxw,
+            # `short` is the only trigger for showing anything about errors: negotiated below what the ports
+            # here are rated for, in speed or in width (an x8 link on an x16 slot is the same class of fault
+            # as a dropped generation, and gets the same fix).
+            "short": bool(ch.get("degraded")), "parked": bool(ch.get("parked")),
+            "corr": sum((d.get("cor") or 0) for d in devs),
+            "uncorr": sum((d.get("nonfatal") or 0) + (d.get("fatal") or 0) for d in devs),
+            "bus": ch["bus"], "slot": ch.get("slot"), "chain": [d["bdf"] for d in devs]}
+    return out
 
 
 def read_pcie(root):
@@ -2232,14 +2274,34 @@ class Hub:
                 slot_by_ep = {ch["bus"]: ch.get("slot") for ch in chains if ch.get("slot")}
                 for g in self.gpus:
                     g["slot"] = slot_by_ep.get((g.get("bus") or "").replace("0000:", "").lower())
+                # And the link itself, on the card. The Monitor used to answer the link question in its own
+                # panel; it is one number per card (Gen5, or the generation it actually negotiated) and it
+                # belongs where the card is. The AER counters still ride the payload, the journal and
+                # tools/journal-pcie.py -- what stopped surfacing on the page is the error COUNT by itself:
+                # this box carries dozens of correctables a minute through a weight load with every link at
+                # its full 32.0 GT/s, and a number that never means anything you would act on is noise that
+                # costs the one colour that does mean something. The badge only speaks when the link is below
+                # its rating (see monitor.css/.gpu-link), which is the state someone acts on.
+                link_by_ep = link_facts(chains)
+                for g in self.gpus:
+                    lk = link_by_ep.get((g.get("bus") or "").replace("0000:", "").lower())
+                    if lk:
+                        g["link"] = lk
                 # Chassis order, and the one-line answer to "which GPU is which PCIe address in which slot".
                 order_by_slot(self.gpus, chains)
                 self.slotmap = [{"pos": ch.get("pos"), "slot": ch.get("slot"), "card": ch.get("card"),
                                  "bus": ch["bus"], "speed": ch.get("speed"), "width": ch.get("width"),
-                                 # The ceiling this chain could run at, so the line can say "16.0 of 32.0".
+                                 # The ceiling this chain could run at, so the line can say "Gen4 of Gen5".
                                  # Not `_num(...)`: that helper answers "is this a number" (a bool), and using it
                                  # here put `True` in the field the page prints as a speed.
                                  "max_speed": max([(d.get("max_speed") or 0) for d in ch["devices"]]) or None,
+                                 # The generation names, and the one flag the page colours on: the chassis line
+                                 # used to print "32.0 GT/s x16 0 corr" per slot, which is four near-identical
+                                 # strings a reader has to decode every tick. It prints Gen5 now, and says more
+                                 # only when `short` is true -- same rule as the card's badge (see .gpu-link).
+                                 "gen": pci_gen(ch.get("speed")), "max_gen": pci_gen(max(
+                                     [(d.get("max_speed") or 0) for d in ch["devices"]]) or None),
+                                 "short": bool(ch.get("degraded")), "parked": bool(ch.get("parked")),
                                  "chain": [d["bdf"] for d in ch["devices"]],
                                  "slot_at": ch.get("slot_at"),
                                  "corr": sum((d.get("cor") or 0) for d in ch["devices"]),

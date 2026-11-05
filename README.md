@@ -37,7 +37,7 @@ underneath it.
   <br><sub>The release on one page: what the stack is, the four model configurations it runs, and how fast they run --
 drawn by <code>docs/summary-page.py</code> from the same numbers the tables below carry, so a figure nobody can
 re-draw cannot drift from them. Its canvas is 1000 px against github.com's ~980 px column, so the smallest type on
-it lands at 14 px; the tag's own hand-drawn <code>docs/r9700-stack-v0.4.1.svg</code> carries the same claims at
+it lands at 14 px; the tag's own hand-drawn <code>docs/r9700-stack-v0.4.2.svg</code> carries the same claims at
 11 px on a 1200-unit canvas, which measures out at 9.0 px in that column -- clicked-to-read, so the generated page
 is what this README carries. The picture links to <code>docs/r9700-stack-page.png</code>, the same drawing at
 2000 × 2620, for zooming. Rows tagged "210 W gate" are the release configuration, "the native box" is one uncapped
@@ -673,14 +673,19 @@ long prefill is the KV pool filling (measured: 5.1 -> 32.1% in 3.0% steps for a 
 Cards whose sysfs answers `EBUSY` are shown as unread rather than as 0%. Where every number comes from, and what
 cannot be answered per request from outside: [notes/webui.md](notes/webui.md).
 
-The PCIe card follows activity, not history: a chain's error cell prints `45 corr · 0 uncorr` while counters are
-moving (this poll, or above one per minute over the trailing span), a drawn i-in-a-circle when the counters exist
-but the span rate is at or under 1/min, and a bare dash when nothing has moved since boot; uncorrectable counters
-and a link below its rating stay red whatever the rate. **The error cell is a button wherever there are numbers**:
-clicking pins a block of text under the grid - the chain, the negotiated link and each port's rating, where the
-slot is registered, totals since boot, the counter names, this window's delta, the rate over its span, how long
-the calm has run, and the last event - which you can select, `Copy`, and close with `Esc`. A tooltip cannot be
-copied, and this is text people paste into vendor reports.
+A card states its link in one word: `Gen5 ×16`. The Monitor used to keep a PCIe panel of its own - link, error
+totals, which counters moved, this window's delta - and it was removed on 2026-11-05, because the counters on this
+box move by the dozen a minute through an ordinary weight load while every port keeps its full 32.0 GT/s. Colour
+that fires on that rate stops being read, and the one state worth colouring (a link that negotiated below what
+the ports above the card are rated for) read the same as all the rest. So a card says `Gen5` and nothing else while
+its link holds its rating. A card that came up short - `Gen4 ×16 of Gen5`, or `Gen5 ×8 of Gen5 ×16` - says that,
+and is coloured: red while the card is working, muted when it is parked (D3hot, idling its links on purpose
+between launches). **Then its badge is a button**: clicking pins a block of text under the cards - the chain, each
+port's rating, where the slot is registered, totals since boot, the counter names, this window's delta, the rate
+over its span, how long the calm has run, and the last event - which you can select, `Copy`, and close with `Esc`.
+A tooltip cannot be copied, and this is text people paste into vendor reports. The counters are still read every
+poll and still ride the payload, the journal and `tools/journal-pcie.py`: what left the page is the alarm, not the
+evidence.
 
 What the page's own JavaScript renders can be checked against a live serve without a browser: `node
 tests/render-monitor.mjs` runs `serve/web/monitor.js` unmodified in a stub DOM and prints the cards and the request

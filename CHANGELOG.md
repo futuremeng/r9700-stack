@@ -1,4 +1,31 @@
 # Changelog
+## the PCIe panel becomes one word on the card: Gen5, and the alarm goes with the panel
+
+Measured on this box through ordinary weight loads: **11.3–45.7 correctable AER counters a minute**, with every
+port on every chain holding its full 32.0 GT/s ×16. The Monitor's PCIe panel coloured a chain whenever those
+counters moved, so the colour was on during healthy work — and the state actually worth colouring, a link that
+negotiated below what the ports above the card are rated for, looked identical to it. A rate threshold was the
+first attempt at this (2026-11-03) and it did not hold: it still fires on weather.
+
+- **The panel is gone** (`serve/web/monitor.html`, `monitor.js`): no chain rows, no box-wide AER spark, no note
+  line. `pcieDetailLines`/`paintPcieDetail` stay — the full account is a pinned, copyable block under the Cards.
+- **Each card prints its generation**: `Gen5 ×16`; `pci_gen()` maps 2.5→Gen1 … 32.0→Gen5, derives unnamed rates by
+  doubling, and treats 0 as "no reading" rather than Gen1. `link_facts()` builds the per-card facts and the poll
+  attaches them as `g.link`, joined by **chain** rather than bus id (the firmware names the slot at the card's
+  switch upstream port, not at the endpoint).
+- **Errors are printed only under `short`** — negotiated below the rating, in speed or in width (an x8 link on an
+  x16 slot was the case a GT/s reading hid entirely). A short link names the rating it fell short of, colours
+  muted when parked (D3hot between launches) and red only while the card works, and its badge becomes a button
+  that opens the account. `slot_map` gained `gen`/`max_gen`/`short`/`parked` so the chassis line agrees.
+- **The evidence trail is untouched**: the counters are still read every poll and still ride `/api/status`
+  (`pcie`, `pcie_history`, `pcie_events`), the journal, `tools/journal-pcie.py` and `tools/aer-watch.py`. The page
+  that used to print them quietly stopped printing the ones nobody acts on.
+- **Tests**: the PCIe grid arithmetic (seven tracks sized from live strings) went with the panel; in its place,
+  `pci_gen`'s mapping, `link_facts` on the parked / x8 / Gen1 fixtures, and a render-harness check that a card at
+  its rating renders a word and **no button**, and never a `corr` count.
+
+[notes/webui.md](notes/webui.md) — "The PCIe panel becomes one word on the card (2026-11-05)".
+
 ## the Monitor binds the loopback it advertises, and the key is compared in constant time
 
 Audit of the commits since v0.4.1 (2026-11-04), findings implemented:

@@ -923,6 +923,39 @@ ck("PCIe chain state, its ring and its event list ride the payload, the ring cap
    and len(s["pcie_history"]) <= W.HIST
    and all(len(h["chains"]) == len(s["pcie"]) for h in s["pcie_history"]),
    f"{len(s.get('pcie_history') or [])} samples x {len(s.get('pcie') or [])} chains")
+# The link now rides on the card (the Monitor's own PCIe panel was removed 2026-11-05), and the page's rule --
+# one word, and no error numbers unless the link is short -- needs two facts the browser cannot invent: what
+# generation a negotiated speed means, and which chain belongs to which card. Both are made here.
+ck("a negotiated speed becomes a generation: 2.5 is Gen1, 32.0 is Gen5, and a rate the table does not name is "
+   "derived by doubling rather than answered as no generation",
+   [W.pci_gen(v) for v in (2.5, 5.0, 8.0, 16.0, 32.0)] == [1, 2, 3, 4, 5]
+   and W.pci_gen(64.0) == 6 and W.pci_gen(0.0) is None and W.pci_gen(None) is None, str(
+       [(v, W.pci_gen(v)) for v in (2.5, 5, 8, 16, 32, 64, 0, None)]))
+_lf = W.link_facts(_pc)
+ck("a parked chain reads as what it is: Gen1 against a Gen5 rating, short AND parked -- so the page colours "
+   "nothing but names the reason",
+   _lf["c6:00.0"]["gen"] == 1 and _lf["c6:00.0"]["max_gen"] == 5 and _lf["c6:00.0"]["short"]
+   and _lf["c6:00.0"]["parked"], str(_lf["c6:00.0"]))
+ck("an x8 link on an x16 slot is short at full speed: Gen5 and short together, which is the case a GT/s "
+   "reading hid",
+   _lf["06:00.0"]["gen"] == 5 and _lf["06:00.0"]["max_gen"] == 5 and _lf["06:00.0"]["short"]
+   and _lf["06:00.0"]["width"] == 8 and _lf["06:00.0"]["max_width"] == 16 and not _lf["06:00.0"]["parked"],
+   str(_lf["06:00.0"]))
+ck("the counts travel with the link and carry no weight of their own: the page reads them only under short",
+   isinstance(_lf["c6:00.0"]["corr"], int) and _lf["c6:00.0"]["corr"] >= 25
+   and all(_lf[b]["uncorr"] == 0 for b in _lf), str({b: (v["corr"], v["uncorr"]) for b, v in _lf.items()}))
+_lk = {(g.get("bus") or "").replace("0000:", "").lower(): g.get("link") for g in s.get("gpus") or []}
+ck("a card carries its own link, joined by chain (its slot is named at the switch upstream port, not at the "
+   "endpoint's bus id)",
+   _lk.get("06:00.0") and _lk["06:00.0"]["gen"] == 5 and _lk["06:00.0"]["short"]
+   and _lk["06:00.0"]["slot"] == "8" and _lk["06:00.0"]["chain"][0] == "0000:06:00.0"
+   and len(_lk["06:00.0"]["chain"]) == 4, str(_lk.get("06:00.0")))
+ck("a card with no chain in this payload carries no link at all: the page prints no badge rather than a dash "
+   "it cannot justify",
+   all(_lk[b] is None for b in _lk if b not in _lf), str(sorted(_lk)))
+ck("the chassis line gets the same one-word facts, so it cannot drift from the cards it labels",
+   s.get("slot_map") and all(all(k in m for k in ("gen", "max_gen", "short", "parked")) for m in s["slot_map"]),
+   str((s.get("slot_map") or [{}])[0]))
 ck("the payload names the journal so the page can say where a restored row came from",
    bool(s.get("journal")) and s["journal"]["ok"] and s["journal"]["path"].endswith("journal-main.jsonl"),
    str(s.get("journal")))
@@ -1133,45 +1166,43 @@ ck("a page with no answer for 5 s says how old its numbers are (short in the slo
    bool(re.search(r"!paused.*s stale", _m, re.S)) and "has not had an answer for" in _m)
 ck("returning to a throttled background tab refetches at once instead of waiting for the timer",
    all("visibilitychange" in _js[f] for f in ("monitor.js", "about.js")))
-# the de-emphasis itself: colour follows activity, not a counter that has stopped moving
+# The second de-emphasis (2026-11-05): a chain that holds its rated speed prints no error numbers at all.
+# Measured on this box, a weight load raises 11.3-45.7 correctables a MINUTE with every port keeping its full
+# 32.0 GT/s -- colour that fires on that rate stops being read, and it fired on the same state as the one thing
+# worth colouring: a link that negotiated below what the ports above the card are rated for. The counters are
+# still read every poll and still ride the payload, the journal and tools/journal-pcie.py. Only the page went
+# quiet, and what it says instead is one word per card: the generation.
 _m2 = _js["monitor.js"]
-ck("a static correctable count no longer holds the warn tone (the tone keys off liveErrs now)",
-   ': cor ? "warn"' not in _m2 and "(cor && liveErrs) ? \"warn\"" in _m2)
-ck("the sidecar clocks are read off the history entry, and an unknown clock counts as LOUD (an older sidecar "
-   "cannot fake calm)",
-   "last?.quiet_s" in _m2 and "last?.rate_per_min" in _m2 and "!last ||" in _m2 and "rate === null" in _m2
-   and "c.quiet_s" not in _m2 and "c.rate_per_min" not in _m2,
-   "payload['pcie'] is read_pcie chains, which carry no deltas, no quiet_s and no rate_per_min")
-# third level: at most one counter a minute over the trailing hour collapses to an info glyph
+_ckc = _js["common.js"]                          # the card, shared by the Monitor and the About page
+ck("a card at its rating paints nothing: no tone, no count, one word",
+   'const tone = !lk.short || lk.parked ? "" : busyCard ? "danger" : "warn"' in _ckc
+   and "const errs = lk.short && (lk.corr || lk.uncorr)" in _ckc
+   and '<span title="${esc(tip)}">${txt}</span>' in _ckc,
+   "the whole panel's error column collapsed into `Gen5`")
+ck("a short link names the rating it fell short of, and the tone is tied to work: parked never colours, a card "
+   "that is working is the danger",
+   "of Gen${rated}" in _ckc and 'busyCard ? "danger" : "warn"' in _ckc and "g.busy_pct >= 25" in _ckc
+   and "parked (D3hot)" in _ckc)
+ck("what a healthy card does not print, its tooltip names -- including where the numbers still live",
+   "correctable /" in _ckc and "tools/journal-pcie.py" in _ckc and "not shown: a link at" in _ckc)
+ck("no chain in the payload means no badge at all: the page never invents a link an older sidecar never read",
+   "const lk = g.link || null" in _ckc and "if (lk) {" in _ckc)
 _sr = open(os.path.join(ROOT, "serve", "webui.py")).read()
 ck("the pump counts characters as well as deltas, so a usage-less stream can call its token count a floor",
    'rec["stream_chars"] += len(txt)' in _sr and '"stream_chars": 0' in _sr)
 ck("the sidecar publishes a trailing-window per-minute rate, pruned as events age out, over the span it watched",
    "self.aer_recent" in _sr and 'd["rate_per_min"]' in _sr and "window_s=300.0" in _sr
    and 'd["window_s"] = round(span, 1)' in _sr and "self.aer_watch" in _sr)
-ck("the row collapses to an info glyph only below ~1 counter/minute, and never while uncorrectable is nonzero",
-   "rate <= 1" in _m2 and "!unc" in _m2.split("const sparse")[1][:40] and 'class="p-info' in _m2)
-ck("the rate, not the time since the last event, decides: a one-per-few-minutes trickle gets the glyph, and a "
-   "single fresh event still flashes to digits",
-   "justNow || !last || rate === null || rate > 1" in _m2 and "!justNow && rate !== null && rate <= 1" in _m2
-   and "quiet < 300" not in _m2, "quiet_s must not gate the colour: measured 1 BadTLP per ~3 min under ~100k-token "
-   "traffic, a 300 s gate would leave the row coloured forever")
-ck("the window cell carries the rate and the calm span once it is sparse",
-   '/min${quiet !== null ? ` \u00b7 quiet' in _m2 or "/min${quiet !== null ? ` · quiet" in _m2)
-ck("the demoted numbers survive in pinned panel text, not in a tooltip that cannot be selected or copied",
+ck("the account a short link opens still holds the counters by name, the window's deltas and the quiet span",
    'put("since boot", `${cor} correctable' in _m2 and 'put("rate",' in _m2
-   and 'put("correctable", cn.join' in _m2 and "function pcieDetailLines" in _m2)
-ck("a chain with nothing raised is a dash, not the sentence 'no errors since boot'",
-   "no errors" not in _js["monitor.js"]
-   and 'title="no AER counter on this chain has moved since boot">' in _js["monitor.js"]
-   and r">\u2014</span>" in _js["monitor.js"], "the dash must be there as a dash, with the meaning in the title")
+   and 'put("correctable", cn.join' in _m2 and 'put("quiet", quiet === null' in _m2
+   and "function pcieDetailLines" in _m2)
+ck("a sidecar too old to report events says so inside the account, rather than the page claiming nothing moved",
+   "status.pcie_events === undefined" in _m2 and "does not report events" in _m2)
 _mc = open(os.path.join(ROOT, "serve", "web", "monitor.css")).read()
-ck("the sparse icon and the panel have styles, built from tokens this page defines",
-   ".p-glyph{" in _mc and "var(--st-line)" in _mc and "var(--st-ink-muted)" in _mc
+ck("the badge and the account have styles, built from tokens this page defines",
+   ".gpu-link{" in _mc and '.gpu-link[data-tone="danger"]' in _mc and '.gpu-link[data-tone="warn"]' in _mc
    and ".pcie-detail{" in _mc and "var(--st-r-sm)" in _mc)
-ck("the quiet row says how long it has been quiet instead of pretending there is nothing there",
-   re.search(r"\+0 · \$\{rate[^}]*\}/min", _m2) and re.search(r"quiet \$\{ago\(quiet\)\}", _m2)
-   and "const ago = (s2) =>" in _m2)
 ck("the About page loop cannot die on one bad tick either",
    bool(re.search(r"finally\s*\{.*setTimeout\(loop", _js["about.js"], re.S)))
 tokens = (WEB / "tokens.css").read_text() + "".join(p.read_text() for p in WEB.glob("*.css") if p.name != "tokens.css")
@@ -1273,13 +1304,16 @@ ck("a row shows how many requests shared its decode window, and the tooltip says
 # const used above its declaration (temporal dead zone) is exactly that class of break: string checks pass
 # and the section never renders. Order is therefore asserted, not just presence.
 mon_note = monjs[monjs.index('function renderStatus'):]
-ck("a const the PCIe note uses is declared before the note is built (no temporal-dead-zone ReferenceError)",
-   mon_note.index("const busyNow =") < mon_note.index("const pse = $(\"pcie-spark\")")
-   and mon_note.index("const busyNow =") < mon_note.index("busyNow)"))
-ck("idle link states are named instead of alarmed: parked (D3hot, Gen1) and sagging (D0, nothing served)",
-   "parked, max \u00d7" in monjs and "below its maximum with nothing running" in monjs
-   and "a link is below its maximum while work is running" in monjs
-   and "2.5 GT/s x16" in monjs and "16 GT/s on the c6 chain at 3% busy" in monjs)
+ck("the cards are filled after the payload they read is bound, and the account they open is painted after them "
+   "(a section that dies on a temporal dead zone reads as an empty one)",
+   mon_note.index("const gpus = s.gpus") < mon_note.index('$("gpus").replaceChildren')
+   and mon_note.index('$("gpus").replaceChildren') < mon_note.index("paintPcieDetail(s);"),
+   "the panel's old home in renderStatus is now the cards' link badge plus the account below them")
+ck("idle link states are named, not alarmed: a parked card (D3hot) is called parked and never takes the tone a "
+   "short link takes",
+   'lk.parked ? "parked (D3hot)' in _js["common.js"] and '!lk.short || lk.parked ? ""' in _js["common.js"]
+   and "parked, max" not in monjs,
+   "measured 2026-11-03 03:00: with the GPUs runtime-suspended every chain on this box reads 2.5 GT/s x16")
 ck("wall-clock is summed per path, and the note says which sum it is",
    "of it queue" in monjs and "all in ${seconds(total)}" in monjs
    and "plus the queue wait before them" in monjs
@@ -1509,39 +1543,27 @@ ck("both pages feed the card history to it",
 ck("a card's caption carries the thermal trio and busy, each as peak and average, with the span named",
    all(x in _ck2 for x in ('"temp_c"', '"temp_mem_c"', '"power_w"', '"sclk_mhz"', "busy avg", "pts over",
                            "crit")))
-# The PCIe panel. Two things it can report, and neither is a curve: link state only moves when a link
-# renegotiates, and the AER counters are eventual (measured on the live box: 0 events in 90 idle samples, 0
-# through an eight-stream burst, ~12 clustered around two serve restarts) -- so four flat waveforms per chain
-# took a third of the page to say nothing. Rows state the numbers; the event, with its time, is what gets listed.
-ck("the PCIe panel exists and says what it is not (no byte counters on these cards)",
-   'id="pcie"' in monhtml and 'id="pcie-note"' in monhtml and "pcieRow(" in monjs
-   and "N/A" in monjs and "no root and no /dev/kfd" in monjs)
-ck("a chain is one row: slot, driver, device chain, negotiated link, totals since boot, which counters, window",
-   'class="pcie-rows"' in monhtml and all(x in monjs for x in
-                                          ('"pcie-row"', 'class="chain p-chain"', 'class="link p-link"',
-                                           'class="cnt p-cnt"', 'class="who p-who"', 'class="win p-win"')))
-ck("no per-chain waveforms are drawn any more -- a flat line for a static or eventual number reads as a fault",
-   "spark" not in monjs.split("function pcieRow")[1].split("\nfunction")[0],
-   str([l.strip() for l in monjs.split("function pcieRow")[1].split("\nfunction")[0].splitlines()
-        if "spark" in l][:3]))
-ck("one box-wide spark of AER events per second stays, on a zero-anchored axis, and it is warned when it moves",
-   'id="pcie-spark"' in monhtml and "baseLo: 0, baseHi: Math.max(...perPoll, 1)" in monjs
-   and 'perPoll.some((v) => v > 0) ? "warn"' in monjs)
-ck("an event is listed with its wall-clock time, device and counter, and only events we witnessed",
-   "s.pcie_events" in monjs and "${when(e.at)} ${shortb(e.bdf)} ${name}" in monjs
-   and "nothing moved while this page has been watching" in monjs)
-ck("a page talking to a serve build too old to report events says so, instead of claiming nothing happened",
-   "s.pcie_events === undefined" in monjs and "does not report events" in monjs)
-# The kernel names a CORRECTABLE counter "NonFatalErr" (Advisory Non-Fatal Error), and the webui tags the real
-# uncorrectable ones #nf/#ft. Printed bare, "NonFatalErr 3" next to "0 uncorr" looks like the panel disagrees
-# with itself, so the counter's kind is stated wherever a name is.
-ck("an AER counter name is shown with its kind, so a correctable NonFatalErr is not read as uncorrectable",
-   "function aerKind(" in monjs and '/#(nf|ft)$/.test(k)' in monjs and '<span class=\"q\">corr</span>' in monjs
-   and 'class="unc"' in monjs)
-ck("a link below its maximum names what it fell short of, and only work-in-progress turns it to danger",
-   'c.parked ? "parked, max \u00d7"' in monjs and 'sag ? "idle, max \u00d7" : "max \u00d7"' in monjs
-   and '(c.degraded && !c.parked && busyNow) || unc ? "danger"' in monjs
-   and "g.busy_pct >= 25" in monjs)
+# The PCIe panel is gone (2026-11-05). What it printed either fits in one word on the card -- the generation --
+# or stays in the account that a short link opens. What must not come back is the panel's alarm: its rows
+# coloured and its spark moved through a normal weight load at a full 32.0 GT/s, which is the state nobody acts
+# on, and the one state worth colouring (a link under its rating) read the same as all the rest.
+ck("no PCIe panel is left on the page: no section, no per-chain row, no AER waveform",
+   'id="pcie"' not in monhtml and 'id="pcie-spark"' not in monhtml and 'class="pcie-rows"' not in monhtml
+   and 'class="card pcie-card"' not in monhtml and "pcieRow(" not in monjs and "perPoll" not in monjs)
+ck("the account moved under the cards rather than vanishing with the panel",
+   monhtml.index('id="gpus"') < monhtml.index('id="pcie-detail"') < monhtml.index("Engine timings")
+   and "paintPcieDetail(s);" in monjs)
+ck("a card states its link as a generation, not a GT/s string -- the string nobody reads as one generation short",
+   "Gen${v}" in _js["common.js"] and "${gt(lk.gen)}" in _js["common.js"]
+   and "${lk.width ||" in _js["common.js"]
+   and "GT/s" not in "\n".join(l for l in _js["common.js"].splitlines() if not l.strip().startswith("//")),
+   sorted({l.strip() for l in _js["common.js"].splitlines() if "GT/s" in l and not l.strip().startswith("//")})[:2])
+ck("an AER counter name still carries its kind wherever it is printed (a correctable NonFatalErr is not the "
+   "same fact as an uncorrectable one)",
+   "function aerKind(" in monjs and "/#(nf|ft)$/.test(k)" in monjs
+   and 'put("uncorrectable", un.join' in monjs and 'put("correctable", cn.join' in monjs)
+ck("an event keeps its wall-clock time, device and counter in the account, and says when the page saw none",
+   'put("last event", ev ?' in monjs and "no counter moved while this page has been open" in monjs)
 # tools/watch-live.py is the page's questions asked from a terminal. Its one hard property is that it observes:
 # measuring someone else's concurrency by adding your own requests would contaminate exactly what is being read.
 _wl = open(os.path.join(ROOT, "tools", "watch-live.py")).read()
@@ -2240,7 +2262,8 @@ with tempfile.TemporaryDirectory() as td:
 mjs = open(os.path.join(ROOT, "serve/web/monitor.js")).read()
 ck("the page says what to do when the serve behind it stops answering",
    all(k in mjs for k in ("down-line", "the serve behind this page is not answering",
-                          "attached read-only", "slot ${esc(c.slot)}")))
+                          "attached read-only", "their links and slots")),
+   "the cards, their links and the last boot's record all come from sysfs, not from the serve")
 wsrc = open(os.path.join(ROOT, "serve/webui.py")).read()
 ck("the launch hint is built after the meta file is read (before it, the page showed launch: None)",
    wsrc.index("self.meta = json.loads(") < wsrc.index("self.launch = launch_hint(self.meta)"))
@@ -2294,131 +2317,64 @@ ck("gpu_poll orders both lists and publishes the mapping, and both pages read th
    and "slot_map=self.slotmap" in wsrc)
 ck("the page leads with the slot and says which numbering it is using",
    all(k in mjs for k in ("slot-map", "chassis order", "firmware slot numbers, not driver names",
-                          "slot ${esc(c.slot)}"))
+                          "Gen${m.gen}"))
    and all(k in open(os.path.join(ROOT, "serve/web/common.js")).read()
            for k in ("slot ${esc(g.slot)}", "#${g.pos} in slot order")))
 
-# ---- the PCIe grid: seven columns, and the widths are a promise the rows have to keep
+# ---- the link badge on the card, and the account that opens under the cards
+# The panel's grid arithmetic (seven named tracks sized from the longest live string) went with the panel: the
+# card's link is one short string inside a card that is already sized, so there is no column promise left to
+# keep. What is still worth pinning is the affordance: which state is a button, where its output lands, and that
+# the output is real text a person can select and paste into a report.
 _css = open(os.path.join(ROOT, "serve/web/monitor.css")).read()
 _mjs2 = open(os.path.join(ROOT, "serve/web/monitor.js")).read()
-
-
-def _tracks(decl):
-    """Count grid tracks, respecting minmax(...)/(180px,34%) so a comma inside a function is not a column."""
-    out, depth, cur = [], 0, ""
-    for ch in decl:
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-        if ch.isspace() and depth == 0:
-            if cur:
-                out.append(cur)
-                cur = ""
-        else:
-            cur += ch
-    if cur:
-        out.append(cur)
-    return out
-
-
-_pblk = _css.split(".pcie-row{display:grid;")[1].split("\n}")[0]
-_ptk = _tracks(_pblk.split("grid-template-columns:")[1].split(";")[0])
-_par = _pblk.split('grid-template-areas:"')[1].split('"')[0].split()
-ck("the PCIe row grid declares as many tracks as areas, and every area has a class to land in",
-   len(_ptk) == 7 and len(_par) == 7 and _par == ["slot", "drv", "chain", "link", "cnt", "who", "win"]
-   and all(f".p-{a}{{grid-area:{a}}}" in _css for a in _par)
-   and all(f'p-{a}' in _mjs2 for a in _par), f"{len(_ptk)} tracks / {len(_par)} areas")
-
-# Track widths are arithmetic, not taste. The strings below are what the page actually renders -- run
-# `node tests/render-monitor.mjs` and read the rows -- and the px-per-glyph comes from the sizes monitor.css
-# itself sets for each cell (chain/who are 11px mono, link/cnt/win 13px mono, the slot label at the row's 16px).
-# A track narrower than the longest string it must hold is not a narrow column, it is a wrapped row.
-_MONO_ADV = 0.6          # a mono advance, as a fraction of the font size
-_needs = {"slot": ("slot 6", 16.0), "drv": ("unnamed \u00b7 #12", 11.0),
-          "chain": ("c6:00.0 \u2192 c5:00.0 \u2192 c4:00.0 \u2192 c0:03.1", 11.0),
-          "link": ("16.0 GT/s \u00d716 (idle, max \u00d716)", 13.0),
-          "cnt": ("144 corr \u00b7 0 uncorr", 13.0),
-          "who": ("corr BadTLP 30 \u00b7 Timeout 13", 11.0),
-          "win": ("+12 \u00b7 45.00/min \u00b7 quiet 4.2 h", 13.0)}
-
-
-def _minem(track):
-    """minmax(16em,1.7fr) or 5.2em -> the fixed lower bound in em: the width the layout is promised."""
-    return float(track.split("(")[1].split("em")[0] if track.startswith("minmax(")
-                 else track.split("em")[0])
-
-
-for _a in _par:
-    _s, _fs = _needs[_a]
-    _need = len(_s) * _MONO_ADV * _fs
-    ck("the %s track holds its longest live string (%d glyphs, %.0fpx)" % (_a, len(_s), _need),
-       _minem(_ptk[_par.index(_a)]) * 16 >= _need,
-       "track %s = %.0fpx vs %.0fpx needed" % (_ptk[_par.index(_a)],
-                                               _minem(_ptk[_par.index(_a)]) * 16, _need))
-ck("seven minimums plus the column gaps still fit below the 1360px breakpoint, so the single-line claim holds",
-   sum(_minem(t) for t in _ptk) * 16 + 6 * 10 <= 1360,
-   "%.0fpx at the narrowest" % (sum(_minem(t) for t in _ptk) * 16 + 60))
-# The count cell's own text, with title attributes removed: a tooltip may spell the span out, rendered text may
-# not repeat what the column header already says (11 glyphs, in a track sized for 19).
-_cnt = re.sub(r'title="[^"]*"', "", _mjs2.split('class="cnt p-cnt"')[1].split('class="who p-who"')[0])
-ck("no per-cell 'since boot' is repeated when the column header already says it",
-   "since boot" not in _cnt and "errors since boot</span>" in _mjs2, _cnt.strip()[:160])
+_ckjs = open(os.path.join(ROOT, "serve/web/common.js")).read()
+_ckcode = "\n".join(l for l in _ckjs.splitlines() if not l.strip().startswith("//"))
+ck("a rendered card says Gen5 and never a GT/s string -- the string that made 'one generation short' something "
+   "you had to read a datasheet to notice",
+   "GT/s" not in _ckcode and "${gt(lk.gen)}" in _ckcode, sorted(
+       {l.strip() for l in _ckcode.splitlines() if "GT/s" in l})[:2])
+ck("only the short link is an affordance: a healthy one is text, not a button inviting a click with nothing to open",
+   'class="lk-btn" data-bus="${esc(lk.bus)}"' in _ckjs and "<span title=" in _ckjs)
+ck("no trace of the row grid is left in the stylesheet (a deleted panel that keeps its CSS keeps its rules alive)",
+   "pcie-row" not in _css and "pcie-head" not in _css and "spark--pcie" not in _css
+   and ".gpu-link{" in _css and '.gpu-link[data-tone="warn"]' in _css
+   and '.gpu-link[data-tone="danger"]' in _css and "button.lk-btn" in _css)
+# The account has to be DOM text, not a `title` tooltip. A tooltip cannot be selected, cannot be copied, and
+# vanishes when the pointer leaves -- and the whole reason these numbers get printed at all is that someone is
+# about to paste them next to a stall they are trying to explain.
+ck("a chain's account opens as real text: the badge is a button, the box sits outside the rebuilt card grid",
+   'class="lk-btn" data-bus="${esc(lk.bus)}"' in _ckjs and "pcie-detail" in _mjs2
+   and 'id="pcie-detail"' in monhtml and "paintPcieDetail(s);" in _mjs2,
+   "the badge, the container outside #gpus, and the call that keeps a pinned account live each tick")
+ck("the click is delegated to the card grid, and Esc closes what opened",
+   '$("gpus").onclick = (e) =>' in _mjs2 and 'closest("[data-bus]")' in _mjs2
+   and 'e.key === "Escape" && detailBus' in _mjs2,
+   "#gpus is replaced wholesale every second: a handler on a card would be garbage within the tick")
+ck("the account is selectable, monospace-aligned text (pre-wrap, so what is seen is what is copied)",
+   ".pcie-detail{" in _css and "white-space:pre-wrap" in _css and "user-select:text" in _css
+   and ".pcie-detail[hidden]{display:none}" in _css and "k.padEnd(14," in _mjs2,
+   "[hidden] needs the display:none guard because .pcie-detail sets display itself")
+ck("a pinned account only writes the lines that changed (re-writing them would destroy the selection)",
+   "if (el.textContent !== t) el.textContent = t;" in _mjs2)
 ck("the render harness stubs the globals the page has started to use (a missing one silences every row)",
    "AbortController" in open(os.path.join(ROOT, "tests", "render-monitor.mjs")).read())
 
 # The page's body font ships a Latin subset (serve/web/fonts/outfit-latin-wght.woff2), so a code point outside
 # that subset falls back to a system font -- and when nothing has it, the browser draws a missing-glyph box.
 # That is exactly how the sparse-state icon arrived: U+24D8 (ⓘ) rendered as a "?"-looking box, which reads as
-# "what is this?" rather than "there is information here". The icon is now drawn in CSS around an ASCII `i`.
+# "what is this?" rather than "there is information here". Nothing on the card may depend on a glyph the subset
+# lacks, and the multiplication sign in "Gen5 ×16" is not one of them.
 _weball = "".join(open(os.path.join(ROOT, "serve", "web", f), encoding="utf-8").read()
                   for f in ("common.js", "monitor.js", "about.js", "monitor.html", "about.html",
                             "monitor.css", "web.css", "tokens.css"))
 _cps = {int(m.group(1), 16) for m in re.finditer(r"\\u([0-9a-fA-F]{4})", _weball)} | {ord(c) for c in _weball
-                                                                                     if ord(c) > 127}
+                                                                                       if ord(c) > 127}
 # Everything below U+0100 is in the subset; the rest are the characters the pages have been rendering for weeks
 # (em dash, curly quotes, ellipsis, arrow, almost-equal) -- present in every system fallback on this box.
 _SAFE = {cp for cp in _cps if cp <= 0x00FF} | {0x2014, 0x201C, 0x201D, 0x2026, 0x2192, 0x2248}
 ck("every glyph the pages emit is one their fonts actually have (U+24D8 came back as a missing-glyph box)",
    _cps <= _SAFE, sorted("U+%04X" % cp for cp in _cps - _SAFE))
-
-# The detail has to be DOM text, not a `title` tooltip. A tooltip cannot be selected, cannot be copied, and
-# vanishes when the pointer leaves -- which is exactly what the reader asked for after the demotion moved the
-# numbers into one. So the count cell is a button, the panel is outside #pcie (which is rebuilt every tick), and
-# the click is delegated to the container for the same reason.
-ck("a chain's account opens as real text (the cell is a button, the panel is outside the rebuilt rows)",
-   'class="p-glyph" data-bus="${esc(c.bus)}"' in _mjs2 and 'class="p-info" data-bus="${esc(c.bus)}"' in _mjs2
-   and "pcie-detail" in _mjs2 and 'id="pcie-detail"' in open(os.path.join(ROOT, "serve", "web", "monitor.html")).read()
-   and "paintPcieDetail(s);" in _mjs2,
-   "the count cell, the container outside #pcie, and the call that keeps a pinned panel live each tick")
-ck("the click is delegated to the row container, and Esc closes what opened",
-   '$("pcie").onclick = (e) =>' in _mjs2 and 'closest("[data-bus]")' in _mjs2
-   and 'e.key === "Escape" && detailBus' in _mjs2,
-   "#pcie is replaced wholesale every second: a handler on a row would be garbage within the tick")
-ck("the panel is selectable, monospace-aligned text (pre-wrap, so what is seen is what is copied)",
-   ".pcie-detail{" in _css and "white-space:pre-wrap" in _css and "user-select:text" in _css
-   and ".pcie-detail[hidden]{display:none}" in _css
-   and "k.padEnd(14," in _mjs2,
-   "[hidden] needs the display:none guard because .pcie-detail sets display itself")
-ck("a pinned panel only writes the lines that changed (re-writing them would destroy the selection)",
-   "if (el.textContent !== t) el.textContent = t;" in _mjs2)
-ck("the sparse icon is still drawn, not typed (a Latin-subset font has no U+24D8)",
-   'class="p-glyph"' in _mjs2 and ">i</button>" in _mjs2 and r"\u24d8" not in _mjs2
-   and chr(0x24d8) not in _mjs2 and ".p-glyph{" in _css and "border-radius:50%" in _css)
-_narrow = [x for x in _css.split("@media")[1:] if "pcie-row" in x and "grid-template-areas" in x]
-ck("both narrow layouts keep all seven areas, spread over more lines (a dropped column is dropped information)",
-   len(_narrow) >= 2 and all(sorted(set(x.split("grid-template-areas:")[1].split("}")[0]
-                                         .replace('"', " ").split())) == sorted("slot drv chain link cnt who win".split())
-                             for x in _narrow),
-   f"{len(_narrow)} narrow layouts checked")
-
-ck("the PCIe table has a header row on the same grid, naming each column",
-   'phead.className = "pcie-row pcie-head"' in _mjs2
-   and all(f'class="{cls} p-{a}"' in _mjs2 or f'p-{a}"' in _mjs2 for a, cls in
-           [("slot", "b"), ("drv", "small"), ("chain", "chain"), ("link", "link"), ("cnt", "cnt"),
-            ("who", "who"), ("win", "win")]))
-ck("slot labels and driver names are separate columns, so one can be long without shoving the other",
-   '<b class="p-slot">' in _mjs2 and 'class="small p-drv"' in _mjs2)
 
 # --- which build is this page? ---------------------------------------------------------------------------
 # "Is the live serve the new one?" used to cost an ssh and a look at the launch log. The header answers it, and
