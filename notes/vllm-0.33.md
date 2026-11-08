@@ -652,9 +652,10 @@ Reading. Throughput and latency are a tie: every probe32 protocol is inside the 
 first-wave effect, not a version effect), and ITL agrees to 0.2 ms. Prefill is a tie to 0.4 %. Quality is
 *identical to the question*: 97/100 on both, same 3 wrong answers by the metric, needles identical.
 
-What actually moved is **capacity**: the same pool memory buys 26,644 more tokens (+2.8 %) and the concurrency
-ceiling goes 3.68x -> 3.78x at 262,144. On a box whose ledger is p99 prompt 245,792 with KV the binding constraint,
-that is the whole argument for the pin, and it is the same direction the container evaluation found. The soak rows
+What appears to have moved is **capacity**: on this pair the same pool memory buys 26,644 more tokens (+2.8 %)
+and the concurrency ceiling goes 3.68x -> 3.78x at 262,144 -- but that reading is **one launch per side**, and the
+pool moves ~2.5 % at fixed settings, so read the correction section at the end of this file before using it as an
+argument. The soak rows
 lean the same way (19 % more requests admitted in the same window, 18 % higher output throughput, median latency
 -5.2 s) though the soak's prompt mix is random per arm, so that row is directional, not a measurement.
 
@@ -748,3 +749,62 @@ Same collapse at 32, same clean 16, same ITL blowup at 2 and 4 in flight with th
 Arm C needs a re-run when the riser settles, and until then the native pin decision rests on arm B alone -- which is
 the same `+rocm72` flavor the production venv is built from, so the decision does not actually turn on the `rocm100`
 wheel. Upstream's docker pin is `rocm100` regardless, and that line is unchanged.
+
+## The pin move, attempted and rolled back the same afternoon (15:14-16:15): the utilization check, and what the KV delta is really worth
+
+The user picked "move to 0.33", so the move was made: `cp -a ~/venv-r9700 ~/venv-r9700-032-saved` (the 0.32 wheel
+**cannot be re-fetched** -- the per-commit 0.32 index 404s -- so that copy is the revert path, and its `pip freeze`
+went to `~/logs/pipfreeze-032-20261108.txt`), then `pip install --no-deps --force-reinstall vllm==0.33.0+rocm72` from
+the live `rocm72` index at the same pin. Import check: `0.33.0+rocm72`, torch/triton/aiter unchanged, `r9700_vllm:register`
+still in `vllm.general_plugins`, monitor plugin entry intact. Then it would not start. Twice.
+
+**Finding 1 -- `orjson` is a hard dep and `--no-deps` does not pull it.** The first 0.33 launch loaded every weight
+and then died with `ModuleNotFoundError: No module named 'orjson'` inside the API server, after the launcher's wait
+window had expired, with nothing but an import traceback in a log. The fix is `pip install orjson` (3.13.0, matching
+arm B), and the launcher now asks the venv instead of trusting the calendar: a version-aware check (`vllm >= 0.33`
+and no `orjson` -> `FATAL`, before any work starts), proven by running it DRY against the saved 0.32 venv, which
+correctly stays quiet because orjson is optional there.
+
+**Finding 2 -- 0.97 utilization is inside this box's launch-to-launch variance, and that is not a 0.33 thing.**
+vLLM refuses to start when `free at startup` < util x total. Readings today at the check (per card, 31.86 GiB total):
+
+```
+30.87  30.89  30.94     30.98  31.00  31.03     31.06  31.09  31.13     31.18  31.19  31.22
+   ^ 0.32 @0.96            ^ 0.33 @0.97 (came up)     ^ 0.32 @0.96            ^ 0.32 @0.97 (morning)
+```
+
+0.97 x 31.86 = **30.90 GiB**, i.e. inside a 0.35 GiB spread: two launches were refused with "Free memory on device
+cuda:0 (30.89/31.86 GiB) on startup is less than desired GPU memory utilization (0.97, 30.9 GiB)" and eight others
+started at the same 0.97. The low readings include a **0.32** launch, and every one of them followed a gate that read
+`procs=0`, `MemAvailable` clean and idle VRAM of 0.06 GiB a card -- so it is neither a version effect nor a
+leftover-process effect; it is vLLM's own contexts being up before its own check. The standing recipe therefore
+moves to **0.96** (30.59 GiB, below the worst reading seen, ~0.3 GiB of margin), which costs about 4-5 % of the KV
+pool at this recipe: 0.97 -> 940-963k tokens, 0.96 -> 892-915k. `bench/gate.sh` now prints and enforces an idle-VRAM
+ceiling (512 MiB a card) -- worth having, but explicitly **not sufficient**, and the comment says so.
+
+**Finding 3 -- the "+2.8 % KV" in the table above is not established.** With the utilization change in the way, the
+pool was finally measured at matched settings, and it moves ~2.5 % launch to launch at fixed settings:
+
+| | 0.97 | 0.96 |
+|---|---|---|
+| 0.32 (this recipe, cap 4, `PC=0`) | 963,486 / 940,726 / 940,726 | 914,748 / 891,919 |
+| 0.33 +rocm72 | 990,130 / 974,659 / 974,659 | 888,770 |
+
+Mean at 0.97: 948k vs 980k (+3.4 %). At 0.96: 903k vs 889k (-1.6 %). The two disagree, and the within-row spread is
+the same size as the between-row difference, so the honest statement is: **the KV difference between 0.32 and 0.33 at
+this recipe is inside launch-to-launch noise**, and the capacity case for the pin -- which is the only case, since
+speed and quality tied -- is not supported by what was measured today. Establishing it needs repeats at matched
+utilization (three launches per side minimum), not one pair.
+
+**Where the box was left.** Rolled back to the 0.32 artifact of record at the path the launcher defaults to
+(`~/venv-r9700` = `0.32.0+rocm723`), serving at 0.96 with the cap 4 install lines proved, KV 891,919 tokens /
+3.40x, fp8 KV, health 200 (`relaunch-262k-032final.log`, 16:14). The upgraded venv is kept beside it as
+`~/venv-r9700-033-saved` (plus the original `~/venv-r9700-033` and the `+rocm100` `~/venv-r9700-033r`), and the 0.32
+AOT caches are at `~/vllm-native-cache-032-bak` / `~/vllm-native-triton-032-bak`, which is what the standing launch
+is pointed at through `VLLM_CACHE_ROOT`/`TRITON_CACHE_DIR` -- worth folding into the recipe file so the cache
+identity stops depending on who remembers to export it.
+
+So: 0.33 is a **clean, fully-gated, no-regression** pin on this box (probe32/ITL/prefill tied, GSM8K and needles
+identical, sanity clean, soak clean, VRAM flat, and its `gate.py` warnings are zero where 0.32 now logs 12) and it is
+**not adopted**, because the one measured reason to move is not real yet. To revisit it: three matched launches per
+side at 0.96 to settle the pool question, and the `+rocm100` flavor still needs a quiet-link arm C.

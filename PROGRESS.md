@@ -3130,3 +3130,44 @@ in hand, A2's baseline too); (3) the router-kernel repro list in [notes/bug-rout
 stays open -- the cap is a mitigation; (4) `tools/test_dsv4_glue.py`'s local `top-k given identical logits` failure is
 still unexplained and is independent of all of the above; (5) the `recipe-check` exit 1 for launches made through
 `bench/relaunch.sh` (its 8 loader knobs are not launcher defaults) is a real gap in that gate, not today's regression.
+
+## 2026-11-08 16:20 - the 0.33 pin move happened, and was rolled back within the hour, on evidence I did not have when I recommended it
+
+Sequence: user picked "(a) move to 0.33". Made the move properly (`cp -a` backup first because the 0.32 index is dead
+upstream and the wheel cannot be re-fetched, `pip freeze` recorded, `pip install --no-deps --force-reinstall
+vllm==0.33.0+rocm72` from the live index at our pin, import + plugin + entry-point checks) -- and the launch died
+twice, which is where the afternoon went.
+
+1. **`orjson`** -- 0.33 imports it at API-server startup, `--no-deps` never pulled it in, and the failure arrived after
+   a full weight load with nothing but an import traceback. Fixed in the venv (3.13.0) and in the launcher: a
+   version-aware pre-flight (`vllm >= 0.33` and no `orjson` -> FATAL before any work), proven by a DRY run against the
+   saved 0.32 venv, which correctly does not complain there.
+2. **The utilization check.** Both remaining failures were `Free memory on device cuda:0 (30.89/31.86 GiB) on startup
+   is less than desired GPU memory utilization (0.97, 30.9 GiB)`. I first blamed 0.33 for holding ~0.3 GiB more than
+   0.32 at that point; that was wrong, and the correction is in the notes: the startup reading today spans
+   30.87-31.22 GiB on cards of 31.86 **across both versions and both utils**, and 0.97 x 31.86 = 30.90 sits inside
+   that spread. So 0.97 has been a coin flip on this box for a while, and today it came up tails twice. The standing
+   recipe now asks 0.96 (30.59 GiB, under the worst reading seen). Cost measured: KV 0.97 -> 940-963k tokens, 0.96 ->
+   892-915k.
+3. **The capacity case, which was the only case, dissolved.** At matched util the pool reads 0.32 @0.97
+   963,486 / 940,726 / 940,726, 0.33 @0.97 990,130 / 974,659 / 974,659 (mean +3.4 %), but 0.32 @0.96
+   914,748 / 891,919 vs 0.33 @0.96 888,770 (-1.6 %). Same-sign problem as the within-row spread (~2.5 %): the
+   version delta is inside launch-to-launch noise. My earlier "+2.8 %, the whole argument for the pin" was one launch
+   per side; corrected in [notes/vllm-0.33.md](notes/vllm-0.33.md) and in the CHANGELOG entry it came from.
+
+Decision taken with that in hand (and stated here rather than buried): **roll back to 0.32 on this box** -- a move
+whose only measured benefit is noise is not a move, and production should not carry an unproven change while the
+router-kernel bug is still open. The box now serves `~/venv-r9700` = `0.32.0+rocm723` at 0.96, KV **891,919 /
+3.40x**, cap-4 install lines proved, fp8 KV, health 200 (`relaunch-262k-032final.log`, 16:14). Kept: `~/venv-r9700-033-saved`
+(0.33 + orjson, production-shaped), `~/venv-r9700-033`, `~/venv-r9700-033r` (+rocm100), and the 0.32 AOT caches at
+`~/vllm-native-cache-032-bak` / `~/vllm-native-triton-032-bak`.
+
+Also landed today: `bench/gate.sh` prints and enforces an idle-VRAM ceiling (a floor, not a guarantee -- the comment
+says why), and `bench/relaunch.sh`'s load window went 400 s -> 1200 s so a cold-cache first launch stops looking like
+a failure.
+
+What would reopen the pin question: three launches per side at matched utilization (0.96) to settle the pool, and the
+`+rocm100` flavor still needs its quiet-link arm C. And note for whoever reads the launch logs: 0.32 now emits 12
+`gate.py` "untested on vLLM" lines at every boot -- that is expected while the pin lists sit on 0.33, not a problem,
+but it is the kind of noise that trains people to scroll past warnings, so it argues for a decision rather than a
+default.

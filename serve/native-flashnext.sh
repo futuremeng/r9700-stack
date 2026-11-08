@@ -8,6 +8,41 @@ VENV=${VENV:-$HOME/venv-r9700}
 REPO=${REPO:-$(dirname "$(realpath "$0")")/..}
 PY=$VENV/bin/python3
 
+# Utilization on the TP4 recipe: 0.96, not the 0.97 this box ran for months. vLLM refuses to start when
+# `free at startup` is below util x total, and the free it measures is already ~0.7-1.0 GiB per card short of the
+# idle number -- by the time the worker checks, its own contexts are up. Across today's launches the reading ranged
+# 30.87 / 30.89 / 30.94 (a 0.32 launch at 0.96 that happened to land low) up to 30.98 / 31.00 / 31.03 / 31.06 /
+# 31.09 / 31.13 / 31.18 / 31.19 / 31.22, on either version: a 0.35 GiB spread. 0.97 x 31.86 = 30.90 GiB sits
+# *inside* that spread, which is why two launches today died on "Free memory on device cuda:0 (30.89/31.86 GiB) on
+# startup is less than desired GPU memory utilization (0.97, 30.9 GiB)" while eight others started fine at the same
+# 0.97. It is not a vLLM-version effect (the low readings include a 0.32 launch) and not a leftover-process effect
+# (the gate's idle reading is 0.06 GiB a card before every one of them). 0.96 x 31.86 = 30.59 GiB, which is below
+# the lowest reading seen, and costs about 4-5 % of the KV pool (measured today at this recipe: 0.97 -> 940-963k
+# tokens, 0.96 -> 892-915k). Anyone who wants the pool back should claw the footprint down, not the margin.
+# 0.33 made orjson a hard dep of the wheel, and a --no-deps pin move cannot pull it in. Ask the venv, not the
+# calendar: on 2026-11-08 the first 0.33 launch of the production venv loaded every weight and only then died with
+# `ModuleNotFoundError: No module named 'orjson'` from the API server, after the launcher's window had expired and
+# with nothing but an import traceback in a log nobody had opened. Version-aware, so reverting the pin to 0.32 (for
+# which orjson is optional) does not make this cry wolf.
+missing_orjson=$("$PY" -c '
+from importlib.metadata import version
+try:
+    v = version("vllm")
+except Exception:
+    raise SystemExit()
+core = tuple(int(x) for x in v.split("+")[0].split(".")[:2])
+if core >= (0, 33):
+    try:
+        version("orjson")
+    except Exception:
+        print("missing")
+' 2>/dev/null)
+if [ "$missing_orjson" = missing ]; then
+  echo "FATAL: $VENV runs vllm >= 0.33 but has no orjson, which it imports at API-server startup." >&2
+  echo "  fix: $VENV/bin/pip install orjson   (the 0.33 install line in setup.py already says this)" >&2
+  exit 1
+fi
+
 # Machine-local launch defaults, deliberately kept outside the repo. The repo's own defaults are the conservative
 # ones: HOST=127.0.0.1, which is also upstream's (`args.host or "127.0.0.1"`). This box is not served over loopback
 # -- `ss` shows 192.168.1.130 and 192.168.1.200 holding :8080 open -- so the bind address is a fact about the box,
@@ -197,7 +232,7 @@ if [ "${ENVRECIPE:-0}" = 1 ]; then echo "env recipe: $(r9k_env_json)"; exit 0; f
 ARGS=(--served-model-name "${SERVED_NAME:-Qwen3.8}" --host "$HOST" --port "${PORT:-8080}"
       --tensor-parallel-size "${TP:-4}" --max-model-len "${MAXLEN}"
       --max-num-seqs "$NSEQ" --max-num-batched-tokens "$NBT"
-      --gpu-memory-utilization "${UTIL:-$([ "${TP:-4}" = 4 ] && echo 0.97 || echo 0.94)}"
+      --gpu-memory-utilization "${UTIL:-$([ "${TP:-4}" = 4 ] && echo 0.96 || echo 0.94)}"
       --reasoning-parser "${REASONING:-qwen3}" --tool-call-parser "${TOOLCALL:-qwen3_coder}" --enable-auto-tool-choice)
 if [ "$MM" = 1 ]; then
   ARGS+=(--limit-mm-per-prompt "{\"image\": ${MM_IMAGE}, \"video\": ${MM_VIDEO}}"
@@ -260,7 +295,7 @@ if [ "${WEBUI:-0}" = 1 ] || [ "${WEBUI:-}" = same ]; then
     META=$META bash "$D/webmeta.sh" venv="$VENV" model="$MODEL" served_name="${SERVED_NAME:-Qwen3.8}" \
       gpus="${GPUS:-0,1,2,3}" tp="${TP:-4}" maxlen="$MAXLEN" nseq="$NSEQ" nbt="$NBT" \
       reasoning="${REASONING:-qwen3}" toolcall="${TOOLCALL:-qwen3_coder}" \
-      util="${UTIL:-$([ "${TP:-4}" = 4 ] && echo 0.97 || echo 0.94)}" offload_gb="${OFFLOAD_GB:-0}" \
+      util="${UTIL:-$([ "${TP:-4}" = 4 ] && echo 0.96 || echo 0.94)}" offload_gb="${OFFLOAD_GB:-0}" \
       kvdtype="${KVDTYPE:-}" mtp="$MTP" attn="${ATTN:-}" cg_sizes="${CGSIZES:-}" prefix_cache="$PREFIX_CACHE" \
       host="$HOST" \
       eager="${EAGER:-0}" log="$LOG" fold="${R9K_FOLD:-1}" ar_quant="${R9K_AR_QUANT:-1}" hc_fp8="${R9K_HC_FP8:-r9k}" \

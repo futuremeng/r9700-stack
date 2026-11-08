@@ -1,6 +1,42 @@
 # Changelog
 
-## the native 0.32-vs-0.33 comparison came back: a tie at speed, one capacity gain, and two things the arms caught on the way
+## the 0.33 pin move was made on this box, and rolled back the same afternoon: the reason was the utilization check, and the KV gain evaporated under it
+
+`cp -a ~/venv-r9700 ~/venv-r9700-032-saved` (the 0.32 per-commit index is dead upstream, so the copy is the revert
+path; `pip freeze` to `~/logs/pipfreeze-032-20261108.txt`), then `pip install --no-deps --force-reinstall
+vllm==0.33.0+rocm72` from the live `rocm72` index at `4ba787ec9`. Import check clean, plugins intact -- and the launch
+was refused twice. Full account: [notes/vllm-0.33.md](notes/vllm-0.33.md), "The pin move, attempted and rolled back".
+
+- **`orjson` is a hard dep of 0.33 and `--no-deps` does not pull it.** The first 0.33 launch loaded every weight and
+  only then died with `ModuleNotFoundError: No module named 'orjson'` from the API server, after the launcher's window
+  had expired. `serve/native-flashnext.sh` now asks the venv before starting anything: version-aware (`vllm >= 0.33`
+  and no `orjson` -> `FATAL` with the one-line fix), proven DRY against the saved 0.32 venv, which correctly stays
+  quiet because orjson is optional at 0.32.
+- **The standing recipe's `--gpu-memory-utilization` goes 0.97 -> 0.96, and it is not a version effect.** vLLM
+  compares `free at startup` against util x total, and its own contexts are already up when it checks: the reading
+  today was 30.87 / 30.89 / 30.94 / 30.98 / 31.00 / 31.03 / 31.06 / 31.09 / 31.13 / 31.18 / 31.19 / 31.22 GiB on
+  cards of 31.86 -- a 0.35 GiB spread that **contains** 0.97 x 31.86 = 30.90. Two launches were refused ten MiB at a
+  time; eight others started at the same 0.97; the low readings include a 0.32 launch, and all of them followed a
+  `procs=0`, host-memory-clean gate with idle VRAM at 0.06 GiB a card. 0.96 = 30.59 GiB sits under the worst reading
+  seen, at a cost of 4-5 % of the KV pool at this recipe (0.97 -> 940-963k tokens, 0.96 -> 892-915k).
+- **`bench/gate.sh` now reads VRAM too** (`VRAMhi=` on every line, PASS requires every card under 512 MiB) --
+  and its comment records that this is a floor, not a guarantee, because the startup check above happens after
+  vLLM's own contexts exist. `bench/relaunch.sh`'s load window goes 400 s -> 1200 s: a first launch on a cold
+  `VLLM_CACHE_ROOT`/`TRITON_CACHE_DIR` spends minutes compiling, and the old window turned a working launch into a
+  "did not finish" false alarm.
+- **The KV gain in the entry below is not established.** At matched settings the pool reads: 0.32 @0.97
+  963,486 / 940,726 / 940,726, 0.33 @0.97 990,130 / 974,659 / 974,659; 0.32 @0.96 914,748 / 891,919, 0.33 @0.96
+  888,770. Within-row spread is the size of the between-row difference and the sign flips with utilization, so
+  **the capacity case for the pin is inside launch-to-launch noise** -- which matters because capacity was the only
+  case: speed and quality were ties. Settling it needs three launches per side at matched utilization.
+- **State: rolled back, serving 0.32 at 0.96** -- `~/venv-r9700` restored to `0.32.0+rocm723`, KV 891,919 / 3.40x,
+  cap 4 install lines proved, fp8 KV, health 200 (`relaunch-262k-032final.log`). Kept beside it:
+  `~/venv-r9700-033-saved` (the production-shaped 0.33 with orjson), `~/venv-r9700-033`, the `+rocm100`
+  `~/venv-r9700-033r`, and the 0.32 AOT caches at `~/vllm-native-cache-032-bak` / `~/vllm-native-triton-032-bak`
+  (currently passed by hand through `VLLM_CACHE_ROOT`/`TRITON_CACHE_DIR` -- that belongs in the recipe file, not in
+  someone's memory).
+
+## the native 0.32-vs-0.33 comparison came back: a tie at speed, a capacity gain that did not survive a second launch, and two things the arms caught on the way
 
 Arms ran as `bench/pin033.sh STEPS=full` (gate, launch, probe32 x3/x2/x3, `itl 1 2 4`, the 60k/120k/180k ladder,
 `quality 100 8`, `sanity_stress` 33/48/64 then long-prefill-first, 1500 s soak at 16 clients with VRAM sampled every
@@ -14,11 +50,11 @@ paired tables: [notes/vllm-0.33.md](notes/vllm-0.33.md).
 - **Quality: identical to the question.** GSM8K 100 @ conc 8: 97.0 % (97/100) on both, and needles 3/3 at 3.8k/15k/30k
   on both. Strict sanity at NSEQ+1/1.5x/2x and long-prefill-first: 0 bad of 1,980 / 2,880 / 3,840 and 0 of 330 on
   both. Soak: 0 errors, 0 context-length rejections, VRAM flat (30.37 -> 30.39 and 30.55 -> 30.57 GiB a card).
-- **What moved is capacity: +2.8 % KV** for the same pool memory -- 963,486 -> 990,130 tokens, and the 262,144-token
-  concurrency ceiling 3.68x -> 3.78x. On a box whose p99 prompt is 245,792 and whose binding constraint is KV, that
-  is the whole argument for the pin, and it agrees in direction with the container evaluation. The soak leans the same
-  way (846 vs 711 requests admitted, 143.9 vs 120.9 output tok/s, median latency 28.7 vs 33.9 s) but the soak's prompt
-  mix is random per arm, so that row is directional.
+- **What appears to move is capacity -- and that reading did not survive** (see the entry above this one): on this
+  pair the same pool memory buys 963,486 -> 990,130 tokens and the 262,144-token ceiling goes 3.68x -> 3.78x, but the
+  pool moves ~2.5 % between launches at *fixed* settings, and at matched utilization the two versions come out within
+  noise of each other. The soak leans toward 0.33 (846 vs 711 requests admitted, 143.9 vs 120.9 output tok/s, median
+  latency 28.7 vs 33.9 s) but the soak's prompt mix is random per arm, so that row is directional too.
 - **The version gate now points the other way.** The 0.32 arm logs **12** "untested on vLLM" lines (`mtp_allowlist`,
   `glm5next_rdna4` -- their TESTED lists moved to `0.33.0` with the upstream pin); the 0.33 arm logs **0**. Checking
   why a clean log is not proof, `qsa_kvfp8` *did* install on 0.33 (`QSA main KV cache as fp8_e4m3` on both arms), but

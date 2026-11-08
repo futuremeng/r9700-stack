@@ -18,7 +18,8 @@ R9K_LOAD_PROF=1 R9K_PRESTAGE_MTP=${R9K_PRESTAGE_MTP:-1} R9K_LOAD_STACKS=${R9K_LO
   setsid bash serve/native-flashnext.sh > "$LOG" 2>&1 &
 
 load=""
-for _ in $(seq 1 40); do
+for _ in $(seq 1 120); do   # 1200 s, not 400: a first launch on a cold VLLM_CACHE_ROOT/TRITON_CACHE_DIR (a pin
+                        # move, a new flavor, an AOT recompile) spends minutes compiling before the load line appears
   sleep 10
   load=$(grep -m1 -oE "Model loading took [0-9.]+ GiB memory and [0-9.]+ seconds" "$LOG" | grep -oE "and [0-9.]+ seconds" | grep -oE "[0-9.]+")
   [ -n "$load" ] && break

@@ -14,6 +14,14 @@
 cd /home/jiulu/r9700-stack || exit 1
 MIN_AVAIL_KB=$((55 * 1048576))
 MIN_SWAPFREE_KB=$((6 * 1048576))
+# VRAM is part of "given the memory back", so check it rather than infer it from procs=0. It is not sufficient:
+# vLLM's own startup check compares `free` against util x total *after* its contexts are up, and that reading varies
+# by ~0.35 GiB launch to launch (30.87-31.22 GiB today at 0.96/0.97 on either version), while the recipe asks for
+# 0.96 x 31.86 = 30.59 GiB. Two launches today were refused with "Free memory on device cuda:0 (30.89/31.86 GiB) on
+# startup is less than desired GPU memory utilization (0.97, 30.9 GiB)" straight after a clean gate: idle cards read
+# 0.06 GiB, so a clean gate is a floor, not a guarantee. What this line does catch is a launch that starts while the
+# previous one's VRAM is genuinely still held (an idle card never reads 1 GiB), which is worth refusing.
+MAX_VRAM_USED=$((512 * 1024 * 1024))   # bytes, as rocm-smi reports them
 
 STOP=1 bash serve/native-flashnext.sh 2>&1 | sed 's/^/  stop: /'
 
@@ -24,19 +32,24 @@ gate () {   # print one line: procs, tasks in D, MemAvailable, SwapFree
   for p in $(pgrep -d' ' 'VLLM::' 2>/dev/null); do
     [ "$(awk '{print $3}' /proc/$p/stat 2>/dev/null)" = D ] && d=$((d + 1))
   done
-  printf '  t+%3ss procs=%s inD=%s MemAvail=%s GiB SwapFree=%s GiB\n' "$1" "${n:-0}" "$d" \
+  local vram
+  vram=$(rocm-smi --showmeminfo vram 2>/dev/null | awk -F': ' '/Used Memory/{if ($NF+0 > m) m = $NF+0} END{printf "%d", m+0}')
+  printf '  t+%3ss procs=%s inD=%s MemAvail=%s GiB SwapFree=%s GiB VRAMhi=%s GiB\n' "$1" "${n:-0}" "$d" \
     "$(awk '/MemAvailable/{printf "%.1f", $2/1048576}' /proc/meminfo)" \
-    "$(awk '/SwapFree/{printf "%.1f", $2/1048576}' /proc/meminfo)"
+    "$(awk '/SwapFree/{printf "%.1f", $2/1048576}' /proc/meminfo)" \
+    "$(printf '%.2f' "$(echo "$vram" | awk '{print $1/1073741824}')")"
   GATE_PROCS=${n:-0}; GATE_D=$d
   GATE_AVAIL=$(awk '/MemAvailable/{print $2}' /proc/meminfo)
   GATE_SWAPFREE=$(awk '/SwapFree/{print $2}' /proc/meminfo)
+  GATE_VRAM=${vram:-0}
 }
 
 for i in $(seq 1 36); do
   sleep 5
   gate "$((i * 5))"
   [ "$GATE_PROCS" = 0 ] || continue
-  [ "$GATE_AVAIL" -ge "$MIN_AVAIL_KB" ] && [ "$GATE_SWAPFREE" -ge "$MIN_SWAPFREE_KB" ] && { echo "gate: PASS"; exit 0; }
+  [ "$GATE_AVAIL" -ge "$MIN_AVAIL_KB" ] && [ "$GATE_SWAPFREE" -ge "$MIN_SWAPFREE_KB" ] \
+    && [ "${GATE_VRAM:-0}" -le "$MAX_VRAM_USED" ] && { echo "gate: PASS"; exit 0; }
 done
 echo "gate: FAIL -- procs stuck in D or memory not returned; treat the box as wedged (notes/load-oom-svm-wedge.md)"
 exit 3
