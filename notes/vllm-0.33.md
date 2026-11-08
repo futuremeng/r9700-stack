@@ -479,7 +479,9 @@ Two things kill the idea:
 1. **Our decode path is not on hipBLASLt where the PR says it should be.** The launcher serves with
    `R9K_HC_FP8_DECODE=1 R9K_HC_FP8_DECODE_MAXM=255` (`serve/native-flashnext.sh:21`): the HC down/up GEMMs run
    per-token fp8 on our WMMA kernels for every decode M up to 255, and `R9K_ROUTER_MAX_M` (default 8) puts the
-   router gate on `r9k_router` for the small-M end. The band the PR fills is mostly already filled here.
+   router gate on `r9k_router` for the small-M end (that default is **4 since 2026-11-08**, and the reason is a
+   fault, not a measurement -- see below and [bug-router-gemm-oob.md](bug-router-gemm-oob.md)). The band the PR
+   fills is mostly already filled here.
 2. **What is left is latency-bound, not bandwidth-bound.** hipBLASLt reads the 2.6 MB router weight in 15.0 µs —
    a 128x128 matmul (12.1 µs) is 2.9 µs of it. The PR's 420-470 GB/s figure is for much larger weights; on our
    per-rank decode shapes the floor is the launch, so a 600 GB/s streaming kernel buys almost nothing: the whole
@@ -490,7 +492,11 @@ Two smaller findings worth keeping, both from the same probe:
 
 - **`R9K_ROUTER_MAX_M` above 8 is a loss, and the kernel's own limit is 32.** At M=16/24/32 the r9k router costs
   29.2 / 41.1 / 43.7 µs against hipBLASLt's 14.6-14.9 — so raising the knob to the kernel's `r9k_router_max_m()`
-  (32) would add ~1.5 ms a step. The default 8 is not timid, it is the measured crossover.
+  (32) would add ~1.5 ms a step. The default 8 was not timid, it was the measured *speed* crossover; the serving
+  default is 4 now because the `MT=8` instantiation has faulted four times on this box
+  ([bug-router-gemm-oob.md](bug-router-gemm-oob.md)) -- measured cost of that cap: ITL at conc 1/2/4 goes
+  12.9/14.7/18.5 ms at cap 8 -> 13.0/15.1/18.4 ms at cap 4, and the 0.33 comparison arms have to carry the same
+  cap on both sides.
 - **The one candidate the probe exposes is the cast, not the GEMM.** Above `MAX_M` the served op is
   `torch.mm(out_dtype=fp32)` followed by a bf16 cast (`r9700_vllm/router.py:72`), and the cast measures
   **2.6 µs a call** (15.04 -> 17.60) = **130 us a step, ~1.0%**, plus 51 fewer launches. Handing the gate fp32

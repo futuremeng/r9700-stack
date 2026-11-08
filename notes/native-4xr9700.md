@@ -622,6 +622,11 @@ prefills serialize, so 8 concurrent 30k prompts queue one after another while th
 2.06× is a residency ceiling rather than a concurrency one. Ladder, queue measurements, the
 `--long-prefill-token-threshold` A/B, and the metric-reading traps: [context-262k.md](context-262k.md).
 
+One env name is part of the recipe now rather than something an operator has to remember: the launcher exports
+`R9K_ROUTER_MAX_M=4`, which keeps the MoE gate off the `MT=8` instantiation that has faulted four times on this box
+(twice 2026-11-04, twice 2026-11-08) -- [bug-router-gemm-oob.md](bug-router-gemm-oob.md). It costs about 0.1 ms of
+single-stream ITL and nothing from conc 2 up.
+
 Not done here: the 2-card offloaded-experts recipe (needs ~120 GiB of host RAM, this box has 93), the
 27B and GLM configs, `--kv-cache-dtype fp8`, the P2P communicator A/B, and a power-capped run for a
 like-for-like decode comparison against the 210 W gate numbers.
