@@ -1,5 +1,42 @@
 # Changelog
 
+## the standing launch died with the terminal that held it, and `bench/relaunch.sh` now takes `MAXLEN`
+
+Found while pushing the v0.4.3 merge: the `vllm serve` process was there at 10:44 and gone by 11:02, with **four
+orphaned `VLLM::Worker_TP*`** left behind (started 2026-11-06 07:56, ppid 1, 23.8 GiB VRAM a card, 55.8 GiB of RSS,
+cards idling at 17-19 W and 3%). Nothing was being served -- no listener on 8080, `/health` refused -- and the last
+request in the journal is 2026-11-06 07:44.
+
+- **What it was not:** no reboot (uptime 3 d 8 h), no OOM-killer and no machine check in the journal for that window
+  (the offline-core workaround for the sick L2 is intact: cpu17/113 still offline, `r9700-offline-core.service`
+  enabled; today's 247 kernel "Hardware Error" lines are all PCIe BadTLP-class CPER noise).
+- **What it looks like:** the launch lives in a tmux session (`setup.py` step 8 still names it:
+  `tmux attach -t r9700-native-flashnext`), `tmux ls` now reports **no server**, and `last` records two tmux
+  pseudo-sessions opened and closed at **10:56:09 and 10:58:28** -- inside the window between "alive" and "gone". The
+  API server goes with its terminal; the ranks do not (documented since 2026-11-01: SIGTERM does not stop them, which
+  is why the launcher refuses to come up over leftovers). No log survived it: that launch was writing to a terminal,
+  not a file, so nothing in `~/logs` was touched in four hours.
+- **The artifact was rebuilt before anything came back up**, because the merge made the tree newer than its own
+  kernel: `libr9k.so` was dated 2026-11-05 while `kernels/r9k_dsv4_glue.hip` had changed under it. Built with
+  `OUT=` into `/tmp` so the in-tree `.so` was never half-written (`mv` swap, old kept as
+  `kernels/libr9k.so.pre-merge-20261108` and `r9700_vllm/kernels/libr9k.so.pre-merge-20261108`, matching the
+  existing `.pre-v041`/`.pre-f8` habit): 166 s, `built -rwxrwxr-x … 15115064`, export gate green on all **126**
+  names, and the two artifacts differ by md5 from the 11-05 ones (`e17026dd` vs `0cec7454`). Not tracked by git,
+  so no commit to go with it.
+- **Back up through the sanctioned path:** `MAXLEN=262144 NBT=8192 WEBUI=same bash bench/relaunch.sh 262k`. The gate
+  passed on the first try (procs 0, MemAvailable 86.7 GiB, SwapFree 8.0 GiB), load 116.9 s, `/health` 200, and the
+  launch is now a `setsid` session leader of its own (pid 83888, ppid 1, no tty) -- so it no longer depends on a
+  terminal or a tmux staying up, and its log is `~/logs/relaunch-262k.log`.
+- `bench/relaunch.sh` hardcoded `MAXLEN=32768`, which would have brought this box back at **1/8 of its context**
+  while still answering `/health` -- the exact trap `setup.py`'s context-vs-checkpoint check exists for. It now
+  takes `MAXLEN=` (default unchanged at 32768, so its own 32k fingerprints stay comparable), and its header names
+  this box's standing recipe.
+- **Pool number, and which regime it belongs to:** the relaunch reads **945,450 KV tokens / 3.61× at 262,144**,
+  not the 540,202 / 2.06× the tables in [notes/context-262k.md](notes/context-262k.md) carry. Checked rather than
+  absorbed: 540,202 is the **bf16** main-KV figure ([kv-fp8-qsa.md](kv-fp8-qsa.md) pairs it with 1,009,899 / 3.85×
+  under fp8 e4m3), and this launch is fp8 with MM on, sitting with the 935,216 / 943,875 of the two MM test logs and
+  the 989,534 of an MM-off one. The note now says so next to its own table.
+
 ## upstream v0.4.3 merged: the pin moves to the vLLM 0.33.0 ROCm 10 release image, and this box owes its paired 0.33 gate
 
 `git fetch upstream && git merge upstream/master`: **17 upstream commits** since v0.4.2, four conflicts, and this is

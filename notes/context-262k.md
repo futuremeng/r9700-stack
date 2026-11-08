@@ -568,6 +568,13 @@ from the buffer shape, not a measured OOM).
   after a throughput wave is not a number to record.
 - The pool figure moves by ~1% between identical launches (540,202 / 546,391 / 544,919 tokens). Nothing here
   explains that; don't read it as an effect.
+- **A pool number means nothing without its KV dtype and its MM flag.** Every 540,202 / 2.06× in this note is the
+  **bf16** main-KV launch (block 448) — the "not measured: `--kv-cache-dtype fp8`" bullet below was overtaken by
+  [kv-fp8-qsa.md](kv-fp8-qsa.md), which pairs 540,202 / 2.06× with **1,009,899 / 3.85×** under fp8 e4m3. Multimodal
+  profiling then costs about 5% of the pool: the standing recipe relaunched 2026-11-08 (`bench/relaunch.sh 262k`,
+  `MAXLEN=262144 NSEQ=32 NBT=8192 WEBUI=same`, fp8 KV, MM on) reads **945,450 tokens / 3.61×**, beside the 935,216 and
+  943,875 the two MM test launches recorded and the 989,534 of an MM-off one. Nothing in the merged v0.4.3 moved the
+  pool; the dtype and the MM flag did.
 - Not measured: `--kv-cache-dtype fp8` (halves the 24 KiB/token attention term for 12 of 48 layers, so less than
   a doubling of the residency ceiling -- the GDN state does not shrink), TP8, and any long-document (non-repetitive)
   recall quality at 262k.

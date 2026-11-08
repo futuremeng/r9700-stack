@@ -2,7 +2,9 @@
 # The only sanctioned way to bring the native server back up: verified gate, then launch, then wait for the load
 # line and print the fingerprints that make two instances comparable (load seconds, KV pool, MTP depth, and the
 # box's own counters at the moment the load finished).
-#   usage: PROBE32=1 bash bench/relaunch.sh [label]
+#   usage: PROBE32=1 bash bench/relaunch.sh [label]        (MAXLEN= defaults to 32768; this box's standing recipe is
+#           MAXLEN=262144 NSEQ=32 NBT=8192 WEBUI=same -- see notes/context-262k.md; setup.py's context check exists
+#           precisely because a launch that comes up at 1/8 of the checkpoint's context still answers /health)
 cd /home/jiulu/r9700-stack || exit 1
 LABEL=${1:-inst}
 LOG=$HOME/logs/relaunch-$LABEL.log
@@ -12,7 +14,7 @@ bash bench/gate.sh > "$GATE" 2>&1
 tail -2 "$GATE"
 grep -q "^gate: PASS" "$GATE" || { echo "refusing to launch: gate failed"; exit 3; }
 
-R9K_LOAD_PROF=1 R9K_PRESTAGE_MTP=${R9K_PRESTAGE_MTP:-1} R9K_LOAD_STACKS=${R9K_LOAD_STACKS:-0} R9K_LOAD_COPIES=${R9K_LOAD_COPIES:-0} R9K_PLE_PIN_LATE=${R9K_PLE_PIN_LATE:-1} R9K_MOE_BATCH_H2D=${R9K_MOE_BATCH_H2D:-0} R9K_PRESTAGE_AHEAD=${R9K_PRESTAGE_AHEAD:-0} R9K_CACHE_WINDOW=${R9K_CACHE_WINDOW:-0} GPUS=0,1,2,3 TP=4 OFFLOAD_GB=0 NSEQ=32 MAXLEN=32768 \
+R9K_LOAD_PROF=1 R9K_PRESTAGE_MTP=${R9K_PRESTAGE_MTP:-1} R9K_LOAD_STACKS=${R9K_LOAD_STACKS:-0} R9K_LOAD_COPIES=${R9K_LOAD_COPIES:-0} R9K_PLE_PIN_LATE=${R9K_PLE_PIN_LATE:-1} R9K_MOE_BATCH_H2D=${R9K_MOE_BATCH_H2D:-0} R9K_PRESTAGE_AHEAD=${R9K_PRESTAGE_AHEAD:-0} R9K_CACHE_WINDOW=${R9K_CACHE_WINDOW:-0} GPUS=0,1,2,3 TP=4 OFFLOAD_GB=0 NSEQ=32 MAXLEN=${MAXLEN:-32768} \
   setsid bash serve/native-flashnext.sh > "$LOG" 2>&1 &
 
 load=""

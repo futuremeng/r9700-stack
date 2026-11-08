@@ -2928,3 +2928,45 @@ the measurement still owed** -- so this record is the merge plus a standing task
   the list below.
 * No launch was touched: a 262k serve was running through the merge (four `VLLM::Worker_TP*`, cards at 78%), so the
   gate order sits queued in the note until the box is idle and out of a reset storm.
+
+## 2026-11-08 (11:05-11:25): the standing launch was dead and four ranks were squatting the cards; rebuilt the kernels to match the merged tree and brought the box back detached
+
+Found while pushing the merge, not from a symptom: `vllm serve` present at 10:44, gone by 11:02, four
+`VLLM::Worker_TP*` (started 11-06 07:56) reparented to init holding 23.8 GiB VRAM a card and 55.8 GiB of RSS, cards
+at 17-19 W / 3%, no listener on 8080, nothing in `~/logs` written in four hours (that launch's stdout was a terminal).
+
+* Ruled out with the journal, not by feel: no reboot (uptime 3 d 8 h), no OOM-kill, no MCA/MCACOD today; the
+  offline-core workaround is intact (cpu17/113 online=0, `r9700-offline-core.service` enabled), so the sick-L2 story
+  from notes/incident-2026-11-03 did not fire this time. 247 kernel "Hardware Error" lines today, all PCIe
+  BadTLP-class CPER (the riser weather), the last at 10:10.
+* What fits: the launch lived in tmux (`setup.py` step 8 prints `tmux attach -t r9700-native-flashnext`); `tmux ls`
+  says no server now, and `last` shows tmux pseudo-sessions opening and closing at 10:56:09 and 10:58:28, inside the
+  alive/dead window. API server dies with its host, ranks stay -- the 2026-11-01 finding, the reason the launcher
+  refuses to come up over leftovers.
+* **Artifact first, because the merge had just made the tree newer than its own kernel.** `libr9k.so` was 11-05;
+  `kernels/r9k_dsv4_glue.hip` changed in the merge (single-rounding rotation, `f2h_mul`). Built with
+  `OUT=/tmp/libr9k-043/libr9k.so HIPCFLAGS=-I~/opt/rocm-dev/opt/rocm/core-10.1/include bash kernels/build.sh` --
+  OUT into /tmp so the in-tree `.so` is never half-written while a reset could relaunch into it; 166 s (11:09:28 ->
+  11:12:14); export gate green over all 126 names (0 MISSING); md5 `e17026dd` new vs `0cec7454` old, then
+  `cp`+`mv` into both load paths with the old ones kept as `*.pre-merge-20261108` (the repo already carries
+  `.pre-v041` / `.pre-f8`). `libr9k.so` is untracked, so the swap is not a commit.
+* `bench/relaunch.sh` had `MAXLEN=32768` hardcoded: run as-is it would have restored this box at 1/8 of the
+  checkpoint's context while still answering `/health`. Now `MAXLEN=${MAXLEN:-32768}` with the standing recipe in the
+  header -- default unchanged so its 32k fingerprints stay comparable.
+* Relaunch: `MAXLEN=262144 NBT=8192 WEBUI=same bash bench/relaunch.sh 262k`. Gate PASS first try (t+5s procs=0
+  inD=0, MemAvailable 86.7 GiB, SwapFree 8.0 GiB); load 116.9 s / 19.83 GiB a worker; place 46.7 s (experts
+  192t/59.8GiB/33.4s, ple 265t/38.8GiB/0.1s); draft requant 52.8-55.2 s a rank; `Available RAM: 73.82 GiB` at loader
+  start, 4 GiB of swap left at rest -- inside the note's "a healthy load always leaves ~4.2 GiB"; `/health` 200.
+  `ps` says pid 83888, ppid 1, sid 83888, tty `?`, state `Ssl` -- a session leader of its own via `setsid`, so a
+  terminal or tmux going away can no longer take the service with it. Log: `~/logs/relaunch-262k.log`.
+* Service proven, not assumed: `/v1/models` max_model_len 262144, `/api/status` `meta.maxlen=262144`, and a real
+  completion returns ("pin check", 58 prompt / 31 completion tokens with 26 reasoning tokens). One gotcha noted: a
+  16-token cap returns no `choices` because the reasoning trace eats it -- `--reasoning-parser qwen3` means a tiny
+  `max_tokens` looks like a failure.
+* **KV pool: 945,450 tokens / 3.61x**, against the 540,202 / 2.06x the notes carry. Checked before believing it:
+  540,202 is the **bf16** main-KV figure (kv-fp8-qsa.md pairs it with 1,009,899 / 3.85x under fp8 e4m3), and this
+  launch is fp8 with MM on -- 935,216 and 943,875 are the two MM test logs, 989,534 an MM-off one. So the pool moved
+  because the dtype and the MM flag did, not because of the merge. `notes/context-262k.md` now carries that pairing
+  beside its own table, and its stale "not measured: `--kv-cache-dtype fp8`" bullet is called out as overtaken.
+* Still open: the 0.33 three-arm comparison (queued in notes/vllm-0.33.md) and upstream PR #3, which will move the
+  image pin to a digest and touches `r9700_vllm/models/qwen4_exp.py`, a file this fork patches.
