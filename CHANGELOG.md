@@ -1,5 +1,46 @@
 # Changelog
 
+## the device names a kernel: `r9k_router_gemm_kernel<8, 2, true>` dies 20 s into GSM8K at conc 8, and `R9K_ROUTER_MAX_M=0` is the measured mitigation
+
+Two launches of the standing 262k recipe died inside `bench/quality.py 100 8` (11:34:59 and 11:49:25), both on
+Worker_TP0, both with the same dispatch (`grid=[32768,1,1] workgroup=[256,1,1]`), and `rocdevice.cpp` printing
+`kernel: void (anonymous namespace)::r9k_router_gemm_kernel<8, 2, true>` with a page-aligned faulting address
+(0x7d94e403f000). 256 threads is this kernel's `NT`; 32768 workitems / 256 = 128 blocks = `E / (WAVES/SPLIT)` ->
+**E=512, K=2560, SPLIT=2, MT=8**, the Flash-Next MoE gate through `kernels/r9k_router.hip` (`d1a5a9a`, 2026-09-28).
+Full account: [notes/bug-router-gemm-oob.md](notes/bug-router-gemm-oob.md).
+
+- **The trigger shape explains what the runs showed.** `MT=8` means the launch had `M <= 8`. The target pass runs
+  `requests x (1+MTP)` rows, so conc 32 is 96 rows and conc 8 is 24 -- both above `R9K_ROUTER_MAX_M=8`, both on the
+  `torch.mm` fallback. The pass that runs one row **per request** is the drafter, so at conc 8 the draft step is
+  exactly M=8, inside our kernel. That is why `probe32` (32 and 16 in flight) and the 60k/120k/180k ladder ran clean
+  in both crashed arms while the death landed inside GSM8K, 20 s in, at `Running: 8 reqs`.
+- **Mitigation measured, not assumed.** `R9K_ROUTER_MAX_M=0` (arm A1: PC=0, `R9K_ARN_CALIBRATE=0`, v0.4.3 tree,
+  rebuilt `libr9k.so`): probe32 1,561.5 / 1,556.5 / 1,571.0 @32x300, 1,786.3 / 1,792.4 @32x1200, 1,089.2 / 1,104.5 /
+  1,090.5 @16x300 -- inside the A0 spread, 2 % *better* at 32x300 -- for **+0.3 ms of single-stream ITL** (12.9 ->
+  13.2 ms). Then the whole protocol passes: **GSM8K 97/100** (33,834 prompt tokens in 42 s), needles 3/3, strict
+  sanity **0 bad of 1,980 / 2,880 / 3,840** plus **0 of 330** with long prefills first. A0 (kernel on) never got
+  there.
+- **What the kernel body rules out**: every index is in range as a function of its own arguments (`live`,
+  `lane < M`, `mr = m < M ? m : M-1`, `c < (K/SPLIT)/8`, and `_fits` requiring `K % (8*split) == 0` with strides
+  `% 8 == 0`). A page-aligned fault with in-range indices says the arguments no longer describe live memory. Leading
+  hypothesis: the gate pointer is baked into a captured HIP graph (the op is registered with a fake impl so it
+  survives `torch.compile`) and the buffer behind it was freed or replaced -- a failure mode this repo already
+  documents for a sibling path (`hc.py: down_silu`, "the bf16 weight may be freed"). The note lists four experiments
+  that would settle it, cheapest first: `EAGER=1` with the router on against the same GSM8K phase.
+- **Ruled out for both crashes**: no reboot (uptime 3 d 8 h), no OOM-killer, no MCA/MCACOD today (the sick-L2
+  workaround intact), no platform reset, no AER storm at the crash minutes. The `amdgpu_amdkfd_restore_userptr_worker
+  hogging CPU` line at 11:35:03 is the SVM/mm-notifier family's signature and is where the first pass of this hunt
+  went looking; the device report ends that detour.
+- **Tooling that came out of it** (`bench/pin033.sh`, one arm per command): `alive()` between phases, because the
+  first arm went on writing sanity/soak rows against a refused connection after the engine died; `PC=` pinned, since
+  the recorded bands are `PREFIX_CACHE=0` while the launcher's default is now 1 and the first arm inherited that; and
+  the soak VRAM sampler touched its own loop-condition file *after* starting the sampler, so arm A1's series came
+  back empty -- fixed.
+- **Effect on the 0.32-vs-0.33 comparison**: paused. Arm A0 (0.32, `PC=0`) is a clean baseline up to the quality gate
+  (load 85.6 s, KV 978,957 tokens / 3.73x, probe32 and the ladder within 1-4 % of the 2026-11-02 bands, ITL 12.9 /
+  14.7 / 18.5 ms); arm A1 is the first full protocol pass since the merge. The 0.33 arms stay unmeasured until the
+  router question closes, and both sides must carry the same `R9K_ROUTER_MAX_M`.
+
 ## the standing launch died with the terminal that held it, and `bench/relaunch.sh` now takes `MAXLEN`
 
 Found while pushing the v0.4.3 merge: the `vllm serve` process was there at 10:44 and gone by 11:02, with **four

@@ -2970,3 +2970,56 @@ at 17-19 W / 3%, no listener on 8080, nothing in `~/logs` written in four hours 
   beside its own table, and its stale "not measured: `--kv-cache-dtype fp8`" bullet is called out as overtaken.
 * Still open: the 0.33 three-arm comparison (queued in notes/vllm-0.33.md) and upstream PR #3, which will move the
   image pin to a digest and touches `r9700_vllm/models/qwen4_exp.py`, a file this fork patches.
+
+## 2026-11-08 13:05 - the hunt found a kernel: `r9k_router_gemm<8,2,true>` at conc 8, and the box runs with `R9K_ROUTER_MAX_M=0`
+
+Continuing the 11:00 record. The rerun I launched to test reproducibility reproduced it: arm **A0** (0.32,
+`PC=0`, `R9K_ARN_CALIBRATE=0`) died at 11:49:25 -- 14 min, at the same phase as the 11:34:59 death, `bench/
+quality.py 100 8`, 20 s in with `Running: 8 reqs`. Two for two. This time the device said who:
+
+```
+GPU HANG ANALYSIS ... kernel: void (anonymous namespace)::r9k_router_gemm_kernel<8, 2, true>
+faulting addr 0x7d94e403f000, grid=[32768,1,1], workgroup=[256,1,1]
+```
+
+Decoding that against `kernels/r9k_router.hip`: `NT = 32*WAVES = 256` matches the workgroup, `grid_x` is total
+workitems so 32768/256 = 128 blocks = `E/(WAVES/SPLIT)` with `SPLIT=2` -> `E=512` -- the Flash-Next MoE gate
+(K=2560, E=512) launched with `MT=8`, i.e. `M <= 8`. With MTP=2 the target pass is `requests x 3` rows, which is
+over the `R9K_ROUTER_MAX_M=8` knob at any concurrency worth benchmarking, but the **drafter** runs one row per
+request, so conc 8 = M=8 exactly. That single fact lines up every observation: probe32 (96/48 rows) and the ladder
+survive, GSM8K (24 rows on the target, 8 on the draft) kills, and `sanity_stress` at 33/48/64 would have skipped the
+kernel entirely.
+
+Arm **A1** = same protocol, `R9K_ROUTER_MAX_M=0` (gate goes to `torch.mm` + fp32 cast). It passed everything the
+crashed arms could not reach: **GSM8K 97/100** (33,834 prompt tokens in 42 s), needles 3/3, strict sanity **0 bad of
+1,980 (conc 33) / 2,880 (48) / 3,840 (64)**, and **0 of 330** with 20-26k-token prefills first; soak running. The
+cost is small and quantified by A0-vs-A1 on the same tree and protocol: probe32 @32x300 1,533 -> 1,563 (A1 *better*,
+i.e. spread), @32x1200 1,791 -> 1,789, @16x300 1,102 -> 1,095, ITL conc 1 **12.9 -> 13.2 ms (+2 %)**, ladder within
+0.5 %. So the mitigation is roughly the price the fork's own estimate predicted for the kernel's benefit, and the box
+stops dying mid-request.
+
+Kernel-body reading (in the note): loads are `wp + c*8`, `c < (K/SPLIT)/8`; `xp + mr*sx + c*8` with
+`mr = m < M ? m : M-1`; stores under `live && lane < M`; `_fits` enforces `K % (8*split) == 0` and strides % 8 == 0.
+In range for the arguments passed, so a page-aligned fault points at a pointer that no longer describes live memory
+rather than at arithmetic. Leading hypothesis: HIP-graph capture baking the gate (or activation) pointer, with the
+tensor behind it freed later -- `hc.py: down_silu` already carries "the bf16 weight may be freed" for the sibling
+path, which is why that hypothesis is not exotic here. Secondary: the read has always been slightly out of range and
+only faults now that fp8 main KV + multimodal profiling moved what sits adjacent.
+
+Also fixed in `bench/pin033.sh`: the soak VRAM sampler touched its own loop condition file after starting, so A1's
+series is empty; `alive()` between phases (the A-pc1 arm wrote sanity/soak rows into a refused connection); `PC=`
+pinned, because the recorded bands are `PREFIX_CACHE=0` and the launcher default is now 1 -- the first arm of this
+session inherited `1`, and its log now lives as `~/logs/pin033-A-pc1` with that written in.
+
+Ruled out for both crashes: reboot, OOM-killer, MCA/MCACOD, platform reset, AER storm, sick-L2 workaround slipping.
+The `restore_userptr_worker` kernel line at 11:35:03 is the load-OOB/mm-notifier family's signature, which is where
+the first pass of this hunt went; the device report closed that detour.
+
+**Where this leaves things.** The 0.32-vs-0.33 comparison is paused by the rule I set at 11:00: reproduction makes
+the crash the priority. Arm A0 stands as a clean 0.32 baseline (load 85.6 s, KV 978,957 tokens/3.73x, probe32 and
+ladder within 1-4 % of the 2026-11-02 bands), arm A1 as the first full protocol pass since the merge. Next, cheapest
+first: `EAGER=1` + router on against the GSM8K phase (settles graph involvement, and gives a second mitigation); a
+conc-8 replay loop to get the fault on demand; `tests/test_router_r9k.py` extended to capture/replay the op with the
+served shapes across a weight release; and logging each MoE gate's `data_ptr()` at load vs first GSM8K step.
+Whatever the answer, `R9K_ROUTER_MAX_M=0` is what this box should serve with until then -- worth deciding with the
+user, since the standing launcher does not set it.

@@ -144,12 +144,13 @@ tail -3 "$D/sanity-long.txt" | sed 's/^/    /'
 
 alive "soak"
 log "soak: 16 clients, 200-30k tokens, 1500 s (with per-card VRAM sampled alongside -- the leak check)"
+touch "$D/soak.run"   # before the sampler starts: the loop's condition is this file, so touching it after means
+                      # the sampler exits on its first test and the VRAM series comes back empty (it did, on arm A1)
 ( while [ -f "$D/soak.run" ]; do
     printf '%s ' "$(date +%H:%M:%S)" >> "$D/vram.txt"
     rocm-smi --showmeminfo vram 2>/dev/null | awk -F': ' '/Used Memory/{printf "%.2f ", $NF/1073741824}' >> "$D/vram.txt"
     echo >> "$D/vram.txt"; sleep 15
   done ) &
-touch "$D/soak.run"
 timeout 2000 "$CLIENT" bench/soak.py "$BASE" --conc 16 --seconds 1500 --lo 200 --hi 30000 > "$D/soak.txt" 2>&1
 rm -f "$D/soak.run"; wait 2>/dev/null
 tail -12 "$D/soak.txt" | sed 's/^/  /'
