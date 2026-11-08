@@ -13,16 +13,16 @@ logger = init_logger("vllm." + __name__)
 
 TESTED = {
     # patch name: (vLLM commits tested, upstream issue/PR that would retire it)
-    "mtp_allowlist": (("dee37d891", "e97573215", "8cbd5d030", "fe4df3df0", "e4a5b5537"), "vllm-project/vllm#55292 (closed unmerged 2026-10)"),
+    "mtp_allowlist": (("dee37d891", "e97573215", "8cbd5d030", "fe4df3df0", "e4a5b5537", "0.33.0"), "vllm-project/vllm#55292 (closed unmerged 2026-10)"),
     # the modular MoE kernel copies its workspace into the layer output on ROCm unless aiter is on (moe/fold.py)
     "moe_output_alias": (("e97573215",), "vllm: FusedMoEKernelModularImpl._fused_experts output alias on ROCm"),
     # the runner adds the shared expert after the experts return; ours folds it into the top-k sum (moe/fold.py)
-    "moe_shared_fold": (("e97573215",), "vllm: MoERunner.forward shared_output + fused_output"),
+    "moe_shared_fold": (("e97573215", "e4a5b5537", "0.33.0"), "vllm: MoERunner.forward shared_output + fused_output"),
     # the decoder layer's post-attention tail as one op with the two all-reduces pipelined by row parts
     # (comm/pipe.py): Qwen4ExpDecoderLayer.forward, RowParallelLinear.reduce_results, moe_config.skip_final_all_reduce
     "layer_tail_pipe": (("e97573215",), "vllm: an all-reduce / compute overlap for row-local layer tails"),
     # GLM-5.3-Flash sparse indexer on RDNA4: is_enabled() gate + the _C top-k ops the ROCm wheel lacks (models/glm5next.py)
-    "glm5next_rdna4": (("fe4df3df0", "e4a5b5537"), "vllm: RDNA4 (is_rdna_aiter_enabled) support in models/glm5next/amd + ROCm top_k_per_row kernels"),
+    "glm5next_rdna4": (("fe4df3df0", "e4a5b5537", "0.33.0"), "vllm: RDNA4 (is_rdna_aiter_enabled) support in models/glm5next/amd + ROCm top_k_per_row kernels"),
     # fp8 main KV cache for Qwen4Exp QSA: the three bf16 guards in models/qwen4_exp/amd/qsa.py (compat/qsa_kvfp8.py)
     "qsa_kvfp8": (("e4a5b5537",), "vllm: an fp8 main KV cache in the ROCm QSA path (the NVIDIA reader already has one)"),
     # stock's per-expert MoE placement batched into runs of adjacent slices (moe/h2dbatch.py): RoutedExperts._load_w13
@@ -32,7 +32,8 @@ TESTED = {
 
 
 def vllm_commit() -> str:
-    """Short git sha of the running vLLM ('0.3.1.dev85+gdee37d891' -> 'dee37d891'), or its version string."""
+    """Short git sha of the running vLLM ('0.3.1.dev85+gdee37d891' -> 'dee37d891'), or its version string (a release
+    image such as v0.33.0-rocm100 reports '0.33.0', which the TESTED tuples list as is)."""
     try:
         import vllm
         v = getattr(vllm, "__version__", "") or ""

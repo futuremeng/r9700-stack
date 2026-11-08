@@ -2874,3 +2874,57 @@ apart here).
 
 Tests: the ring fixture now carries a 10% cache hit rate (read 6,300/s vs 7,000 credited) and pins both figures plus the
 poll-level subtraction; the render harness still passes against the sidecar and against production.
+
+## 2026-11-08: merge upstream v0.4.3 (17 commits); the pin moves to vLLM 0.33.0, and this box's own 0.33 gate is queued, not run
+
+Asked: is there anything upstream, and do we follow it? Fetched, merged, and the answer came out **yes to both, with
+the measurement still owed** -- so this record is the merge plus a standing task, not a result.
+
+* Backup tag first, in the v0.4.2 precedent's shape: `backup/pre-v043-merge-20261108` = `1a009d8`. Merge base is
+  `a6a97a2` (v0.4.2): **17 upstream commits in, 228 fork commits out**, four conflicts. Fork work untouched; nothing
+  was rebased.
+* **The overlap, found before merging rather than after.** `fix/build-sh-single-nm-pass` (this fork, 2026-11-05) and
+  upstream's `8f8af94` (2026-11-07) are the same bug -- `nm -D | grep -q` under `set -o pipefail`: `grep -q` exits on
+  its first match, `nm` takes SIGPIPE (141), the pipeline fails, and a symbol that is present reports MISSING. Upstream
+  hit it in the nightly-1648 image build, this fork hit it on two clean host builds on 2026-11-03. Upstream's form
+  (`SYMS=$(nm -D | awk '$2=="T"{print $3}')`, then `grep -qx`) is taken; the branch is deleted. The symbol list stays
+  the fork's: **126 names checked, the extra one being `r9k_qsa_attn_f8`** (set difference computed both ways, empty
+  except that), and `bash -n` clean.
+* **What the pin move means for this box.** `docker/Dockerfile` BASE is now `vllm/vllm-openai-rocm:v0.33.0-rocm100`,
+  `__version__` is 0.4.3, and the container path is validated four configurations deep on VM100 at the v0.4.2 numbers.
+  The native path this box serves is **not** validated on 0.33 by anything newer than 2026-11-02, and the merged tree
+  changes under both arms: `comm/calibrate.py` graph-times the TP4 collective cutoffs at launch (default on,
+  `R9K_ARN_CALIBRATE=0` for the fixed PLX numbers), which is a confound in a 0.32-vs-0.33 pair on a switch-fed box.
+  So the plan in `notes/vllm-0.33.md` runs the first launch of each arm with the calibration off and reports what it
+  moves as its own row.
+* **Two fork-only patches deliberately left untested on 0.33**: `qsa_kvfp8` and `moe_h2d_batch` keep their
+  `e4a5b5537`/`0.32.0` entries in `compat/gate.py`. A 0.33 launch here will warn for them; that is the gate doing its
+  job, and the fix is a passing gate, not an edit to the list. `glm5next_rdna4` takes upstream's `0.33.0` (validated
+  there on the GLM launch).
+* `notes/vllm-0.33.md` is now **one file carrying two evaluations** -- upstream's VM100/container half and this fork's
+  native half, add/add conflict, neither trimmed, headings demoted one level under two part titles. The 2026-11-02
+  "not adopted" verdict is marked superseded and says why it was a judgement about a second serving line on a box
+  that was resetting four times a day, not about the platform.
+* One fact added while checking the wheels were still fetchable: at the 0.33.0 pin `4ba787ec9`, **both** native
+  flavours are live (verified 2026-11-08, HTTP 200): `…/rocm72/vllm/vllm-0.33.0+rocm72-cp312…manylinux_2_39.whl` and
+  `…/rocm100/vllm/vllm-0.33.0+rocm100-cp312…manylinux_2_34.whl`, `amd-aiter 0.1.26` beside each. `+rocm100` is the
+  flavour whose build SDK matches what this box actually loads (`/opt/rocm -> core-10.1`) and the flavour the docker
+  pin is built from, and `notes/native-4xr9700.md` has always flagged it as never measured here -- so it is arm C of
+  the comparison, not a footnote. `setup.py`'s missing-venv hint now prints that live URL instead of a 404ing
+  0.32-era index.
+* **The merge makes the tree newer than its own artifact**: `kernels/r9k_dsv4_glue.hip` changes (the rotation pre-pass
+  rounds once, `f2h_mul`, bit-equal to exllamav3's `-ffp-contract=fast` build) while the committed `libr9k.so` is dated
+  2026-11-05. `tests/test_dsv4_glue.py` went from "<= 2 f16 ulp above M = 1" to `torch.equal` at every M in the same
+  range, so it fails against the `.so` in the tree, and the next launch loads the old kernel. Queued as step 0 of the
+  comparison list with the build line written out -- a 4-12 minute hipcc compile is not what you start beside a
+  serving box, and upstream's own first 0.33 gate run is where that FAIL was caught.
+* **Checks that ran on the merged tree, against a busy box** (so only the ones that need no torch and no card):
+  `python3 -m compileall` over `r9700_vllm`, `setup.py`, `bench`, `tools`, `serve/webui.py`; `tests/test_readme.py`
+  (1 failing at first — its rule is that the release-page caption must name the **newest** tag page by name, and the
+  merge brought `docs/r9700-stack-v0.4.3.svg` while the caption and the generated page's `alt` still said v0.4.2;
+  both now say v0.4.3, 0 failing), `test_setup` PASS, `test_webui` PASS, `test_brief` PASS, `test_journal_mca` PASS,
+  `test_prefix_replay` PASS, `test_prestage_anon` PASS, `test_lockup` SKIP (no Pillow, as its docstring says). The
+  torch/vllm gates — `test_integration` and the kernel suites — are the ones that need the box to itself; they join
+  the list below.
+* No launch was touched: a 262k serve was running through the merge (four `VLLM::Worker_TP*`, cards at 78%), so the
+  gate order sits queued in the note until the box is idle and out of a reset storm.

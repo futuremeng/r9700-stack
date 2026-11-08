@@ -652,11 +652,14 @@ def native(cfg):
     py = venv / "bin" / "python3"
     if not py.exists():
         warn(f"native path needs a venv with stock ROCm vLLM at {venv} (missing)",
-             "python3 -m venv ~/venv-r9700 && ~/venv-r9700/bin/pip install vllm==0.32.0+rocm723 --extra-index-url "
-             "https://wheels.vllm.ai/rocm/<pin>/rocm723/ && pip install -e . (that index is per-commit and expires "
-             "upstream: none of the six 0.32-era pins checked on 2026-11-02 is live, so the venv you have IS the "
-             "artifact of record -- keep it. 0.33+ renames the flavor to rocm72; notes/vllm-0.33.md has the 0.33.0 "
-             "gate result and why we did not move. The wheel "
+             "python3 -m venv ~/venv-r9700 && ~/venv-r9700/bin/pip install vllm==0.33.0+rocm72 --extra-index-url "
+             "https://wheels.vllm.ai/rocm/4ba787ec9959e566d3b587a796dff07673324da5/rocm72/ && pip install orjson "
+             "&& pip install -e . (that index is per-commit and expires upstream: none of the six 0.32-era pins "
+             "checked on 2026-11-02 is live -- the 0.32 wheel cannot be re-fetched at all, so the venv you have IS "
+             "the artifact of record -- keep it. 0.33 renames the flavor to rocm72 and builds a rocm100 one beside "
+             "it (both verified live at that pin, 2026-11-08); the docker pin is the rocm100 image, the native venvs "
+             "measured here are rocm72. notes/vllm-0.33.md carries both 0.33.0 gates: the container line moved to "
+             "the v0.33.0-rocm100 image, and this venv owes a paired re-measurement before it follows. The wheel "
              "build matters -- the box's own is what notes/native-4xr9700.md measures)")
         return
     # the ROCm vLLM wheels link OpenMPI, which this box has unpacked locally, not system-wide: exactly what

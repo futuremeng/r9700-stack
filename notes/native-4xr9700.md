@@ -12,7 +12,9 @@ the image: `~/venv-r9700`, `vllm==0.32.0+rocm723` / `torch==2.13.0+git733fca1` /
 `https://wheels.vllm.ai/rocm/5df63a72.../rocm723/` — **that per-commit index 404s as of 2026-11-02**: old pins
 expire upstream and the flavor is renamed `rocm723` -> `rocm72` in 0.33+ (none of the six 0.32-era pins checked
 that day is live, so **this venv is the artifact of record** — keep it, don't plan to rebuild it; and
-[vllm-0.33.md](vllm-0.33.md) has the vLLM 0.33.0 gate result plus the decision not to move). Plugin
+[vllm-0.33.md](vllm-0.33.md) carries both 0.33.0 gates: the container line moved to the `v0.33.0-rocm100` release
+image (v0.4.3, 2026-11-08), and this venv's paired re-measurement is owed before it follows — the command and the
+gate order are at the end of that note). Plugin
 `pip install -e .`, `libr9k.so` built by
 `kernels/build.sh` with the host hipcc for gfx1201. `serve/native-flashnext.sh` is the container-free
 launcher (same knobs as `serve/serve.sh`).
@@ -31,9 +33,13 @@ kept soname `libamdhip64.so.7` from 7.2 through 7.16. That is why the README/not
 [rocm-10.1.md](rocm-10.1.md) talks about 10.1: that note is research into the 10.1 stack's contents (and the
 source of the `-dev` deb and the headers `build.sh` needs), not a claim about which wheel we install.
 
-Never tested here, worth knowing if a pin move ever happens: the `rocm100` flavor is the one whose *build* SDK
-matches what we actually load at runtime. Everything measured so far — the standing venv and `~/venv-r9700-033` —
-is the `rocm72x` flavor.
+Never tested here, worth knowing now that the pin has moved: the `rocm100` flavor is the one whose *build* SDK
+matches what we actually load at runtime, and it is what the docker pin (`vllm/vllm-openai-rocm:v0.33.0-rocm100`)
+is built from. Everything measured so far — the standing venv and `~/venv-r9700-033` — is the `rocm72x` flavor.
+Both 0.33.0 flavors are installable natively: `wheels.vllm.ai/rocm/4ba787ec9…/rocm72/` and
+`…/rocm100/` both answer 200 on 2026-11-08 (`vllm-0.33.0+rocm72-cp312…manylinux_2_39`,
+`vllm-0.33.0+rocm100-cp312…manylinux_2_34`, `amd-aiter 0.1.26` beside each). The comparison this box owes should
+run the `rocm100` wheel as its third arm for that reason.
 
 ## What the host needed (three unpacked .debs, no root)
 

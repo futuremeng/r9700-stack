@@ -36,7 +36,10 @@ exec env \
                                     the knee: +18% aggregate decode at 32 in flight (1,216 -> 1,433, 48 worse at
                                     1,366), single-stream and long-context prefill untouched.` \
   PREFIX_CACHE=${PREFIX_CACHE-0} `  # off: avoids the mamba-aligned prefill chunking (2k prefill 2.8k -> ~4.7k tok/s,
-                                    # see serve.sh); =1 restores prefix reuse across requests` \
+                                    # see serve.sh); =1 restores prefix reuse across requests. USE =1 FOR AGENTS
+                                    # (Claude Code etc. resend the whole conversation every turn): a 61-70k-token
+                                    # session went 8.2-9.3 s TTFT a turn -> 0.55-0.88 s, for +0.15 s on short
+                                    # cold prompts and -5% KV (notes/root-ports.md)` \
   CGSIZES=${CGSIZES-1,2,4,8,16,24,32,48,64,96,128,192,256} `  # graphs for prefill chunks <= 256 tokens
                                     # (short-prompt TTFT 336 -> 91 ms). The sizes up to 2048 cost 1.4 GiB of graph
                                     # memory a card and 1.4 GiB of vLLM's activation estimate for no soak-measured

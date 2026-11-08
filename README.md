@@ -14,7 +14,7 @@ no re-quantised weights: everything loads at runtime through vLLM's own extensio
 underneath it.
 
 [![Release](https://img.shields.io/github/v/release/bkvargyas/r9700-stack?label=release&color=2ea043)](https://github.com/bkvargyas/r9700-stack/releases/latest)
-![vLLM 0.32 line](https://img.shields.io/badge/vLLM-0.32%20line%2C%20stock%20nightly-blue)
+![vLLM 0.33.0](https://img.shields.io/badge/vLLM-0.33.0%2C%20stock%20ROCm%2010%20image-blue)
 ![ROCm 10](https://img.shields.io/badge/ROCm-10.0%2C%20stock-red)
 ![Cards](https://img.shields.io/badge/Radeon%20AI%20PRO%20R9700-2%20%7C%204%20%7C%208%20cards-orange)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-lightgrey)](LICENSE)
@@ -30,14 +30,14 @@ underneath it.
 > comparable across, and every table names which of them it is. Your rig will differ; the serve scripts carry every
 > knob with the reason next to it.
 
-![r9700-stack v0.4.2: what runs on it, the weight formats, the speed](docs/r9700-stack-v0.4.2.png)
+![r9700-stack v0.4.3: what runs on it, the weight formats, the speed](docs/r9700-stack-v0.4.3.png)
 
 <p align="center">
-  <a href="docs/r9700-stack-page.png"><img src="docs/r9700-stack-page.svg" alt="r9700-stack v0.4.2: what runs on it, the weight formats, the speed"></a>
+  <a href="docs/r9700-stack-page.png"><img src="docs/r9700-stack-page.svg" alt="r9700-stack v0.4.3: what runs on it, the weight formats, the speed"></a>
   <br><sub>The release on one page: what the stack is, the four model configurations it runs, and how fast they run --
 drawn by <code>docs/summary-page.py</code> from the same numbers the tables below carry, so a figure nobody can
 re-draw cannot drift from them. Its canvas is 1000 px against github.com's ~980 px column, so the smallest type on
-it lands at 14 px; the tag's own hand-drawn <code>docs/r9700-stack-v0.4.2.svg</code> carries the same claims at
+it lands at 14 px; the tag's own hand-drawn <code>docs/r9700-stack-v0.4.3.svg</code> carries the same claims at
 11 px on a 1200-unit canvas, which measures out at 9.0 px in that column -- clicked-to-read, so the generated page
 is what this README carries. The picture links to <code>docs/r9700-stack-page.png</code>, the same drawing at
 2000 × 2764, for zooming. Rows tagged "210 W gate" are the release configuration, "the native box" is one uncapped
@@ -98,7 +98,7 @@ You run the stock vLLM ROCm image with this plugin installed. From there:
    `max_num_seqs`, mixed-length soaks and long-context needles on every configuration before a tag; paired GSM8K
    (McNemar) and HumanEval on the numerics.
 
-Current release: **v0.4.2** (2026-11-04), [release notes](notes/release-v0.4.2.md), [CHANGELOG.md](CHANGELOG.md).
+Current release: **v0.4.3** (2026-11-08), [release notes](notes/release-v0.4.3.md), [CHANGELOG.md](CHANGELOG.md).
 On the four-card native box this fork runs, the main KV cache is fp8 e4m3 by default - see the 262k table below.
 
 ## Features
@@ -518,7 +518,7 @@ p = 1.00 against v0.3.1), HumanEval 162 / 164; v0.3.3 validation: 0 bad answers 
 ## How it fits together
 
 ```
-OpenAI-compatible clients ──▶ stock vLLM (ROCm 10 nightly image) ──▶ model classes, attention backends, quant methods
+OpenAI-compatible clients ──▶ stock vLLM (ROCm 10 image, v0.33.0) ──▶ model classes, attention backends, quant methods
                                        │                                   registered by r9700_vllm at import
                                        ├──▶ libr9k.so (HIP) + Triton kernels      the decode / prefill / MoE / collective kernels
                                        ├──▶ exllamav3's gfx1201 extension         EXL3 trellis GEMV / GEMM (built into the image)
@@ -526,7 +526,7 @@ OpenAI-compatible clients ──▶ stock vLLM (ROCm 10 nightly image) ──▶
                                        └──▶ 2 / 4 / 8 R9700s over PCIe switches   P2P pair stages, host-memory cross stage, RCCL above 2 MB
 ```
 
-The image is the pinned nightly plus the plugin (`docker/Dockerfile`); the plugin tree is mounted at `/opt/r9700`
+The image is the pinned stock image plus the plugin (`docker/Dockerfile`); the plugin tree is mounted at `/opt/r9700`
 and its kernels are rebuilt by the serve scripts when a source is newer than the library. Every kernel has a stock
 fallback behind an `R9K_*` knob, and the integration gate checks the stock entry points the plugin depends on against
 the installed vLLM before a tree is served.
@@ -538,13 +538,13 @@ You need 2, 4 or 8 Radeon AI PRO R9700s, ROCm 10 on the host, docker, and the we
 (eight cards), and for DeepSeek-V4.1-Flash a directory composed of the EXL3 pack's shards and config plus the base
 checkpoint's two Engram shards and tokenizer (`serve/ds41-exl3.sh`'s header has the recipe; about 200 GB of host RAM).
 
-**1. Build the image** (the stock vLLM ROCm 10 nightly plus the plugin; the kernels and exllamav3's extension compile inside):
+**1. Build the image** (the stock vLLM ROCm 10 image plus the plugin; the kernels and exllamav3's extension compile inside):
 
 ```sh
 docker build -t r9700/vllm:dev docker/
 ```
 
-The pin (2026-10-25: vLLM 0.32.1rc1, torch 2.13) is in `docker/Dockerfile`; `--build-arg BASE=` picks another nightly.
+The pin (`vllm/vllm-openai-rocm:v0.33.0-rocm100`: vLLM 0.33.0, torch 2.13) is in `docker/Dockerfile`; `--build-arg BASE=` picks another image or nightly.
 
 **2. Serve.** Each script carries the measured defaults with the reason next to every knob:
 
@@ -553,7 +553,7 @@ bash serve/27b.sh                                                  # Qwen3.8-27B
 GPUS=0,1,2,3 TP=4 OFFLOAD_GB=0 NSEQ=16 bash serve/flashnext.sh     # Qwen3.8-Flash-Next, four cards
 bash serve/flashnext.sh                                            # Qwen3.8-Flash-Next, two cards, experts in host RAM
 MODEL=/models/GLM-5.3-Flash-NVFP4-RedHat GPUS=0,1,2,3,4,5,6,7 TP=8 OFFLOAD_GB=0 EAGER=0 MTP=3 KVDTYPE=fp8 \
-  MAXLEN=32768 NSEQ=4 NBT=8192 PREFIX_CACHE=0 VLLM_ROCM_USE_AITER=1 R9K_AG_MAX_KB=2048 \
+  MAXLEN=32768 NSEQ=4 NBT=8192 KVMEM=2.65 PREFIX_CACHE=0 VLLM_ROCM_USE_AITER=1 R9K_AG_MAX_KB=2048 \
   'SPEC_EXTRA="use_local_argmax_reduction": true' 'R9K_FP8_LINEARS=self_attn\.(in_proj_qkvbfg_a|o_proj|f_b_proj|g_b_proj)$' \
   bash serve/serve.sh                                               # GLM-5.3-Flash, eight cards (notes/glm53.md)
 bash serve/ds41-exl3.sh                                            # DeepSeek-V4.1-Flash EXL3, eight cards (notes/exl3-plan.md)
@@ -778,7 +778,8 @@ these numbers runs.
    torch 2.13.0+git733fca1 and triton 3.8.0 come with that wheel. The index is per-commit and old pins expire:
    the one this release fetched 404s as of 2026-11-02, and vLLM 0.33 renamed the flavor to `rocm72`. No 0.32-era
    pin is live any more (six checked), so the venv IS the artifact of record -- keep it, don't plan to rebuild it.
-   notes/vllm-0.33.md: the 0.33.0 gate result and why we did not move. The build line above is host hipcc, gfx1201,
+   notes/vllm-0.33.md: both 0.33.0 gates -- the container line moved to the v0.33.0-rocm100 release image (v0.4.3),
+   and this venv's paired re-measurement is owed before it follows. The build line above is host hipcc, gfx1201,
    all 68 export checks, and it ends in the `cp` because the launcher loads the copy under `r9700_vllm/kernels/`.
    Those ROCm wheels link OpenMPI 4 and the host does not have it: unpack the runtime with `dpkg-deb -x` under
    `~/opt/openmpi` (no root; the deb list is in the note), and the launcher's `OPENMPI=` line puts it on
@@ -891,7 +892,7 @@ nightly are in [notes/picking-up.md](notes/picking-up.md).
   (bit-exact against a torch reference, graph replay equal to eager), [notes/kernel-inventory.md](notes/kernel-inventory.md)
   what exists and why.
 - **Move the pin:** [notes/picking-up.md](notes/picking-up.md) is the upgrade recipe for a newer vLLM nightly and the
-  release checklist; [notes/vllm-0.32.md](notes/vllm-0.32.md) the last move.
+  release checklist; [notes/vllm-0.33.md](notes/vllm-0.33.md) the last move (to the v0.33.0 release image), [notes/vllm-0.32.md](notes/vllm-0.32.md) the one before.
 - **Measure first:** `bench/ds41/ledger/` is the per-kernel step ledger; [notes/exl3-ledger.md](notes/exl3-ledger.md)
   shows how it reads.
 
@@ -918,7 +919,7 @@ kernels/         the HIP sources and build.sh (libr9k.so); Triton kernels live n
 serve/           one launcher per configuration, serve.sh underneath them
 bench/           warm-up, sanity, soak, eval, needle, profiling and ledger tools (bench/ds41/ for DeepSeek)
 tests/           kernel unit gates (bit-exact references, graph replay) and the integration gate
-docker/          the image: the pinned nightly, the plugin, exllamav3's gfx1201 extension
+docker/          the image: the pinned stock vLLM image, the plugin, exllamav3's gfx1201 extension
 overlay/ host/   the emulated-switch overlay for KVM guests; host-side clock and power helpers
 notes/ docs/     the written record, the graphics
 ```

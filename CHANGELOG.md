@@ -1,5 +1,42 @@
 # Changelog
 
+## upstream v0.4.3 merged: the pin moves to the vLLM 0.33.0 ROCm 10 release image, and this box owes its paired 0.33 gate
+
+`git fetch upstream && git merge upstream/master`: **17 upstream commits** since v0.4.2, four conflicts, and this is
+the first merge where the fork and upstream reached the same conclusion independently -- this fork's
+`fix/build-sh-single-nm-pass` branch is now **superseded** by upstream's `8f8af94`, the same `nm | grep -q`
+SIGPIPE-under-`pipefail` flake found from the other end.
+
+- **What upstream brings.** `comm/calibrate.py`: the TP4 one-shot / two-shot / RCCL cutoffs are **graph-timed at
+  launch** on every rank (the fixed ones are PLX-switch numbers and lose 2-9x on a root-port box, `notes/root-ports.md`);
+  `ar4` now only takes messages above `ar4_min` so a calibrated, smaller exact range never sends decode-sized messages
+  to the compressed path; the image `BASE` is `vllm/vllm-openai-rocm:v0.33.0-rocm100` (vLLM 0.33.0, same torch 2.13 /
+  triton 3.8 / aiter 0.1.26 / SDK build / HIP / RCCL as the nightly it replaces); the GLM 32k recipe gains `KVMEM=2.65`
+  (0.33's profile run would otherwise cost it 203k -> 155k KV tokens); `serve/ds41-exl3.sh` waits for readiness while
+  the container lives; the dsv4 glue rotation rounds once, bit-equal to exllamav3. Tag `v0.4.3`.
+- **The decision that splits.** Upstream's `notes/vllm-0.33.md` gates all four configurations on VM100 and moves the
+  pin; this fork's `notes/vllm-0.33.md` of 2026-11-02 gated 0.33 on the native box, found it **level**, and did not
+  move. Both notes are kept whole, under one file, with the two halves labelled and the 2026-11-02 "not adopted" marked
+  superseded: it was a judgement about this box's second serving line, not about the platform, and upstream's half
+  answers the two things this box could not produce (BetterBench, and the eight-card DeepSeek validation).
+- **The comparison is owed, not run.** The box was serving when the merge landed, so the native 0.32-vs-0.33 pair has
+  not been taken again: gate order, the three arms (production venv, `~/venv-r9700-033`, and a new `+rocm100`-flavour
+  venv -- the build SDK that matches what this box loads, both wheels verified live at `4ba787ec9`), and the reason to
+  run the first launch of each arm with `R9K_ARN_CALIBRATE=0` are in "On this box: the comparison to run" at the end of
+  [notes/vllm-0.33.md](notes/vllm-0.33.md). Until it passes, `qsa_kvfp8` and `moe_h2d_batch` stay at 0.32/`e4a5b5537`
+  in `compat/gate.py`, so a 0.33 launch here **warns on purpose** -- that warning is the marker, not something to
+  silence by editing the list.
+- **One artifact is now older than the source it sits in.** The merge changes `kernels/r9k_dsv4_glue.hip` while
+  `libr9k.so` in the tree is dated 2026-11-05, so `tests/test_dsv4_glue.py` (upstream tightened it to bit-equality at
+  every M against exllamav3's rotation) fails until the kernels are rebuilt, and the next launch would load the old
+  kernel. Rebuilding is a 4-12 minute hipcc compile, so it is queued with the 0.33 comparison rather than run against
+  a serving box; step 0 of that list, command included.
+- **Conflicts, and how each went.** `kernels/build.sh`: upstream's mechanics (`SYMS=$(nm -D | awk …)` + `grep -qx`),
+  this fork's symbol list -- 126 names, the extra one being `r9k_qsa_attn_f8`; `bash -n` clean. `README.md`: upstream's
+  v0.4.3 release line, this fork's fp8-e4m3 KV sentence kept under it. `notes/vllm-0.33.md`: add/add, composed as
+  above. `r9700_vllm/compat/gate.py`: upstream's `0.33.0` on `glm5next_rdna4`, this fork's two extra patches kept.
+  `CHANGELOG.md` auto-merged; `0.4.3` sits below the fork's own log.
+
 ## one test had promoted a hand-started sidecar to a service: `:8099` stops being required
 
 `tests/test_webui.py` asserted `0.0.0.0:8099` in `ss -ltn`. That socket was a standalone Monitor someone had
@@ -1380,6 +1417,33 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   when a request *finishes*: polling every 2 s, TTFT/queue/prefill/decode read as no-data for the whole
   duration of a 600-token generation. The payload now carries `since` — the same ratios over the engine's whole
   run — and the page marks those numbers "(since launch)" instead of showing a dash it cannot justify.
+
+## [0.4.3] - 2026-11-08
+
+Release notes with the validation record: [notes/release-v0.4.3.md](notes/release-v0.4.3.md); the evaluation: [notes/vllm-0.33.md](notes/vllm-0.33.md).
+
+### Added
+- **Startup calibration of the TP4 collective cutoffs** (`comm/calibrate.py`): one-shot / two-shot / RCCL all-reduce
+  and r9k / RCCL all-gather, graph-timed on every rank at launch, slowest rank decides. The fixed cutoffs were PLX-switch
+  numbers; on a box with every card on its own CPU root port they put 8-16-stream decode on a two-shot path 4-9x slower
+  than RCCL (notes/root-ports.md). `R9K_ARN_CALIBRATE=0` keeps the fixed cutoffs; explicit `R9K_ARN_1S_KB` /
+  `R9K_ARN_MAX_KB` / `R9K_AG` / `R9K_AG_MAX_KB` are respected.
+- notes/root-ports.md: bring-up and measurements of a switchless 4x R9700 box (passthrough, P2P kernel config, collectives,
+  step ledger against the PLX box, prefix caching for agent workloads).
+
+### Changed
+- The compressed all-reduce (`ar4`) only takes messages above the exact path's original ceiling (`ar4_min`, 512 KiB), so
+  a calibrated, smaller exact range sends the sizes in between to RCCL instead of compressing decode-sized messages.
+
+- **The pin moves to the official vLLM 0.33.0 ROCm 10 release image** (`vllm/vllm-openai-rocm:v0.33.0-rocm100`, `docker/Dockerfile`):
+  the same torch 2.13 / triton 3.8 / aiter 0.1.26 / SDK build / HIP runtime / RCCL as the 2026-10-25 nightly it replaces, exllamav3
+  v1.6.6 unchanged, no serving fix needed. Gate on the tagged tree: Flash-Next TP4 BetterBench 185.3, 27B TP2 197.7, GLM TP8 97.5 tok/s (KV cache 284,829 tokens with `KVMEM=2.65`), DeepSeek-V4.1-Flash prose 109 / code 221 tok/s single stream, 229 / 421 at four, 313 / 529 at eight, GSM8K 97.5 %; every soak 0 errors.
+- GLM-5.3-Flash 32k recipe: `KVMEM=2.65` (0.33's profile run would otherwise shrink the KV cache from 203k to 155k tokens).
+
+### Fixed
+- `kernels/build.sh` export check (an `nm | grep -q` SIGPIPE race under `pipefail`); the DeepSeek glue rotation pre-pass rounds once
+  (bit-equal to exllamav3); `serve/ds41-exl3.sh` waits for READY while the container lives (`READY_WAIT`); `compat/gate.py` tested
+  lists gain `0.33.0`; `tests/test_exl3_linear.py`'s negative control names its first error.
 
 ## [0.4.2] - 2026-11-04
 
