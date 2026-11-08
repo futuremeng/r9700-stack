@@ -23,8 +23,9 @@ walking off the end of a mapping, not a wild index.
 
 ## Which traffic reaches that kernel, and why the crash lands on conc 8 and not on a probe32 wave
 
-`MT=8` means the launch happened with `M <= 8`. With MTP=2 the target pass runs `requests x (1 + 2)` rows, so 32
-streams is 96 rows and 8 streams is 24 -- both above the knob, both fall back to `torch.mm`. The pass that runs one
+`MT=8` means the launch happened with `M <= 8` (the C++ dispatcher pads rows 5..8 to `MT=8`). With MTP=2 the target
+pass runs `requests x (1 + 2)` rows, so 32 streams is 96 rows and 8 streams is 24 -- both above the knob, both fall
+back to `torch.mm`. The pass that runs one
 row **per request** is the drafter, so at conc 8 the draft step is exactly `M = 8`, which is inside the kernel. That
 is the whole pattern:
 
@@ -72,7 +73,7 @@ freed or replaced faults exactly this way. This repo already knows weights can b
 `hc.py: down_silu` carries the comment "the bf16 weight may be freed" and keeps `n_out` for it. Secondary
 possibility: the read was always slightly out of range and only became a fault because the allocation map moved --
 the fp8 main KV cache (default since [kv-fp8-qsa.md](kv-fp8-qsa.md)) and multimodal profiling both changed what
-sits next to what, and the last clean GSM8K runs of this kernel (2026-11-02/03) predate both.
+sits next to what, and the earlier faults this kernel has (2026-11-04, below) predate the fp8 KV default by a day either way.
 
 ## What would settle it, in order of cost
 
@@ -87,6 +88,58 @@ sits next to what, and the last clean GSM8K runs of this kernel (2026-11-02/03) 
    step: if a pointer moved, the baked-pointer hypothesis is proven and the fix is on the plugin side, not in the
    kernel.
 
+## This is not the first time: 2026-11-04 named the same kernel, and this same cap was already the discriminator
+
+[launch-methodology.md §12](launch-methodology.md) records two `hipErrorIllegalAddress` deaths on **2026-11-04**
+(07:53 with the prefix cache off, 14:01 with it on), each naming `r9k_router_gemm_kernel<8, 2, true>`, on a decode
+step of **6 rows** (2 streams x (1 + 2 MTP drafts)) at up to 203,257 computed tokens. The experiment that followed
+was this cap at 4 -- `R9K_ROUTER_MAX_M=4`, session `r9700-native-TEST-routermaxm4` -- which carried real traffic for
+**9 h 37 m with zero illegal-access lines and zero EngineDeadError** (329,983 drafts, 1.317 accepted per draft), and
+was then reverted to the default `M <= 8` on purpose, with the note writing the rule: *"if the fault comes back in
+`r9k_router_gemm_kernel<8, 2, true>`, the discriminator did not discriminate, and the next move is serialization,
+not another cap."*
+
+Today's two deaths are exactly that come-back. So the honest reading of the cap evidence is now:
+
+- faults at the default cap 8: **four** (2026-11-04 x2, 2026-11-08 x2) -- and the 11-08 pair happened in a 20 s
+  GSM8K burst at *short* context, so the deep-context framing of 11-04 was not a requirement: what the two pairs
+  share is an `M` in 5..8 (6 target rows at conc 2 then, 8 draft rows at conc 8 now), not a context depth;
+- clean at cap 4: **9 h 37 m** of live traffic, plus every `M <= 4` step this box has ever run (the cap only moves
+  which instantiation exists, and `M <= 4` never selects `MT=8`);
+- clean at cap 0: today's full-protocol arm A1.
+
+Per §12's own rule, if a launch with the cap at 4 faults in this kernel the next move is `AMD_SERIALIZE_KERNEL=3` --
+the driver's own suggestion, which names the faulting kernel instead of the first innocent reader that trips over a
+poisoned page -- not a third cap.
+
+## What the recipe now carries (baked 2026-11-08)
+
+`serve/native-flashnext.sh` sets `: ${R9K_ROUTER_MAX_M:=4}` and exports it, so the standing recipe -- not an
+operator's memory -- holds the cap, and the launcher's env snapshot (which is taken after the last default it sets)
+records it in the recipe file; `tools/recipe-check.py` compares `R9K_*` by value, so a live serve at cap 4 and a tree
+at cap 4 agree, and `R9K_ROUTER_MAX_M=8` in an operator's shell is visible as a test config. The library default in
+`r9700_vllm/router.py` moved to 4 as well, so the container path inherits the same choice rather than only the
+native launcher. Cap 4 rather than cap 0 because cap 4 is the value with 9 h 37 m of clean traffic behind it, it
+keeps our kernel on the 1-2 stream steps where its ~0.3 ms lives, and it excludes the faulting `MT=8` instantiation
+just as completely.
+
+Verified on the launch that carries it (`~/logs/relaunch-262k-cap4.log`, 12:37, `bench/relaunch.sh 262k-cap4`):
+
+- boot proof, all of it rather than `tail -1` per [launch-methodology.md §12](launch-methodology.md): four ranks x
+  `r9k router GEMM installed on 48 gates (M <= 4, split 2)` and four x `installed on 1 gates` (the MTP draft model
+  has one gate);
+- `tr '\0' '\n' < /proc/<pid>/environ | grep '^R9K_ROUTER_MAX_M='` -> `R9K_ROUTER_MAX_M=4`, and
+  `ENVRECIPE=1` from the launcher itself answers `R9K_ROUTER_MAX_M = 4`, so the cap is in the recipe rather than in
+  somebody's shell;
+- fingerprints of that launch: load 72.6 s, KV 940,726 tokens / 3.59x at 262,144;
+- **the phase that killed both cap-8 arms**: `bench/quality.py 100 8` -> **97.0 % (97/100), 33,209 prompt tokens in
+  40 s, needles 3/3**, engine still up afterwards, and the launch log holds 0 `illegal memory access` /
+  `HSA_STATUS_ERROR` lines;
+- the cost of the cap, three-way on single-stream latency: `bench/itl.py 1 2 4` gives **13.0 / 15.1 / 18.4 ms** at
+  cap 4 against 12.9 / 14.7 / 18.5 at cap 8 (A0) and 13.2 / 15.0 / 18.5 at cap 0 (A1). Cap 4 recovers most of the
+  conc-1 step (3 rows stay on ours) and matches cap 0 from conc 2 up, exactly as the row arithmetic says
+  (2 streams x 3 = 6 rows > 4).
+
 ## What is NOT the cause
 
 Ruled out from the journal for both crashes: no reboot (uptime 3 d 8 h), no OOM-killer, no MCA/MCACOD today (the
@@ -99,9 +152,13 @@ fault, not a wedge.
 
 ## Box state and the effect on the 0.32-vs-0.33 comparison
 
-The comparison in [vllm-0.33.md](vllm-0.33.md) is **paused with arm A0 half-taken and arm A1 complete**: A0 (router
-ON) is the clean 0.32 baseline up to the quality gate -- load 85.6 s, KV 978,957 tokens / 3.73x, probe32 and the
-ladder inside 1-4 % of the recorded 2026-11-02 bands, ITL 12.9/14.7/18.5 -- and A1 (router OFF) is the first full
-pass of the whole protocol on this box since the merge. The 0.33 arms (B: `~/venv-r9700-033`, C: a `+rocm100`
-venv) are unmeasured, and until the router question is closed they have to run with the same
-`R9K_ROUTER_MAX_M` value on both sides to be comparable at all.
+The comparison in [vllm-0.33.md](vllm-0.33.md) is **paused with arm A0 half-taken and arm A1 complete**. A0 (cap 8)
+is the clean 0.32 baseline up to the quality gate -- load 85.6 s, KV 978,957 tokens / 3.73x, probe32 and the ladder
+inside 1-4 % of the recorded 2026-11-02 bands, ITL 12.9 / 14.7 / 18.5. A1 (cap 0) is the first full pass of the whole
+protocol on this box since the merge: GSM8K 97/100, needles 3/3, strict sanity 0 bad of 1,980 / 2,880 / 3,840 plus 0
+of 330, and a 1504 s soak at 16 clients with **753 ok, 0 errors, 0 context-length rejections**.
+
+The box now stands at the baked cap 4 (`~/logs/relaunch-262k-cap4.log`: load 72.6 s, KV 940,726 tokens / 3.59x,
+health OK, GSM8K 97/100 and needles 3/3 run against it). That is also what makes the paused 0.33 arms (B:
+`~/venv-r9700-033`, C: a `+rocm100` venv) comparable when they do run -- both sides inherit the same cap from the
+launcher instead of from a shell.

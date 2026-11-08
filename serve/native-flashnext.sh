@@ -108,6 +108,17 @@ elif [ -n "${KVDTYPE:-}" ]; then
 fi
 export R9K_QSA_KVF8
 
+# The MoE gate cap, baked. Four launches on this box have died inside r9k_router_gemm_kernel<8, 2, true>: two on
+# 2026-11-04 (notes/launch-methodology.md section 12) and two on 2026-11-08 (notes/bug-router-gemm-oob.md). The
+# 11-04 discriminator was this cap at 4: 9 h 37 m of real traffic, zero illegal-access lines, zero
+# EngineDeadError, and it was reverted only to test whether the fault came back at M <= 8. It did, twice, so the
+# cap is now part of the recipe instead of something an operator has to remember. M <= 4 keeps our kernel for the
+# widths it wins at (a 1-2 stream decode step is 3-6 rows; the cap-0 arm measured +0.3 ms of single-stream ITL,
+# which is the step at issue) and never picks the MT=8 instantiation the device names. Opt back in with
+# R9K_ROUTER_MAX_M=8. If it faults at this cap the next move is AMD_SERIALIZE_KERNEL=3, not a different cap.
+: ${R9K_ROUTER_MAX_M:=4}
+export R9K_ROUTER_MAX_M
+
 # The recipe includes the ENVIRONMENT, not only the flags. Half of this stack's switches are env names (R9K_*),
 # they decide which kernel runs and therefore what a measured number means, and a gate that reads only the
 # engine's measured config cannot see any of them: on 2026-11-04 two launches died inside r9k_router_gemm_kernel

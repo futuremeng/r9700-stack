@@ -9,7 +9,8 @@ summation order.
 
 Registered as torch.ops.r9700.router_gemm (the gate sits inside the compiled model graph); ``install`` binds it
 as the forward of every ``mlp.gate`` ReplicatedLinear with bf16 weights and no bias. Rows above R9K_ROUTER_MAX_M
-(8: ours re-reads the activations per expert and loses to hipBLASLt from ~16 rows, tests/test_router_r9k.py) or
+(4 since 2026-11-08 -- the cap that has never faulted; ours re-reads the activations per expert and
+loses to hipBLASLt from ~16 rows, tests/test_router_r9k.py) or
 shapes the kernel does not take use hipBLASLt's bf16 x bf16 -> fp32 out_dtype GEMM rounded to bf16 inside the op
 (7.5 us at 32 rows where F.linear's bf16 tile takes 19.6), so the branch is taken at run time, not at trace time.
 R9K_ROUTER=stock keeps vLLM's path.
@@ -30,7 +31,10 @@ logger = init_logger("vllm." + __name__)
 
 _L = None
 _DONE = False
-MAX_M = int(os.environ.get("R9K_ROUTER_MAX_M", "8"))
+# 4, not 8: four launches on this box died inside the MT=8 instantiation (r9k_router_gemm_kernel<8, 2, true>),
+# two on 2026-11-04 and two on 2026-11-08, while 9 h 37 m of traffic at this cap and every M <= 4 step ever run
+# were fault-free. See notes/bug-router-gemm-oob.md. R9K_ROUTER_MAX_M=8 opts back in; R9K_ROUTER=stock skips us.
+MAX_M = int(os.environ.get("R9K_ROUTER_MAX_M", "4"))
 SPLIT = int(os.environ.get("R9K_ROUTER_SPLIT", "2"))
 
 

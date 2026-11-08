@@ -3023,3 +3023,56 @@ conc-8 replay loop to get the fault on demand; `tests/test_router_r9k.py` extend
 served shapes across a weight release; and logging each MoE gate's `data_ptr()` at load vs first GSM8K step.
 Whatever the answer, `R9K_ROUTER_MAX_M=0` is what this box should serve with until then -- worth deciding with the
 user, since the standing launcher does not set it.
+
+## 2026-11-08 12:45 - the cap is baked: the standing recipe carries `R9K_ROUTER_MAX_M=4`, and the launch that proves it is up
+
+The user's answer to the question I asked at 12:27 was one word, "固化" -- bake it in. Before doing that I found the
+prior art in [notes/launch-methodology.md](notes/launch-methodology.md) section 12, which changes the framing and
+which I had not read this session: **the same kernel was named by two deaths on 2026-11-04** (07:53 prefix cache off,
+14:01 on), the crashed step there was 6 rows (2 streams x (1+2 MTP)) at up to 203,257 computed tokens, and the
+discriminator run then was exactly this cap at 4 -- **9 h 37 m of real traffic, zero illegal-access lines, zero
+EngineDeadError** -- reverted afterwards on purpose, with the rule written down: *if the fault comes back in
+`r9k_router_gemm_kernel<8, 2, true>`, the next move is serialization, not another cap.* Today's pair is that
+come-back, and today's crash is at *short* context, so the 11-04 "deep context" framing was not a requirement: what
+the four deaths share is `M` in 5..8, not depth. Corrected in the note and the CHANGELOG entry.
+
+**Chose cap 4 over cap 0, deliberately.** Both exclude the faulting `MT=8` instantiation entirely. 4 additionally
+keeps our kernel on the 1-2 row steps and has 9 h 37 m of clean traffic behind it, while 0 has today's arm and
+nothing else. Cost measured three ways on this box (`bench/itl.py 1 2 4`): cap 8 **12.9** / 14.7 / 18.5 ms, cap 4
+**13.0** / 15.1 / 18.4 ms, cap 0 13.2 / 15.0 / 18.5 ms -- cap 4 recovers the conc-1 step (3 rows stay on ours) and
+matches cap 0 from conc 2 up, which is what the row arithmetic says (2 streams x 3 = 6 > 4). Aggregate decode is
+unmeasurable between the caps.
+
+**Where it lives**: `serve/native-flashnext.sh` gets `: ${R9K_ROUTER_MAX_M:=4}` + `export`, next to `R9K_QSA_KVF8`
+and above the env-snapshot block so the recipe file records it; `r9700_vllm/router.py`'s library default moves 8 -> 4
+so the container path inherits the choice instead of only the native launcher. `R9K_ROUTER_MAX_M=8` opts back in,
+`R9K_ROUTER=stock` skips us entirely.
+
+**Proof, per section 12's own two commands** (the second one must grep *all* the install lines, not `tail -1`: the
+first pass is the target's 48 gates, the second the draft model's 1):
+
+    grep -o "r9k router GEMM installed.*" ~/logs/relaunch-262k-cap4.log | sort | uniq -c
+      4 ... installed on 1 gates (M <= 4, split 2)
+      4 ... installed on 48 gates (M <= 4, split 2)
+    tr '\0' '\n' < /proc/<pid>/environ | grep '^R9K_ROUTER_MAX_M='   -> R9K_ROUTER_MAX_M=4
+    ENVRECIPE=1 DRY=1 bash serve/native-flashnext.sh                -> R9K_ROUTER_MAX_M = 4
+
+That launch: load 72.6 s, KV 940,726 tokens / 3.59x at 262,144, health OK, and it then passed **the exact phase that
+killed both cap-8 arms**: `bench/quality.py 100 8` -> 97.0 % (97/100), 33,209 prompt tokens in 40 s, needles 3/3,
+engine still up, 0 fault lines in its log.
+
+Two loose ends noted rather than chased. (1) `tools/recipe-check.py` exits 1 on this launch with 8 knobs "this tree
+says None, the live serve says engine=<v> meta=set" -- they are the loader knobs `bench/relaunch.sh` puts on the
+launcher command line (`R9K_PRESTAGE_MTP`, `R9K_LOAD_PROF`, `R9K_PLE_PIN_LATE`, ...), which are not launcher defaults,
+so any launch made through `relaunch.sh` reads as an env-differs config. Pre-existing, same family as section 12's
+gap, and the useful half is that `R9K_ROUTER_MAX_M` is *not* in that list any more because both sides now get 4 from
+the launcher. (2) My sampler-ordering fix to `bench/pin033.sh` was written **while arm A1 was executing that file**;
+bash reads scripts by offset, so the running copy hit `syntax error near unexpected token '('` at the soak summary
+and the VRAM series stayed empty. The arm's data survived (soak.py had already exited: 1504 s, 16 clients, **753 ok,
+0 errors, 0 context-length rejections**, prompts 273..33,689 tok median 16,406, 8,231 prompt tok/s, 128.2 output
+tok/s) -- but the rule is: never edit a runner that a live arm is executing; queue the edit or edit a copy.
+
+Next, in order: (a) resume the 0.32-vs-0.33 comparison at cap 4 -- A0's rows stand as the cap-8 0.32 baseline, so arm
+A needs one more 0.32 pass at cap 4 before arms B/C are meaningful; (b) if any launch at cap 4 faults in this kernel,
+`AMD_SERIALIZE_KERNEL=3`, per section 12; (c) the kernel-level repro list in
+[notes/bug-router-gemm-oob.md](notes/bug-router-gemm-oob.md) stays open -- the cap is a mitigation, not a fix.

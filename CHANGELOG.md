@@ -27,6 +27,36 @@ Full account: [notes/bug-router-gemm-oob.md](notes/bug-router-gemm-oob.md).
   survives `torch.compile`) and the buffer behind it was freed or replaced -- a failure mode this repo already
   documents for a sibling path (`hc.py: down_silu`, "the bf16 weight may be freed"). The note lists four experiments
   that would settle it, cheapest first: `EAGER=1` with the router on against the same GSM8K phase.
+- **This is the second pair, not the first.** [notes/launch-methodology.md](notes/launch-methodology.md) section 12
+  records two `hipErrorIllegalAddress` deaths on **2026-11-04** with the same signature, naming the same
+  `r9k_router_gemm_kernel<8, 2, true>`, on a decode step of **6 rows** (2 streams x 3) at up to 203,257 computed
+  tokens. The experiment then was this same cap at 4: **9 h 37 m of live traffic, zero illegal-access lines, zero
+  EngineDeadError**, reverted afterwards on purpose, with the rule written down: *if the fault comes back in
+  `r9k_router_gemm_kernel<8, 2, true>`, the discriminator did not discriminate, and the next move is serialization,
+  not another cap.* Today's pair is that come-back. Deep context is not the common factor -- what the two pairs
+  share is `M` in 5..8 (6 target rows at conc 2 then, 8 draft rows at conc 8 now); today's crash is at short context.
+- **Baked into the recipe** (the user's call, "固化"): `serve/native-flashnext.sh` now sets `: ${R9K_ROUTER_MAX_M:=4}`
+  and exports it, which puts the cap in the launcher's env snapshot and therefore in the recipe file that
+  `tools/recipe-check.py` compares by value -- so a live serve at the cap and this tree agree, and an operator shell
+  at `R9K_ROUTER_MAX_M=8` reads as a test config instead of silently changing which kernel runs. The library default
+  in `r9700_vllm/router.py` moved 8 -> 4 as well, so the container path inherits the choice rather than only the
+  native launcher. Cap 4 rather than 0 because 4 has 9 h 37 m of clean traffic behind it, keeps our kernel on the
+  1-2 stream steps where its ~0.3 ms lives, and excludes the faulting `MT=8` instantiation just as completely.
+
+- **Verified on the launch that carries it** (`bench/relaunch.sh 262k-cap4`, 12:37): four ranks x
+  `r9k router GEMM installed on 48 gates (M <= 4, split 2)` plus four x `installed on 1 gates` (the draft model),
+  `/proc/<pid>/environ` has `R9K_ROUTER_MAX_M=4`, and `ENVRECIPE=1` from the launcher answers 4 -- the cap is in the
+  recipe, not in an operator's shell. Then `bench/quality.py 100 8`, the phase that killed both cap-8 arms: **97.0 %
+  (97/100)**, 33,209 prompt tokens in 40 s, needles 3/3, engine still up, 0 fault lines in the log. Its cost measured
+  three ways at `bench/itl.py 1 2 4`: **13.0 / 15.1 / 18.4 ms** at cap 4 vs 12.9 / 14.7 / 18.5 at cap 8 and 13.2 /
+  15.0 / 18.5 at cap 0 -- cap 4 recovers the conc-1 step (3 rows stay on ours) and matches cap 0 from conc 2 up, as
+  the row arithmetic predicts (2 streams x 3 = 6 > 4).
+- **The cap-0 arm's soak completed after all** (the runner itself died on a corrupted line because I rewrote
+  `bench/pin033.sh` while it was executing -- bash reads a script by offset, so editing a running runner reads
+  garbage from the middle of a rewritten line; the arm's data is intact): 16 clients, 1504 s, **753 ok, 0 errors, 0
+  context-length rejections**, prompts 273..33,689 tokens (median 16,406), 8,231 prompt tok/s, 128.2 output tok/s,
+  median latency 31.8 s.
+
 - **Ruled out for both crashes**: no reboot (uptime 3 d 8 h), no OOM-killer, no MCA/MCACOD today (the sick-L2
   workaround intact), no platform reset, no AER storm at the crash minutes. The `amdgpu_amdkfd_restore_userptr_worker
   hogging CPU` line at 11:35:03 is the SVM/mm-notifier family's signature and is where the first pass of this hunt
