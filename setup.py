@@ -976,6 +976,20 @@ def launch(cfg, have="docker"):
     pick = cfg.launch
     if pick == "none":
         return
+    if pick is not None:
+        # --launch names a recipe the way the list above prints it. Accept the short form but resolve it here,
+        # because further down the name becomes a path (serve/<pick>) and a missing ".sh" used to arrive as a
+        # FileNotFoundError traceback out of pathlib -- after the line saying what it was about to run (2026-11-08).
+        names = [n for n, _ in rs]
+        if pick.endswith(".sh") and pick in names:
+            pass
+        elif pick + ".sh" in names:
+            pick += ".sh"
+        else:
+            bad(f"no serve/{pick}", "--launch takes a name from the list above, e.g. --launch "
+                + (names[0] if names else "native-flashnext.sh"))
+            return
+        cfg.launch = pick
     if pick is None:
         if not sys.stdin.isatty():
             note("not a terminal: not starting anything")

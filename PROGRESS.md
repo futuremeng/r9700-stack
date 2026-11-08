@@ -3171,3 +3171,40 @@ What would reopen the pin question: three launches per side at matched utilizati
 `gate.py` "untested on vLLM" lines at every boot -- that is expected while the pin lists sit on 0.33, not a problem,
 but it is the kind of noise that trains people to scroll past warnings, so it argues for a decision rather than a
 default.
+
+## 2026-11-08 23:45 - reverted to pre-merge on request, then un-reverted on the answer to one question, and the box is now up via `setup.sh`
+
+User asked to go back to the pre-merge configuration and start with `setup.sh`. Done in the careful order (branch
+`day/post-v043-merge-20261108` + tag `snapshot/post-merge-day-20261108` at `faa0fca`, then `git reset --hard
+backup/pre-v043-merge-20261108`; `origin/master` never moved), and I asked the one question that decided it: does the
+service come up on the merged tree? It does -- it had come up at 12:37, 12:43, 15:01 and twice at 0.96 the same day,
+and the two refusals were `orjson` and the utilization coin flip, both already fixed inside the merged tree.
+Reverting would have thrown those two fixes away along with everything else, so: `git reset --hard origin/master`
+(now `faa0fca`, plugin `0.4.3`) and start the supported way. The user picked that (option B).
+
+What the supported path exposed, in order: `setup.py --launch native-flashnext` died with a `FileNotFoundError` from
+`pathlib` (the name is used as a path downstream and was only validated in the interactive branch) -- fixed, short
+form resolves to `+.sh`, bad names now get a `bad()` with a real example. `git reset --hard` moved the kernel sources'
+mtimes, so `setup.sh --check` claimed `libr9k.so is older than kernels/r9k_dsv4_glue.hip` for an artifact that was
+built at 11:12 from exactly those bytes (`md5 e17026dd` checked first, then `touch`ed -- a hipcc rebuild would have
+been 3 minutes spent on a checkout artifact). Then the launch itself:
+
+    MAXLEN=262144 NBT=8192 LOG=~/logs/setup-262k.log \
+      ./setup.sh --no-docker --webui same --launch native-flashnext.sh --yes
+      tmux session r9700-native-flashnext;  up after 305 s
+      context: 262,144 tokens, checkpoint declares 262,144, KV pool 917,110 tokens (3.50x)
+      load 74.8 s | gpu_memory_utilization 0.96 | R9K_ROUTER_MAX_M=4 in the live /proc environ
+      48 gates (M <= 4, split 2) x4 + 1 gate x4 | cache fp8_e4m3 | health 200 | gate.py untested lines: 12
+
+The 12 warnings are expected on this pairing (the merged TESTED lists sit on 0.33 while the box serves 0.32) and are
+the main visible cost of running the merged tree against a 0.32 runtime.
+
+One timeline fact worth having: the 0.96 production launch stayed up from 16:14 to 23:32 -- 7 h 18 m -- with health
+polls and no traffic at all, so it adds nothing to the cap-4 traffic record except that a cap-4 launch does not rot.
+The gap is elapsed time between instructions, not a clock step: the journal runs continuously from 16:31 to 22:59
+with 413 entries in it.
+
+Housekeeping the pin attempts left behind: the canonical `~/vllm-native-cache` / `-triton` (used by `setup.sh`
+launches, which do not set them) had the 0.33 artifacts while 0.32's sat in `*-032-bak`, so they were swapped back
+and the 0.33 leftovers kept as `*-033left-20261108`. Health re-checked at 200 after the rename. Box state: serving on
+the merged tree at 0.96 with the router cap baked, 0.32 venv, tmux-managed, monitor up at :8080/monitor.

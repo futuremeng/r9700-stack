@@ -1,5 +1,41 @@
 # Changelog
 
+## a revert to the pre-merge tree was started, abandoned by choice, and the box is back on the merged tree brought up by `setup.sh` -- which had no validation on `--launch`
+
+Asked to roll back to the pre-merge configuration and bring the box up through `setup.sh`, the rollback was done
+(`git branch day/post-v043-merge-20261108` + tag `snapshot/post-merge-day-20261108` at `faa0fca` first, then
+`git reset --hard backup/pre-v043-merge-20261108` -- `origin/master` never moved), and the question asked back was the
+one that mattered: *can the service come up after the merge?* It can, and it had done so many times today --
+`serve/native-flashnext.sh` on the merged tree with this box's 0.32 venv came up at 12:37, 12:43 (arm A2, full
+protocol), 15:01 and twice at 0.96 this afternoon; the two refusals were the missing `orjson` and the utilization
+coin flip, both already fixed in the merged tree, and neither is a property of the merge. Reverting instead would
+have dropped those two fixes with everything else, so the rollback was undone (`git reset --hard origin/master`)
+and the box was started the supported way.
+
+- **`setup.sh --launch <name>` had no validation.** `--launch native-flashnext` (the form the printed recipe list
+  invites, since it shows `serve/native-flashnext.sh`) got as far as printing the command it was about to run and
+  then died in `pathlib.read_text` with `FileNotFoundError: .../serve/native-flashnext` -- `pick` becomes a path
+  downstream, and the name check exists only in the interactive branch. `setup.py` now resolves the short form to
+  `+.sh` when that is a real recipe and fails with the name of a good one otherwise.
+- **`git reset --hard` rewrites mtimes, and the kernel-freshness check reads them.** After the reset, `setup.sh
+  --check` warned `libr9k.so is older than kernels/r9k_dsv4_glue.hip` even though the `.so` on disk (`md5 e17026dd`)
+  is the one built at 11:12 from exactly those sources -- the checkout moved the source mtime to "now". `touch`ed
+  both copies after checking the md5, and the check went quiet. Worth remembering before paying a 3-minute hipcc
+  rebuild for a checkout artifact.
+- **Bringing the box up with `setup.sh` instead of `bench/relaunch.sh`** (`MAXLEN=262144 NBT=8192 LOG=...
+  ./setup.sh --no-docker --webui same --launch native-flashnext.sh --yes`): tmux session
+  `r9700-native-flashnext`, up in 305 s, context check passes at 262,144 with **KV 917,110 tokens / 3.50x**, load
+  74.8 s, `gpu_memory_utilization 0.96`, four ranks x `installed on 48 gates (M <= 4, split 2)` plus the draft's
+  `1 gates`, `R9K_ROUTER_MAX_M=4` in the live process env, fp8 KV, health 200, monitor/about served inside the API
+  server. It also prints its own pre-flight (a launch still holding the GPUs, and the `RLIMIT_MEMLOCK` ceiling that
+  is the reason the offload path needs a container) and the stale-`launch.json` notice naming the log of the launch
+  it last started.
+- **Cache directories tidied after the pin attempts.** The canonical `~/vllm-native-cache` / `~/vllm-native-triton`
+  -- what a `setup.sh` launch uses, because `setup.py` does not set them -- had accumulated the 0.33 artifacts from
+  the attempted pin move while the 0.32 artifacts sat in `*-032-bak`. They were swapped back (the 0.33 leftovers kept
+  as `*-033left-20261108`), health re-checked at 200 afterwards. vLLM keys its compile caches by version/config, so a
+  mixed dir costs space and a cold miss, not correctness -- but it is why that launch took 305 s.
+
 ## the 0.33 pin move was made on this box, and rolled back the same afternoon: the reason was the utilization check, and the KV gain evaporated under it
 
 `cp -a ~/venv-r9700 ~/venv-r9700-032-saved` (the 0.32 per-commit index is dead upstream, so the copy is the revert
