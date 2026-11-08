@@ -1,5 +1,50 @@
 # Changelog
 
+## the native 0.32-vs-0.33 comparison came back: a tie at speed, one capacity gain, and two things the arms caught on the way
+
+Arms ran as `bench/pin033.sh STEPS=full` (gate, launch, probe32 x3/x2/x3, `itl 1 2 4`, the 60k/120k/180k ladder,
+`quality 100 8`, `sanity_stress` 33/48/64 then long-prefill-first, 1500 s soak at 16 clients with VRAM sampled every
+15 s), **A2** on `~/venv-r9700` (0.32.0) and **B** on `~/venv-r9700-033` (0.33.0+rocm72), 12:43-14:16, with
+`PREFIX_CACHE=0`, `R9K_ARN_CALIBRATE=0`, the same client python, and now `R9K_ROUTER_MAX_M=4` on both sides. Full
+paired tables: [notes/vllm-0.33.md](notes/vllm-0.33.md).
+
+- **Speed: a tie.** probe32 @32x300 1,544 mean (A2) vs 1,527 (B), @32x1200 1,774 vs 1,789, @16x300 1,091 vs 1,094;
+  ITL 13.0/15.1/18.4 vs 12.8/15.0/18.5 ms; prefill 8,570/7,919/7,344 vs 8,612/7,940/7,371 tok/s. Every protocol is
+  inside the launch spread, including the ~100 tok/s dip in each arm's *first* 32x300 sample.
+- **Quality: identical to the question.** GSM8K 100 @ conc 8: 97.0 % (97/100) on both, and needles 3/3 at 3.8k/15k/30k
+  on both. Strict sanity at NSEQ+1/1.5x/2x and long-prefill-first: 0 bad of 1,980 / 2,880 / 3,840 and 0 of 330 on
+  both. Soak: 0 errors, 0 context-length rejections, VRAM flat (30.37 -> 30.39 and 30.55 -> 30.57 GiB a card).
+- **What moved is capacity: +2.8 % KV** for the same pool memory -- 963,486 -> 990,130 tokens, and the 262,144-token
+  concurrency ceiling 3.68x -> 3.78x. On a box whose p99 prompt is 245,792 and whose binding constraint is KV, that
+  is the whole argument for the pin, and it agrees in direction with the container evaluation. The soak leans the same
+  way (846 vs 711 requests admitted, 143.9 vs 120.9 output tok/s, median latency 28.7 vs 33.9 s) but the soak's prompt
+  mix is random per arm, so that row is directional.
+- **The version gate now points the other way.** The 0.32 arm logs **12** "untested on vLLM" lines (`mtp_allowlist`,
+  `glm5next_rdna4` -- their TESTED lists moved to `0.33.0` with the upstream pin); the 0.33 arm logs **0**. Checking
+  why a clean log is not proof, `qsa_kvfp8` *did* install on 0.33 (`QSA main KV cache as fp8_e4m3` on both arms), but
+  it never warned on **any** version because **the patch never called `gate.check()` at all** -- that call is added,
+  and its TESTED list now carries `0.32.0` and `0.33.0` on the strength of arm B. `moe_h2d_batch` stays at `0.32.0`:
+  it is not in this recipe at all, and with the knob on it installs on 0.33 and the gate now says so.
+- **The C4 expert-placement batcher costs 2x at serving, not +7 s at load.** With `R9K_MOE_BATCH_H2D=1` on either
+  version (arms Ah2d/Bh2d) `probe32` halves -- @32x300 750-795 against 1,461-1,606, @16x300 553 against 1,050-1,115,
+  ITL at 1 in flight 16.1 against 13.0 ms -- with spread under 2 %, while the coalescing stays exactly as broken as
+  the load note recorded (98,496 slices staged into 98,496 copies). The recorded reason for the default (a load
+  penalty) understated it by an order of magnitude; mechanism left open (pinned buffer per rank, or the destination
+  pages of 98,496 single-slice copies mapped worse for the MoE GEMMs).
+- **Arm C (0.33.0 +rocm100) is unmeasured, not slow** -- the box spoiled it, and the control proves it. Its probes
+  collapsed at 32 streams (138/1,038/1,165, then 722/625, then 583/499 across warm repeats) while 16 in flight was
+  *exactly* arm B's number (1,058-1,103). `pcieport 0000:04:00.0 ... [6] BadTLP` at 14:39:10, 14:48:13, 14:57:52 --
+  every ~9.3 min -- with `TOTAL_ERR_COR` 369 on that port against 0-1 on the other seven, links still Gen5 x16 with no
+  retrain and no MCE. Relaunching the *known-good* 0.33 +rocm72 venv inside the same window (arm Bw) reproduces it
+  precisely: @32x300 1,209/1,559/878, @16x300 normal, ITL p90 30.3 ms at conc 2. Rules taken from it: `probe32`
+  numbers compare only when the BadTLP *cadence* matches (30 events today, three of them inside arm B's window, so
+  A2-vs-B still stands and everything after 14:39 does not), and the signature of link jitter rather than a slower
+  kernel is 16 normal / 32 collapsing with p90 far above median.
+- **Arm tooling fixes from the same run**: `bench/pin033.sh` records the router cap per arm (all four `installed on 48
+  gates (M <= 4, split 2)` lines plus `/proc/<pid>/environ`), and its soak cleanup used a bare `wait`, which also
+  waits for the `setsid`'d server job -- arm A2 hung there for 20 min with the soak already over, so it now waits on
+  the sampler's pid.
+
 ## the device names a kernel: `r9k_router_gemm_kernel<8, 2, true>` dies 20 s into GSM8K at conc 8, and `R9K_ROUTER_MAX_M=0` is the measured mitigation
 
 Two launches of the standing 262k recipe died inside `bench/quality.py 100 8` (11:34:59 and 11:49:25), both on

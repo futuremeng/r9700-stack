@@ -793,6 +793,13 @@ read ~110-119 GiB from disk, i.e. the amplification is mostly absorbed by the sh
 the staging buffer, or `tensor.to()` cannot touch that; a single-pass reader per rank could, and that is where the
 remaining ~35 s lives. The patch stays in the tree, off by default, as the cheap re-test if that ever changes.
 
+**The load-time number is not the reason to keep it off.** Re-run 2026-11-08 on both vLLM arms with the knob on
+(arms Ah2d/Bh2d in [vllm-0.33.md](vllm-0.33.md)): same counters (98,496 slices into 98,496 copies, 18.3 s host
+staging) and the same +15 s at load, but the decode cost is **a factor of two** -- `probe32` @32x300 750-795 tok/s
+against 1,461-1,606 with it off, @16x300 553 against 1,050-1,115, ITL at 1 in flight 16.1 ms against 13.0 -- on 0.32
+and 0.33 alike, with sample-to-sample spread under 2 %. A batcher that joins nothing still pays staging and
+per-slice bookkeeping, and part of that lands in the serving path rather than only in placement.
+
 ## C5: the read path is fault-bound, but readahead-ahead does not buy anything; the swing left is the draft pass
 
 `bench/mmapread_probe.py` measures cold reads of real shards (each config starts by `fadvise(DONTNEED)`-ing the files
@@ -1606,7 +1613,8 @@ grep "probe:\|SM clock while busy\|host CPU time by frequency" ~/logs/relaunch-t
 Switches: `R9K_LOAD_PROF=1` (group timers + phase snapshots), `R9K_LOAD_STACKS=1` (SIGPROF stack sampler: which
 function), `R9K_LOAD_COPIES=1` (`copy_` accounting, fault deltas, slow-call names, watchdog wchan),
 `R9K_PRESTAGE_MTP=0|1` (the E1 control), `R9K_PLE_PIN_LATE=0|1` (default 1: register the PLE tables after the stream),
-`R9K_MOE_BATCH_H2D=0|1` (the C4 batcher, default 0: slower, see above), `R9K_PRESTAGE_AHEAD=<bytes>` (the C5
+`R9K_MOE_BATCH_H2D=0|1` (the C4 batcher, default 0: +7 s at load, see above, and -- measured 2026-11-08 --
+                                                         **half of serving throughput** at 16 and 32 streams), `R9K_PRESTAGE_AHEAD=<bytes>` (the C5
 stream-ahead readahead, default 0: no effect on the target pass, see above), `R9K_CACHE_WINDOW=<MiB>` (the C6
 consumed-page handback, default 0: neutral, see above), `R9K_PWAL_PROBE=0|1` and `R9K_PWAL_PROBE_MS=<ms>` (the window
 probe, default on at 200 ms: submission cost, whole-device latency, and a fixed host loop sampled inside the window),

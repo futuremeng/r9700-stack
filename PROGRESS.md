@@ -3076,3 +3076,57 @@ Next, in order: (a) resume the 0.32-vs-0.33 comparison at cap 4 -- A0's rows sta
 A needs one more 0.32 pass at cap 4 before arms B/C are meaningful; (b) if any launch at cap 4 faults in this kernel,
 `AMD_SERIALIZE_KERNEL=3`, per section 12; (c) the kernel-level repro list in
 [notes/bug-router-gemm-oob.md](notes/bug-router-gemm-oob.md) stays open -- the cap is a mitigation, not a fix.
+
+## 2026-11-08 15:10 - the pin comparison ran: 0.33 is a tie at speed and +2.8 % KV, and two side findings (the C4 batcher, and a riser episode that ate arm C)
+
+The user's "好的" covered: rerun the 0.32 arm at the baked cap, then B and C. What actually ran, in order, with
+`bench/pin033.sh` (one arm per command, `CALIBRATE=0 PC=0`, cap `M <= 4` from the launcher on both sides):
+
+| arm | venv | steps | window | verdict |
+|---|---|---|---|---|
+| A2 | `~/venv-r9700` (0.32.0) | full | 12:43-13:38 | clean full pass -- the 0.32 reference at the cap |
+| B | `~/venv-r9700-033` (0.33.0+rocm72) | full | 13:39-14:16 | clean full pass -- the comparison arm |
+| Bh2d / Ah2d | 0.33 / 0.32, `R9K_MOE_BATCH_H2D=1` | probe | 14:16-14:30 | the batcher halves serving throughput, on both versions |
+| C | `~/venv-r9700-033r` (0.33.0+rocm100) | probe | 14:32-14:41 | **spoiled by the box**, see below |
+| Bw | `~/venv-r9700-033` again | probe | 14:50-14:58 | the control: reproduces C's collapse on a known-good venv |
+
+**The version answer.** Tie everywhere that measures speed (probe32 1,544/1,774/1,091 vs 1,527/1,789/1,094; ITL
+13.0/15.1/18.4 vs 12.8/15.0/18.5 ms; prefill within 0.4 %), *identical* quality (97/100 GSM8K on both, needles 3/3,
+sanity 0 bad of 1,980/2,880/3,840 + 0 of 330 on both), and one real gain: **KV 963,486 -> 990,130 tokens
+(+2.8 %), concurrency 3.68x -> 3.78x** for the same pool memory. So the native case for 0.33 is capacity and nothing
+else, which is the same direction the container line found. Recommendation to the user, stated rather than assumed:
+move, but as a separate decision with its own relaunch -- production stays on 0.32 for now (relaunched at 15:01 as
+`relaunch-262k-prod`, cap 4 proved again, KV 940,726, health OK).
+
+**Side finding 1 -- `R9K_MOE_BATCH_H2D` is not a load-path knob.** It is recorded in native-4xr9700.md as "+7 s at
+load, so default off". With it on, decode throughput halves on 0.32 and 0.33 alike (@32x300 750-795 vs 1,461-1,606;
+@16x300 553 vs 1,050-1,115; ITL 16.1 vs 13.0 ms), spread under 2 %, while its own counters stay exactly as the load
+note says: 98,496 slices staged into 98,496 copies, i.e. no coalescing. Recorded in both notes; mechanism open.
+
+**Side finding 2 -- the gate lists now indict 0.32, and one patch was ungated.** The 0.32 arm prints 12 "untested on
+vLLM" lines, the 0.33 arm prints 0, because upstream's TESTED lists moved to `0.33.0`. Reading why that is not
+evidence of anything for the fork-only patches: `qsa_kvfp8` installs on 0.33 (its `QSA main KV cache as fp8_e4m3` line
+is in both arms' logs) but **it never called `gate.check()` on any version** -- added now, and the list gains
+`0.32.0`/`0.33.0` because arm B passed a whole protocol on it. Verified in both venvs: no warning for `qsa_kvfp8`
+either side, and `moe_h2d_batch` correctly warns on 0.33 only.
+
+**Side finding 3 -- arm C was spoiled by the riser chain, and the control arm proves it.** C's probes collapsed at 32
+streams and were normal at 16; `journalctl -k` shows `pcieport 0000:04:00.0 aer_status 0x40 [6] BadTLP` at 14:39:10,
+14:48:13, 14:57:52 (every ~9.3 min) with `TOTAL_ERR_COR` 369 on that port against 0-1 on the other seven, links still
+`32.0 GT/s x16` everywhere, GPU fatal counters zero, no MCE, sick-L2 workaround intact. Relaunching the *known-good*
+rocm72 venv (Bw) inside the same window reproduces the same signature (@32 1,209/1,559/878 with @16 normal and ITL
+p90 30.3 ms at conc 2). So the `+rocm100` flavor is **unmeasured here, not slower**, and C needs a re-run when the
+link is quiet. Two rules for future probes: compare probe32 only when the BadTLP cadence matches (30 events today,
+three of them inside arm B's window -- A2-vs-B still stands because both sit in the sparse part), and 16-in-flight is
+the number to read when it is noisy.
+
+**Tooling.** `bench/pin033.sh` now records the router cap per arm (the four `48 gates (M <= 4, split 2)` lines plus
+`/proc/<pid>/environ`), and its post-soak cleanup used a bare `wait`, which waits for the `setsid`'d server job too:
+arm A2 hung for 20 min after its soak ended. Now `wait "$SAMPLER"`. Also re-learned the hard way earlier today: do
+not edit a script while a runner is executing it (bash reads by offset).
+
+Open now: (1) arm C re-run when the riser settles; (2) the 0.33 pin decision for the native line (B's evidence is
+in hand, A2's baseline too); (3) the router-kernel repro list in [notes/bug-router-gemm-oob.md](notes/bug-router-gemm-oob.md)
+stays open -- the cap is a mitigation; (4) `tools/test_dsv4_glue.py`'s local `top-k given identical logits` failure is
+still unexplained and is independent of all of the above; (5) the `recipe-check` exit 1 for launches made through
+`bench/relaunch.sh` (its 8 loader knobs are not launcher defaults) is a real gap in that gate, not today's regression.

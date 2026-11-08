@@ -24,7 +24,10 @@ TESTED = {
     # GLM-5.3-Flash sparse indexer on RDNA4: is_enabled() gate + the _C top-k ops the ROCm wheel lacks (models/glm5next.py)
     "glm5next_rdna4": (("fe4df3df0", "e4a5b5537", "0.33.0"), "vllm: RDNA4 (is_rdna_aiter_enabled) support in models/glm5next/amd + ROCm top_k_per_row kernels"),
     # fp8 main KV cache for Qwen4Exp QSA: the three bf16 guards in models/qwen4_exp/amd/qsa.py (compat/qsa_kvfp8.py)
-    "qsa_kvfp8": (("e4a5b5537",), "vllm: an fp8 main KV cache in the ROCm QSA path (the NVIDIA reader already has one)"),
+    # 0.32.0 is the native venv's own version string (this patch has run under it on this box since 2026-11-03);
+    # 0.33.0 is arm B of the pin comparison, 2026-11-08: the patch logged its install line, and the full native
+    # protocol (probe32, ladder, GSM8K+needles, sanity_stress to 2x, soak) passed -- notes/vllm-0.33.md.
+    "qsa_kvfp8": (("e4a5b5537", "0.32.0", "0.33.0"), "vllm: an fp8 main KV cache in the ROCm QSA path (the NVIDIA reader already has one)"),
     # stock's per-expert MoE placement batched into runs of adjacent slices (moe/h2dbatch.py): RoutedExperts._load_w13
     # and _load_w2 -- 147,912 pageable copies a rank, 15.0 GiB, 34.5 s of copy wall at 0.33-0.52 GB/s
     "moe_h2d_batch": (("0.32.0",), "vllm: batched expert weight placement in RoutedExperts"),

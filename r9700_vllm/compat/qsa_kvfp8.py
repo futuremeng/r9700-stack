@@ -52,6 +52,8 @@ def patch() -> bool:
     except Exception as e:                                            # a vLLM that moved the model: off, not fatal
         logger.warning("r9700: QSA fp8 KV patch not installed (%s)", e)
         return False
+    from . import gate                                               # the version gate this patch never called: a pin
+    gate.check("qsa_kvfp8")                                          # bump re-tests it, see compat/gate.py
     orig = Layer.__init__
 
     def __init__(self, *args, **kwargs):

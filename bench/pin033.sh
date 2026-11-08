@@ -95,6 +95,11 @@ done
   grep -m1 -oE "max_model_len=[0-9]+" "$D/launch.log" | head -1 | sed 's/^/  /'
   grep -m1 "collective calibration" "$D/launch.log" | sed 's/^/  calibrate: /' || echo "  calibrate: (no line -- fixed cutoffs)"
   grep -c "untested on vLLM" "$D/launch.log" | sed 's/^/  gate.py warnings (untested patches): /'
+  # Which gate kernel this arm actually ran, per launch-methodology.md section 12: grep ALL the install lines (the
+  # first pass is the target model's 48 gates, the second the MTP draft's 1), and read the cap off the live process
+  # rather than trusting that a default travelled.
+  grep -o "r9k router GEMM installed.*" "$D/launch.log" | sort | uniq -c | sed 's/^/  router: /'
+  _pid=$(pgrep -f 'vll[m] serve' | head -1); tr '\0' '\n' < /proc/$_pid/environ 2>/dev/null | grep -E '^R9K_ROUTER_MAX_M=' | sed 's/^/  env: /'
 } | tee "$D/fingerprints.txt"
 
 # A launch that dies mid-arm makes every later row a lie, and on this box that is not hypothetical: the first arm of
@@ -151,8 +156,10 @@ touch "$D/soak.run"   # before the sampler starts: the loop's condition is this 
     rocm-smi --showmeminfo vram 2>/dev/null | awk -F': ' '/Used Memory/{printf "%.2f ", $NF/1073741824}' >> "$D/vram.txt"
     echo >> "$D/vram.txt"; sleep 15
   done ) &
+SAMPLER=$!
 timeout 2000 "$CLIENT" bench/soak.py "$BASE" --conc 16 --seconds 1500 --lo 200 --hi 30000 > "$D/soak.txt" 2>&1
-rm -f "$D/soak.run"; wait 2>/dev/null
+rm -f "$D/soak.run"; wait "$SAMPLER" 2>/dev/null   # NOT a bare wait: a bare wait also waits for the setsid'd
+                       # server job, which never exits -- arm A2 hung here for 20 min with the soak already over
 tail -12 "$D/soak.txt" | sed 's/^/  /'
 { echo "  VRAM samples: $(grep -c . "$D/vram.txt")"; awk 'NR>0{for(i=2;i<=NF;i++) if($i+0>m[i])m[i]=$i+0} END{printf "  high-water a card:"; for(i=2;i<=10;i++) if(m[i]) printf " %.2f", m[i]; print ""}' "$D/vram.txt"; } | tee -a "$D/fingerprints.txt"
 

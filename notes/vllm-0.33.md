@@ -617,3 +617,134 @@ by hand: they match the caller's own command line. Two arm switches per comparis
 What then lands, in one commit: `qsa_kvfp8` and `moe_h2d_batch` gain `0.33.0` in `compat/gate.py` (or the reason
 they do not), `notes/native-4xr9700.md` and the README's native recipe name the venv the box runs, and this section
 closes with the two paired tables. If an arm is cut by a platform reset, it is re-run, not quoted from Part 1.
+
+## Result: arms A2 (0.32) and B (0.33 `+rocm72`), 2026-11-08 12:43-14:16 -- one protocol, three confounds pinned, and the router cap on both sides
+
+Both arms ran `bench/pin033.sh STEPS=full` in order: gate, launch, `probe32` x3/x2/x3, `itl.py 1 2 4`, the retrieval
+ladder, `quality.py 100 8`, `sanity_stress` at 33/48/64 then long-prefill-first, then a 1500 s soak at 16 clients with
+per-card VRAM sampled every 15 s. Pinned identically on both: `PREFIX_CACHE=0` (the recorded bands were taken with
+the cache off and the launcher's default is now on), `R9K_ARN_CALIBRATE=0` (fixed PLX cutoffs -- the merge added the
+launch-time collective calibration and every 0.32 number predates it), `R9K_ROUTER_MAX_M=4` (baked into the launcher
+at 12:40, see [bug-router-gemm-oob.md](bug-router-gemm-oob.md); arm A0 earlier the same day at the old default 8 is
+**not** comparable with these rows and is kept separate for that reason), same client python (`~/venv-r9700`) for
+every arm, `MAXLEN=262144 NSEQ=32 NBT=8192`, `libr9k.so` rebuilt from the same tree, plugin editable in both venvs.
+
+| | A2 -- vllm 0.32.0 | B -- vllm 0.33.0 +rocm72 |
+|---|---|---|
+| toolchain | torch 2.13.0+git733fca1, hip 7.2.53211, aiter 0.1.24.post1, triton 3.8.0+git669b31ac | identical, except `orjson 3.13.0` is now a hard dep |
+| load | 73.3 s, 19.83 GiB/rank | 73.1 s, 19.83 GiB/rank |
+| **KV pool** | 963,486 tokens, 3.68x at 262,144 | **990,130 tokens, 3.78x** (+2.8 %, same 6.89 -> 7.08 GiB of pool memory) |
+| probe32 @32x300 | 1,461.0 / 1,605.8 / 1,565.5 | 1,469.4 / 1,577.9 / 1,532.9 |
+| probe32 @32x1200 | 1,767.2 / 1,779.9 | 1,782.4 / 1,796.0 |
+| probe32 @16x300 | 1,049.7 / 1,110.0 / 1,114.5 | 1,104.1 / 1,106.8 / 1,071.1 |
+| ITL 1 / 2 / 4 in flight | 13.0 / 15.1 / 18.4 ms | 12.8 / 15.0 / 18.5 ms |
+| ladder 60k / 120k / 180k TTFT | 7.01 / 15.16 / 24.52 s | 6.97 / 15.12 / 24.43 s |
+| ladder prefill | 8,570 / 7,919 / 7,344 tok/s | 8,612 / 7,940 / 7,371 tok/s |
+| GSM8K 100 @ conc 8 | 97.0 % (97/100), 33,686 tok in 41 s | 97.0 % (97/100), 33,216 tok in 41 s |
+| needles 3.8k / 15k / 30k | 3/3 | 3/3 |
+| strict sanity 33 / 48 / 64 + long-prefill-first | 0 bad of 1,980 / 2,880 / 3,840, 0 of 330 | 0 bad of 1,980 / 2,880 / 3,840, 0 of 330 |
+| soak 1500 s @16 | 711 ok, 0 errors, 0 rejections; 8,261 prompt tok/s, 120.9 output tok/s, median 33.9 s | 846 ok, 0 errors, 0 rejections; 8,146 prompt tok/s, **143.9** output tok/s, median **28.7 s** |
+| VRAM across the soak | 30.37 -> 30.39 GiB a card (flat) | 30.55 -> 30.57 GiB a card (flat) |
+| `gate.py` "untested on vLLM" lines | 12 (6 ranks x `mtp_allowlist`, `glm5next_rdna4`) | **0** |
+
+Reading. Throughput and latency are a tie: every probe32 protocol is inside the launch-to-launch spread (the first
+32x300 sample of each arm is ~100 tok/s below its own next two, which has been true of every launch here and is the
+first-wave effect, not a version effect), and ITL agrees to 0.2 ms. Prefill is a tie to 0.4 %. Quality is
+*identical to the question*: 97/100 on both, same 3 wrong answers by the metric, needles identical.
+
+What actually moved is **capacity**: the same pool memory buys 26,644 more tokens (+2.8 %) and the concurrency
+ceiling goes 3.68x -> 3.78x at 262,144. On a box whose ledger is p99 prompt 245,792 with KV the binding constraint,
+that is the whole argument for the pin, and it is the same direction the container evaluation found. The soak rows
+lean the same way (19 % more requests admitted in the same window, 18 % higher output throughput, median latency
+-5.2 s) though the soak's prompt mix is random per arm, so that row is directional, not a measurement.
+
+The `gate.py` line is worth reading carefully because it runs the other way from intuition: **0.32 is now the
+version with untested patches** (12 lines). `mtp_allowlist` and `glm5next_rdna4` carry `0.33.0` in their TESTED
+lists -- upstream's lists moved to the release the docker pin runs -- so the native 0.32 venv is the one the gate
+warns about. 0.33 is clean. Two fork-only patches needed looking at separately, because a clean launch log is not
+proof they ran:
+
+- `qsa_kvfp8`: it logged `r9700: QSA main KV cache as fp8_e4m3 (k_scale 1.0, v_scale 1.0)` on arm B exactly as on
+  arm A2, so the fp8 main KV is *our patch* doing it on 0.33, not upstream -- and arm B is a full protocol pass on
+  top of it. Its TESTED list now includes `0.32.0` and `0.33.0`. **And the reason it never warned on any version is
+  that the patch never called `gate.check()` at all**; that is fixed in the same commit, so a future pin bump
+  re-tests it instead of silently keeping a monkeypatch that upstream may have moved under it.
+- `moe_h2d_batch`: not in this recipe at all (`R9K_MOE_BATCH_H2D` defaults off, the launcher never sets it), which is
+  why arm B logged nothing for it. With the knob on (arm **Bh2d**) it installs on 0.33 and the gate says so:
+
+    r9700 moe h2d batch: 64 MiB pinned staging buffer in 0.03 s
+    r9700 moe h2d batch: end of the weight stream -- 98496 expert slices staged into 98496 large copies (10.0 GiB):
+      18.5 s host staging + 4.3 s device
+
+  **98,496 slices staged into 98,496 copies is no coalescing at all** -- one copy per slice, exactly what the patch
+  exists to avoid -- and arm **Ah2d** (0.32 with the same knob) gives the same counters (98,496 into 98,496, 18.3 s
+  host staging) and the same load penalty: 88.2 s against arm A2's 73.3 s. So nothing about the coalescing is
+  version-dependent; [native-4xr9700.md](native-4xr9700.md) already knew the runs never join, because stock loads the
+  w1 and w3 halves of one expert alternately from two different storages.
+
+  What is new is the size of the cost, and where it is paid. `notes/native-4xr9700.md` justifies the default-off with
+  **"+7 s at load"**. Both arms with the knob on lose **half of serving throughput**, reproducibly and on both
+  versions:
+
+  | probe32 | A2 (0.32, knob off) | Ah2d (0.32, **knob on**) | B (0.33, knob off) | Bh2d (0.33, **knob on**) |
+  |---|---|---|---|---|
+  | @32x300 | 1,461 / 1,606 / 1,566 | 750 / 795 / 786 | 1,469 / 1,578 / 1,533 | 725 / 784 / 784 |
+  | @32x1200 | 1,767 / 1,780 | 793 / 790 | 1,782 / 1,796 | 796 / 793 |
+  | @16x300 | 1,050 / 1,110 / 1,115 | 553 / 553 / 403 | 1,104 / 1,107 / 1,071 | 550 / 552 / 559 |
+  | ITL 1 / 2 / 4 | 13.0 / 15.1 / 18.4 ms | 16.1 / 16.5 / 18.0 ms | 12.8 / 15.0 / 18.5 ms | 12.9 / 15.0 / 18.5 ms |
+
+  Halved at 32 in flight **and** at 16, sample-to-sample tight (spread under 2 %), on 0.32 and 0.33 alike: a batcher
+  that coalesces nothing still pays the pinned-buffer staging and the per-slice copy bookkeeping, and the bill arrives
+  at decode, not at load. The `moe_h2d_batch` TESTED entry stays at `0.32.0` -- on 0.33 it installs and the gate
+  warning fires, and that warning stays until an arm shows the patch worth having. The mechanism of the decode cost is
+  not established (the two suspects are the 64 MiB pinned buffer held per rank, and the destination pages of 98,496
+  single-slice `copy_` calls ending up mapped worse for the MoE GEMMs); the knob is off in the recipe, so it is
+  recorded rather than chased.
+
+## Arm C (0.33.0 **+rocm100**) is not a clean verdict, and the reason is the box, not the wheel
+
+Arm C ran at 14:32-14:41 against a fresh venv (`~/venv-r9700-033r`, made by `cp -a ~/venv-r9700-033` and
+`pip install --no-deps --force-reinstall vllm==0.33.0+rocm100` from the `rocm100` index at the same pin, so
+torch/triton/aiter are byte-identical to arm B's and only the vLLM build flavor differs) with fresh
+`VLLM_CACHE_ROOT`/`TRITON_CACHE_DIR`. It came up fine -- load 76.0 s, KV 955,751 tokens / 3.65x, `gate.py` warnings
+0, cap `M <= 4` proved -- and then the probe:
+
+| repetition | @32x300 | @32x1200 | @16x300 | ITL 1/2/4 |
+|---|---|---|---|---|
+| in-arm, 14:38 | 138.3 / 1,038.5 / 1,165.3 | 1,447.0 / 1,228.0 | 904.6 / 898.9 / 488.0 | 18.7 / 15.2 / 23.7 ms |
+| warm, 14:44 | 721.8 / 625.1 | 1,238.2 / 1,173.4 | 857.1 / 848.3 / 566.8 | |
+| warm again, 14:52 | 583.3 / 498.7 | 617.7 / 617.5 | **1,058.3 / 1,102.7 / 1,074.9** | |
+
+At 16 streams the last repetition is **exactly arm B's number** (1,058-1,103 vs 1,071-1,107); at 32 it is a third to
+two thirds, with per-stream medians swinging 15-51 tok/s inside one sample. That is not a shape a slower kernel
+produces -- a slower kernel shifts all three protocols. It is what this box looks like when the riser chain to one
+card starts throwing Bad TLPs:
+
+- `pcieport 0000:04:00.0 aer_status 0x40 [6] BadTLP` at **14:39:10, 14:48:13, 14:57:52** -- three in 19 minutes,
+  every ~9.3 min, right across arm C's probes and the warm repeats;
+- `TOTAL_ERR_COR` on that port **369** against **0-1** on the other seven switch ports and all four GPUs;
+- links unchanged: all four GPUs and all four switch ports still `32.0 GT/s` (Gen5) `x16`, GPU `aer_dev_fatal`
+  counters all zero, no link retrain, no MCA/MCACOD, sick-L2 workaround intact (cpu 17 and 113 offline,
+  `r9700-offline-core.service` active).
+
+The control that makes it a box problem rather than a wheel problem is arm **Bw** -- the *same* 0.33 `+rocm72` venv
+that produced arm B, relaunched at 14:50, i.e. inside the same dense episode:
+
+    @32x300  1,209.4 / 1,559.4 / 877.7      @32x1200  1,427.6 / 1,780.0      @16x300  1,058.4 / 1,105.1 / 1,068.5
+    ITL 1/2/4 = 13.0 / 18.1 (p90 30.3) / 23.4 (p90 26.6) ms
+
+Same collapse at 32, same clean 16, same ITL blowup at 2 and 4 in flight with the p90 running 12 ms above the median.
+**So the `+rocm100` flavor is unmeasured on this box, not slower.** Two rules come out of it:
+
+1. BadTLPs on `04:00.0` are chronic here (30 `aer_status` lines today, including 13:43, 13:53 and 13:56 inside arm
+   B's window), so a `probe32` number is only comparable to another one when the *cadence* matches. The day's
+   cadence is sparse (one every 1-2 h); from 14:39 it went to one every ~9 min, and every measurement after that --
+   C's probes, both warm repeats, Bw -- is unusable at 32 streams. Arms A2 and B (12:43-14:16) sit in the sparse
+   part and stand.
+2. `probe32` at 16 in flight is the state to compare when the link is noisy, since TP4 collectives at 48 rows are
+   less exposed to one link's replays than at 96; and the tell of link jitter (rather than a slower kernel) is that
+   16 is normal while 32 collapses and the ITL p90 runs far above its median.
+
+Arm C needs a re-run when the riser settles, and until then the native pin decision rests on arm B alone -- which is
+the same `+rocm72` flavor the production venv is built from, so the decision does not actually turn on the `rocm100`
+wheel. Upstream's docker pin is `rocm100` regardless, and that line is unchanged.
