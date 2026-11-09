@@ -405,7 +405,13 @@ is 16,777,216 px = 16,384 image tokens, and an uncapped 2,560 × 6,236 screensho
 The default cap (4,194,304 px ≈ 4,096 tokens) brings that to 4,123, and per-request `mm_processor_kwargs` are
 refused by default, so it is a ceiling a client cannot lift. Note that `image: 4` does **not** mean four images in
 one step: the encoder cache came up at 8,192 tokens with 2 items profiled because `NBT=8192` bounds it — four may be
-sent, two are encoded at a time. What is still unmeasured, and is what the decode card should be watched against:
+sent, two are encoded at a time. And **only the images of the turn being answered are processed**: a chat client
+replays its transcript, and stock vLLM re-encodes every picture in it, so the replay alone reaches the per-prompt
+ceiling — measured on this launch, three turns with three pictures paid 297 prompt tokens to answer about one, and
+one turn with five pictures was refused outright (`400 At most 4 image(s) may be provided in one prompt`).
+`r9700_vllm/compat/mm_last_turn.py` keeps the last submitted turn's images (its newest 4, the cap read from the
+engine itself) and drops the rest: the same two requests became **153 tokens** and **200**. `R9K_MM_LAST_TURN=0`
+restores stock behavior, at the price of an earlier screenshot staying visible. `bench/mmturns.py` re-runs both. What is still unmeasured, and is what the decode card should be watched against:
 **images under concurrency** (every image measurement so far is one request at a time, on a box that also carries
 32 deep-context streams). The About page answers the whole question in one card (what the live serve accepts, what
 the recipe recorded as effective limits, the knobs, and 1,024 px per image token as the basis) because the engine's
