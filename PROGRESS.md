@@ -3247,3 +3247,14 @@ typed flags beating the file without rewriting it; two files with no keyboard re
 diffs `.r9700-state/*.json` to nothing, so that was the state recording today's venv change once, not a check run
 writing. README's setup block documents it (`tests/test_readme.py` also enforces one command per fenced block --
 the first draft's two-command fence failed it).
+
+## 2026-11-09 00:35 - production is now started by the stored configuration, and one number came out of it
+
+`bash bench/gate.sh` (stop, VRAM 0.06 GiB/card, PASS) and then a bare `./setup.sh`: one file in the store, so it
+applied `262k`, asked nothing, started in tmux `r9700-native-flashnext`, `/health` after 285 s, load 74.8 s,
+`gpu_memory_utilization 0.96`, four ranks x `48 gates (M <= 4, split 2)` plus the draft's `1 gates`,
+`R9K_ROUTER_MAX_M=4` in the live environ, `recipe-check` clean (every knob matches the tree).
+
+The number: **KV 902,153 tokens / 3.44x at 262,144**. That is the third 0.32-at-0.96 sample -- 914,748 / 891,919 /
+902,153, a 2.5% spread on identical settings -- which is the same spread that made the 0.32-vs-0.33 capacity
+difference unresolvable. Any future capacity claim has to come with repeats, not one launch per side.
