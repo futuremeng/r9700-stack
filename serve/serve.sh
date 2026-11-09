@@ -68,6 +68,25 @@ OFFL=(); [ "${OFFLOAD_GB:-34}" != 0 ] && OFFL=(--cpu-offload-gb ${OFFLOAD_GB:-34
 # (PROGRESS.md): 42 minutes, 313 requests, none failed, 2.2 GiB free on a first launch; on a restarted launch
 # 1.2 GiB free at the peak of a 5.7-minute burst (a full soak of that case is still owed). UTIL=0.94 restores.
 UTIL=${UTIL:-$([ "${OFFLOAD_GB:-34}" != 0 ] && [ "${TP:-2}" = 2 ] && echo 0.96 || echo 0.94)}
+# Images are ON by default here too, with the same numbers serve/native-flashnext.sh measures (that launcher's
+# comment block and notes/multimodal-input.md carry the cost: the vision tower's KV, the ~60 s of extra boot, and
+# MM_MAX_PIX bounding what one picture can cost -- 16,777,216 px straight from preprocessor_config.json would let
+# a single screenshot take 16,384 tokens). MM=0 is the text-only path; it used to be spelled LMONLY=1, and since
+# nothing else in the tree read that name the spelling is gone rather than kept as an alias.
+# --limit-mm-per-prompt's image count is MM_IMAGE.
+: ${MM_DEFAULT:=1}; : ${MM:=$MM_DEFAULT}; : ${MM_IMAGE:=4}; : ${MM_VIDEO:=0}
+: ${MM_MAX_PIX:=4194304}; : ${MM_MIN_PIX:=65536}
+if [ "$MM" = 1 ]; then
+  MMARGS=(--limit-mm-per-prompt "{\"image\": ${MM_IMAGE}, \"video\": ${MM_VIDEO}}"
+          --mm-processor-kwargs "{\"size\": {\"longest_edge\": ${MM_MAX_PIX}, \"shortest_edge\": ${MM_MIN_PIX}}}")
+else
+  MMARGS=(--language-model-only)
+fi
+# r9700_vllm/compat/mm_last_turn.py: a chat client replays the whole conversation every turn, and stock vLLM then
+# re-encodes every earlier picture (and the replay alone can reach --limit-mm-per-prompt and answer 400 on the
+# turn that adds a new one). Only the last submitted turn's pictures are processed. R9K_MM_LAST_TURN=0 restores.
+: ${R9K_MM_LAST_TURN:=1}
+
 [ "${EAGER:-0}" = 1 ] && ARGS+=(--enforce-eager)
 # KVDTYPE=fp8: fp8 KV cache (vLLM --kv-cache-dtype; unset = "auto" = the model dtype). On GLM-5.3-Flash only the 11 sparse-MLA
 # layers hold KV; the gfx1201 path for an fp8 pool is aiter's Triton sparse_mla_fwd (plugin models/glm5next.py), scales 1.0.
@@ -131,6 +150,7 @@ sudo docker run -d --name ${NAME:-vllmstock} --ipc=host --network=host ${PIDNS--
   --cap-add SYS_PTRACE --security-opt seccomp=unconfined \
   -e HIP_VISIBLE_DEVICES=${GPUS:-0,1} -e VLLM_ROCM_USE_AITER=0 -e HSA_ENABLE_IPC_MODE_LEGACY=0 \
   -e GPU_MAX_HW_QUEUES=${HWQ:-1} -e HSA_ENABLE_MWAITX=${MWAITX:-1} -e OMP_NUM_THREADS=8 -e R9K_LIB=/opt/r9700/r9700_vllm/kernels/libr9k.so \
+  -e R9K_MM_LAST_TURN=${R9K_MM_LAST_TURN} \
   $DOCKER_ARGS "${MNT[@]}" -v $HOME/models:/models -v $HOME/vllmstock-cache-$CKEY:/root/.cache/vllm \
   -v $HOME/vllmstock-triton:/root/.triton \
   "${ENTRY[@]}" $IMG "${PRE[@]}" ${MODEL:-/models/Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ} \
@@ -138,7 +158,7 @@ sudo docker run -d --name ${NAME:-vllmstock} --ipc=host --network=host ${PIDNS--
   --tensor-parallel-size ${TP:-2} --max-model-len ${MAXLEN:-32768} --max-num-seqs ${NSEQ:-4} \
   --max-num-batched-tokens ${NBT:-4096} --gpu-memory-utilization $UTIL \
   "${OFFL[@]}" \
-  --reasoning-parser ${REASONING:-qwen3} --tool-call-parser ${TOOLCALL:-qwen3_coder} --enable-auto-tool-choice ${LMONLY---language-model-only} \
+  --reasoning-parser ${REASONING:-qwen3} --tool-call-parser ${TOOLCALL:-qwen3_coder} --enable-auto-tool-choice "${MMARGS[@]}" \
   "${ARGS[@]}" $EXTRA
 echo "started stock vLLM + r9700 plugin (offload ${OFFLOAD_GB:-34} GB/rank, maxlen ${MAXLEN:-32768})"
 # WEBUI=1: the Monitor/About pages (serve/webui.py, host process, port PORT+1). It only GETs /health,

@@ -304,3 +304,58 @@ the launch environment.
 Two checks keep the two ends joined: the recipe's `mm_default` must equal the launcher's own `:=` value, and the
 launch line for an unset `MM` must be byte-identical to the line for `MM=<that default>` -- one source of truth
 rather than a recorded default and an applied default that can drift apart.
+
+## 2026-11-09: a chat client replays its history, so the engine was encoding the same pictures again every turn
+
+The default flipped to `MM=1` (images accepted) with `MM_IMAGE=4` and `MM_MAX_PIX=4,194,304`, and the first thing the
+multi-turn shape showed was that "accept images" and "process the images of this turn" are different statements.
+A client that keeps a conversation sends the whole transcript on every turn, so turn N carries N-1 pictures again,
+and stock vLLM has no notion of what is new: by the time the engine sees the request the transcript is one flat token
+sequence. Two consequences, both measured on this box before any patch was in place
+(`bench/mmturns.py`, against the standing 262k launch):
+
+```
+turns   three messages: 2 images in the first, 1 in the last   http 200  prompt_tokens 297
+five    one message carrying 5 images                           http 400  At most 4 image(s) may be provided in one prompt
+```
+
+The first line pays for three images when one was asked about; the second is a hard refusal of a request whose newest
+content is a single picture, because `--limit-mm-per-prompt` counts images **per prompt** and the replayed history
+reaches the ceiling by itself. So the bug is not a nicety: past four pictures in a conversation the endpoint stops
+answering at all, and each stale picture costs a vision-tower step plus its image tokens (`MM_MAX_PIX` caps one image
+at ~4,096 tokens; this fixture's 240x160 PNG costs 72 tokens each).
+
+`r9700_vllm/compat/mm_last_turn.py` wraps the one method every chat request passes --
+`OpenAIServingChat.render_chat_request` -- before the transcript is rendered. It keeps the pictures of the last
+submitted turn (the last `user` message, plus anything after it, where tool results carrying a screenshot live),
+drops the image parts of everything older, and leaves one short text part in a message that would otherwise render
+as an empty turn. Within the kept turn the **newest** `N` survive, `N` read from the engine's own
+`limit_per_prompt["image"]` rather than a second copy of the number, so six pictures become four answered requests
+instead of a 400. Re-run against the same launch with the patch installed:
+
+```
+turns   http 200  prompt_tokens 153      (297 -> 153: 144 tokens = the 2 replayed images, not encoded)
+five    http 200  prompt_tokens 346      (was 400; the newest 4 of the 5 are what the model sees)
+```
+
+and the serve says it out loud the first time it happens:
+
+```
+r9700 mm last-turn: dropped 2 image(s) replayed from history, kept 1 from the turn being answered
+(R9K_MM_LAST_TURN=0 restores stock behavior)
+```
+
+The knob is baked into `serve/native-flashnext.sh` (`: ${R9K_MM_LAST_TURN:=1}`, exported, so `tools/recipe-check.py`
+holds the running engine to it) and into the container path's `serve/serve.sh`, which also gained the same image
+defaults the native launcher has -- it was still passing `--language-model-only` by default, i.e. the container path
+was text-only while the native one accepted pictures.
+
+**What the trade costs, stated plainly:** a picture from an earlier turn is not visible any more. "What was in the
+first screenshot?" needs the client to send it again, and that is the deliberate choice -- keeping every old picture
+is what made the endpoint refuse at four. `R9K_MM_LAST_TURN=0` restores the old behavior for anybody who wants the
+history visible and pays tokens for it.
+
+Unmeasured, and worth knowing before pointing a heavy vision client at this: everything above is one request at a
+time on an idle box. Vision-tower steps interleaving with 32 concurrent deep-context decodes is still unmeasured
+(the same gap the `MM=1` default took on), and `mm_processor_cache` behavior across many distinct pictures in a long
+conversation has not been looked at.

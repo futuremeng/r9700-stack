@@ -3258,3 +3258,33 @@ applied `262k`, asked nothing, started in tmux `r9700-native-flashnext`, `/healt
 The number: **KV 902,153 tokens / 3.44x at 262,144**. That is the third 0.32-at-0.96 sample -- 914,748 / 891,919 /
 902,153, a 2.5% spread on identical settings -- which is the same spread that made the 0.32-vs-0.33 capacity
 difference unresolvable. Any future capacity claim has to come with repeats, not one launch per side.
+
+## 2026-11-09 01:0x - images: default on for both launch paths, and only the last turn's pictures are processed
+
+User asked for three things: image support as the default configuration, the history-image bug fixed (stock processes
+every picture a chat client replays), and a default cap of 4 per request. The cap and the native default already
+existed (`MM_DEFAULT=1`, `MM_IMAGE=4` since 2026-11-05); the container path was the one still passing
+`--language-model-only` by default, so `serve/serve.sh` now mirrors the native launcher's mm defaults (and `LMONLY`
+is deleted rather than aliased, since nothing else in the tree read it).
+
+The bug, measured on the live launch before patching (`bench/mmturns.py`, fixture `~/r9700-mm-test.png` 240x160):
+
+    turns   3 messages, 2 images in the first + 1 in the last   http 200  prompt_tokens 297
+    five    1 message, 5 images                                 http 400  At most 4 image(s) may be provided in one prompt
+
+so the "cost" case is real (three images encoded to answer about one) and the ceiling case is a hard refusal: with
+`--limit-mm-per-prompt image:4`, the replayed history alone reaches the cap, and a conversation holding four pictures
+stops being answerable. Fix: `r9700_vllm/compat/mm_last_turn.py` wraps `OpenAIServingChat.render_chat_request` (the
+one method every chat request passes) and keeps the last submitted turn's images only -- the last `user` message and
+anything after it, that turn's newest `N` with `N` read from the engine's own `limit_per_prompt["image"]`, a
+picture-only history message replaced by one text line so the template doesn't render an empty turn. Same two
+requests after the restart:
+
+    turns   http 200  prompt_tokens 153     (297 -> 153 = 2 images x 72 tokens not encoded)
+    five    http 200  prompt_tokens 346     (400 -> 200; newest 4 of 5 kept)
+
+`r9700 mm last-turn installed on OpenAIServingChat.render_chat_request` at boot, and the first drop logs itself.
+`R9K_MM_LAST_TURN=1` baked into the native launcher and forwarded to the container; `=0` restores stock. Gate lists
+`0.32.0` only (measured here); the container pin warns. Tests: `tests/test_mm_last_turn.py`, 6 checks, host python,
+no vLLM import needed (the module falls back to `logging` when vLLM is absent) -- all pass. Nothing yet measured
+about vision-tower steps under concurrency, which was already the open risk on the `MM=1` default.

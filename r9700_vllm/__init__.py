@@ -63,6 +63,11 @@ def register() -> None:
         from .compat import qsa_kvfp8
         if qsa_kvfp8.patch():
             done.append("patch:qsa_kvfp8")
+    if not _disabled("mm_last_turn"):
+        # only the images of the last submitted turn of a chat request are processed (compat/mm_last_turn.py)
+        from .compat import mm_last_turn
+        if mm_last_turn.patch():
+            done.append("patch:mm_last_turn")
     if not _disabled("glm5next"):
         from .models import glm5next
         if glm5next.patch():

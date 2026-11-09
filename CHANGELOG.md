@@ -1,5 +1,32 @@
 # Changelog
 
+## images: default on for both launch paths, and only the last submitted turn's pictures are processed (cap 4, newest wins)
+
+Two things asked for and both now true, with the numbers in `notes/multimodal-input.md`:
+
+- **Supporting images is the default configuration on both paths.** The native launcher has defaulted `MM=1`,
+  `MM_IMAGE=4`, `MM_MAX_PIX=4,194,304` since 2026-11-05; the **container path was still text-only** --
+  `serve/serve.sh` passed `--language-model-only` unless `LMONLY=` was cleared by hand. It now takes the same
+  defaults and the same measured size cap, and `LMONLY` is gone rather than kept as a dead alias.
+- **The history-image bug.** A chat client replays the transcript every turn, so turn N arrives with N-1 old
+  pictures; stock vLLM re-encodes all of them, and because `--limit-mm-per-prompt` counts images **per prompt**,
+  the replay by itself hits the cap. Measured on this box before any patch: a three-turn request carrying three
+  pictures answered 200 with **297** prompt tokens (paying for three images to ask about one), and a
+  one-turn-five-pictures request answered **400 "At most 4 image(s) may be provided in one prompt"** -- the
+  endpoint stops answering a conversation once it holds four pictures, even though exactly one is new.
+  `r9700_vllm/compat/mm_last_turn.py` wraps `OpenAIServingChat.render_chat_request` and keeps only the last
+  submitted turn's images (that turn's newest `N`, `N` read from the engine's own `limit_per_prompt`, so there is
+  no second cap to drift), replacing a picture-only message with one short text line so the transcript still
+  renders. After: **297 → 153** prompt tokens (144 = the two replayed images, 72 each) and **400 → 200** at 346
+  tokens. The serve logs it the first time: `r9700 mm last-turn: dropped 2 image(s) replayed from history, kept 1`.
+- The knob is baked where a knob belongs: `: ${R9K_MM_LAST_TURN:=1}; export` in `serve/native-flashnext.sh` (so
+  `tools/recipe-check.py` holds the live engine to it) and forwarded into the container. `R9K_MM_LAST_TURN=0`
+  restores stock behavior; the trade is that an earlier screenshot is no longer visible without resending it.
+- `bench/mmturns.py` is the probe (the two requests and their prompt-token counts), and
+  `tests/test_mm_last_turn.py` tests the pure filter on the host python -- six checks, no GPU, no vLLM.
+  `gate.py` lists `mm_last_turn` as tested on `0.32.0` only: the container pin has never run that target, and an
+  unlisted pin warns instead of being assumed.
+
 ## `setup.sh` keeps its launch choices in a file: answer the questions once, and the next run starts without asking
 
 The bring-up script asked the same four questions every single run (which recipe, the pages or not, container or

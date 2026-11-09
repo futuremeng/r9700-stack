@@ -31,6 +31,12 @@ TESTED = {
     # stock's per-expert MoE placement batched into runs of adjacent slices (moe/h2dbatch.py): RoutedExperts._load_w13
     # and _load_w2 -- 147,912 pageable copies a rank, 15.0 GiB, 34.5 s of copy wall at 0.33-0.52 GB/s
     "moe_h2d_batch": (("0.32.0",), "vllm: batched expert weight placement in RoutedExperts"),
+    # a chat request replays every earlier turn's pictures, and stock processes them all over again -- cost AND a
+    # 400 from --limit-mm-per-prompt on the turn that adds a new one (compat/mm_last_turn.py).
+    # 0.32.0 measured on this box 2026-11-09 (bench/mmturns.py, notes/multimodal-input.md): the same two requests
+    # went 297 -> 153 prompt tokens (two replayed images no longer encoded) and 400 -> 200. The container pin is
+    # NOT listed: nothing has run that target there, and an unlisted pin is a warning, not a guess.
+    "mm_last_turn": (("0.32.0",), "vllm: process only the images of the last submitted turn of a chat request"),
 }
 
 
