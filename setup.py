@@ -151,6 +151,242 @@ def state_write(name, data):
     (STATE / name).write_text(json.dumps(data, sort_keys=True) + "\n")
 
 
+# -------------------------------------------------------------------- the launch choices, on disk ---
+# Why a file rather than a question every run: each invocation of setup.py re-asked the same handful of
+# questions (which recipe, the pages or not, container or native, tmux or not), and on a given box those
+# answers stopped changing the day the box was built. Re-asking is worse than tedious: what gets launched then
+# depends on whatever the calling shell happened to carry, so a MAXLEN= exported for an experiment three days
+# ago silently changes what a launch MEANS -- the same failure mode ~/.config/r9700-stack/native.env exists to
+# stop ("written here instead of being whatever the last hand-typed command happened to inherit"). A stored
+# configuration is that same idea for the launch itself: the out-loud choice made once, then loaded. One file
+# means a bare ./setup.sh asks nothing and launches; several means it lists them and asks which; --config
+# re-asks and writes a new file when the answers differ. It lives next to native.env for the same reason that
+# file does: it is a fact about this box and this operator, not about the repository.
+CONF = Path(os.environ.get("R9K_CONF_DIR", Path.home() / ".config" / "r9700-stack" / "launches"))
+# The keys that make a configuration. Everything else in the file (its name, a note, when it was saved or last
+# used) is metadata and is deliberately NOT in the fingerprint: renaming or annotating must not fork a config.
+CONF_KEYS = ("recipe", "docker", "webui", "tmux", "env", "rest")
+
+
+def conf_all():
+    """The stored configurations as [(name, dict)] in name order. A file that does not parse, or that names no
+    recipe, is skipped rather than half-applied -- a broken file must not start a half-known launch."""
+    got = []
+    for path in sorted(CONF.glob("*.json")):
+        try:
+            d = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(d, dict) and d.get("recipe"):
+            got.append((path.stem, d))
+    return got
+
+
+def conf_shape(cfg):
+    """This run's shape, in the form the file stores it."""
+    return {"recipe": cfg.launch, "docker": cfg.docker, "webui": cfg.webui, "tmux": not cfg.no_tmux,
+            "env": dict(getattr(cfg, "conf_env", None) or {}), "rest": list(getattr(cfg, "rest", None) or [])}
+
+
+def conf_fingerprint(d):
+    return hashlib.sha256(json.dumps({k: d.get(k) for k in CONF_KEYS}, sort_keys=True).encode()).hexdigest()[:10]
+
+
+def conf_auto_name(d):
+    """A name for a shape nobody named: the recipe plus the knobs that are the reason it is a new shape. The
+    store is meant to be READ, so `native-flashnext-262144` and not `native-flashnext-3f9a1c2b04`."""
+    env = [str(v) for k, v in sorted((d.get("env") or {}).items())]
+    base = (d.get("recipe") or "launch")[:-3] if (d.get("recipe") or "").endswith(".sh") else (d.get("recipe") or "launch")
+    tail = "-".join(re.sub(r"[^A-Za-z0-9.]", "", x) for x in env[:3])
+    return f"{base}-{tail}" if tail else base
+
+
+def conf_save(name, shape, note_txt=None):
+    """Write one configuration. Never called under --check: a check-only run changes nothing, and
+    tests/test_setup.py holds that line true."""
+    CONF.mkdir(parents=True, exist_ok=True)
+    rec = {k: shape.get(k) for k in CONF_KEYS}
+    rec.update(name=name, fingerprint=conf_fingerprint(shape), saved_at=int(time.time()))
+    if note_txt:
+        rec["note"] = note_txt
+    path = CONF / f"{name}.json"
+    path.write_text(json.dumps(rec, sort_keys=True, indent=1) + "\n")
+    return path
+
+
+def conf_used(name):
+    """Record that a configuration was the one this launch came from: the store then answers 'which one is this
+    box on, and when' without anybody remembering."""
+    path = CONF / f"{name}.json"
+    try:
+        rec = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return
+    rec["used_at"] = int(time.time())
+    path.write_text(json.dumps(rec, sort_keys=True, indent=1) + "\n")
+
+
+def conf_line(name, d):
+    env = " ".join(f"{k}={v}" for k, v in sorted((d.get("env") or {}).items()))
+    return (f"    {name:<26} serve/{d.get('recipe')}  webui={d.get('webui')}  "
+            f"{'container' if d.get('docker') == 'yes' else 'native'}"
+            f"{'' if d.get('tmux', True) else '  no-tmux'}" + (f"  {env}" if env else ""))
+
+
+def conf_apply(cfg, name, d):
+    """Apply a stored configuration, then put this run's out-loud flags back on top of it: the file is the
+    default for a bare ./setup.sh, and a flag typed this run still beats it for that run (it does not rewrite
+    the file -- that is --config / --save-config, so an experiment cannot quietly become the box's config)."""
+    if not cfg.explicit.get("launch"):
+        cfg.launch = d.get("recipe") or cfg.launch
+    if not cfg.explicit.get("docker"):
+        cfg.docker = d.get("docker") or cfg.docker
+    if not cfg.explicit.get("webui"):
+        cfg.webui = d.get("webui") or cfg.webui
+    if not cfg.explicit.get("tmux"):
+        cfg.no_tmux = not d.get("tmux", True)
+    if not cfg.explicit.get("rest"):
+        cfg.rest = list(d.get("rest") or [])
+    env = {k: str(v) for k, v in (d.get("env") or {}).items()}
+    cfg.conf_env = env
+    cfg.conf_name = name
+    cfg.conf_applied = True
+    ok(f"launch configuration from {CONF / (name + '.json')}: " + conf_line(name, d).strip()[len(name) + 1:])
+    for k, v in sorted(env.items()):
+        if os.environ.get(k, v) != v:
+            note(f"{k}={os.environ[k]} came in with this shell; the configuration pins {k}={v} and wins "
+                 f"(edit the file with --config {name}, or unset it in the shell)")
+        os.environ[k] = v
+
+
+def asks_whether_to_start(cfg):
+    """Does this run stop and ask before the GPUs go busy? No when a stored configuration chose the launch: the
+    file is that question already answered, and answering it again is what made every run a ceremony."""
+    return not (cfg.yes or getattr(cfg, "conf_applied", False))
+
+
+def conf_tell(cfg):
+    """What a bare ./setup.sh would do, printed where the reader can see it before a launch starts."""
+    store = conf_all()
+    if not store:
+        note("no launch configuration stored under " + str(CONF) + ": every run re-asks the launch questions "
+             "until ./setup.sh --config writes one (or --save-config NAME writes it from the flags)")
+        return
+    say(f"    {len(store)} launch configuration(s) under {CONF}:")
+    for n, d in store:
+        say(conf_line(n, d))
+
+
+def conf_ask(cfg, store):
+    """--config with no name: ask the questions once more and write the answers. Defaults shown are the shape
+    this run already resolved (stored file plus any flags typed), so reconfiguring means changing ONE answer."""
+    base = conf_shape(cfg)
+    names = [n for n, _ in recipes()]
+    say("    reconfiguring the launch -- Enter keeps what is shown")
+    cur = base["recipe"] if base["recipe"] in names else (names[0] if names else None)
+    got = input(f"    launch which ({', '.join(names)}) [{cur}]? ").strip()
+    recipe = got if got in names else cur
+    cur = base["webui"]
+    got = input(f"    the Monitor/About pages: side | same | off [{cur}]? ").strip().lower()
+    webui = got if got in ("side", "same", "off") else cur
+    cur = "y" if base["docker"] == "yes" else "n"
+    got = input("    container path (the pinned image)? [y/N] " if cur == "n" else "    container path (the pinned image)? [Y/n] ").strip().lower()
+    docker = "yes" if (got == "y" if cur == "y" else got in ("y", "yes")) else "no"
+    cur = "Y" if base["tmux"] else "n"
+    got = input("    start it inside a tmux session (a pane to attach to, and the session is the liveness probe)? [Y/n] ").strip().lower()
+    tmux = False if (got == "n" if cur == "n" else got in ("no", "n")) else True
+    cur = " ".join(f"{k}={v}" for k, v in sorted(base["env"].items()))
+    got = input(f"    environment for the launcher (NAME=VALUE, space separated) [{cur or 'none'}]? ").strip()
+    env = {}
+    if got:
+        for tok in got.split():
+            if "=" in tok:
+                k, v = tok.split("=", 1)
+                env[k] = v
+    note_txt = input("    a note saying what this one is for (Enter for none)? ").strip() or None
+    shape = dict(base, recipe=recipe, docker=docker, webui=webui, tmux=tmux, env=env)
+    fp = conf_fingerprint(shape)
+    for n, d in store:
+        if conf_fingerprint(d) == fp:
+            note(f"that is already stored as {n}: nothing written")
+            conf_apply(cfg, n, d)
+            return
+    name = input(f"    save it as [{conf_auto_name(shape)}]? ").strip() or conf_auto_name(shape)
+    path = conf_save(name, shape, note_txt)
+    say(f"    wrote {path}")
+    others = [n for n, _ in store if conf_fingerprint(_) != fp]
+    if others:
+        say(f"    alongside {', '.join(others)}: a bare ./setup.sh will ask which one to take "
+            f"(or take --config NAME)")
+    conf_apply(cfg, name, shape)
+
+
+def conf_stage(cfg):
+    """Resolve the launch configuration BEFORE the checks, because a native run and a container run check
+    different things -- the choice cannot wait for step 8. Returns False when the run must stop (a name that is
+    not there, or a choice nobody can make without a keyboard)."""
+    store = conf_all()
+    if cfg.config == "*" and cfg.check:
+        note("--check: --config with no name asks questions and writes a file, and a check-only run does "
+             "neither -- the stored ones are reported as they are")
+        conf_tell(cfg)
+        return True
+    if cfg.config not in (None, "*"):
+        for n, d in store:
+            if n == cfg.config:
+                conf_apply(cfg, n, d)
+                return True
+        bad(f"no stored configuration named {cfg.config}",
+            "the names under " + str(CONF) + ": " + (", ".join(n for n, _ in store) if store else "(none yet)"))
+        return False
+    if cfg.config == "*":
+        if not sys.stdin.isatty():
+            bad("--config asks its questions, and this is not a terminal",
+                "--config NAME applies a stored one; or type the flags and record them with "
+                "--save-config NAME (see --help)")
+            return False
+        conf_ask(cfg, store)
+        return True
+    if len(store) == 1:
+        # applied under --check too: a native box and a container box get checked for different things, so the
+        # report has to know which one this is. Nothing is written by any of it.
+        conf_apply(cfg, *store[0])
+    elif len(store) > 1:
+        conf_tell(cfg)
+        if cfg.explicit.get("launch"):
+            note("--launch names the recipe out loud, so no stored configuration is applied to this run")
+        elif not sys.stdin.isatty():
+            bad("several configurations stored and no keyboard to choose one with",
+                "./setup.sh --config NAME   (the names above)")
+            return False
+        else:
+            got = input("    which configuration (name, or Enter to answer the questions as they come)? ").strip()
+            hit = [d for n, d in store if n == got]
+            if not got:
+                note("nothing applied: this run asks the questions as it goes")
+            elif not hit:
+                bad(f"no stored configuration named {got}", "the names above")
+                return False
+            else:
+                conf_apply(cfg, got, hit[0])
+    if cfg.save_config and cfg.check:
+        note(f"--check: --save-config {cfg.save_config} would write a file, so nothing is written")
+    elif cfg.save_config:
+        if cfg.launch in (None, "none"):
+            note(f"--save-config {cfg.save_config} not written: the shape to record has no recipe in it "
+                 f"(name it with --launch, or use --config)")
+        else:
+            shape = conf_shape(cfg)
+            for n, d in store:
+                if conf_fingerprint(d) == conf_fingerprint(shape):
+                    note(f"what the flags say is already stored as {n}: nothing written "
+                         f"(a different shape becomes a new file)")
+                    break
+            else:
+                say(f"    wrote {conf_save(cfg.save_config, shape)}")
+    return True
+
+
 def sha256(p):
     """A short hash of a file, for 'did this change since the last run'. 5 MB libr9k.so, so it is cheap."""
     try:
@@ -242,7 +478,7 @@ def left_vllm():
 def offload_gb(cfg):
     """The --cpu-offload-gb the launch will get. The scripts take it as OFFLOAD_GB= in the environment rather
     than as an argument, so both spellings are read."""
-    v = os.environ.get("OFFLOAD_GB", "0")
+    v = os.environ.get("OFFLOAD_GB", "0")          # conf_apply puts a stored OFFLOAD_GB into the environment
     for a in getattr(cfg, "rest", []):
         m = re.match(r"^OFFLOAD_GB=(\S+)$", a)
         if m:
@@ -957,7 +1193,9 @@ def launch_status():
         warn(f"the launch this script started {age:.0f} min ago (serve/{recipe}, log {log}) is not running: "
              f"no VLLM process left"
              f"{'' if prev.get('died_at') is None else ', recorded dead ' + time.strftime('%H:%M:%S', time.localtime(prev['died_at']))}",
-             f"its log's last lines are below; relaunch: WEBUI={prev.get('webui')} bash serve/{recipe}")
+             f"its log's last lines are below; relaunch: "
+             + (f"./setup.sh --config {prev['config']}" if prev.get("config")
+                else f"WEBUI={prev.get('webui')} bash serve/{recipe}"))
         for ln in tail_log(log, 8):
             say(f"         | {ln}")
     return prev
@@ -1025,7 +1263,9 @@ def launch(cfg, have="docker"):
                      "(notes/tcclaviger-fork-analysis.md, PROGRESS.md's '11.7 GiB per process')")
             return
     say(f"    $ WEBUI={WEBUI_ENV[cfg.webui]} LOG={log} bash serve/{pick}")
-    if not cfg.yes and not ask(cfg, f"start serve/{pick} now (GPUs go busy for ~75 s)?"):
+    # A stored configuration IS the out-loud choice, made once, so it does not get asked again: that is the
+    # point of the file. --yes keeps its meaning for a run that answered the questions live.
+    if asks_whether_to_start(cfg) and not ask(cfg, f"start serve/{pick} now (GPUs go busy for ~75 s)?"):
         return
     proc, sess = None, None
     if pick.startswith("native"):
@@ -1050,9 +1290,26 @@ def launch(cfg, have="docker"):
                  "no session left to ask whether the launch is still up (notes/launch-methodology.md)")
     else:
         subprocess.call(["bash", str(ROOT / "serve" / pick), *cfg.rest], env=env)
+    # the configuration the launch came from is part of the record: a death should be re-launchable by name
+    if not cfg.check:
+        shape, fp = conf_shape(cfg), conf_fingerprint(conf_shape(cfg))
+        named = getattr(cfg, "conf_name", None)
+        if named:
+            # The file this launch came from gets a timestamp, so the store answers "which configuration is this
+            # box on, and when was it last taken" without anybody remembering. Flags typed on top of it are NOT
+            # written back: an experiment must not become tomorrow's default.
+            conf_used(named)
+        elif not any(conf_fingerprint(d) == fp for _, d in conf_all()):
+            # First launch of a shape nobody wrote down: that is the choice worth keeping -- rule 1 of the file,
+            # the parameters chosen the first time get saved so the next run does not have to be told again.
+            nm = conf_auto_name(shape)
+            say(f"    recorded as a new configuration: {conf_save(nm, shape)} -- the next run takes it without "
+                f"asking (./setup.sh --config {nm} names it, ./setup.sh --config re-asks)")
+            cfg.conf_name = nm
     state_write("launch.json", {"recipe": pick, "webui": WEBUI_ENV[cfg.webui], "port": port, "path": have,
                                 "started": int(time.time()), "log": log, "session": sess,
-                                "pid": proc.pid if proc else None, "up_at": None, "died_at": None})
+                                "pid": proc.pid if proc else None, "up_at": None, "died_at": None,
+                                "config": getattr(cfg, "conf_name", None)})
     say(f"    waiting for http://127.0.0.1:{port}/health ...")
     what, dt, why = wait_up(port, proc, sess)
     stopper = f"STOP=1 bash serve/{pick}"
@@ -1082,7 +1339,8 @@ def launch(cfg, have="docker"):
             say(f"         | {ln}")
         state_update("launch.json", died_at=int(time.time()), reason=why)
         say(f"    the ranks ignore SIGTERM: clear anything left with  {stopper}")
-        say(f"    then relaunch:  WEBUI={WEBUI_ENV[cfg.webui]} bash serve/{pick}")
+        say("    then relaunch:  " + (f"./setup.sh --config {cfg.conf_name}" if getattr(cfg, "conf_name", None)
+                                      else f"WEBUI={WEBUI_ENV[cfg.webui]} bash serve/{pick}"))
         return
     else:
         warn(f"not answering /health within {dt / 60:.0f} min: {log}, last lines:")
@@ -1114,12 +1372,33 @@ def main():
                           "native path is the default and --yes does not answer this one.")
     grp.add_argument("--no-docker", dest="docker", action="store_const", const="no",
                      help="keep the container path off without asking (the default answer, said out loud)")
+    ap.add_argument("--config", nargs="?", const="*", default=None,
+                    help="with a name: launch that stored configuration. with no name: re-ask the launch "
+                         "questions and write the answers (a shape that differs from what is stored becomes a "
+                         "new file). The files live under ~/.config/r9700-stack/launches, and a bare ./setup.sh "
+                         "applies the one it finds -- no questions when there is exactly one, a list when "
+                         "there are several.")
+    ap.add_argument("--save-config", default=None, metavar="NAME",
+                    help="record what the flags say as a configuration named NAME, without asking anything: the "
+                         "way to set the box's config from a script")
+    ap.add_argument("--list-configs", action="store_true", help="print the stored launch configurations, stop")
     ap.add_argument("--no-tmux", action="store_true",
                     help="start a native launch detached without tmux: no pane to watch while it loads and no "
                          "session to ask afterwards whether the launch is still up")
     cfg, extra = ap.parse_known_args()
     cfg.rest = extra
+    cfg.conf_env, cfg.conf_name, cfg.conf_applied = {}, None, False
+    # Which answers this run typed out loud. A stored configuration supplies the defaults of a bare run; a flag
+    # said this run beats it for that run, and beats it WITHOUT rewriting the file, so an experiment with
+    # hand-typed flags cannot quietly become what the box boots into tomorrow.
+    cfg.explicit = {"launch": cfg.launch is not None, "webui": cfg.webui is not None or cfg.no_webui,
+                    "docker": cfg.docker != "auto", "tmux": cfg.no_tmux, "rest": bool(extra)}
     cfg.webui = cfg.webui or ("off" if cfg.no_webui else "side")
+    if cfg.list_configs:                     # the store alone: no box walk, no questions
+        conf_tell(cfg)
+        return
+    if not conf_stage(cfg):
+        sys.exit(2)
     say(f"r9700-stack bring-up -- {ROOT}")
     say(f"check-only: {cfg.check}   (every requirement below names the file it came from)")
     host(cfg)

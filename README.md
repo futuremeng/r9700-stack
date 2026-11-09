@@ -732,6 +732,24 @@ these numbers runs.
    ./setup.sh --docker --launch 27b            # the container path: asked for, default no
    ```
    ```bash
+   ./setup.sh --config                         # answer the launch questions ONCE, and write down the answers
+   ```
+   ```bash
+   ./setup.sh --config 262k                    # from now on: start that stored configuration
+   ```
+   **The launch choices are a file, so a bare `./setup.sh` asks nothing.** The choices (which recipe, the pages,
+   container or native, tmux or not, and the launcher's environment) are stored under
+   `~/.config/r9700-stack/launches/`, next to `native.env` and for the same reason: they are facts about this box
+   and this operator, not about the repository. One file there and `./setup.sh` loads it and launches without a
+   question; several and it lists them and asks which (`--config NAME` picks one, and with no keyboard attached it
+   refuses instead of guessing). `--config` re-asks and writes a **new** file when the answers differ from what is
+   stored; `--save-config NAME` records what the flags say, which is how a script sets it. A flag typed this run
+   beats the file **for that run and does not rewrite it**, so an afternoon of hand-typed experiments cannot
+   quietly become what the box starts tomorrow; the file's `MAXLEN=` outranks a stale `export MAXLEN=` in the
+   shell and says out loud that it does (`notes/launch-methodology.md` §12 is why that matters more than it looks).
+   Every launch records the configuration it came from, so the next run's "did it die, and what do I start again"
+   answer names it.
+   ```bash
    ./update.sh                                 # git pull here (refuses on tracked edits), re-check
    ```
    **The native path is the default, and the container path is the one thing asked for, with a default of no**

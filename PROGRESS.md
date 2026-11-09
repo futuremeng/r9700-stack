@@ -3208,3 +3208,42 @@ Housekeeping the pin attempts left behind: the canonical `~/vllm-native-cache` /
 launches, which do not set them) had the 0.33 artifacts while 0.32's sat in `*-032-bak`, so they were swapped back
 and the 0.33 leftovers kept as `*-033left-20261108`. Health re-checked at 200 after the rename. Box state: serving on
 the merged tree at 0.96 with the router cap baked, 0.32 venv, tmux-managed, monitor up at :8080/monitor.
+
+## 2026-11-09 00:1x - the launch choices became a file: `./setup.sh` asks once, then just starts
+
+User's complaint about the design, and it is right: `setup.sh` re-asked the launch questions on every run. What it
+should do is remember -- first run's answers into a config file; a later run with a file loads it and launches with
+no questions; `--config` reconfigures, and a shape that differs from what is stored is written as a new file; if
+several files exist, launch lists them and asks which. Implemented in `setup.py` (the bootstrap in `setup.sh` only
+finds a Python and execs it).
+
+Store: `~/.config/r9700-stack/launches/<name>.json`, next to `native.env`, same justification (its own header says
+the values are "written here instead of being whatever the last hand-typed command happened to inherit" -- which is
+also the §12 failure mode). A configuration is six keys: `recipe, docker, webui, tmux, env, rest`; the fingerprint
+ignores name/note/timestamps so annotating a file cannot fork it. Resolution runs **before** the box walk, since a
+native run and a container run get different checks.
+
+Behavior now: 1 file → applied, printed, no `start now?` prompt (`asks_whether_to_start` is the testable form);
+N files → listed with their distinguishing knobs, asked; N files with no tty → exit 2 naming `--config NAME`
+rather than guessing; `--config` re-asks with the current shape as the defaults (Enter keeps) and writes a *new*
+file only when the fingerprint differs; `--config NAME` applies one; `--save-config NAME` writes what the flags
+say (scripted path); `--list-configs` prints and stops. Precedence: an out-loud flag beats the file **for that run
+and never rewrites it** -- hand-typed experiments must not become tomorrow's default; the file's env beats a stale
+shell export and says so. First launch of an unwritten shape is auto-saved under a readable name
+(`native-flashnext-262144`). `launch.json` now records `config`, and the death notice suggests
+`./setup.sh --config NAME`.
+
+This box got `262k.json`: `native-flashnext.sh`, webui=same, native, tmux, `env={}` -- empty because the launcher
+already defaults to the standing recipe at TP4 (`NSEQ=32`, `NBT=8192`, `MAXLEN=262144`), and a knob that changes
+what a number means belongs in the launcher where `tools/recipe-check.py` can see it, not in a file it cannot.
+Made it by running the real walk with `--no-docker --webui same --launch native-flashnext.sh --save-config 262k`:
+the file was written early, and step 8 then refused to start a second engine on the 5 vLLM processes holding the
+GPUs -- production untouched, health 200 throughout.
+
+Tests: the first draft of this added ~25 checks and cost real time, which the user called out ("你给的测试太多了,
+快速一两个测试就可以确认的事情"). Cut to three: one file applied without asking and outranking the shell's `MAXLEN`;
+typed flags beating the file without rewriting it; two files with no keyboard refusing. `tests/test_setup.py`
+0 failing. One intermediate run failed "check writes no state and rewrites none"; a bare `--launch none --check`
+diffs `.r9700-state/*.json` to nothing, so that was the state recording today's venv change once, not a check run
+writing. README's setup block documents it (`tests/test_readme.py` also enforces one command per fenced block --
+the first draft's two-command fence failed it).

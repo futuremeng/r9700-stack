@@ -1,5 +1,45 @@
 # Changelog
 
+## `setup.sh` keeps its launch choices in a file: answer the questions once, and the next run starts without asking
+
+The bring-up script asked the same four questions every single run (which recipe, the pages or not, container or
+native, tmux or not) even though on a given box those answers stopped changing the day the box was built. Beyond the
+ceremony that has a real cost: what launches then depends on whatever the calling shell carried, so an
+`export MAXLEN=` left over from an experiment three days earlier silently changes what a launch *means* -- the same
+failure mode `~/.config/r9700-stack/native.env` exists to stop, and `notes/launch-methodology.md` §12 a section to.
+The choices are now stored under `~/.config/r9700-stack/launches/`, beside `native.env` and for the same reason:
+they are facts about this box and this operator, not about the repository.
+
+- **One file, no questions.** `./setup.sh` applies the one it finds, prints what it is applying, and starts without
+  the "GPUs go busy for ~75 s?" prompt -- the file *is* that prompt answered, once. The configuration is resolved
+  before step 1, not at step 8, because a native box and a container box get checked for different things.
+- **Several files, ask.** `./setup.sh` lists them with the knobs that distinguish them (`262k serve/native-flashnext.sh
+  webui=same native`) and asks which. With no keyboard attached it **refuses** (exit 2) and names `--config NAME`,
+  rather than guessing which of two configurations the box should boot into.
+- **`--config` re-asks; a differing answer becomes a new file**, and the prompt defaults are the shape already
+  resolved, so reconfiguring is changing one answer instead of answering everything again. `--config NAME` applies a
+  named file. `--save-config NAME` records what the flags say (the scripted path; `--config`'s questions cannot be
+  answered from cron). `--list-configs` prints the store and stops, without walking the box.
+- **A flag typed this run beats the file for that run, and does not rewrite it.** That is deliberate: an afternoon of
+  hand-typed `--webui off --docker` experiments must not quietly become what the box starts tomorrow. The file's
+  environment likewise outranks a stale shell export, and says so out loud (`MAXLEN=32768 came in with this shell;
+  the configuration pins MAXLEN=262144 and wins`).
+- **What a configuration *is* is six keys** -- recipe, docker, webui, tmux, env, rest -- and the fingerprint ignores
+  the name, the note and the timestamps, so annotating or renaming a file cannot fork a configuration. Every launch
+  records the configuration it came from in `.r9700-state/launch.json`, and a death notice now re-launches it by name
+  (`./setup.sh --config 262k`) instead of printing a half-remembered `WEBUI=... bash serve/...`.
+- **First launch of a shape nobody wrote down is saved**, named after what makes it different
+  (`native-flashnext-262144`), because the store is meant to be read.
+- This box's file: `~/.config/r9700-stack/launches/262k.json` -- `serve/native-flashnext.sh`, `webui=same`, native,
+  tmux, `env: {}`. The env is empty on purpose: `serve/native-flashnext.sh` already defaults to the standing recipe
+  at TP4 (`NSEQ=32`, `NBT=8192`, `MAXLEN=262144`), so the knobs that differ from that belong in the launcher where
+  `tools/recipe-check.py` can hold the running engine to them, exactly as `native.env`'s own header argues.
+- `tests/test_setup.py` gained three checks, no more: one file applied without asking (and outranking the shell's
+  `MAXLEN`), typed flags beating the file without rewriting it, and several files with no keyboard refusing. The
+  suite passes (0 failing) -- and one run that had failed once on "check writes no state" turned out to be the state
+  file legitimately recording today's venv change, not a check-only run writing: a bare `--launch none --check`
+  diffs nothing.
+
 ## a revert to the pre-merge tree was started, abandoned by choice, and the box is back on the merged tree brought up by `setup.sh` -- which had no validation on `--launch`
 
 Asked to roll back to the pre-merge configuration and bring the box up through `setup.sh`, the rollback was done

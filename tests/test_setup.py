@@ -54,7 +54,9 @@ def cfg(**kw):
     """The few fields setup.py reads off its own argparse result."""
     d = dict(check=False, yes=False, update=False, rebuild=False, launch=None, no_webui=False,
              webui="side", img="r9700/vllm:dev", repo=str(Path.home() / "r9700-build" / "repo"),
-             docker="auto", no_tmux=False, rest=[])
+             docker="auto", no_tmux=False, rest=[], conf_env={}, conf_name=None, conf_applied=False,
+             config=None, save_config=None, list_configs=False,
+             explicit={"launch": False, "webui": False, "docker": False, "tmux": False, "rest": False})
     d.update(kw)
     return types.SimpleNamespace(**d)
 
@@ -271,6 +273,47 @@ if S.shutil_which("tmux"):
 else:
     print("  skip tmux: not installed here (the native launch then falls back to a plain detached start)")
 
+# ------------------------------------------------------------------ the launch configuration on disk ----
+# Answer the launch questions once; the next run takes the file and asks nothing. Two checks carry that: one
+# file is applied without a question (and its knobs beat what the shell inherited), several files with nobody
+# at the keyboard refuses instead of guessing.
+with tempfile.TemporaryDirectory() as _td:
+    S.CONF = Path(_td) / "launches"
+
+    def _cfg2(**kw):
+        c = cfg(**kw)
+        c.conf_env, c.conf_name, c.conf_applied = {}, None, False
+        c.explicit = {"launch": kw.get("launch") is not None, "webui": kw.get("webui") is not None,
+                      "docker": kw.get("docker") not in (None, "auto"), "tmux": kw.get("no_tmux", False),
+                      "rest": False}
+        for f, dflt in (("config", None), ("save_config", None), ("list_configs", False)):
+            if not hasattr(c, f):
+                setattr(c, f, dflt)
+        return c
+
+    S.conf_save("262k", {"recipe": "native-flashnext.sh", "docker": "no", "webui": "same", "tmux": True,
+                         "env": {"MAXLEN": "262144"}, "rest": []}, "the standing 262k launch")
+    os.environ["MAXLEN"] = "32768"                      # inherited from some earlier hand-typed command
+    c = _cfg2()
+    S.conf_stage(c)
+    ck("one stored configuration: a bare run takes it, asks nothing, and the file outranks the shell's MAXLEN",
+       c.conf_applied is True and c.launch == "native-flashnext.sh" and c.webui == "same"
+       and os.environ["MAXLEN"] == "262144" and S.asks_whether_to_start(c) is False,
+       f"{c.launch} {c.webui} MAXLEN={os.environ['MAXLEN']}")
+    ck("flags typed this run still beat the file for that run, and do not rewrite it",
+       (_c := _cfg2(webui="off", docker="yes")) or (S.conf_stage(_c) is True)
+       and (_c.webui, _c.docker) == ("off", "yes")
+       and json.loads((S.CONF / "262k.json").read_text())["webui"] == "same")
+    os.environ.pop("MAXLEN", None)
+    S.conf_save("32k", {"recipe": "native-flashnext.sh", "docker": "no", "webui": "side", "tmux": True,
+                        "env": {"MAXLEN": "32768"}, "rest": []})
+    ck("two files and no keyboard: it stops and names --config NAME rather than picking one",
+       S.conf_stage(_cfg2()) is False and S.conf_stage(_cfg2(config="32k")).__class__ is not None
+       and S.conf_all()[0][0] == "262k")
+    for _n, _d in S.conf_all():
+        for _k in (_d.get("env") or {}):
+            os.environ.pop(_k, None)
+
 # ------------------------------------------------------------------------------ the report itself ----
 with tempfile.TemporaryDirectory() as td:
     old_state = S.STATE
@@ -296,7 +339,8 @@ ck("--launch none --check changes nothing and names the path it took",
    p.returncode == 0 and "[8] a launch" in p.stdout
    and "which path this box runs: native (the default)" in p.stdout, p.stdout[-400:])
 ck("--check writes no state and rewrites none (check-only runs nothing that changes anything)",
-   before == after, f"{sorted(before)} -> {sorted(after)}")
+   before == after, "; ".join(f"{k}: {before.get(k)!r} -> {after.get(k)!r}" for k in sorted(set(before) | set(after))
+                              if before.get(k) != after.get(k))[:900])
 
 # The context question, learned the hard way on 2026-11-03: a launch answered /health in 150 s and looked
 # healthy while running at a fraction of the checkpoint's declared context. Nothing compared the two numbers.
