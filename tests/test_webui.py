@@ -1785,7 +1785,9 @@ finally:
 ck("an exported knob cannot move the PRODUCTION answer: the launcher is asked with a stripped environment, so the "
    "line and the env block come back as the tree has them",
    "MAXLEN" not in _ce and "R9K_ROUTER_MAX_M" not in _ce and "R9K_FOLD" not in _ce
-   and _pe_polluted.get("R9K_FOLD") != "zzz" and "R9K_ROUTER_MAX_M" not in _pe_polluted
+   and _pe_polluted.get("R9K_FOLD") != "zzz"
+   and _pe_polluted.get("R9K_ROUTER_MAX_M") == "4"
+   and _pe_polluted.get("R9K_MM_LAST_TURN") == "1"
    and f"--max-model-len 999" not in _cmd_polluted and "--max-num-batched-tokens 1 " not in _cmd_polluted
    and "--limit-mm-per-prompt" in _cmd_polluted and "--language-model-only" not in _cmd_polluted,
    f"{sorted(_ce)[:4]} / {sorted(_pe_polluted)[:6]} / {len(_cmd_polluted)}")
@@ -1798,7 +1800,12 @@ _envmap = json.loads(next(l for l in (_er.stdout + _er.stderr).splitlines()
                           if l.startswith("env recipe:"))[len("env recipe:"):])
 ck("the launcher prints its own env block (ENVRECIPE=1) after every default it sets, writing and starting nothing",
    _er.returncode == 0 and _envmap.get("R9K_FOLD") == "1" and _envmap.get("R9K_QSA_KVF8") == "1"
-   and "R9K_ROUTER_MAX_M" not in _envmap
+   # the launcher OWNS these two defaults now (the router cap was baked in on 2026-11-08 after four device faults,
+   # the last-turn image rule on 2026-11-09), so "not in the block" was the old truth and the new one is stronger:
+   # an ambient value in the shell is stripped, and what the block reports is the launcher's own answer. R9K_MM_LAST_TURN
+   # is asserted here because it is set above the ENVRECIPE print -- a knob exported below it would be missing from
+   # the tree's own answer while the recipe file had it, which is exactly the drift tools/recipe-check.py reports.
+   and _envmap.get("R9K_ROUTER_MAX_M") == "4" and _envmap.get("R9K_MM_LAST_TURN") == "1"
    and os.stat(os.path.expanduser("~/r9700-web-meta-8080.json")).st_mtime == _metabefore
    and "launch:" not in _er.stdout,
    _er.stdout[:200])
@@ -1814,7 +1821,7 @@ subprocess.run(["bash", _LAU], env=rc.clean_env({"METAONLY": "1", "FORCE": "1", 
 _mjv = json.loads(Path(_mj).read_text()) if Path(_mj).exists() else {}
 ck("the recipe file records that block as an object, so the About page shows the switches and the gate can diff them",
    isinstance(_mjv.get("env"), dict) and _mjv["env"].get("R9K_FOLD") == "1"
-   and "R9K_ROUTER_MAX_M" not in _mjv["env"], str(_mjv.get("env"))[:200])
+   and _mjv["env"].get("R9K_ROUTER_MAX_M") == "4", str(_mjv.get("env"))[:200])
 Path(_mj).unlink(missing_ok=True)
 # The FLAGS are the third face of the recipe, and they are how the multimodal question gets answered: no vllm:*
 # label says whether the serve came up --language-model-only, and that flag decides what the box can be asked at

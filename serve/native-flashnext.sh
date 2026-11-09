@@ -169,6 +169,17 @@ for ln in sys.stdin:
     k, _, v = ln.rstrip("\n").partition("\t")
     d[k] = v
 print(json.dumps(d, sort_keys=True))'; }
+# Only the images of the turn being answered, not the whole conversation's. A chat client replays the transcript on
+# every turn, so turn N carries N-1 pictures again, and stock vLLM re-encodes each one (a vision-tower step and up
+# to MM_MAX_PIX/1024 image tokens each) -- and since --limit-mm-per-prompt counts images PER PROMPT, the replay by
+# itself reaches MM_IMAGE and answers 400 on the turn that adds the new one. r9700_vllm/compat/mm_last_turn.py
+# drops them; R9K_MM_LAST_TURN=0 restores stock behavior. Baked here, not left to whoever starts the box -- and set
+# ABOVE the env-recipe print, because a knob exported below it is missing from the tree's own answer: the recipe
+# file (written later) had R9K_MM_LAST_TURN while ENVRECIPE=1 did not, and tools/recipe-check.py read that as the
+# tree not setting a knob the live engine had.
+: ${R9K_MM_LAST_TURN:=1}
+export R9K_MM_LAST_TURN
+
 if [ "${ENVRECIPE:-0}" = 1 ]; then echo "env recipe: $(r9k_env_json)"; exit 0; fi
 
 # The prefix cache, ON -- which is upstream's default (`config/cache.py`: `enable_prefix_caching: bool = True`).
@@ -228,13 +239,6 @@ if [ "${ENVRECIPE:-0}" = 1 ]; then echo "env recipe: $(r9k_env_json)"; exit 0; f
 # 1,200x654 documentation PNG (760 tokens) untouched and shrinks the giant screenshot to 4,059. MM_MIN_PIX is left at
 # the checkpoint's own shortest_edge (tiny images get upscaled to ~64 tokens).
 : ${MM_MAX_PIX:=4194304}; : ${MM_MIN_PIX:=65536}
-# Only the images of the turn being answered, not the whole conversation's. A chat client replays the transcript on
-# every turn, so turn N carries N-1 pictures again, and stock vLLM re-encodes each one (a vision-tower step and up
-# to MM_MAX_PIX/1024 image tokens each) -- and since --limit-mm-per-prompt counts images PER PROMPT, the replay by
-# itself reaches MM_IMAGE and answers 400 on the turn that adds the new one. r9700_vllm/compat/mm_last_turn.py
-# drops them; R9K_MM_LAST_TURN=0 restores stock behavior. Baked here, not left to whoever starts the box.
-: ${R9K_MM_LAST_TURN:=1}
-export R9K_MM_LAST_TURN
 
 ARGS=(--served-model-name "${SERVED_NAME:-Qwen3.8}" --host "$HOST" --port "${PORT:-8080}"
       --tensor-parallel-size "${TP:-4}" --max-model-len "${MAXLEN}"
