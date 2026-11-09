@@ -3288,3 +3288,21 @@ requests after the restart:
 `0.32.0` only (measured here); the container pin warns. Tests: `tests/test_mm_last_turn.py`, 6 checks, host python,
 no vLLM import needed (the module falls back to `logging` when vLLM is absent) -- all pass. Nothing yet measured
 about vision-tower steps under concurrency, which was already the open risk on the `MM=1` default.
+
+## 2026-11-09 01:2x - measurements owed, deferred by choice to the next merge (nothing is "verified" that isn't)
+
+User's call: no stress testing now; commit the changes and measure them together with the next merge. So the image
+work is committed and live with only the two single-request probes done (`bench/mmturns.py`), and what is owed is
+written down instead of being remembered:
+
+- **Images under concurrency.** Everything measured about pictures so far is one request at a time on an idle box.
+  The standing `MM=1` default has said that since 2026-11-05 and it is still unmeasured: encoder steps interleaving
+  with 32 deep-context streams, and what they cost in ITL and probe32 aggregate. The gate order is already written
+  (probe32, ITL, retrieval ladder, GSM8K+needles, sanity_stress, soak); the image shape to add is the same run with
+  `bench/mmturns.py`-shaped traffic mixed into the streams, so the text-only bands stay comparable.
+- **`mm_processor_cache` across many distinct pictures in a long conversation** -- what is cached, what is
+  re-encoded, and whether the cache evicts under a transcript with dozens of screenshots.
+- Carried from 2026-11-08, unchanged: three launches per side at util 0.96 to settle 0.32-vs-0.33 KV capacity (the
+  0.32@0.96 spread is 914,748 / 891,919 / 902,153 -- 2.5% on identical settings); a rerun of the `+rocm100` arm
+  outside a PCIe BadTLP episode; the `r9k_router_gemm_kernel<8, 2, true>` root cause (cap 4 is a mitigation); and
+  `tests/test_dsv4_glue.py`'s `top-k given identical logits` failure, which is independent of the vLLM version.
