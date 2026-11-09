@@ -65,9 +65,9 @@ Qwen3.8-Flash-Next (MoE, MXFP4 experts plus fp8 dense) on four Radeon AI PRO R97
 | | measured | where it came from |
 |---|---:|---|
 | **decoding, one stream** | **225 tok/s** (best sample 228) | 14.3-14.4 ms a step; release configuration, 210 W cap, 32k |
-| **decoding, 32 streams** | **1,823 tok/s** aggregate (best sample 1,836.3) | 1,200-token waves, `bench/probe32.sh`; the native box, uncapped. The fp8 main-KV launch this box now defaults to reads **1,792** (1,789 / 1,796) at the same protocol |
+| **decoding, 32 streams** | **1,823 tok/s** aggregate (best sample 1,836.3) | 1,200-token waves, `bench/probe32.sh`; the native box, uncapped. The fp8 main-KV launch this box now defaults to reads **1,792** (1,789 / 1,796) at the same protocol, and the 2026-11-08 standing launch (vLLM 0.32, router cap 4, util 0.96, `PREFIX_CACHE=0`) read **1,767 / 1,780** — inside that spread, so the router cap costs nothing measurable here (notes/bug-router-gemm-oob.md) |
 | **reading a prompt** | **9,633 tok/s** | 7,789-token prompt, the native box uncapped (7,141 at the 210 W gate); **9,702** on the fp8 launch, 7,792 tokens |
-| **context** | **262,144 tokens**, needle found at 250,078 | the checkpoint's own ceiling, running on this box today; KV pool **935,216 tokens** (1,188 blocks of 832) on the standing launch — fp8 e4m3 main KV with image inputs on; 1,009,899 without the vision knobs, 540,202 at bf16 |
+| **context** | **262,144 tokens**, needle found at 250,078 | the checkpoint's own ceiling, running on this box today; KV pool **902,153 tokens** (`Maximum concurrency for 262,144 tokens per request: 3.44x`) on the standing launch — fp8 e4m3 main KV, image inputs on, `--gpu-memory-utilization 0.96`. At 0.97 the same launch read 935,216 with the vision knobs and 1,009,899 without them; 540,202 at bf16 main KV |
 | **decoding, in real work** (not a benchmark) | **162 tok/s** with the box to yourself, **115 tok/s** as a request actually finishes | 1,568 real requests off the fp8 launch's journal over 10.25 h, prompts p50 52,083; the benchmark rows above describe a machine nobody sits on |
 
 <sub>Two different machines, so the rows are not comparable with each other; each one names its own. The last row is
@@ -217,11 +217,14 @@ TP4, MTP-3. Except where a row names another launch, this is the launch that run
 `MAXLEN=262144 NSEQ=32 NBT=8192`, and until 2026-11-04 also `PREFIX_CACHE=0`, which is why **every number in this
 table is a cache-off number**. The prefix cache went on that day, aligned with upstream's default
 (notes/prefix-cache-decision.md); rows from before it stay valid for the recipe they were measured on, and
-re-measuring them under the cache is owed rather than assumed.
+re-measuring them under the cache is owed rather than assumed. The standing `--gpu-memory-utilization` is **0.96**
+since 2026-11-08: 0.97 asks for 30.90 GiB of a 31.86 GiB card while this box's free-at-startup reading ranged
+30.87–31.22 GiB, so a launch refused at both 0.32 and 0.33 whenever the reading landed low -- a coin flip, not a
+regression. 0.96 costs about 4-5% of the pool and buys 0.3 GiB of margin over the worst reading seen here.
 
 | | |
 |---|---:|
-| KV cache at MAXLEN=262,144 | **540,202 tokens**; vLLM: `Maximum concurrency for 262,144 tokens per request: 2.06x` |
+| KV cache at MAXLEN=262,144 | **540,202 tokens**; vLLM: `Maximum concurrency for 262,144 tokens per request: 2.06x` — a bf16 main-KV launch at util 0.97, kept as the bf16 baseline; the fp8 row below is what this box runs, and today's standing launch reads 902,153 at util 0.96 with images on |
 | the same launch with an **fp8 e4m3 main KV** (the default since 2026-11-03: 12 full-attention layers quantized, the QSA side caches left bf16) | **1,009,899-1,021,931 tokens**, `3.85-3.90x`; attention block size 880 instead of 448; prefill **2,614 / 7,886 / 9,702 / 8,965 / 8,282 tok/s at 485 / 1,976 / 7,792 / 31,131 / 77,733 tokens** (bf16: 2,586 / 7,938 / 9,705 / 8,928 / 8,252 -- flat); 32 in flight, 1,200-token waves **1,789 / 1,796** (bf16 1,817 / 1,831) and 300-token waves 1,511-1,563 (bf16 1,594-1,640), and that 1.5-4% is MTP acceptance under the bench's own traffic (2.55 against 2.61 tokens a step; real traffic on this launch runs 2.33) -- not the kernel, which measures 7-11% faster; GSM8K 800 @8 **96.0 against 95.6**, HumanEval 164 **98.17 against 96.95** (McNemar b=2, c=0, p=0.50), needle intact cold and warm to 250,078 tokens: [notes/kv-fp8-qsa.md](notes/kv-fp8-qsa.md) |
 | KV cache at MAXLEN=32,768 (same launch shape) | 497,588 tokens: raising context 8x made the pool **bigger**, because the sizing run is bounded by `NBT`, not by MAXLEN |
 | prompt processing at 60k / 120k / 180k | 8,672-8,742 / 8,062-8,064 / 7,416-7,436 tok/s, each tier sent twice back to back with no prefix cache to help it |
@@ -381,7 +384,11 @@ environment: a **whitelist** of `VLLM_*`/`R9K_*`/`R9700_*`/`WEBUI_*`/launcher na
 this page is served on every interface of the box. `R9K_` is listed as a whole namespace because those names pick
 **which kernel runs**, so they change what a measured number means while staying absent from the engine's config;
 `tools/recipe-check.py` compares the same block against the launcher (`ENVRECIPE=1`), which is how the running
-test config `R9K_ROUTER_MAX_M=4` got named. Plus the machine-local
+test config `R9K_ROUTER_MAX_M=4` got named -- and since 2026-11-08 that name is a **default of the launcher and of
+the library**, not a test config: four `hipErrorIllegalAddress` deaths all named
+`r9k_router_gemm_kernel<8, 2, true>`, and the four crashed steps were widths 5-8 (notes/bug-router-gemm-oob.md).
+It is on the page for the reason the whitelist exists at all: the flag does not appear in the engine's config, and
+a cap that lives in somebody's memory is a cap that a restart loses. Plus the machine-local
 `~/.config/r9700-stack/native.env` parsed each poll, so the page agrees with the file an operator just edited. A name that looks like a credential is
 listed as `set · value withheld`, in the env block and in the printed command line alike (`--api-key <withheld>`,
 flag kept, because a restart line that drops the flag starts a serve nobody can reach). The card says which process
@@ -638,10 +645,10 @@ checkpoint path, the API key never printed, and the reasoning parser accounted f
 makes reasoning tokens count against `max_tokens`, so a small budget returns `content = None`).
 
 Both pages' headers name the build that is answering: the plugin's version, and the branch, commit and dirtiness of
-the tree that plugin was loaded from - on the launch running today, `vLLM 0.32.0 · plugin 0.4.2 · 4f4d1b2a`, with a
+the tree that plugin was loaded from - on the launch running today, `vLLM 0.32.0 · plugin 0.4.3 · df4d9cb`, with a
 `*` on the commit when the tree has uncommitted edits, and the same facts as a row in About. It is the build that
-**answered**, not the build this checkout holds: that serve came up at `4f4d1b2a` while the tree had already moved
-two commits past it, and the header went on naming the older one - which is the whole point, and why the About page
+**answered**, not the build this checkout holds: that serve came up at `df4d9cb` while the tree has since moved
+past it, and the header went on naming the older one - which is the whole point, and why the About page
 labels the same facts as three sources that are allowed to disagree. "Is the live serve the new one?" used to cost
 an ssh and a look at the launch log; now it is a glance, and the string survives into the screenshot someone sends.
 
@@ -821,8 +828,11 @@ these numbers runs.
    ```bash
    docker build -t r9700/vllm:dev docker/
    ```
-   The pinned nightly (2026-10-25, vLLM 0.32.1rc1, torch 2.13) is in `docker/Dockerfile` (`--build-arg BASE=` for another);
-   the image also builds exllamav3 v1.6.6's extension for gfx1201 (the EXL3 kernels, MIT).
+   The pin (`vllm/vllm-openai-rocm:v0.33.0-rocm100`) is in `docker/Dockerfile` (`--build-arg BASE=` for another);
+   the image also builds exllamav3 v1.6.6's extension for gfx1201 (the EXL3 kernels, MIT). Since 2026-11-09
+   `serve.sh` also passes the **same multimodal defaults the native launcher has** (image 4 per prompt, video off,
+   the `MM_MAX_PIX` size cap) -- until then the container path was the text-only one (`--language-model-only` by
+   default) while the native box accepted pictures, which is the sort of drift two launchers invite.
    `serve.sh` runs the image against the second checkout of this repo (default `~/r9700-build/repo`, mounted at
    `/opt/r9700`) so the running plugin is code you can change without rebuilding; `./setup.sh` names it and offers
    to clone it. Container-only recipes are labelled in `setup.py`'s launch list, and asking for one on a run that
