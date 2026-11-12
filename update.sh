@@ -3,8 +3,9 @@
 # (~/vllmstock-cache-*, ~/vllm-native-*), the image unless its pin moved, and any launch that is running.
 # What it does: git pull this checkout, then what ./setup.sh checks -- the pinned image (rebuild offered when
 # docker/Dockerfile's BASE changed), the SECOND checkout serve.sh mounts ($HOME/r9700-build/repo, which is where
-# the running plugin actually comes from), the host tests, and then it offers a launch. Start one later with
-# ./setup.sh. Options are passed on to setup.py.
+# the running plugin actually comes from), the host tests, the embedding sidecar's two facts (the
+# $HOME/llama.cpp build and the GGUF in ~/models -- an update checks them, never builds or fetches), and then it
+# offers a launch. Start one later with ./setup.sh. Options are passed on to setup.py.
 cd "$(dirname "$0")" || exit 1
 main() {
   if [ ! -d .git ]; then

@@ -20,6 +20,8 @@ in the launch list rather than offered, and a checkpoint only they want is a not
   ./setup.sh --update           what update.sh runs after a git pull: pin, build repo, tests
   ./setup.sh --rebuild          build the image again even though the pin says it is current
   ./setup.sh --launch 27b       start that recipe instead of asking (none = stop after the checks)
+  ./setup.sh --embedding        the CPU embedding sidecar: serve/embed.sh on :8090, llama.cpp built in
+                                $HOME when missing (mmap GGUF only -- see the step and serve/embed.sh)
   ./setup.sh --no-webui         launch without the Monitor/About sidecar
   ./setup.sh --docker           deploy with the pinned image. This is the ONE question asked with a default of
                                 no: the native path is the default, and every later step follows that answer.
@@ -616,7 +618,9 @@ def recipes():
     user a script that starts nothing."""
     out_ = []
     for p in sorted((ROOT / "serve").glob("*.sh")):
-        if p.name in ("serve.sh", "webui.sh", "webmeta.sh", "deploy.sh"):
+        if p.name in ("serve.sh", "webui.sh", "webmeta.sh", "deploy.sh", "embed.sh", "embed-watch.sh"):
+            # embed.sh is not an engine recipe: it starts no vLLM and owns no GPU, so it is offered by its own
+            # flag (--embedding) and its own step, not in the launch list a GPU launch is picked from.
             continue
         head = ""
         for line in p.read_text(errors="replace").splitlines()[1:6]:
@@ -1153,6 +1157,112 @@ def sidecar(cfg):
              f"Install with:  {py} -m pip install --no-build-isolation -e {ROOT / 'serve' / 'plugin'}")
 
 
+def _up(url):
+    """A GET that answers 200 -- the whole health question, the same one wait_up asks one level up."""
+    try:
+        with urllib.request.urlopen(url, timeout=3) as r:
+            return r.status == 200
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def llama_build(cfg, want=False):
+    """The llama.cpp build in $HOME the embedding sidecar runs from (no root, no venv: cmake --build, native
+    dispatch -- on the EPYC Genoa that routes q8_0 through the AVX-512/VNNI kernels by itself). Returns the
+    binary path or None. An update only checks it; the clone + compile happens only when asked -- the one
+    build update.sh's contract says an update does not do by itself."""
+    p = Path(os.environ.get("LLAMA_SERVER", Path.home() / "llama.cpp/build/bin/llama-server"))
+    if p.exists():
+        ok(f"llama-server: {p}")
+        return str(p)
+    if want and not cfg.check:
+        if shutil_which("cmake") is None:
+            bad("cmake is not installed -- llama.cpp needs it", "sudo apt install cmake g++ git")
+            return None
+        src = Path.home() / "llama.cpp"
+        if not src.is_dir():
+            if not ask(cfg, f"clone llama.cpp into {src} (~2 min, ~1 GB)?"):
+                return None
+            if run(["git", "clone", "--depth", "1", "https://github.com/ggml-org/llama.cpp", str(src)],
+                   cfg, timeout=900) != 0:
+                bad("git clone llama.cpp failed (the reason is above)")
+                return None
+        if run(["cmake", "-B", f"{src}/build", "-DGGML_NATIVE=ON", "-DCMAKE_BUILD_TYPE=Release"], cfg) != 0:
+            bad("cmake configure failed (the reason is above)")
+            return None
+        if run(["cmake", "--build", f"{src}/build", "-j16"], cfg, timeout=1800) != 0:
+            bad("cmake --build failed (the reason is above)")
+            return None
+        if p.exists():
+            ok(f"built {p}")
+            return str(p)
+        bad("the build finished but the binary is not where it should be", f"ls {src}/build/bin")
+        return None
+    note(f"llama-server not built yet: {p} -- ./setup.sh --embedding clones and compiles it in $HOME "
+         "(or LLAMA_SERVER=<path> to use one that lives elsewhere)")
+    return None
+
+
+def embedding(cfg, have, build=False):
+    step("e", "the embedding sidecar (serve/embed.sh: llama-server + Qwen3-Embedding-0.6B q8_0 on :8090, CPU)")
+    note("why CPU: ~1.35 GiB spare a card at util 0.96 (README 'VRAM per card') -- a second process does not "
+         "fit; and ~11 of 192 EPYC cores busy with the engine (notes/native-4xr9700.md), so the rest are free")
+    so = llama_build(cfg, want=build)
+    gguf = Path.home() / "models/qwen3-embedding-0.6b-q8_0.gguf"
+    if gguf.exists():
+        ok(f"{gguf}: {gguf.stat().st_size / 1e9:.2f} GB -- mmap page cache, not anon: it never enters the "
+           "swap or the Committed_AS that wedged the box on 2026-11-01 (notes/load-oom-svm-wedge.md)")
+    else:
+        note(f"{gguf} missing -- serve/embed.sh fetches it (~0.65 GB) on its first run, or:")
+        say("      hf download unsloth/Qwen3-Embedding-0.6B-GGUF qwen3-embedding-0.6b-q8_0.gguf "
+            "--local-dir ~/models && mv ~/models/qwen3-embedding-0.6b-q8_0.gguf " + str(gguf))
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8090/health", timeout=3) as r:
+            up = r.status == 200
+    except (urllib.error.URLError, OSError):
+        up = False
+    if up:
+        ok("embedding up on :8090 -- /v1/embeddings is OpenAI-compatible, point RAG clients at http://<box>:8090/v1")
+        say("      monitor: http://127.0.0.1:8091/ is watching" if _up("http://127.0.0.1:8091/health") else
+            "      monitor: bash serve/embed-watch.sh   (http://127.0.0.1:8091/ -- webui.py is vLLM-shaped, "
+            "this one speaks llama.cpp)")
+    else:
+        note("not running: bash serve/embed.sh starts it (STOP=1 stops it, DRY=1 previews, LLAMA_SERVER=... "
+             "names the binary)"
+             + ("" if so else " -- build it first: ./setup.sh --embedding"))
+
+
+def embedding_launch(cfg):
+    """serve/embed.sh as --launch's target: no GPUs to be free, no tmux pane worth having, no engine context
+    to compare -- the whole contract is /health on 8090, so none of launch()'s GPU machinery applies."""
+    script = ROOT / "serve/embed.sh"
+    log = os.environ.get("LOG") or str(Path.home() / "logs" / f"embed-{time.strftime('%H%M%S')}.log")
+    Path(log).parent.mkdir(parents=True, exist_ok=True)
+    so = llama_build(cfg, want=True)
+    if so is None:
+        return
+    if asks_whether_to_start(cfg) and not ask(cfg, "start the embedding sidecar on :8090 (no GPU, ~0.65 GB mmap)?"):
+        return
+    say(f"    $ LLAMA_SERVER={so} LOG={log} bash serve/embed.sh")
+    with open(log, "ab") as fh:
+        proc = subprocess.Popen(["bash", str(script)], stdout=fh, stderr=subprocess.STDOUT,
+                                env=dict(os.environ, LLAMA_SERVER=so, LOG=log), start_new_session=True)
+    say("    waiting for http://127.0.0.1:8090/health ...")
+    what, dt, why = wait_up(8090, proc, None, secs=120)
+    if what == "up":
+        ok(f"up after {dt:.0f} s -- POST http://127.0.0.1:8090/v1/embeddings (OpenAI shape; the query side "
+           "carries the Instruct/Query prompt, the document side plain text)")
+    elif what == "dead":
+        bad(f"{why} without answering /health. {log}, last lines:")
+        for ln in tail_log(log, 10):
+            say(f"         | {ln}")
+        say("    stop and relaunch:  STOP=1 bash serve/embed.sh")
+    else:
+        warn(f"not answering /health within {dt / 60:.0f} min: {log}, last lines:")
+        for ln in tail_log(log, 10):
+            say(f"         | {ln}")
+
+
 def start_tmux(sess, script, env, rest, log):
     """The native launch inside a tmux session.
 
@@ -1239,6 +1349,9 @@ def launch(cfg, have="docker"):
         if pick not in names:
             bad(f"no serve/{pick}")
             return
+    if pick == "embed.sh":
+        embedding_launch(cfg)   # the CPU sidecar: no GPU pre-flight, no tmux, no context comparison
+        return
     if container_recipe(pick) and have != "docker":
         bad(f"serve/{pick} runs through serve.sh, and this run takes the native path",
             "./setup.sh --docker --launch " + pick + "   (or run a native recipe: serve/native-flashnext.sh)")
@@ -1382,6 +1495,10 @@ def main():
                     help="record what the flags say as a configuration named NAME, without asking anything: the "
                          "way to set the box's config from a script")
     ap.add_argument("--list-configs", action="store_true", help="print the stored launch configurations, stop")
+    ap.add_argument("--embedding", action="store_true",
+                    help="the embedding sidecar: check llama.cpp and the GGUF, and build llama.cpp in $HOME "
+                         "when missing (the only step that compiles third-party source; an update only "
+                         "reports it). Start the sidecar itself with --launch embed.sh or bash serve/embed.sh.")
     ap.add_argument("--no-tmux", action="store_true",
                     help="start a native launch detached without tmux: no pane to watch while it loads and no "
                          "session to ask afterwards whether the launch is still up")
@@ -1414,6 +1531,7 @@ def main():
     models(cfg, have)
     tests(cfg)
     sidecar(cfg)
+    embedding(cfg, have, build=cfg.embedding)
     if cfg.update:
         step("u", "what an update does NOT touch: the weights in ~/models, the caches "
                   "(~/vllmstock-cache-*, ~/vllm-native-*), and any launch that is running")

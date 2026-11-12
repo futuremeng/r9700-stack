@@ -1,5 +1,34 @@
 # Changelog
 
+## the embedding sidecar: Qwen3-Embedding-0.6B on the EPYC, mmap-only, with its own page on :8091
+
+The RAG path needed vectors and the cards have no room for a second process: the standing launch sits at
+**30.3-30.5 of 31.86 GiB a card, ~1.35 GiB spare** (README "VRAM per card", util 0.96), and the smallest
+vLLM embedding serve does not fit in a spare that thin. The EPYC takes it: ~11 of 192 cores are busy with
+the engine (`notes/native-4xr9700.md`), the rest are free.
+
+- **The shape: llama.cpp + q8_0 GGUF + mmap, and nothing else.** `serve/embed.sh` starts
+  `llama-server --embedding --pooling last --metrics` on **:8090** (OpenAI-compatible `/v1/embeddings`; the
+  query side carries the Qwen3 instruct, the document side plain text), `taskset -c 16-31 -t 8` off the
+  engine's cores, DRY/STOP/FORE like the other launchers, and it fetches the GGUF on first run. The mmap
+  rule is the load-bearing one: GGUF pages are page cache -- reclaimable, never swap, never anon -- while
+  an extra 4 GiB of anon commit is the recipe of the 2026-11-01 SVM wedge (`notes/load-oom-svm-wedge.md`,
+  Committed_AS 122.6 against 93.8 GiB, kswapd blocked on the amdgpu notifier). So: never `--mlock`, never
+  `--no-mmap`, and 0.6B here; the 4B q8_0 stays mmap-safe but 6x slower, for a golden set to decide.
+- **`setup.py` knows about it**: step `e` checks the build, the GGUF and `:8090/health` and says who needs
+  what; `--embedding` is the only path that clones and compiles llama.cpp in `$HOME` (an update reports,
+  never builds -- update.sh's contract); `--launch embed.sh` starts it without the GPU launch machinery,
+  because its whole contract is /health on 8090.
+- **`serve/embed-watch.py` / `.sh`: its own Monitor on :8091**, because webui.py is vLLM-shaped -- its
+  parser speaks vLLM's Prometheus and its body is the amdgpu sysfs. Four cards: the serve's health, the
+  /metrics deltas (req/s, tokens/s, ms/req as counter deltas; the metric names are matched defensively, a
+  renamed one reads as `-`), the **11-01 red-line card** (PSI, MemAvailable, swap, and the sidecar's own
+  RSS -- which should read ~0 as long as the GGUF stays in the page cache), and the embed.sh recipe read
+  from its own `${VAR:=default}` lines the way `launcher_env()` does.
+- Untested on the box and named as such: llama.cpp's real metric names against the `COUNTERS` table, the
+  Genoa q8_0 throughput, and whether 0.6B is enough -- that last one is a golden-set question, and BM25 +
+  a 0.6B reranker (`--rerank`, same launcher) beat a bigger embedder for it.
+
 ## images: default on for both launch paths, and only the last submitted turn's pictures are processed (cap 4, newest wins)
 
 Two things asked for and both now true, with the numbers in `notes/multimodal-input.md`:
