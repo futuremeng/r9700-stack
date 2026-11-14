@@ -124,8 +124,16 @@ one: `same` is one less process and no page that outlives the death
   ranks*. Before 2026-11-14 the `died_at` half was a promise with no code behind it: only a launch that died
   **before** first answering `/health` got stamped.
 
+  Two properties of the watcher worth knowing when a box looks like it has too many of them: a watcher only ever
+  stamps the record whose `session` matches the one it was armed for — a stale watcher (one armed by an earlier
+  launch, or one started by hand) writes **nothing** and exits at the first death it does not own; and two
+  watchers on one death are safe, because the second sees `died_at` already set and stops. Both are asserted
+  (`tests/test_setup.py`), and the recording path itself was proved end-to-end against a throwaway tmux session
+  in a temporary state directory: nothing written while the session was up, `died_at` + `reason` + one appended
+  log line the moment it was killed, and the live record untouched.
+
 `--check` writes no state and rewrites none: that is asserted, not assumed
-(`tests/test_setup.py`, 88 checks, no GPU and no card touched).
+(`tests/test_setup.py`, 85 checks, no GPU and no card touched).
 
 ## 6. Refusals, and the numbers behind them
 

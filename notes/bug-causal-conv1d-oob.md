@@ -75,7 +75,7 @@ holding, and this launch logged zero illegal-access lines in the router kernel i
 | 20:59:07 | last three journal records complete (`queue_s` 514 / 1,104 / 754 s) |
 | 20:59:09 | gfxhub page fault + `HSA_STATUS_ERROR_MEMORY_FAULT`; `Worker_TP0 (pid 251454)` `torch.AcceleratorError: an illegal memory access` (`multiproc_executor.py:1063`, 218 ERROR lines) |
 | 21:00:10, 21:01:10, 21:02:10, 21:03:10 | `shm_broadcast.py:871 No available shared memory broadcast block found in 60 seconds` — the engine core is waiting on a rank that is already gone |
-| 21:04:09 | EngineCore `mq.dequeue(timeout=...)` gives up (`core.py:1512`), `dump_input.py:79/81` writes the scheduler output above, `async_llm.py:906` `EngineDeadError`, **8,412** `serving.py:929` EngineDeadError lines — every request in flight, none of them journalled; `[shutdown] MPClient: start timeout=0s` |
+| 21:04:09 | EngineCore `mq.dequeue(timeout=...)` gives up (`core.py:1512`), `dump_input.py:79/81` writes the scheduler output above, `async_llm.py:906` `EngineDeadError`; then `serving.py:929` logs **8 tracebacks** carrying **8,412** error-prefixed lines (vLLM repeats the tag on every line of a multi-line traceback — count the `Traceback` lines, not the tag, or you get 1000x the truth, as this note did on its first pass). What actually died is in the dump: **31 running + 13 waiting** requests, none of them journalled (the journal holds only completed records); `[shutdown] MPClient: start timeout=0s` |
 | 21:09:09 | ranks 1/2/3: `WorkNCCL(SeqNum=9000991, OpType=_ALLGATHER_BASE, NumelIn=5649280, NumelOut=22597120, Timeout(ms)=600000) ran for 600009 / 600064 / 600076 ms` |
 | 21:10:09 | `To avoid data inconsistency, we are taking the entire process down` → `terminate called after throwing an instance of 'c10::DistBackendError'`; `resource_tracker: 4 leaked semaphore / 6 leaked shared_memory` |
 | 21:10:09 | the tmux session's pane closes, so the tmux server (pid 251036) exits — `last -x` shows `tmux(251036).%0 ... - 21:10 (5+20:12)` |
@@ -192,10 +192,12 @@ is exactly one page-aligned read fault, and the kernel-side fault names the scal
 (`Faulty UTCL2 client ID: SQC (data)`), which is where that index load happens. Ruled in as the surviving
 suspect, not established.
 
-**And the frozen-graph family does not apply to this step.** 700 scheduled tokens is above
-`max_cudagraph_capture_size = 256`, so this step ran piecewise-uncaptured: `grid` and `batch_ptr` were
-computed live for it, not replayed. (At ≤ 256 tokens the frozen-grid/persistent-`batch_ptr` story would be a
-live suspect — worth remembering for the next fault, not for this one.)
+**And the frozen-graph family does not apply to this step** (an inference from the launch's own config, not an
+observation of the step): 700 scheduled tokens is above `max_cudagraph_capture_size = 256` (in the live argv,
+confirmed in `setup-230248.log`), and `cudagraph_capture_sizes` is `[1,2,4,...,256]`, so there is no captured
+graph for a 700-token step: `grid` and `batch_ptr` were computed for it live. (At ≤ 256 tokens the
+frozen-grid/persistent-`batch_ptr` story stays a live suspect — worth remembering for the next fault, not for
+this one.)
 
 **The replay itself is clean.** Arm B runs stock's `causal_conv1d_fn` at that shape on a real card
 (~50 MB, `validate_data=True`, the state line index set to the largest legal block 1145 of 1146):
@@ -245,3 +247,20 @@ incident's. The watcher is armed on the new launch; the next run of `./setup.sh`
 from `.r9700-state/launch.json` rather than from an operator's memory. `tests/test_conv1d_mixed_step.py` was
 run against this box (one card, ~50 MB, GPU[0] still at 32.2 GiB used afterwards) with the serve in traffic
 throughout: health 200 before, during and after.
+
+Re-checked after writing, because two numbers in this note were wrong the first time round:
+
+- the engine-error count (§3): 8 tracebacks / 8,412 tag-prefixed lines, not 8,412 requests;
+- the check counts: `tests/test_setup.py` is 85 checks (the methodology doc said 57, then 88 — both wrong; the
+  count of *executed* checks is what the run prints), and `tests/test_conv1d_mixed_step.py` is 27 when vLLM and
+  a GPU are importable (11 geometry + 12 bounds + 4 replay) and 11 + 2 named skips on the host python.
+  22 of those are `ck(` calls in the source — arm A's shape table runs one check over six shapes.
+- the watcher was proved end-to-end on a throwaway tmux session inside a temporary state directory (nothing
+  written while it was alive; `died_at` + `reason` + a log line when it was killed; the live record untouched).
+  One stray `--watch` process from an aborted verification was found and killed; a stray is inert — it can only
+  stamp a record naming its own session — but it does poll until the launch dies, so `pgrep -af "setup.py
+  --watch"` is worth a look after hand-testing.
+- `tests/test_webui.py` failed **once in eleven** runs during this session and passed the other ten, including
+  six back-to-back afterwards; it is full of timing windows (0.2 s polls, 0.12 s streams, sleeps) and the failure
+  was not reproduced while hunting it. Left as a known flake rather than papered over: if it comes back, the
+  run prints which check.
