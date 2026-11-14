@@ -31,6 +31,16 @@ and mixed with decodes, so the stock conv, not `r9k_gdn_conv`. The card's chain 
 crash window holds no AER/CPER/MCE/reset/OOM lines, and the router cap held for five days without a router-kernel
 fault. Reproduction attempts and the discriminator are in the note.
 
+`tests/test_conv1d_mixed_step.py` (new, 15 checks: 11 pure geometry, 4 on one GPU) is that step as a check. It
+reproduces the device's dispatch from the shape — `ceil(610/8) = 77` programs x 128 threads = the recorded 9856,
+`cdiv(2560,256) = 10`, one non-spec row of 610 tokens — finds every index in range for that shape and for every
+other step shape this launcher can emit, and replays the step through stock's kernel on a real card: clean, and
+it writes the conv state at exactly the prefill row's line. Two attribution facts came out of reading the
+seam: the plugin was **not** in this step (`_prefill_ok` false at 610 > 256, and one-page GDN state is not
+applied for Qwen4Exp — `gdn.py:325` logs "stock mamba pages" at boot — so `gdn.py:613` hands it to stock
+`_forward_core`), and the kernel's three-level block indirection is **off** for this call site
+(`IS_APC_ENABLED` needs `block_idx_last_scheduled_token`, which the Qwen GDN call passes nowhere), leaving the
+single 1-D `cache_indices[idx_seq]` = column 0 of the mamba group's block table as the surviving suspect.
 ## the embedding sidecar: Qwen3-Embedding-0.6B on the EPYC, mmap-only, with its own page on :8091
 
 The RAG path needed vectors and the cards have no room for a second process: the standing launch sits at

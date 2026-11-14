@@ -157,25 +157,76 @@ What is in the tree now (`setup.py`, `tests/test_setup.py`):
 * `launch()` now says, in the same breath as the context check, that the Monitor page lives inside a `WEBUI=same`
   launch and so is not what will report this death.
 
-## 7. What would settle the fault, in order of cost
+## 7. What the kernel's own indexing allows, and the step replayed on a real card
 
-1. `EAGER=1` plus a 610-token prefill arriving into a batch of long spec-decoding requests. If the fault goes
-   away under eager, the piecewise/full cudagraph capture is implicated, the same discriminator the router note
-   proposed first.
-2. A replay loop: N long requests (each ≥ 200k tokens) to push the pool to 0.998, then a steady arrival of
-   ~500–700-token prompts. That is the shape the dump shows, and `bench/` already has both halves
-   (`sanity_stress`'s long prefills, `bench/quality.py`'s concurrency).
-3. The step shape as a unit check: `tests/test_gdn_prefill_r9k.py` covers our conv; the stock Triton conv is
-   covered by nothing at this shape (mixed batch, 610-token prefill, 30 spec rows, `align` mamba mode, fp8 KV).
-   Feeding that exact `SchedulerOutput` through `causal_conv1d_fn` with `metadata=md` is the fault on demand.
-4. Whether the plugin should take the conv on steps above 256 prefill tokens anyway (it already does the
-   spec-row conv in `_spec_rows`): `R9K_GDN_PREFILL_MAX` exists, so a launch at, say, 1024 is a config change
-   rather than a code change — but that would be a *measured* change: PREFILL_MAX=256 is where the one-page
-   conv work was validated, and `tools/recipe-check.py` will hold the live engine to whatever it becomes.
-5. `AMD_SERIALIZE_KERNEL=3` if (1)-(3) fail to reproduce: it names the faulting kernel instead of the first
-   innocent reader, at the cost of the whole protocol's timing.
+`tests/test_conv1d_mixed_step.py` (15 checks: 11 geometry, no GPU and no vLLM; 4 replay, one GPU). It pins
+four things that change the search:
 
-## 8. Box state while this is written
+**The dispatch arithmetic is exactly the recorded one.** `grid = (num_program, cdiv(dim, BLOCK_N))` with
+`BLOCK_M = 8` (fixed) and `BLOCK_N = 256` (passed at the launch), one program per 8-token chunk of one
+sequence. For the dumped step: `ceil(610/8) = 77` programs and `cdiv(2560, 256) = 10` — and the HSA record was
+`grid=[9856, 10, 1] workgroup=[128, 1, 1]`: 77 x 128 = 9856. So the call was **one non-spec (prefill) row of
+610 tokens, 77 programs, conv dim 2560 per rank** (the whole model's conv is 10,240 wide, TP4). vLLM's own
+`compute_causal_conv1d_metadata` gives the same `tot = 77`. There is no program/token/line index outside its
+buffer for that shape — nor for the other shapes this launcher can put on the wire (8192-token chunk = 1024
+programs, prefill + 30 reclassified decodes, zero-length padded rows, a state line at the pool's last block,
+a dim that is not a multiple of BLOCK_N).
+
+**The plugin was not in that step at all.** `gdn.py:589` takes the short-prefill path only when `_prefill_ok`
+(`num_prefill_tokens <= R9K_GDN_PREFILL_MAX` = 256, and `num_decodes == 0`); `gdn.py:592`'s mixed
+long-prefill+spec handling needs one-page GDN state, and this launch logged at boot
+(`gdn.py:325`): *"one-page GDN state not applied at the model level (Qwen4ExpForConditionalGeneration): stock
+mamba pages"*. So the step falls through to `gdn.py:613` → **stock** `_forward_core` →
+`qwen_gdn_linear_attn.py:1451`, with **stock's own** `non_spec_query_start_loc` and
+`non_spec_state_indices_tensor`. Our conv (`r9k_gdn_conv`) never saw that step.
+
+**The usual suspect is off for this model.** The kernel's three-level block indirection (the shape that
+normally produces a garbage cache-line index) only runs when `IS_APC_ENABLED`, i.e. when
+`block_idx_last_scheduled_token` is not None — and the Qwen GDN call site passes none of
+`block_idx_first_scheduled_token / block_idx_last_scheduled_token / initial_state_idx / num_computed_tokens`.
+The only indirection in play is `cache_indices[idx_seq]`, 1-D, = `block_table_tensor[non_spec_masks, 0]` —
+column 0 of the mamba group's block table (`align` mode, `mamba_get_block_table_tensor`). A bad *value* there
+lands on a wrong-but-legal line (silent corruption); a bad value large enough to leave the conv-state buffer
+is exactly one page-aligned read fault, and the kernel-side fault names the scalar path
+(`Faulty UTCL2 client ID: SQC (data)`), which is where that index load happens. Ruled in as the surviving
+suspect, not established.
+
+**And the frozen-graph family does not apply to this step.** 700 scheduled tokens is above
+`max_cudagraph_capture_size = 256`, so this step ran piecewise-uncaptured: `grid` and `batch_ptr` were
+computed live for it, not replayed. (At ≤ 256 tokens the frozen-grid/persistent-`batch_ptr` story would be a
+live suspect — worth remembering for the next fault, not for this one.)
+
+**The replay itself is clean.** Arm B runs stock's `causal_conv1d_fn` at that shape on a real card
+(~50 MB, `validate_data=True`, the state line index set to the largest legal block 1145 of 1146):
+no fault after `torch.cuda.synchronize()`, `out` finite with the expected `(2560, 610)`, and the conv state
+written at that one line and nowhere else. So the shape alone does not reproduce it — a repro needs the real
+pool and the real allocation map, not the geometry. That is the same conclusion
+[bug-router-gemm-oob.md](bug-router-gemm-oob.md) reached from the other direction: *indices in range as the
+kernel describes them, pointing at memory that no longer describes the object*.
+
+One asymmetry the replay makes visible: the plugin's own `_debug_check` already asserts exactly the invariant
+that would catch the surviving suspect (`idx max >= state blocks`), and it runs on **our** paths. The stock
+fallback path — the one that ran here — never runs it.
+
+## 8. What would settle the fault, in order of cost
+
+1. ~~Shape/geometry~~ — done, §7: in range, and the step replays clean.
+2. **Instrument the fallback path** (cheap, diagnosis-only, the shape of `_debug_check`): on eager steps of a
+   GDN layer with prefills, check `max(non_spec_state_indices_tensor) < conv_states.size(0)` and that the
+   mamba group's block-table rows are the length `align` mode expects. It costs a device sync per layer, so it
+   goes behind `R9K_GDN_DEBUG`/`R9K_GDN_TRACE`, not in the serving path — but it is the check that catches the
+   surviving suspect in the act instead of after the fact.
+3. **Reproduce with the pool, not the shape**: ~12 requests at ≥ 200k tokens to drive `kv_cache_usage` to
+   ~0.998, then a steady arrival of 500–700-token prompts (the dumped step). Against a *spare* launch, not the
+   box behind traffic — a hit costs the 10-minute NCCL teardown.
+4. `AMD_SERIALIZE_KERNEL=3` if (3) does not hit: names the faulting kernel rather than the first innocent
+   reader, at the cost of every timing the protocol produces.
+5. If it returns and stays unreproducible, the mitigation is a config change: `R9K_GDN_PREFILL_MAX=1024` puts
+   steps like this one (610 prefill tokens) on our conv and out of the faulting kernel — but that has to be
+   *measured*, because PREFILL_MAX=256 is where the one-page conv work was validated, and
+   `tools/recipe-check.py` will hold the live engine to whatever value it becomes.
+
+## 9. Box state while this is written
 
 Relaunched at 23:02:48 from the stored configuration (`./setup.sh --config 262k`,
 `~/logs/setup-230248.log`): up after 190 s, `KV 902,153 tokens / Maximum concurrency 3.44x at 262,144`,
@@ -183,4 +234,6 @@ Relaunched at 23:02:48 from the stored configuration (`./setup.sh --config 262k`
 launch flag of the live serve matching this tree. The dead launch booted at the same 902,153 / 3.44x
 (`setup-005730.log`, 01:00:09), so nothing drifted between the two: the fingerprint is the recipe's, not the
 incident's. The watcher is armed on the new launch; the next run of `./setup.sh` will answer "is it still up"
-from `.r9700-state/launch.json` rather than from an operator's memory.
+from `.r9700-state/launch.json` rather than from an operator's memory. `tests/test_conv1d_mixed_step.py` was
+run against this box (one card, ~50 MB, GPU[0] still at 32.2 GiB used afterwards) with the serve in traffic
+throughout: health 200 before, during and after.
