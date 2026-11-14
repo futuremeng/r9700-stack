@@ -604,6 +604,7 @@ def gdn_core(qkvz: torch.Tensor, ba: torch.Tensor, out: torch.Tensor, layer_name
             self.kv_cache[4][md.prefill_state_indices.long()] = 0     # stock prefill below: no live record
     dbg = DEBUG and not torch.cuda.is_current_stream_capturing()
     if dbg:
+        _fallback_check(self, md)                       # the stock kernels' indices, checked before they run
         torch.cuda.synchronize()
         logger.info("r9700 gdn debug %s: fallback T=%d md=%s", self.prefix, T, None if md is None else
                     f"prefills={md.num_prefills} decodes={md.num_decodes} spec={md.num_spec_decodes} act={md.num_actual_tokens}")
@@ -634,6 +635,54 @@ def _trace(self, tag, md, mixed, b, a, z, out, idx, cu, acc, N, kv):
     logger.info("r9700 trace %s %s N=%d pages=%s acc=%s cu=%s | in: mixed %s b %s a %s z %s | out %s | state %s rec %s flags %s",
                 self.prefix.split(".layers.")[1].split(".")[0], tag, N, pg.tolist(), k.tolist(), c.tolist(),
                 cs(mixed[:L]), cs(b[:L]), cs(a[:L]), cs(z[:L]), cs(out[:L]), st, rec, fl)
+
+
+def _bounds_problems(vals, lines, cu_last, n_act, pad_ids=(-1, 0)):
+    """Pure (host ints in, strings out): the range rules for the indices STOCK's GDN kernels index with.
+
+    Split out from `_fallback_check` so tests/test_conv1d_mixed_step.py can feed it the shapes -- including the
+    one that killed 2026-11-14 -- without a GPU or a live cache. `vals` are the values of
+    `non_spec_state_indices_tensor` and `spec_state_indices_tensor` (the conv's `cache_indices` and the update's
+    `conv_state_indices`: column 0..S of the mamba group's block table), `lines` is `conv_state.size(0)`.
+
+    A line index outside the conv-state cache is the surviving suspect for that fault (§7): one page-aligned
+    read on the scalar path, from `conv_states + idx * stride`. The two padding ids are legal and skipped by the
+    kernels -- PAD_SLOT_ID = -1 and NULL_BLOCK_ID = 0 (`v1/attention/backends/utils.py:51`, and gdn_attn fills
+    the padded non-spec slots with the latter). The kernel cannot tell a padding slot from a real block 0, but
+    that costs nothing here: the block pool reserves block 0 as its null block and never hands it to a request
+    (`v1/core/kv_cache_utils.py:1606`)."""
+    bad = []
+    real = [v for v in vals if v not in pad_ids]
+    if real and (min(real) < 0 or max(real) >= lines):
+        bad.append(f"a block-table line index leaves the conv-state cache: min {min(real)} max {max(real)} of "
+                   f"{lines} lines ({len(vals)} indices, {len(vals) - len(real)} padding)")
+    if cu_last > n_act:
+        bad.append(f"non-spec query tokens {cu_last} > num_actual_tokens {n_act} (the rows of x the conv reads)")
+    return bad
+
+
+def _fallback_check(self, md) -> None:
+    """R9K_GDN_DEBUG=1: host range checks on the STOCK path -- the one gdn.py hands a step to when `_prefill_ok`
+    is false (a step above R9K_GDN_PREFILL_MAX prefill tokens, or a mixed prefill+spec step with stock pages).
+
+    `_debug_check` covers our own paths and says so loudly; the 2026-11-14 fault was in a *stock* conv call
+    whose arguments nobody checked (notes/bug-causal-conv1d-oob.md §7). Costs host syncs, so it is diagnosis
+    only -- and it runs on layer 0 only: the block table and the token counts are per-step, so layer 0 sees
+    what every other layer of that step will see."""
+    if md is None or ".layers.0." not in self.prefix or not len(self.kv_cache):
+        return
+    vals = []
+    for t in (getattr(md, "non_spec_state_indices_tensor", None), getattr(md, "spec_state_indices_tensor", None)):
+        if t is not None:
+            vals += t.flatten().to("cpu").tolist()
+    cu = getattr(md, "non_spec_query_start_loc", None)
+    cu_last = int(cu[-1]) if cu is not None else 0
+    bad = _bounds_problems(vals, self.kv_cache[0].shape[0], cu_last, int(md.num_actual_tokens))
+    if bad:
+        logger.error("r9700 gdn fallback %s: BAD %s | prefills=%d decodes=%d spec=%d act=%d lines=%d "
+                     "idx min/max=%s/%s", self.prefix, "; ".join(bad), md.num_prefills, md.num_decodes,
+                     md.num_spec_decodes, md.num_actual_tokens, self.kv_cache[0].shape[0],
+                     min(vals, default=0), max(vals, default=0))
 
 
 def _debug_check(self, qkvz, ba, out, x, idx, cu, acc, N, n_act, T) -> None:

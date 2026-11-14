@@ -31,7 +31,8 @@ and mixed with decodes, so the stock conv, not `r9k_gdn_conv`. The card's chain 
 crash window holds no AER/CPER/MCE/reset/OOM lines, and the router cap held for five days without a router-kernel
 fault. Reproduction attempts and the discriminator are in the note.
 
-`tests/test_conv1d_mixed_step.py` (new, 15 checks: 11 pure geometry, 4 on one GPU) is that step as a check. It
+`tests/test_conv1d_mixed_step.py` (new, 27 checks: 11 pure geometry -- no GPU, no vLLM -- 12 for the bounds
+guard below, 4 replayed on one GPU) is that step as a check. It
 reproduces the device's dispatch from the shape — `ceil(610/8) = 77` programs x 128 threads = the recorded 9856,
 `cdiv(2560,256) = 10`, one non-spec row of 610 tokens — finds every index in range for that shape and for every
 other step shape this launcher can emit, and replays the step through stock's kernel on a real card: clean, and
@@ -69,6 +70,17 @@ the engine (`notes/native-4xr9700.md`), the rest are free.
 - Untested on the box and named as such: llama.cpp's real metric names against the `COUNTERS` table, the
   Genoa q8_0 throughput, and whether 0.6B is enough -- that last one is a golden-set question, and BM25 +
   a 0.6B reranker (`--rerank`, same launcher) beat a bigger embedder for it.
+
+**The stock fallback path is bounded now.** `R9K_GDN_DEBUG=1` runs `gdn.py:_fallback_check` before stock's
+kernels on the path stock takes (`_prefill_ok` false): every conv-state line index in
+`non_spec_state_indices_tensor` / `spec_state_indices_tensor` against `conv_state.size(0)`, and the non-spec
+token span against `num_actual_tokens` — the two walks that kernel can make, the first of which is the surviving
+suspect. Our own paths already asserted this (`_debug_check`: `idx max >= state blocks`); the path this fault ran
+had no check at all. It costs host syncs, so it stays behind the existing `DEBUG` gate (default off: one `if`
+per layer) and runs on **layer 0 only** — the block table and the token counts are per-step, so layer 0 sees what
+all 48 layers of that step will. Writing it pinned a detail worth having in the code rather than in memory: the
+conv kernel skips a slot whose index equals `NULL_BLOCK_ID = 0`, so it cannot tell padding from a real block 0 —
+harmless, because the block pool reserves block 0 as its null block (`kv_cache_utils.py:1606`).
 
 ## images: default on for both launch paths, and only the last submitted turn's pictures are processed (cap 4, newest wins)
 

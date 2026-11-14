@@ -159,7 +159,8 @@ What is in the tree now (`setup.py`, `tests/test_setup.py`):
 
 ## 7. What the kernel's own indexing allows, and the step replayed on a real card
 
-`tests/test_conv1d_mixed_step.py` (15 checks: 11 geometry, no GPU and no vLLM; 4 replay, one GPU). It pins
+`tests/test_conv1d_mixed_step.py` (27 checks: 11 pure geometry -- no GPU, no vLLM; 12 for the fallback bounds
+guard of §8.2; 4 replayed on one card). It pins
 four things that change the search:
 
 **The dispatch arithmetic is exactly the recorded one.** `grid = (num_program, cdiv(dim, BLOCK_N))` with
@@ -211,11 +212,18 @@ fallback path — the one that ran here — never runs it.
 ## 8. What would settle the fault, in order of cost
 
 1. ~~Shape/geometry~~ — done, §7: in range, and the step replays clean.
-2. **Instrument the fallback path** (cheap, diagnosis-only, the shape of `_debug_check`): on eager steps of a
-   GDN layer with prefills, check `max(non_spec_state_indices_tensor) < conv_states.size(0)` and that the
-   mamba group's block-table rows are the length `align` mode expects. It costs a device sync per layer, so it
-   goes behind `R9K_GDN_DEBUG`/`R9K_GDN_TRACE`, not in the serving path — but it is the check that catches the
-   surviving suspect in the act instead of after the fact.
+2. **Instrument the fallback path** — *done, 2026-11-14* (`gdn.py:_bounds_problems` / `_fallback_check`, and
+   12 checks in `tests/test_conv1d_mixed_step.py` arm C). With `R9K_GDN_DEBUG=1` the fallback now bounds, before
+   stock's kernels run, the two walks that kernel can make: every conv-state line index in
+   `non_spec_state_indices_tensor` / `spec_state_indices_tensor` against `conv_state.size(0)`, and the non-spec
+   token span against `num_actual_tokens`. It costs host syncs, so it stays behind the existing `DEBUG` gate
+   (default off) and it runs on **layer 0 only** — the block table and the token counts are per-step, so layer 0
+   sees what all 48 layers of that step will see. Off, it is one `if` per layer. This is the check that would
+   have named a bad line index in the log instead of leaving the device to name it: our own paths already had
+   that assertion in `_debug_check` (`idx max >= state blocks`); the path this fault ran never did.
+   A detail the check forced out: the conv kernel skips a slot whose index equals `NULL_BLOCK_ID = 0`, so it
+   cannot tell padding from a real block 0 — harmless, because the block pool reserves block 0 as its null
+   block (`kv_cache_utils.py:1606`), and now said in the code rather than remembered.
 3. **Reproduce with the pool, not the shape**: ~12 requests at ≥ 200k tokens to drive `kv_cache_usage` to
    ~0.998, then a steady arrival of 500–700-token prompts (the dumped step). Against a *spare* launch, not the
    box behind traffic — a hit costs the 10-minute NCCL teardown.

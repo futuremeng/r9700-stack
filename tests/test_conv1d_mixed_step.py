@@ -24,9 +24,18 @@ What this file can and cannot catch, said out loud (a check that asserts nothing
      line index set to the largest legal block, then `torch.cuda.synchronize()`. Any out-of-range read that the
      allocation map happens to make fatal shows up here; and the conv state must be written at the prefill row's
      line and nowhere else (a write to a neighbour's line would corrupt a running request silently).
+  C. BOUNDS, needs vLLM importable but no GPU work: `r9700_vllm.models.gdn._bounds_problems`, the host range
+     check that `R9K_GDN_DEBUG=1` now runs on the STOCK fallback path (gdn.py `_fallback_check`) -- the path the
+     faulting step took and that nothing used to check. It covers the two walks that kernel can do: a conv-state
+     line index outside the cache, and a token span outside the rows of x. Includes the guard firing on CPU
+     tensors (one logger.error line, quiet when in range, layer 0 only) and a source check that the call sits
+     before stock's `_forward_core`.
 
-Run:  python3 tests/test_conv1d_mixed_step.py            (B is skipped without a free GPU; BENCH=1 prints shapes)
-      GPU=0 python3 tests/test_conv1d_mixed_step.py      (geometry only)
+Run:  python3 tests/test_conv1d_mixed_step.py            (A always; B and C skip if vLLM/GPU is missing)
+      GPU=0 python3 tests/test_conv1d_mixed_step.py      (no GPU replay)
+  On the native box, arm C needs the OpenMPI runtime the launcher itself puts on LD_LIBRARY_PATH
+  (serve/native-flashnext.sh:60): LD_LIBRARY_PATH=$HOME/opt/openmpi/usr/lib/x86_64-linux-gnu \
+  ~/venv-r9700/bin/python tests/test_conv1d_mixed_step.py
 """
 from __future__ import annotations
 
@@ -143,6 +152,87 @@ def geom():
        610 <= 1024 and 8192 <= 8192)
 
 
+# ------------------------------------------------- C. the fallback bounds check the fault would have hit ---
+def bounds():
+    print("\nC. the stock-path bounds check (needs vLLM importable, no GPU work)")
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from r9700_vllm.models.gdn import _bounds_problems as bp
+    except Exception as e:                                                      # noqa: BLE001
+        print(f"  skip   r9700_vllm.models.gdn not importable here: {type(e).__name__}: {e}")
+        return
+    # The 2026-11-14 step's own indices: the new request's block_ids from the engine dump, the conv-state cache
+    # is one line per KV block (1,146), and 610 non-spec tokens inside a 700-token step.
+    dump = [1071, 125, 596, 56, 314, 840, 1041, 277, 1116, 989, 1008, 833, 654, 185]
+    ck("the faulting step's own block ids pass: max 1116 inside 1146 conv-state lines",
+       bp(dump, 1146, 610, 700) == [], str(bp(dump, 1146, 610, 700)))
+    ck("a line index one past the cache is named (that is the walk the fault is)",
+       any("leaves the conv-state cache" in s for s in bp([1146], 1146, 610, 700)), str(bp([1146], 1146, 610, 700)))
+    ck("a garbage index far past it is named too (the page-aligned read we saw)",
+       any("max 53761" in s for s in bp([53761], 1146, 610, 700)), str(bp([53761], 1146, 610, 700)))
+    ck("the two padding ids are legal: PAD_SLOT_ID -1 and NULL_BLOCK_ID 0 are skipped by the kernels",
+       bp([-1, 654, 0, -1], 1146, 610, 700) == [], str(bp([-1, 654, 0, -1], 1146, 610, 700)))
+    ck("... and that is documented, not assumed: block 0 is indistinguishable from padding to the conv kernel",
+       bp([0], 1146, 610, 700) == [])
+    ck("a step whose non-spec tokens exceed the rows of x is named (the other walk in that kernel)",
+       any("rows of x" in s for s in bp([7], 1146, 701, 700)), str(bp([7], 1146, 701, 700)))
+    ck("no prefill rows: nothing to check, nothing reported", bp([], 1146, 0, 90) == [])
+    ck("the check reports several problems at once (one line is enough to read in the log)",
+       len(bp([1146], 1146, 4000, 700)) == 2, str(bp([1146], 1146, 4000, 700)))
+
+    # The wired-up guard, not just the helper: R9K_GDN_DEBUG=1 must actually call it on the fallback path, and
+    # it must speak with one logger.error line naming the index. CPU tensors only -- the check's whole cost is
+    # host syncs, which is why it sits behind DEBUG.
+    import torch
+    from r9700_vllm.models import gdn as G
+
+    real_logger = G.logger
+    seen = []
+
+    class FakeLog:
+        def error(self, fmt, *a):
+            seen.append(fmt % a)
+
+        def __getattr__(self, _n):
+            return lambda *a, **k: None
+
+    class FakeLayer:
+        prefix = "model.layers.0.gdn"
+        kv_cache = [torch.zeros(1146, 2560, 3, dtype=torch.bfloat16)]
+
+    class FakeMd:
+        num_prefills, num_decodes, num_spec_decodes, num_actual_tokens = 1, 0, 30, 700
+        non_spec_query_start_loc = torch.tensor([0, 610], dtype=torch.int32)
+        spec_state_indices_tensor = None
+
+    G.logger = FakeLog()
+    try:
+        md = FakeMd()
+        md.non_spec_state_indices_tensor = torch.tensor(dump[:9] + [654], dtype=torch.int32)
+        G._fallback_check(FakeLayer(), md)
+        ck("R9K_GDN_DEBUG on the stock fallback: an in-range step stays quiet (no log spam per step)",
+           seen == [], str(seen[:2]))
+        md.non_spec_state_indices_tensor = torch.tensor([654, 1146], dtype=torch.int32)
+        G._fallback_check(FakeLayer(), md)
+        ck("... and one out of range is named, with the value and the cache size",
+           len(seen) == 1 and "leaves the conv-state cache" in seen[0] and "1146" in seen[0], str(seen)[:200])
+        seen.clear()
+        layer = FakeLayer()
+        layer.prefix = "model.layers.7.gdn"
+        md.non_spec_state_indices_tensor = torch.tensor([9999], dtype=torch.int32)
+        G._fallback_check(layer, md)
+        ck("only layer 0 pays for it (the block table is per-step, so one layer sees what all of them do)",
+           seen == [], str(seen[:2]))
+    finally:
+        G.logger = real_logger
+
+    src = open(os.path.join(os.path.dirname(__file__), "..", "r9700_vllm", "models", "gdn.py")).read()
+    fb = src.split("dbg = DEBUG and not torch.cuda.is_current_stream_capturing()")[-1]
+    ck("the guard is on the path the faulting step took: it runs before stock _forward_core is called",
+       "_fallback_check(self, md)" in fb and "self._forward_core(" in fb
+       and fb.index("_fallback_check(self, md)") < fb.index("self._forward_core("))
+
+
 # ------------------------------------------------------------------------ B. replay it on a real GPU ---
 def replay():
     print("\nB. replay the faulting step through stock causal_conv1d_fn (one GPU)")
@@ -204,6 +294,7 @@ def replay():
 
 if __name__ == "__main__":
     geom()
+    bounds()
     replay()
     print("\nPASS" if fail == 0 else "FAIL", f"({fail} failing)")
     sys.exit(1 if fail else 0)
