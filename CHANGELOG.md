@@ -1,5 +1,36 @@
 # Changelog
 
+## a launch that dies after `/health` is now seen: a detached watcher writes `died_at`/`reason` (it does not restart)
+
+The 262k production launch died on 2026-11-14 at 21:10 and nobody on the box said so for **1 h 48 m**
+(`notes/bug-causal-conv1d-oob.md`). Two reasons, both fixed here:
+
+- **`launch.json` lied by omission.** `launch()` writes the record, waits for `/health`, reports, and exits, so
+  `died_at`/`reason` were only ever written for a launch that died *before* it first answered. A launch that
+  came up and died five days later kept a record saying `up_at`, and `launch_status()`'s "recorded dead
+  HH:MM:SS" clause had nothing to print — the next run could only say "not running: no VLLM process left". The
+  field was documented (`notes/launch-methodology.md` §5: "when the watcher saw it die") with no watcher behind
+  it.
+- **the thing meant to outlive the launch did not.** This box runs `WEBUI=same`, which puts the Monitor/About
+  pages *inside* the serve: the page went down with the engine at 21:04:09.
+
+Now: `setup.py --watch` is a detached process `launch()` arms once `/health` answers (pid on the record as
+`watcher`/`watcher_at`); it polls (`tmux has-session`, then `/health` + the process count) and on death writes
+`died_at`/`reason` and appends one line to the launch's own log, so `tail` shows the death next to the engine's
+last lines. **It records and does not restart** — §4's 2026-11-08 rule stands: a four-card serve restarting into
+a degrading link (this box has one: card4's chain, 678 correctables) turns one fault into a loop.
+`tests/test_setup.py` grows eleven checks for it (88 total, all pass, no GPU): it must not stamp a record naming
+another session, must not re-stamp a death already recorded (which is also what makes two watchers safe), and
+must never call a still-loading launch dead just because `/health` has not answered yet. `launch()` also says
+out loud, when it arms the watcher, that a `WEBUI=same` launch has no page that survives its own death.
+
+The fault itself is a new one and is not ours: `HSA_STATUS_ERROR_MEMORY_FAULT` in vLLM's Triton
+`_causal_conv1d_fwd_kernel` (read, page-aligned, `PERMISSION_FAULTS: 0x3`, one page), on a step with a 610-token
+prefill arriving into 30 long spec-decoding requests at `kv_cache_usage=0.998` — above `R9K_GDN_PREFILL_MAX=256`
+and mixed with decodes, so the stock conv, not `r9k_gdn_conv`. The card's chain was clean (0 correctables), the
+crash window holds no AER/CPER/MCE/reset/OOM lines, and the router cap held for five days without a router-kernel
+fault. Reproduction attempts and the discriminator are in the note.
+
 ## the embedding sidecar: Qwen3-Embedding-0.6B on the EPYC, mmap-only, with its own page on :8091
 
 The RAG path needed vectors and the cards have no room for a second process: the standing launch sits at

@@ -17,6 +17,8 @@ the decision it covers was wrong at some point:
   (4) libr9k.so freshness: two copies (build.sh's output, and the copy the launcher loads through R9K_LIB),
       and README's own build line ends in a `cp`. stale_since is what catches the rebuild that skipped it.
   (5) the launch record: the only way the next run can answer "did it die, and which log do I read".
+  (6) the watcher that keeps that record true AFTER /health answers: which deaths it may write, which it must
+      leave alone, and the one case (still loading, no /health) it must never call death.
 
 Nothing here touches a GPU, a card, a network port, or ~/models. tmux is exercised only if it is installed,
 and it says so when it is not.
@@ -233,6 +235,40 @@ t0 = time.time()
 what, dt, why = S.wait_up(59999, None, None, secs=3)
 ck("a launch that is alive but never answers /health still ends on the timeout",
    what == "timeout" and time.time() - t0 < 12, f"{what} {dt:.1f}s")
+
+# -------------------------------------------------- a death AFTER /health is still seen: the watcher ----
+# setup.py used to exit the moment /health answered, so the record of a launch that died five days later still
+# said up_at and nothing else, and notes/launch-methodology.md §5's "died_at/reason when the watcher saw it die"
+# described a watcher that did not exist. The 2026-11-14 death (1 h 48 m of silence, notes/bug-causal-conv1d-oob.md)
+# is what made it exist. Each rule below is a mistake the first draft could have made.
+ck("alive: the watcher writes nothing",
+   S.watch_tick({"session": "r9700-x"}, "r9700-x", None, 100) == ("", {}))
+ck("dead, first time: died_at and the reason go on the record",
+   S.watch_tick({"session": "r9700-x"}, "r9700-x", "the tmux session r9700-x holding it is gone", 100.6)
+   == ("record", {"died_at": 100,
+                  "reason": "the tmux session r9700-x holding it is gone"}))
+ck("a record naming someone else's session is left alone (a watcher must not stamp a launch it did not arm)",
+   S.watch_tick({"session": "r9700-other"}, "r9700-x", "gone", 100) == ("stop", {}))
+ck("and no record at all is not stamped either",
+   S.watch_tick(None, "r9700-x", "gone", 100) == ("stop", {}))
+ck("a death already on the record is not re-stamped (the first timestamp is the one worth having)",
+   S.watch_tick({"session": "r9700-x", "died_at": 55}, "r9700-x", "gone", 100) == (("stop"), {}))
+ck("two watchers, one death: the second sees it already recorded and stops",
+   S.watch_tick(dict(S.watch_tick({"session": "r9700-x"}, "r9700-x", "gone", 100)[1], session="r9700-x"),
+                "r9700-x", "gone", 130) == ("stop", {}))
+real_left, real_tmux = S.left_vllm, S.out
+ck("a tmux session that is gone is a reason, not a guess",
+   (S.watch_dead(59999, "r9700-definitely-not-here") or "").startswith("the tmux session"))
+S.left_vllm = lambda: 0
+ck("no /health and no ranks left is a reason on the --no-tmux path too",
+   "no VLLM process left" in (S.watch_dead(59999, None) or ""))
+S.left_vllm = lambda: 4
+ck("a launch still loading weights (no /health yet, ranks present) is NOT called dead",
+   S.watch_dead(59999, None) is None)
+S.left_vllm = real_left
+ck("the watcher is a flag on setup.py, so a reader who finds a stray python is pointed at the reason",
+   "--watch" in subprocess.run([sys.executable, str(ROOTP / "setup.py"), "--help"],
+                               capture_output=True, text=True).stdout)
 
 # ---------------------------------------------------------------------------- the tmux environment ----
 text = (ROOTP / "serve" / "native-flashnext.sh").read_text()

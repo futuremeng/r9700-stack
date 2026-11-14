@@ -544,6 +544,97 @@ def wait_up(port, proc=None, sess=None, secs=420):
     return "timeout", time.time() - t0, None
 
 
+# ------------------------------------------------------------------ watching a launch that is already up ---
+# Why this exists at all: notes/launch-methodology.md §5 promises `died_at`/`reason` "when the watcher saw it
+# die", and there was no watcher. launch() writes the record, waits for /health, prints its report and exits --
+# so a launch that came up and died later kept a record that still said `up_at` and nothing else, and the next
+# run's "recorded dead HH:MM:SS" clause had nothing to print. On 2026-11-14 that meant 1 h 48 m of nothing: the
+# engine faulted at 20:59:09, the last rank aborted at 21:10:09, and neither launch.json nor the Monitor said a
+# word (WEBUI=same puts the page INSIDE the serve, so it went down with it) until an operator asked at 22:58 --
+# notes/bug-causal-conv1d-oob.md.
+#
+# It records; it does not restart. §4's rule stands: seen, not resurrected -- a four-card serve that restarts
+# into a degrading link turns one fault into a loop.
+WATCH_TICK = int(os.environ.get("WATCH_TICK", "10"))        # s between liveness probes
+
+
+def watch_tick(prev, sess, dead, now):
+    """One tick of the watcher as a decision: ("", {}) keep waiting, ("record", fields) write the death,
+    ("stop", {}) leave the record alone and get out.
+
+    Pure, so tests/test_setup.py can hold it to its three rules without a box to kill: the record must name the
+    session this watcher was armed for (someone else's launch -- a relaunch under another session, a hand-started
+    serve -- is stamped by its own launcher, not by a watcher left awake for the previous one); a death already
+    on the record is not re-stamped, because the first timestamp is the one worth having; and while the launch
+    answers, nothing is written at all."""
+    if prev is None or (prev.get("session") or None) != (sess or None):
+        return "stop", {}
+    if dead is None:
+        return "", {}
+    if prev.get("died_at") is not None:
+        return "stop", {}
+    return "record", {"died_at": int(now), "reason": dead}
+
+
+def watch_dead(port, sess):
+    """Why the launch is gone, or None while it is still there.
+
+    With tmux the session IS the probe (the pane closes when the pipeline ends, per start_tmux). Without one it
+    is /health AND the process count: a launch still loading weights has no /health yet, and calling that dead
+    is how a watcher writes a lie into the record."""
+    if sess and out(["tmux", "has-session", "-t", sess])[0] != 0:
+        return f"the tmux session {sess} holding it is gone"
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=5) as r:
+            if r.status == 200:
+                return None
+    except (urllib.error.URLError, OSError):
+        pass
+    if left_vllm():
+        return None                       # ranks present, no answer: still loading, or wedged -- not "gone"
+    return f"no /health answer on {port} and no VLLM process left"
+
+
+def watch_loop(port, sess, log):
+    """Poll a launch that is already up until it stops, then put the moment on the record and exit."""
+    while True:
+        d = watch_dead(port, sess)
+        if d:
+            break
+        time.sleep(WATCH_TICK)
+    act, fields = watch_tick(state_read("launch.json"), sess, d, time.time())
+    line = (f"[watcher] {time.strftime('%Y-%m-%d %H:%M:%S')} this launch is gone: {d}")
+    if act == "record":
+        state_update("launch.json", **fields)
+        line += " -- recorded (launch.json: died_at, reason). Nothing restarted it: see " \
+                "notes/launch-methodology.md \u00a74."
+    else:
+        line += " -- nothing written: that record is not this launch's, or its death is already on it"
+    say(line)
+    if log:
+        try:
+            with open(log, "a") as fh:
+                fh.write(line + "\n")
+        except OSError:
+            pass
+    return 0
+
+
+def arm_watch(port, sess, log):
+    """Put the watcher on a launch that came up: detached, so it outlives setup.py the way the serve does."""
+    try:
+        p = subprocess.Popen([sys.executable, str(ROOT / "setup.py"), "--watch"],
+                             env=dict(os.environ, PORT=str(port), LOG=log or "",
+                                      WATCH_SESSION=sess or ""),
+                             stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, start_new_session=True)
+        state_update("launch.json", watcher=p.pid, watcher_at=int(time.time()))
+        return p.pid
+    except OSError as e:
+        warn(f"no watcher on this launch ({e}): died_at/reason will stay unset, so a death after /health is "
+             f"only visible on the next run as 'no VLLM process left'")
+        return None
+
+
 def serve_context_read(port, launcher_text, log=None):
     """I/O wrapper: the running serve's own answers, plus the launcher text and its log. See serve_context."""
     st = None
@@ -1442,6 +1533,16 @@ def launch(cfg, have="docker"):
         else:
             note("context not compared: no /api/status answer, or no MODEL= default in the launcher to read "
                  "config.json from")
+        pid = arm_watch(port, sess, log)
+        if pid:
+            say(f"    watching it (pid {pid}): the moment it stops goes into .r9700-state/launch.json as "
+                f"died_at/reason, and the same line is appended to {log}. It records and does not restart "
+                f"(notes/launch-methodology.md \u00a74).")
+            if cfg.webui == "same":
+                note("this launch carries the Monitor page inside itself (WEBUI=same), so the page goes down "
+                     "with it: the record, not a page, is what outlives the death. A sidecar "
+                     "(./setup.sh --webui side, or bash serve/webui.sh against a dead launch) is what reports "
+                     "it live (notes/webui.md)")
         mon, about = webui_urls(cfg.webui, port)
         if mon:
             say(f"    monitor: {mon}    about: {about}"
@@ -1499,6 +1600,11 @@ def main():
                     help="the embedding sidecar: check llama.cpp and the GGUF, and build llama.cpp in $HOME "
                          "when missing (the only step that compiles third-party source; an update only "
                          "reports it). Start the sidecar itself with --launch embed.sh or bash serve/embed.sh.")
+    ap.add_argument("--watch", action="store_true",
+                    help="internal (setup.py arms this itself, detached, once a launch answers /health): poll "
+                         "that launch and write died_at/reason into .r9700-state/launch.json when it stops. "
+                         "Records only -- nothing here restarts a serve (notes/launch-methodology.md \u00a74). "
+                         "PORT, LOG and WATCH_SESSION come from the environment.")
     ap.add_argument("--no-tmux", action="store_true",
                     help="start a native launch detached without tmux: no pane to watch while it loads and no "
                          "session to ask afterwards whether the launch is still up")
@@ -1511,6 +1617,9 @@ def main():
     cfg.explicit = {"launch": cfg.launch is not None, "webui": cfg.webui is not None or cfg.no_webui,
                     "docker": cfg.docker != "auto", "tmux": cfg.no_tmux, "rest": bool(extra)}
     cfg.webui = cfg.webui or ("off" if cfg.no_webui else "side")
+    if cfg.watch:                            # no box walk: the watcher has one job and no questions
+        sys.exit(watch_loop(int(os.environ.get("PORT", "8080")),
+                            os.environ.get("WATCH_SESSION") or None, os.environ.get("LOG") or None))
     if cfg.list_configs:                     # the store alone: no box walk, no questions
         conf_tell(cfg)
         return

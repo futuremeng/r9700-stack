@@ -96,11 +96,19 @@ wrong:
   launch is still up.
 
 A tmux session still dies if the tmux server is killed, and nothing here restarts a serve that died. What the
-box has for that is the Monitor sidecar (notes/webui.md) — it outlives the launch and reports it dead, which is
-the honest version of "supervised": seen, not resurrected. A unit that restarts a four-card serve automatically
-is not in place and is not recommended before the PCIe/reseat story
-(notes/incident-2026-11-03, `tools/reseat-check.py`) is settled: a serve that restarts into a degrading link
-turns a fault into a loop.
+box has for that is (a) a watcher `setup.py` arms once the launch answers `/health` (`--watch`, detached; it
+writes `died_at`/`reason` into `launch.json` and appends one line to the launch's log), and (b) the Monitor
+sidecar (notes/webui.md) — either outlives the launch, which is the honest version of "supervised": seen, not
+resurrected. A unit that restarts a four-card serve automatically is not in place and is not recommended before
+the PCIe/reseat story (notes/incident-2026-11-03, `tools/reseat-check.py`) is settled: a serve that restarts
+into a degrading link turns a fault into a loop — this box has such a link (card4's chain, 678 correctables).
+
+The watcher exists because of 2026-11-14: the launch answered `/health`, so `setup.py` exited, and the engine
+faulted five days later. `launch.json` went on saying `up_at` with `died_at: null` and the death sat unnoticed
+for 1 h 48 m, because the box runs `WEBUI=same` and the Monitor page lives **inside** the serve — it went down
+with it. So the rule about which webui mode a production launch runs is a supervision choice, not a cosmetic
+one: `same` is one less process and no page that outlives the death
+(notes/bug-causal-conv1d-oob.md §6).
 
 ## 5. What the next run can answer
 
@@ -109,13 +117,15 @@ turns a fault into a loop.
 - `native.json` — the venv's `vllm/torch/hip`, the `libr9k.so` hash for **both** copies (the one
   `kernels/build.sh` writes and the one the launcher loads through `R9K_LIB`, which README's own build line
   separates with a `cp`), the newest kernel-source mtime, and the `docker/Dockerfile` pin.
-- `launch.json` — recipe, port, log, session, `started`, `up_at`, and `died_at`/`reason` when the watcher saw it
-  die. Step 8 then answers the two questions that matter after a death: *is the launch I started still up* (5
-  processes, and `tmux attach -t r9700-native-flashnext`), or *here are its log's last lines and the STOP=1 that
-  clears the ranks*.
+- `launch.json` — recipe, port, log, session, `started`, `up_at`, `watcher`/`watcher_at` (the detached `--watch`
+  process armed when the launch came up), and `died_at`/`reason` when that watcher saw it die. Step 8 then
+  answers the two questions that matter after a death: *is the launch I started still up* (5 processes, and
+  `tmux attach -t r9700-native-flashnext`), or *here are its log's last lines and the STOP=1 that clears the
+  ranks*. Before 2026-11-14 the `died_at` half was a promise with no code behind it: only a launch that died
+  **before** first answering `/health` got stamped.
 
 `--check` writes no state and rewrites none: that is asserted, not assumed
-(`tests/test_setup.py`, 57 checks, no GPU and no card touched).
+(`tests/test_setup.py`, 88 checks, no GPU and no card touched).
 
 ## 6. Refusals, and the numbers behind them
 
