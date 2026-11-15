@@ -96,49 +96,77 @@
       <span class="card-title">Connect your tools</span>
       <p class="muted">Any OpenAI-compatible client works with these. The base URL is the serve itself —
         <span id="api-note">this page is a sidecar, not a proxy, unless it was started with <code>--proxy</code>.</span></p>
-      <!-- Three sections, one per model family this port answers. Chat is the engine; embeddings and rerank are
-           separate llama.cpp serves on the CPU, behind the SAME URL, answering their OWN model names. Naming only
-           the chat model -- which this card did until now -- tells someone wiring up embeddings that there is
-           nothing to wire. Each section carries the two strings a client config is made of, endpoint path in its
-           header, and one Copy per value: copying a section means copying both of its strings, and a Copy that
-           covered the section would have to guess which one the reader wanted. -->
-      <div class="ep-grid">
-        <div class="ep" id="ep-chat">
-          <div class="ep-head"><span class="ep-name">Chat / completions</span>
-            <code class="ep-path">POST /v1/chat/completions</code></div>
-          <div class="ep-field"><span class="label">Model name — goes in <code>model</code></span>
-            <div class="value" id="ep-chat-model">—</div>
-            <button class="st-btn st-btn--copy" data-copy-target="ep-chat-model">Copy</button></div>
-          <div class="ep-field"><span class="label">Base URL — the address this page was served on</span>
-            <div class="value" id="ep-chat-base">—</div>
-            <button class="st-btn st-btn--copy" data-copy-target="ep-chat-base">Copy</button></div>
-          <p class="small" id="ep-chat-note"></p>
-        </div>
-        <div class="ep" id="ep-embed" hidden>
-          <div class="ep-head"><span class="ep-name">Embeddings</span>
-            <code class="ep-path">POST /v1/embeddings</code></div>
-          <div class="ep-field"><span class="label">Model name — goes in <code>model</code></span>
-            <div class="value" id="ep-embed-model">—</div>
-            <button class="st-btn st-btn--copy" data-copy-target="ep-embed-model">Copy</button></div>
-          <div class="ep-field"><span class="label">Base URL — same front door, different serve behind it</span>
-            <div class="value" id="ep-embed-base">—</div>
-            <button class="st-btn st-btn--copy" data-copy-target="ep-embed-base">Copy</button></div>
-          <p class="small" id="ep-embed-note"></p>
-        </div>
-        <div class="ep" id="ep-rerank" hidden>
-          <div class="ep-head"><span class="ep-name">Rerank</span>
-            <code class="ep-path">POST /v1/rerank</code></div>
-          <div class="ep-field"><span class="label">Model name — goes in <code>model</code></span>
-            <div class="value" id="ep-rerank-model">—</div>
-            <button class="st-btn st-btn--copy" data-copy-target="ep-rerank-model">Copy</button></div>
-          <div class="ep-field"><span class="label">Base URL — same front door, different serve behind it</span>
-            <div class="value" id="ep-rerank-base">—</div>
-            <button class="st-btn st-btn--copy" data-copy-target="ep-rerank-base">Copy</button></div>
-          <p class="small" id="ep-rerank-note"></p>
-        </div>
+      <!-- One COLUMN per model family, one ROW per config field. The question this card has to answer is "what
+           differs between the three?" and the answer is short: the model name, and how deep the api_base goes.
+           Three separate cards hid that -- comparing one field across families meant reading three boxes top to
+           bottom. A row here reads as one sentence: "LiteLLM api_base: same, same, root". Cells carry data-f (the
+           row) and data-ep (the column), so the alignment is a claim tests can count instead of a side effect of
+           source order, and a column disappears by class when this port does not answer that family. -->
+      <div class="ep-wrap">
+      <div class="ep-grid" id="ep-grid">
+        <div class="ep-corner">one port, three serves</div>
+        <div class="ep-head col-chat" data-f="head" data-ep="chat"><span class="ep-name">Chat</span>
+          <code class="ep-path">POST /v1/chat/completions</code></div>
+        <div class="ep-head col-embed" data-f="head" data-ep="embed"><span class="ep-name">Embeddings</span>
+          <code class="ep-path">POST /v1/embeddings</code></div>
+        <div class="ep-head col-rerank" data-f="head" data-ep="rerank"><span class="ep-name">Rerank</span>
+          <code class="ep-path">POST /v1/rerank</code></div>
+
+        <div class="ep-label" data-f="model">Model name<div class="sub">goes in <code>model</code></div></div>
+        <div class="ep-cell col-chat" data-f="model" data-ep="chat">
+          <div class="value" id="ep-chat-model">&#8212;</div>
+          <button class="st-btn st-btn--copy" data-copy-target="ep-chat-model">Copy</button></div>
+        <div class="ep-cell col-embed" data-f="model" data-ep="embed">
+          <div class="value" id="ep-embed-model">&#8212;</div>
+          <button class="st-btn st-btn--copy" data-copy-target="ep-embed-model">Copy</button></div>
+        <div class="ep-cell col-rerank" data-f="model" data-ep="rerank">
+          <div class="value" id="ep-rerank-model">&#8212;</div>
+          <button class="st-btn st-btn--copy" data-copy-target="ep-rerank-model">Copy</button></div>
+
+        <div class="ep-label" data-f="base">Base URL<div class="sub">the OpenAI SDK, and every curl below</div></div>
+        <div class="ep-cell col-chat" data-f="base" data-ep="chat">
+          <div class="value" id="ep-chat-base">&#8212;</div>
+          <button class="st-btn st-btn--copy" data-copy-target="ep-chat-base">Copy</button></div>
+        <div class="ep-cell col-embed" data-f="base" data-ep="embed">
+          <div class="value" id="ep-embed-base">&#8212;</div>
+          <button class="st-btn st-btn--copy" data-copy-target="ep-embed-base">Copy</button></div>
+        <div class="ep-cell col-rerank" data-f="base" data-ep="rerank">
+          <div class="value" id="ep-rerank-base">&#8212;</div>
+          <button class="st-btn st-btn--copy" data-copy-target="ep-rerank-base">Copy</button></div>
+
+        <div class="ep-label" data-f="provider">LiteLLM provider</div>
+        <div class="ep-cell static col-chat" data-f="provider" data-ep="chat"><code>openai</code></div>
+        <div class="ep-cell static col-embed" data-f="provider" data-ep="embed"><code>openai</code></div>
+        <div class="ep-cell static col-rerank" data-f="provider" data-ep="rerank"><code>hosted_vllm</code>
+          <div class="sub">not <code>openai</code>: LiteLLM's rerank API has no openai provider, and says so as
+            "Unsupported provider: openai".</div></div>
+
+        <div class="ep-label" data-f="lbase">LiteLLM api_base</div>
+        <div class="ep-cell static col-chat" data-f="lbase" data-ep="chat">the Base URL above
+          <div class="sub">ends in <code>/v1</code></div></div>
+        <div class="ep-cell static col-embed" data-f="lbase" data-ep="embed">the Base URL above
+          <div class="sub">ends in <code>/v1</code>; LiteLLM appends <code>/embeddings</code> itself</div></div>
+        <div class="ep-cell col-rerank" data-f="lbase" data-ep="rerank">
+          <div class="value" id="ep-rerank-lbase">&#8212;</div>
+          <div class="sub">the root, not a route: LiteLLM appends <code>/rerank</code> to it, so writing the route
+            in here asks for <code>/v1/rerank/rerank</code>.</div>
+          <button class="st-btn st-btn--copy" data-copy-target="ep-rerank-lbase">Copy</button></div>
+
+        <div class="ep-label" data-f="mode">LiteLLM mode<div class="sub">model_info.mode</div></div>
+        <div class="ep-cell static col-chat" data-f="mode" data-ep="chat">completion
+          <div class="sub">the default, nothing to write</div></div>
+        <div class="ep-cell static col-embed" data-f="mode" data-ep="embed"><code>embedding</code></div>
+        <div class="ep-cell static col-rerank" data-f="mode" data-ep="rerank"><code>rerank</code>
+          <div class="sub">the Admin UI has no field for this. Without it the health check probes the deployment
+            with a chat completion, and the engine answers that this model does not exist.</div></div>
+
+        <div class="ep-label" data-f="who">Answered by</div>
+        <div class="ep-cell col-chat" data-f="who" data-ep="chat"><span class="small" id="ep-chat-note"></span></div>
+        <div class="ep-cell col-embed" data-f="who" data-ep="embed"><span class="small" id="ep-embed-note"></span></div>
+        <div class="ep-cell col-rerank" data-f="who" data-ep="rerank"><span class="small" id="ep-rerank-note"></span></div>
       </div>
-      <!-- Blocks tile two-up in a full-width card: the chat pair first, because that is what most readers came
-           for, then one per CPU serve. Each keeps its own Copy for the same reason the cells do. -->
+      </div>
+
       <div class="code-grid">
         <div class="code-col">
           <div class="label code-cap">Agent config — paste this, edit nothing</div>
@@ -148,7 +176,7 @@
           </div>
         </div>
         <div class="code-col">
-          <div class="label code-cap">Chat — curl (curl wants the path without <code>/v1</code>)</div>
+          <div class="label code-cap">Chat — curl (the path is spelled once: <code>/v1/chat/completions</code>)</div>
           <div class="code-block">
             <pre class="code" id="curl"></pre>
             <button class="st-btn st-btn--copy" data-copy-target="curl">Copy</button>
@@ -187,7 +215,8 @@
       </div>
       </details>
       <p class="small note">Three things that bite when pasting: LiteLLM and the OpenAI SDK want the base
-        <strong>with</strong> <code>/v1</code> (curl wants it without, as the block above shows), the model
+        <strong>ending in</strong> <code>/v1</code>, and the blocks below spell each full path once — putting the
+        base in front of a path that already has it is how <code>/v1/v1/chat/completions</code> happens. The model
         string is <code>openai/&lt;served name&gt;</code>, and these launches run a reasoning parser —
         <code>message.content</code> can come back <code>None</code> with everything spent on
         <code>message.reasoning_content</code>, because reasoning counts against <code>max_tokens</code>. The

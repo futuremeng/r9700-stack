@@ -33,7 +33,8 @@ class El {
       _s: new Set(),
       add(...c) { c.forEach((x) => this._s.add(x)); },
       remove(...c) { c.forEach((x) => this._s.delete(x)); },
-      toggle(c) { this._s.has(c) ? this._s.delete(c) : this._s.add(c); },
+      toggle(c, on) { if (on === undefined) { this._s.has(c) ? this._s.delete(c) : this._s.add(c); }
+                                       else { on ? this._s.add(c) : this._s.delete(c); } },
       contains(c) { return this._s.has(c); },
     };
   }
@@ -306,7 +307,12 @@ for (const [id, avgKey, rateKey] of [["rate-gen", "generation_tok_s", "generatio
     console.log(`BAD  ${id} shows ${got} for a ${winShown} window whose values are ${wants.join(" / ")}`);
     process.exitCode = 1;
   }
-  if (winShown !== "live" && isnum(STAT?.rate?.[rateKey]) && Math.abs(STAT.rate[rateKey] - want) > Math.abs(want) * 0.25)
+  // "Is it printing this poll instead of the window?" only means something when the two could print differently.
+  // On an idle box this fired on 0.0088 tok/s (178 samples, 8 tokens across 904 s) versus a 0.0 live poll: the
+  // 25% ratio calls that a magnitude apart, the card is allowed to round both to the same one decimal, and the
+  // check above already accepted the rendering. Same lesson as the tolerance fix above, one clause further in.
+  if (winShown !== "live" && isnum(STAT?.rate?.[rateKey]) && Math.abs(STAT.rate[rateKey] - want) > Math.abs(want) * 0.25
+      && Math.abs(STAT.rate[rateKey] - want) > tolAbs)
     if (near(got, STAT.rate[rateKey])) {
       console.log(`BAD  ${id} is printing this poll (${STAT.rate[rateKey]}) under a ${winShown} label`); process.exitCode = 1;
     }

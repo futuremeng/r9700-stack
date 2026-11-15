@@ -2146,7 +2146,7 @@ ck("About carries a pasteable LiteLLM proxy config and a direct call",
    and "model: openai/" in abjs and 'api_base: ${apiBase}' in abjs and 'api_base="${apiBase}"' in abjs)
 ck("the base a client gets is the address that answered this page, with /v1; the internal one is labelled",
    "const origin = (location.origin" in abjs and 'const apiBase = `${origin}/v1`' in abjs
-   and 'text("ep-chat-base", origin || null)' in abjs
+   and 'text("ep-chat-base", apiBase || null)' in abjs and 'const apiBase = `${origin}/v1`' in abjs
    and 'text("ep-embed-model"' in abjs and 'text("ep-rerank-model"' in abjs and "OPENAI_BASE_URL=${apiBase}" in abjs
    and '["Upstream this page dials", s.upstream' in abjs)
 # The About grid is two columns and a grid row is as tall as its tallest card, so WHICH CARD SITS NEXT TO WHICH
@@ -2158,9 +2158,9 @@ _cards = {m.group(1) for m in re.finditer(r'<section class="card\s+([a-z-]+)"', 
 _placed = set(re.findall(r"\.about \.(c-[a-z]+)\{order:", _acss))
 ck("every About card is placed by the layout rule, and the rule places no card the markup dropped",
    _cards == _placed and len(_cards) >= 6, f"markup: {sorted(_cards)}; placed: {sorted(_placed)}")
-ck("no API key is ever written into a pasteable block",
-   all(k in abjs for k in ('api_key: ${s.key_needed ? "os.environ/LITELLM_API_KEY" : "none"}',))
-   and not re.search(r"api_key[=:]\s*\$?\{?\s*(s\.key\b|cfg\[.key.\])", abjs),
+ck("no API key is ever written into a pasteable block; the block names where one lives instead",
+   all(k in abjs for k in ('const kp = s.key_needed ? "os.environ/LITELLM_API_KEY" : "none"', "api_key: ${kp}"))
+   and not re.search(r"api_key[=:]\s*\$?\{?\s*(s\.key\b|cfg\[.key.\]|s\.api_key\b)", abjs),
    [m.group(0) for m in re.finditer(r"api_key.{0,40}", abjs)][:2])
 ck("the checkpoint path is on the page but says it is not a model name",
    'Weights live at' in abjs and "not a name a client can ask for" in abjs)
@@ -2743,13 +2743,18 @@ ck("every Copy button in the About markup has its payload wired, and nothing is 
 _btn = re.findall(r'<button class="([^"]*)"[^>]*data-copy-target', abhtml)
 ck("every Copy button on the About page carries the class its styling hangs on",
    _btn and all("st-btn--copy" in c for c in _btn), sorted(set(_btn))[:4])
-# One URL, three model families. The sections are declared in markup (not built by JS) so that a family vanishing
-# from the page is an edit someone can see in a diff, and so the endpoint paths a reader copies are reviewable text
-# rather than strings assembled at runtime.
-_ep = re.findall(r'<div class="ep[^"]*" id="(ep-[a-z]+)"', abhtml)
-ck("the Connect card declares one section per model family, with its endpoint path in the markup",
-   _ep == ["ep-chat", "ep-embed", "ep-rerank"]
-   and all(p in abhtml for p in ("POST /v1/chat/completions", "POST /v1/embeddings", "POST /v1/rerank")), _ep)
+# One column per model family, one row per config field. The alignment is the point of the card, so the shape is
+# counted here: every field row must carry a cell for each of the three families, named in markup (data-f = row,
+# data-ep = column). Hiding a family this port does not answer is then a CSS class over cells that already exist,
+# not JS rebuilding the grid at render time.
+_rows = {}
+for _f, _e in re.findall(r'data-f="([a-z]+)" data-ep="([a-z]+)"', abhtml):
+    _rows.setdefault(_f, set()).add(_e)
+ck("the Connect card is a field x family grid: three families on every field row, declared in markup",
+   len(_rows) >= 5 and all(v == {"chat", "embed", "rerank"} for v in _rows.values()),
+   {k: sorted(v) for k, v in _rows.items()})
+ck("the Connect card names each family's endpoint path in the markup",
+   all(p in abhtml for p in ("POST /v1/chat/completions", "POST /v1/embeddings", "POST /v1/rerank")), [])
 ck("the rate row is three slots per card and the trend row two, so the two rows are the same shape",
    len(re.findall(r'id="note-[a-z]+"', _wh)) == 4 and len(re.findall(r'id="spans-[a-z]+"', _wh)) == 4
    and len(re.findall(r'id="poll-[a-z]+"', _wh)) == 4

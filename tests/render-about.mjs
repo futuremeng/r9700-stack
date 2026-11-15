@@ -40,7 +40,11 @@ class El {
     this.style = {}; this.hidden = false; this.value = ""; this.disabled = false;
     this.classList = { _s: new Set(), add(...c) { c.forEach((x) => this._s.add(x)); },
                        remove(...c) { c.forEach((x) => this._s.delete(x)); },
-                       toggle(c) { this._s.has(c) ? this._s.delete(c) : this._s.add(c); },
+                       // `force` is not decoration: a stub that ignores it makes classList.toggle(name, false)
+                       // turn the class ON, so the page looked like it was hiding columns it was actually showing
+                       // (and the harness invented four BADs about a grid that rendered correctly).
+                       toggle(c, on) { if (on === undefined) { this._s.has(c) ? this._s.delete(c) : this._s.add(c); }
+                                       else { on ? this._s.add(c) : this._s.delete(c); } },
                        contains(c) { return this._s.has(c); } };
   }
   get textContent() {
@@ -227,9 +231,9 @@ if ((!SC || !SC.sidecars) && /Serves behind this URL/.test(api)) B("the API card
 // each carrying its two strings at a size that outranks the prose, plus blocks that paste without editing. Each
 // goes blank silently if the payload or the wiring breaks, and the page still says "render: ok" -- the class of
 // rot only a check like this catches.
-const cbase = t("ep-chat-base"), cmodel = t("ep-chat-model"), cenv = t("agent-env");
+const cbase = t("ep-chat-base"), ROOT = ORIGIN.replace(/\/$/, ""), cmodel = t("ep-chat-model"), cenv = t("agent-env");
 console.log(`\nconnect: ${cbase}  ·  chat model ${cmodel}`);
-if (cbase !== ORIGIN.replace(/\/$/, "")) B(`the chat base_url says "${cbase}", not the address this page was served on`);
+if (cbase !== `${ROOT}/v1`) B(`the chat base_url cell says "${cbase}", not the address this page was served on plus /v1`);
 if (S.model_name && cmodel !== S.model_name) B(`the chat section says "${cmodel}", not ${S.model_name}`);
 if (!/OPENAI_BASE_URL=\S+\/v1/.test(cenv)) B("the agent config block has no OPENAI_BASE_URL ending in /v1");
 if (S.model_name && !cenv.includes(`OPENAI_MODEL=${S.model_name}`)) B("the agent config block does not carry the model name");
@@ -242,38 +246,67 @@ if (SC && (SC.sidecars || []).some((x) => x.serve && x.serve.alias) && !/model q
 // embeddings serve never heard of (a 404 listing names they had not seen either). Checked per section, per block,
 // and against the payload rather than against the page's own strings.
 const cp = (id) => { const b = document.querySelector(`[data-copy-target=${id}]`); return (b && b.dataset && b.dataset.copy) || ""; };
-const FAM = [["/v1/embeddings", "ep-embed", "curl-embed"], ["/v1/rerank", "ep-rerank", "curl-rerank"]];
+const FAM = [["/v1/embeddings", "embed", "curl-embed"], ["/v1/rerank", "rerank", "curl-rerank"]];
+const GRID = $("ep-grid");
+const off = (c) => GRID.classList.contains(`no-${c}`);
 const seen = [];
-for (const [route, cell, block] of FAM) {
+for (const [route, col, block] of FAM) {
   const e = ((SC && SC.sidecars) || []).find((x) => (x.name || "").trim() === route);
   const alias = e ? (((e.serve || {}).alias || "").trim()) : "";
   if (!e) {
-    if (!$(cell).hidden) B(`${route} is not routed here, but its ${cell} section is visible`);
-    if (cp(`${cell}-model`)) B(`${cell} offers a Copy with a payload for a route this port does not answer`);
+    if (!off(col)) B(`${route} is not answered from this port, but its ${col} column is still in the grid`);
+    if (cp(`ep-${col}-model`)) B(`the ${col} column offers a Copy payload for a route this port does not answer`);
     continue;
   }
-  if ($(cell).hidden) B(`${route} is routed by the front door but its ${cell} section is hidden`);
-  if (alias && t(`${cell}-model`) !== alias) B(`${cell} shows "${t(`${cell}-model`)}" where the serve advertises "${alias}"`);
-  if (t(`${cell}-base`) !== `${cbase}/v1`) B(`${cell} base_url is "${t(`${cell}-base`)}" where the chat section says "${cbase}/v1"`);
+  if (off(col)) B(`${route} is routed by the front door but its ${col} column is dropped from the grid`);
+  if (alias && t(`ep-${col}-model`) !== alias) B(`the ${col} column shows "${t(`ep-${col}-model`)}" where the serve advertises "${alias}"`);
+  if (t(`ep-${col}-base`) !== `${ROOT}/v1`) B(`the ${col} base_url is "${t(`ep-${col}-base`)}", not "${ROOT}/v1"`);
   if (alias) {
     seen.push(alias);
     if (!t(block).includes(`"${alias}"`)) B(`${block} does not paste ${alias}; it reads "${t(block).slice(0, 60)}"`);
     if (cmodel && t(block).includes(`"${cmodel}"`)) B(`${block} pastes the chat model name into a ${route} request`);
-    if (!cp(`${cell}-model`).includes(alias)) B(`the Copy beside ${cell}-model does not carry the name on screen`);
-    if (cp(`${cell}-base`) !== `${cbase}/v1`) B(`the Copy beside ${cell}-base is not the base_url on screen`);
+    if (!cp(`ep-${col}-model`).includes(alias)) B(`the Copy beside the ${col} model name does not carry what is on screen`);
+    if (cp(`ep-${col}-base`) !== `${ROOT}/v1`) B(`the Copy beside the ${col} base_url is not what is on screen`);
   }
 }
 if (cmodel) seen.push(cmodel);
-if (new Set(seen).size !== seen.length) B(`two sections offer the same model name to a client: ${seen.join(" / ")}`);
+if (new Set(seen).size !== seen.length) B(`two columns offer the same model name to a client: ${seen.join(" / ")}`);
+// The one row where the three columns must NOT agree. The reranker's LiteLLM api_base stops at the root, because
+// litellm appends /rerank itself; writing the route there produced POST /v1/rerank/rerank and a 404 that named no
+// path (2026-11-15), so the depth of that string is a fact worth pinning.
+const lbase = t("ep-rerank-lbase");
+if (!off("rerank")) {
+  if (lbase !== ROOT) B(`the rerank LiteLLM api_base is "${lbase}", not the root "${ROOT}"`);
+  if (cp("ep-rerank-lbase") !== lbase) B("the Copy beside the rerank api_base carries something else");
+}
+// The LiteLLM block has to say what the grid says: one deployment per family this port answers, hosted_vllm for
+// the reranker (its rerank API has no openai provider), model_info mode for the CPU serves, and no api_base that
+// ends in a route path.
+const ly = t("litellm-yaml");
+const dep = (ly.match(/- model_name:/g) || []).length;
+const wantDep = 1 + (off("embed") ? 0 : 1) + (off("rerank") ? 0 : 1);
+if (dep !== wantDep) B(`the LiteLLM block lists ${dep} deployments while this port answers ${wantDep} families`);
+if (!off("rerank")) {
+  if (!/model: hosted_vllm\//.test(ly)) B("the LiteLLM block gives the reranker a provider its rerank API rejects");
+  if (!/mode: rerank/.test(ly)) B("the LiteLLM block omits mode: rerank, so the proxy health-checks it with a chat completion");
+  if (!/mode: embedding/.test(ly)) B("the LiteLLM block omits mode: embedding");
+  const bad = (ly.match(/api_base: \S+/g) || []).filter((l) => /\/(v1\/)?(embeddings|rerank)$/.test(l));
+  if (bad.length) B(`an api_base in the LiteLLM block ends in a route path: ${bad.join(" ")}`);
+}
 // A Copy button is invisible when it is dead: the click does nothing and no error appears. The static check in
-// tests/test_webui.py pins the wiring; this pins that the wiring produced a string, for the buttons that are on
-// screen right now.
-for (const id of ["ep-chat-model", "ep-chat-base", "agent-env", "curl", "litellm-yaml", "litellm-py"])
-  if (!cp(id)) B(`the Copy for ${id} has no payload in this render`);
+// tests/test_webui.py pins the wiring; this pins that the wiring produced a string, for the buttons on screen.
+const needCopy = ["ep-chat-model", "ep-chat-base", "agent-env", "curl", "litellm-yaml", "litellm-py"]
+  .concat(off("embed") ? [] : ["ep-embed-model", "ep-embed-base", "curl-embed"])
+  .concat(off("rerank") ? [] : ["ep-rerank-model", "ep-rerank-base", "ep-rerank-lbase", "curl-rerank"]);
+for (const id of needCopy) if (!cp(id)) B(`the Copy for ${id} has no payload in this render`);
 const wired = [...qsel.keys()].filter((k) => k.startsWith("[data-copy-target="));
 const empty = wired.filter((k) => !(qsel.get(k).dataset || {}).copy);
-console.log(`  connect sections: ${FAM.map(([, c]) => `${c}=${$(c).hidden ? "hidden" : t(`${c}-model`)}`).join(" ")}`
-            + ` · Copy buttons carrying a payload: ${wired.length - empty.length}/${wired.length}`
+const COLS = ["chat", "embed", "rerank"].filter((c) => !off(c));
+console.log(`\nconnect grid, columns: ${COLS.join(" / ")}`);
+for (const [row, f] of [["model", (c) => t(`ep-${c}-model`)], ["base_url", (c) => t(`ep-${c}-base`)],
+                        ["litellm api_base", (c) => c === "rerank" ? t("ep-rerank-lbase") : `${ROOT}/v1`]])
+  console.log(`  ${row.padEnd(16)} ${COLS.map(f).join("  |  ")}`);
+console.log(`  Copy buttons carrying a payload: ${wired.length - empty.length}/${wired.length}`
             + (empty.length ? ` (empty: ${empty.join(" ")})` : ""));
 
 const bar = t("error");

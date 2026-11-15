@@ -14,11 +14,13 @@ dl.facts{margin-top:16px}
    paired with Model and engine ~210 -- roughly 4,000 px of blank column down the right edge, and a page ~5,000 px
    tall. So the reference lists are closed by default (each summary says how much is behind it), two of the three
    paste blocks are closed, and the pairing is stated here. The rest is width, not order: Connect and This
-   machine are FULL WIDTH, each wasting space in a half-width column for a different reason -- Connect holds
-   three code blocks whose lines want the room and its two headline cells side by side instead of stacked, and
+   machine are FULL WIDTH, each wasting space in a half-width column for a different reason -- Connect holds a
+   field x family grid that needs three usable columns plus code blocks that want the line length, and
    This machine holds four GPU cards that fit one row across the page rather than 2x2 with the second row half
    empty. A spanning card starts a row, so what is left pairs two-up: Model and engine (~210) with Configuration
-   (~300), the recipe (~120) with This page (~250) -- page height ~1,700, waste ~200. Change a card's content and
+   (~300), the recipe (~120) with This page (~250) -- page height ~1,700, waste ~200. Connect itself is ~950 now
+   (a six-row grid plus two rows of paste blocks): still the tallest card, still alone in its row, so the pairing
+   holds without restating it. Change a card's content and
    this has to be re-checked, not assumed; the check in tests/test_webui.py only guarantees every card IS placed,
    not that the numbers still match. */
 .about .c-connect{order:1;grid-column:1/-1}
@@ -33,24 +35,40 @@ dl.facts{margin-top:16px}
 /* captions above the paste blocks (agent config, curl x3, LiteLLM x2) */
 .code-cap{margin:0 0 6px}
 
-/* One section per model family this URL answers: chat, embeddings, rerank. The fact being taught is that they
-   are three serves with three names, and the revision before this one hid it in a list row ("also on this port:
-   /v1/embeddings (model qwen3-embed)"). Same shape three times, side by side, is the shape of that fact.
-   A URL and a model name want a monospace face and a size that can be read across the room, because the job is
-   transcription. The box is deliberately not a code block -- a code block here means "multi-line paste". */
-.ep-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(17rem,1fr));gap:12px;margin-top:16px}
-.ep{background:var(--st-surface-2);border:1px solid var(--st-line);border-radius:var(--st-r-sm);padding:12px 14px}
-.ep-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;padding-bottom:8px;
-  border-bottom:1px solid var(--st-line)}
+/* One column per model family, one ROW per config field: chat / embeddings / rerank across, and "Model name",
+   "Base URL", "LiteLLM provider", "LiteLLM api_base", "LiteLLM mode", "Answered by" down. The comparison a
+   reader is actually making is across a row -- "these three are the same string except the reranker's api_base
+   stops one level higher" -- and three boxes side by side could not answer it without reading each box top to
+   bottom. The gutter column carries the field name, which is what lets the cells stay bare. A URL and a model
+   name want a monospace face because the job is transcription; the cells are deliberately not code blocks,
+   because a code block on this page means "multi-line paste". */
+.ep-wrap{margin-top:16px;overflow-x:auto}
+.ep-grid{display:grid;grid-template-columns:9.5rem repeat(3,minmax(12rem,1fr));border:1px solid var(--st-line);
+  border-radius:var(--st-r-sm);background:var(--st-surface-2);min-width:52rem}
+/* a family this port does not answer is dropped by column, not greyed out: its cells carry the column class and
+   the track count follows, so the remaining columns keep their width instead of one hole in the middle. */
+.ep-grid.no-embed,.ep-grid.no-rerank{grid-template-columns:9.5rem repeat(2,minmax(12rem,1fr))}
+.ep-grid.no-embed.no-rerank{grid-template-columns:9.5rem minmax(12rem,1fr)}
+.ep-grid.no-embed .col-embed,.ep-grid.no-rerank .col-rerank{display:none}
+.ep-corner,.ep-head,.ep-label,.ep-cell{padding:9px 12px;border-left:1px solid var(--st-line);
+  border-top:1px solid var(--st-line)}
+.ep-corner,.ep-head,.ep-label{background:var(--st-surface)}
+.ep-corner,.ep-head{border-top:0}
+.ep-corner{border-left:0;font-size:var(--st-fs-xs);letter-spacing:.06em;text-transform:uppercase;
+  color:var(--st-ink-muted)}
+.ep-label{font-size:var(--st-fs-sm);font-weight:700}
+.ep-head{display:flex;flex-direction:column;gap:2px}
 .ep-name{font-weight:700;font-size:var(--st-fs-md)}
-.ep-path{font-family:var(--st-font-mono);font-size:var(--st-fs-sm);color:var(--st-ink-muted)}
-/* the Copy lives in the field's corner, and the field keeps a right gutter for it: a button inside the value
-   would sit on top of the string someone is reading, and one under it adds a row per value. */
-.ep-field{position:relative;padding-right:70px;margin-top:12px}
-.ep-field .label{display:block;margin-bottom:2px}
-.ep-field .value{font-family:var(--st-font-mono);font-weight:700;font-size:var(--st-fs-lg);line-height:1.3;
+.ep-path{font-family:var(--st-font-mono);font-size:var(--st-fs-xs);color:var(--st-ink-muted)}
+/* the Copy sits in the cell's corner and the cell keeps a right gutter for it: inside the value it would cover
+   the string being read, and under it would add a row per value -- which breaks the row alignment this grid
+   exists to get. */
+.ep-cell{position:relative;padding-right:72px;font-size:var(--st-fs-sm)}
+.ep-cell .value{font-family:var(--st-font-mono);font-weight:700;font-size:var(--st-fs-md);line-height:1.35;
   letter-spacing:0;overflow-wrap:anywhere}
-.ep .small{margin:12px 0 0}
+.ep-cell .sub,.ep-label .sub{font-size:var(--st-fs-xs);color:var(--st-ink-muted);margin-top:4px;font-weight:400}
+.ep-cell .small{color:var(--st-ink-muted)}
+.ep-cell[data-f="who"]{padding-right:12px}
 
 /* The paste blocks tile rather than stacking: this card spans the full width, and four blocks of up to 260 px in
    one column was the wasted height this page is trying to get rid of. 26rem keeps them two-up wide, one-up

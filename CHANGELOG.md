@@ -1,5 +1,47 @@
 # Changelog
 
+## Connect your tools: three columns, and the config fields line up in rows
+
+Three boxes side by side could not answer the question the card exists for. "What differs between the chat model and
+the other two?" is a question about one field at a time -- same host, same depth of base URL, different name -- and
+reading three boxes top-to-bottom to answer it is the reading the card should not require. The card is now a grid:
+a gutter column naming the field, one column per family, and one row per field -- model name, base URL, LiteLLM
+provider, LiteLLM `api_base`, `model_info.mode`, which process answers. A row reads as one sentence:
+"LiteLLM api_base: same, same, root". Cells carry `data-f` (row) and `data-ep` (column) so `test_webui.py` can count
+that every field row carries all three families; a family this port does not answer is dropped **by column** (the CSS
+drops the track and every cell carrying the column class), because hiding one cell of a row leaves a hole exactly
+where the comparison happens.
+
+Measured by the render harness on this box: `model` = Qwen3.8 / qwen3-embed / qwen3-rerank, `base_url` = the same
+`…:8080/v1` three times, `litellm api_base` = `…/v1`, `…/v1`, `…:8080`.
+
+- **The Base URL row was caught disagreeing with itself**: the chat cell carried the root while the other two
+  carried `/v1`. A row whose cells differ for no reason teaches the reader that rows mean nothing, so all three now
+  show the `/v1` form, and the root lives one row down (LiteLLM's rerank `api_base`) where the difference is the point.
+- **The page contradicted its own curl blocks about `/v1`.** The caption and the note said curl wants the path
+  *without* `/v1`, while every block on the card spells `/v1/chat/completions`. Both now say what is true: the SDK
+  and LiteLLM want the base ending in `/v1`, the blocks spell each full path once, and pasting a base in front of a
+  path that already carries it gives `/v1/v1/chat/completions` — measured, a 404 with `"detail": "Not Found"`, the
+  same faceless answer as every other routing slip on this box.
+
+- **The LiteLLM matrix is on the page now**, because that is where today's two failures came from: a rerank model
+  declared `openai/` (litellm's rerank API has no openai provider and says "Unsupported provider: openai"), and an
+  `api_base` that carried the route, which produced `POST /v1/rerank/rerank` answered by a 404 naming no path. The
+  `api_base` row is the one row the columns must NOT agree on: the reranker's stops at the root, since litellm
+  appends `/rerank` itself. Verified against this gateway with litellm 1.109.1: `/health` 3/3 healthy, and chat /
+  embeddings / rerank calls through the proxy all answered (rerank scored 0.9905 vs 0.0003). Without
+  `model_info.mode` the calls still work but the proxy health-checks the deployment with a chat completion, and the
+  engine answers that the model does not exist -- now a row on the page instead of an hour of guessing.
+- **Two harness lies found while checking this.** Both DOM stubs implemented `classList.toggle(name, force)`
+  without the `force` argument, so `toggle("no-embed", false)` turned the class ON: the page was reported as hiding
+  columns it was showing, four invented BADs. And the Monitor's "is it printing this poll under a 15m label" check
+  fired on an idle box where 0.0088 tok/s (178 samples, 8 tokens in 904 s) and a 0.0 live poll are the same number at
+  the card's one decimal; the check now requires the difference to be printable, which is the same lesson the
+  tolerance fix learned one clause earlier.
+- `test_webui.py`'s API-key check was pinning an exact source string (`api_key: ${s.key_needed ? ... }`) and failed
+  the moment that string moved into a named constant; it pins the intent now -- the block names an env var or says
+  none, and never interpolates a key.
+
 ## Connect your tools: one section per model family, and Copy buttons that admit when they are dead
 
 The card named one model (`Qwen3.8`) and showed one curl, on a port that answers three families: `/v1/chat/completions`

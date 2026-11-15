@@ -245,7 +245,7 @@ function render() {
   // else (this box is reached over the network, and wtmp says so). location.origin is the address that
   // actually answered this page, tunnel or reverse proxy included.
   const origin = (location.origin || "").replace(/\/$/, "");
-  const apiBase = `${origin}/v1`;          // LiteLLM and the OpenAI SDK want the /v1; curl does not
+  const apiBase = `${origin}/v1`;          // the SDK and LiteLLM want the base ending in /v1; the blocks below
   const name = model || "model";
   const rsn = meta.reasoning || null;      // the launcher records the parser it passed, in the recipe file
   facts($("facts-api"), [
@@ -282,28 +282,39 @@ function render() {
   const scNote = (x) => x ? `a llama.cpp serve on this box's CPU, not this engine · `
     + `${(x.serve || {}).threads || "?"} threads · ctx ${(x.serve || {}).ctx || "?"}`
     + (x.health === 200 || x.health === null || x.health === undefined ? "" : ` · last health ${x.health}`) : null;
-  const cell = (id, on) => { const el = $(id); if (el) el.hidden = !on; };
-  cell("ep-embed", !!emb); cell("col-embed", !!emb);
-  cell("ep-rerank", !!rrk); cell("col-rerank", !!rrk);
+  // A family this port does not answer is dropped from the grid BY COLUMN (about.css drops the track and hides
+  // every cell carrying that column class): hiding one cell of a row and leaving its neighbours would leave a hole
+  // in the middle of the row, which is the whole thing the grid is for.
+  const grid = $("ep-grid");
+  if (grid) { grid.classList.toggle("no-embed", !emb); grid.classList.toggle("no-rerank", !rrk); }
+  const col = (id, on) => { const el = $(id); if (el) el.hidden = !on; };
+  col("col-embed", !!emb); col("col-rerank", !!rrk);
   text("ep-chat-model", model || null);
-  text("ep-chat-base", origin || null);
+  // One string across the row: the Base URL cell for every family is the /v1 form an SDK wants, and the root is
+  // one row down (LiteLLM's rerank api_base) plus a facts row. A row whose three cells differ for no reason teaches
+  // the reader that the row means nothing.
+  text("ep-chat-base", apiBase || null);
   text("ep-chat-note", s.port ? `answered by this serve, which listens on `
     + `${s.bind || ""}${s.bind ? ":" : ""}${s.port}` : null);
   document.querySelector("[data-copy-target=ep-chat-model]").dataset.copy = name;
-  document.querySelector("[data-copy-target=ep-chat-base]").dataset.copy = origin;
+  document.querySelector("[data-copy-target=ep-chat-base]").dataset.copy = apiBase;
   // One line per target, no loop: tests/test_webui.py compares the buttons the markup declares against the
   // payloads wired here, and a wiring built from a variable hides a dead button from every checker.
   document.querySelector("[data-copy-target=ep-embed-model]").dataset.copy = scName(emb) || "";
   document.querySelector("[data-copy-target=ep-embed-base]").dataset.copy = emb ? apiBase : "";
   document.querySelector("[data-copy-target=ep-rerank-model]").dataset.copy = scName(rrk) || "";
   document.querySelector("[data-copy-target=ep-rerank-base]").dataset.copy = rrk ? apiBase : "";
+  // The LiteLLM api_base for the reranker is one level shallower than every other string on this card, and the
+  // failure when it is written wrong is a request to /v1/rerank/rerank that answers with a 404 naming no path.
+  document.querySelector("[data-copy-target=ep-rerank-lbase]").dataset.copy = rrk ? origin : "";
+  text("ep-rerank-lbase", rrk ? origin : null);
   text("ep-embed-model", scName(emb));
   text("ep-embed-base", emb ? apiBase : null);
   text("ep-embed-note", emb ? scNote(emb) : null);
   text("ep-rerank-model", scName(rrk));
   text("ep-rerank-base", rrk ? apiBase : null);
   text("ep-rerank-note", rrk ? scNote(rrk) : null);
-  const agentEnv = `# OpenAI-compatible. The SDK and LiteLLM want the /v1; curl does not.\n`
+  const agentEnv = `# OpenAI-compatible. The base ends in /v1; the SDK and LiteLLM take it as-is.\n`
     + `OPENAI_BASE_URL=${apiBase}\n`
     + `OPENAI_API_KEY=${s.key_needed ? "<your key, never printed here>" : "none"}\n`
     + `OPENAI_MODEL=${name}\n`
@@ -320,7 +331,7 @@ function render() {
   document.querySelector("[data-copy-target=curl]").dataset.copy = curl;
   // The CPU serves get their own blocks for the same reason they get their own sections: the model name in the
   // chat block is not a name either of them accepts, and pasting it buys a 404 listing names the reader has never
-  // seen. curl wants the path without /v1 here too -- the caption says that once instead of in every block.
+  // seen. Every block spells the full path once: base + route, never route pasted onto a base that ends in one.
   const curlEmbed = emb ? `curl ${origin}/v1/embeddings \\\n`
     + `  -H 'Content-Type: application/json' \\\n`
     + `  -d '{"model": "${scName(emb)}", "input": "text to embed"}'` : "";
@@ -332,19 +343,37 @@ function render() {
   $("curl-rerank").textContent = curlRerank;
   document.querySelector("[data-copy-target=curl-embed]").dataset.copy = curlEmbed;
   document.querySelector("[data-copy-target=curl-rerank]").dataset.copy = curlRerank;
-  // LiteLLM in both shapes people actually use it: a proxy config, and a direct call. The `openai/` prefix is
-  // what makes it treat this as an OpenAI-compatible endpoint; the key is never inlined, only named.
+  // LiteLLM in the two shapes people actually use it: a proxy config, and a direct call. The `openai/` prefix is
+  // what makes it treat this as an OpenAI-compatible endpoint, and the key is never inlined, only named. Since
+  // 2026-11-15 this one port answers three families, so the config lists three deployments -- and the two lines a
+  // person gets wrong by hand are the rerank provider (litellm's rerank API has no openai provider) and the depth
+  // of its api_base (litellm appends `/rerank` itself). Both learned today from a failing proxy, not from docs.
+  const kp = s.key_needed ? "os.environ/LITELLM_API_KEY" : "none";
+  const kpy = s.key_needed ? "os.environ[\"LITELLM_API_KEY\"]" : "\"none\"";
   const yaml = `# litellm --config litellm.yaml --port 4000\nmodel_list:\n`
-    + `  - model_name: ${name}\n    litellm_params:\n`
-    + `      model: openai/${name}\n      api_base: ${apiBase}\n`
-    + `      api_key: ${s.key_needed ? "os.environ/LITELLM_API_KEY" : "none"}\n`
-    + `      # max_tokens counts reasoning too: this serve reports reasoning_tokens separately.`;
+    + `  - model_name: ${name}\n    litellm_params:\n      model: openai/${name}\n`
+    + `      api_base: ${apiBase}\n      api_key: ${kp}\n`
+    + `      # max_tokens counts reasoning too: this serve reports reasoning_tokens separately.`
+    + (emb ? `\n\n  # a different process answering the same URL, and it answers its own model name\n`
+        + `  - model_name: ${scName(emb)}\n    litellm_params:\n      model: openai/${scName(emb)}\n`
+        + `      api_base: ${apiBase}\n      api_key: ${kp}\n`
+        + `    model_info:\n      mode: embedding   # else the proxy health-checks it with a chat completion` : "")
+    + (rrk ? `\n\n  # NOT openai/: litellm's rerank API has no openai provider ("Unsupported provider: openai")\n`
+        + `  - model_name: ${scName(rrk)}\n    litellm_params:\n      model: hosted_vllm/${scName(rrk)}\n`
+        + `      api_base: ${origin}\n      api_key: ${kp}\n`
+        + `    model_info:\n      mode: rerank\n`
+        + `      # api_base stops at the root: litellm appends /rerank, so writing the route in here asks for\n`
+        + `      # ${origin}/v1/rerank/rerank, which answers a 404 that names no path.` : "");
   const py = `import litellm\nr = litellm.completion(\n    model="openai/${name}",\n`
-    + `    api_base="${apiBase}",\n    api_key=${s.key_needed ? "os.environ[\"LITELLM_API_KEY\"]" : "\"none\""},\n`
-    + `    messages=[{\"role\": \"user\", \"content\": \"hello\"}], max_tokens=128)\n`
+    + `    api_base="${apiBase}",\n    api_key=${kpy},\n`
+    + `    messages=[{"role": "user", "content": "hello"}], max_tokens=128)\n`
     + `m = r.choices[0].message\n`
     + `print(m.content)                              # None when max_tokens was all spent on reasoning\n`
-    + `print(getattr(m, "reasoning_content", None))  # where ${rsn ? `this serve's --reasoning-parser ${rsn}` : "a reasoning parser"} puts it`;
+    + `print(getattr(m, "reasoning_content", None))  # where ${rsn ? `this serve's --reasoning-parser ${rsn}` : "a reasoning parser"} puts it`
+    + (emb ? `\n\nlitellm.embedding(model="${scName(emb)}", api_base="${apiBase}", api_key=${kpy},\n`
+        + `                input=["text to embed"])` : "")
+    + (rrk ? `\nlitellm.rerank(model="hosted_vllm/${scName(rrk)}", api_base="${origin}", api_key=${kpy},\n`
+        + `              query="what the search was for", documents=["first", "second"])` : "");
   for (const [id, text_] of [["litellm-yaml", yaml], ["litellm-py", py]]) $(id).textContent = text_;
   // Wired one by one rather than in the loop above: a copy button whose wiring is built from a template literal
   // is invisible to the static check that every data-copy-target in the markup gets a copy payload (the same

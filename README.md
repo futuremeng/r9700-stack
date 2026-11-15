@@ -646,10 +646,12 @@ proxying when the request bodies themselves are the thing under study. (`tests/t
 hand-started sidecar on `:8099` a requirement of the box; since 2026-11-05 it checks the engine's own port is bound
 the way the machine-local file says, and any sidecar that happens to be running - running none is the shape.)
 
-The About page hands out client config that is right where you paste it: one section per model family the port
-answers — chat, embeddings, rerank — each with the model name that family actually accepts and its own curl, because
-one URL is answered by three processes and pasting the chat name into an embeddings request buys a 404 listing names
-the reader has never seen. The base URL is the address that answered the page (`/v1` for the OpenAI SDK and LiteLLM,
+The About page hands out client config that is right where you paste it: a grid with one column per model family
+the port answers (chat, embeddings, rerank) and one row per config field — model name, base URL, LiteLLM provider,
+LiteLLM `api_base`, `model_info.mode`, which process answers — so the comparison a reader is making is a row read
+left to right: three families, one host, and the only depths that differ. Each family gets its own model name and its
+own curl, because one URL is answered by three processes and pasting the chat name into an embeddings request buys a
+404 listing names the reader has never seen. The base URL is the address that answered the page (`/v1` for the OpenAI SDK and LiteLLM,
 the root for curl), `openai/<served name>` rather than the checkpoint path, the API key never printed, and the
 reasoning parser accounted for (`--reasoning-parser qwen3` makes reasoning tokens count against `max_tokens`, so a
 small budget returns `content = None`). A Copy button that has nothing to copy says so instead of writing an empty
