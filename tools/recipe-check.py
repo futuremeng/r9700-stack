@@ -299,12 +299,25 @@ def compare_flags(prod_cmd, live_line):
     return bad
 
 
+def looks_like_monitor(argv):
+    """Is this `argv` the monitor's own command line rather than the serve's?
+
+    Since 2026-11-15 the front door's pages come from a standalone sidecar on this box, and a sidecar's
+    `/api/status` carries ITS argv -- `serve/webui.py --port 8181 ...`. Comparing that against the launcher's
+    `vllm serve ...` line invented 17 deviations ("--compilation-config: the live process was launched with
+    nothing") on a box whose engine was exactly as configured. A monitor's argv proves nothing about the serve;
+    it must never be compared, only named.
+    """
+    return "webui.py" in (argv or "")
+
+
 def main(argv):
     as_json = "--json" in argv
     # A URL, or a saved /api/status JSON -- the file mode is what the test suite drives, so the comparison can be
     # checked against a fabricated test config without a live serve.
     arg = next((a for a in argv if a != "--json"), "http://127.0.0.1:8080")
     url = arg if arg.startswith("http") else None
+    url_mode = bool(url)
     cmd = production_args()
     if not cmd:
         print("could not get the launch line from serve/native-flashnext.sh (DRY run failed)", file=sys.stderr)
@@ -319,6 +332,32 @@ def main(argv):
         print(f"no status from {arg}: {type(e).__name__}: {e}", file=sys.stderr)
         return 2
     url = url or arg
+    # Which payload the FLAG claim is resting on, said out loud, because the page that answers the front door is
+    # not necessarily the process that was launched.
+    flag_src, argv_note = url, ""
+    if looks_like_monitor(st.get("argv")):
+        port = (st.get("meta") or {}).get("port") or (st.get("config") or {}).get("port") or ""
+        # Only a LIVE url gets followed to the engine's own port. A file payload is an artifact someone is
+        # testing -- a fabricated deviation in it must survive, not be replaced by what the box happens to say.
+        if not url_mode:
+            argv_note = ("  (this payload is a standalone monitor's: its argv is its own command line and proves "
+                         "nothing about the serve, so the launch FLAGS are unprovable from it)")
+            st = {k: v for k, v in st.items() if k != "argv"}
+        else:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=10) as f:
+                    st2 = json.load(f)
+            except (OSError, ValueError):
+                st2 = {}
+            if st2.get("argv") and not looks_like_monitor(st2.get("argv")):
+                argv_note = (f"  (the page at {url} is a standalone monitor -- its own argv proves nothing about "
+                             f"the serve, so the engine's own page at :{port} answered for the flags)")
+                st, flag_src = st2, f"http://127.0.0.1:{port}"
+            else:
+                argv_note = (f"  ({url} is a standalone monitor and the engine's own page on port {port or '?'} "
+                             f"did not answer with an argv: the launch FLAGS are unprovable right now, not "
+                             f"mismatched)")
+                st = {k: v for k, v in st.items() if k != "argv"}
     dev = compare(cmd, st.get("config") or {}, st.get("meta") or {})
     livev, env_src = live_env(st)
     env_dev = compare_env(production_env(), livev, (st.get("meta") or {}).get("env"))
@@ -330,20 +369,25 @@ def main(argv):
                           "env_deviations": env_dev, "flag_deviations": flags}))
     elif not dev and not env_dev and not flags:
         if st.get("argv"):
-            print(f"PRODUCTION recipe ({url}): every measured knob, every R9K_/R9700_ env name and every launch "
-                  f"flag in the live argv matches this tree's launcher.")
+            print(f"PRODUCTION recipe ({flag_src}): every measured knob, every R9K_/R9700_ env name and every "
+                  f"launch flag in the live argv matches this tree's launcher.")
         else:
             # Unprovable is not the same as matching, and a green line that hides which of its three claims were
             # actually checked is how a gate stops meaning anything.
-            print(f"PRODUCTION recipe on the measured knobs and the environment ({url}) -- but the LAUNCH FLAGS ARE "
-                  f"UNPROVABLE: the payload carries no argv, so an in-process page older than the flag comparison "
-                  f"is answering. Restart the serve to make the flag claim provable.")
+            print(f"PRODUCTION recipe on the measured knobs and the environment ({flag_src}) -- but the LAUNCH "
+                  f"FLAGS ARE UNPROVABLE: the payload carries no argv, so an in-process page older than the flag "
+                  f"comparison (or a standalone monitor whose argv is its own) is answering. Restart the serve to "
+                  f"make the flag claim provable.")
         print(f"  {cmd}")
+        if argv_note:
+            print(argv_note)
         print(f"  env read from {env_src}")
     else:
+        if argv_note:
+            print(argv_note)
         if flags:
-            print(f"NOT the production recipe ({url}) -- {len(flags)} launch flag(s) differ, and the engine's "
-                  f"measured config cannot see these:")
+            print(f"NOT the production recipe ({flag_src}) -- {len(flags)} launch flag(s) differ, and the "
+                  f"engine's measured config cannot see these:")
             for f, x, y in flags:
                 say = lambda v: 'nothing' if v == 'not passed' else ('the flag itself' if v is None else repr(v))
                 print(f"  {f}: this tree passes {say(x)}, the live process was launched with {say(y)}")

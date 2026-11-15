@@ -659,7 +659,11 @@ serve takes `:8180/monitor` down with it — which is exactly how the 2026-11-15
 `:8180/monitor` still answers while the engine is up and remains the only page that can show the engine's
 **resolved** config: a sidecar has no HTTP way to read it (vLLM serves no `/api/config`), so its About card names
 the recipe row and `tools/recipe-check.py` instead of inventing numbers. The sidecar also asks the engine for its
-own version (`GET /version`) rather than printing one it remembered. (`tests/test_webui.py` had made a
+own version (`GET /version`) rather than printing one it remembered, and `tools/recipe-check.py` says which payload
+its flag claim rests on: a monitor's `argv` is its own command line and proves nothing about the serve, so the check
+follows the engine's own page for it — or calls the flags unprovable — rather than comparing `serve/webui.py --port
+8181 ...` against `vllm serve ...`, which on 2026-11-15 invented 17 deviations on a box whose engine was exactly as
+configured. (`tests/test_webui.py` had made a
 hand-started sidecar on `:8099` a requirement of the box; since 2026-11-05 it checks the engine's own port is bound
 the way the machine-local file says, and any sidecar that happens to be running - running none is the shape.)
 
@@ -920,7 +924,7 @@ these numbers runs.
    MAXLEN=262144 NSEQ=32 NBT=8192 WEBUI=same bash serve/native-flashnext.sh
    ```
    One box fact is not in that line: the bind address. The launcher's `HOST` default is `127.0.0.1` — upstream's own
-   default — and this machine's `0.0.0.0` comes from `~/.config/r9700-stack/native.env`, which the launcher sources
+   default — and this machine's `0.0.0.0` comes from `~/.config/r9700-stack/native.env`, which the launcher sources (as a default: a value you export beats it, and `serve/lib/localenv.sh` is the one place that sources it, for all five launchers)
    and names in the log (notes/launch-methodology.md §10). Nothing that changes what a number means goes in that
    file.
    ```

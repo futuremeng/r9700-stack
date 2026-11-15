@@ -292,6 +292,16 @@ The production serve died on its own, mid-traffic, and the Monitor noticed befor
 `serve/native-flashnext.sh` sources `~/.config/r9700-stack/native.env` (path overridable with `LOCAL_ENV=`) before
 its own defaults, and prints `local env: <path>` at every launch. The dividing line for what may live in it:
 
+**Precedence, stated rather than assumed (2026-11-15).** The file used to be sourced with a bare
+`set -a; . "$LOCAL_ENV"; set +a`, which made a box fact an OVERRIDE: `GATEWAY_PORT=8090 bash serve/gateway.sh` got
+8080 back because the file says 8080, and `serve/webui.sh`'s own documented usage line
+(`PORT=8100 bash serve/webui.sh # a second launch on 8100 -> monitor on 8101`) silently watched 8180. Worse, it
+disagreed with how `setup.py` reads a launcher — `launcher_var` asks the environment first, then the file, then the
+script's default — which is this section's own failure class in a new costume: two readers, two orders, two meanings
+for one launch line. The sourcing now lives in one place, `serve/lib/localenv.sh`, sourced by all five launchers: the
+file fills only names nobody exported, `set -a` is kept so those facts still reach the child processes, and the
+launcher prints which names it left alone.
+
 - **a knob that changes what a measured number means stays in the launcher**, next to the measurement that justifies
   it, so `tools/recipe-check.py` can hold the running engine to it: `PREFIX_CACHE`, `NBT`, `NSEQ`, `UTIL`, `KVDTYPE`,
   `MTP`, each with its numbers in the comment above it.

@@ -674,6 +674,48 @@ ck("gateway.sh forwards gate overrides but states no default for any of them -- 
    not re.search(r'^\s*(?:export )?GATE_[A-Z_]+:?=', _gsh, re.M),
    [l.strip()[:60] for l in _gsh.splitlines() if re.match(r"^\s*(?:export )?GATE_[A-Z_]+:?=", l)][:3])
 
+_wsh = (ROOTP / "serve" / "webui.sh").read_text().splitlines()
+ck("serve/webui.sh sources the machine-local env file BEFORE it defaults its ports -- a box that moved its engine "
+   "to 8180 otherwise gets a sidecar pointed at 8080: a monitor watching nothing, printing URLs for a port nothing "
+   "listens on (measured here on 2026-11-15: the DRY run said --port 8081 --upstream http://127.0.0.1:8080 while "
+   "native.env said PORT=8180)",
+   next(i for i, l in enumerate(_wsh) if "lib/localenv.sh" in l and not l.lstrip().startswith("#"))
+   < next(i for i, l in enumerate(_wsh) if l.startswith("PORT=${PORT:-")))
+ck("every launcher gets its machine-local file through serve/lib/localenv.sh: a launcher that sources the file "
+   "directly makes a box fact an OVERRIDE, and `PORT=8100 bash serve/webui.sh` -- that script's own documented "
+   "usage line -- came back watching 8180",
+   all("lib/localenv.sh" in (ROOTP / "serve" / n).read_text() and '. "$LOCAL_ENV"' not in
+       (ROOTP / "serve" / n).read_text()
+       for n in ("native-flashnext.sh", "gateway.sh", "webui.sh", "embed.sh", "embed-watch.sh")))
+_lr = subprocess.run(["bash", "-c", "PORT=8100 WEBUI_PORT=8101 DRY=1 bash serve/webui.sh"], cwd=str(ROOTP),
+                     capture_output=True, text=True, timeout=90)
+ck("the file is a DEFAULT, not an override: what the caller exported wins, which is also the order setup.py reads "
+   "launchers in (env -> file -> the script's own default) -- two orders means the tool and the launcher can mean "
+   "different launches while both print a command line",
+   "--port 8101" in _lr.stdout and "--upstream http://127.0.0.1:8100" in _lr.stdout, _lr.stdout[-300:])
+
+# A front door whose PAGE SOURCE is a process nobody started has to say so, not fail every /monitor in silence.
+import socket as _sock
+
+
+def _free():
+    with _sock.socket() as _s:
+        _s.bind(("127.0.0.1", 0))
+        return _s.getsockname()[1]
+
+
+_dead, _gp = _free(), _free()
+_genv = {**os.environ, "GATEWAY_PORT": str(_gp), "PAGES": f"http://127.0.0.1:{_dead}",
+         "LOG": f"/tmp/r9700-gw-pages-probe-{_gp}.log", "PIDF": f"/tmp/r9700-gw-probe-{_gp}.pid"}
+_gr = subprocess.run(["bash", f"{ROOTP}/serve/gateway.sh"], env=_genv, capture_output=True, text=True, timeout=180)
+cout = _gr.stdout + _gr.stderr
+ck("a front door whose page source is not answering says so at start and names both ways out; it does NOT quietly "
+   "point the pages back at the engine -- that reinstates the state where a wedged serve takes its own report down "
+   "with it (notes/supervision.md §4)",
+   "not answering" in cout and "serve/webui.sh" in cout and "PAGES=" in cout, cout[-300:])
+subprocess.run(["bash", f"{ROOTP}/serve/gateway.sh"], env={**_genv, "STOP": "1"},
+               capture_output=True, text=True, timeout=90)
+
 # Who decides whether a death gets restarted: the record, unless someone says WATCH_RESTART out loud.
 ck("a watcher armed with no opinion follows the record -- a hand-armed watcher must not silently flip a "
    "launch's supervision mode",

@@ -21,21 +21,9 @@
 #        POLL_S, KEEP, GPUS (sysfs root), SMI=1 (fill the sysfs gaps from rocm-smi: it opens /dev/kfd, so
 #        leave it off while measuring; SMI="<command>" overrides the default invocation),
 #        VERSION (string to show as the engine version), FORE=1 (no nohup).
-# The machine-local file is sourced BEFORE the ports are defaulted, because it is where this box says where
-# things live: sourcing it after `PORT=${PORT:-8080}` means a box that moved its engine to 8180 gets a sidecar
-# watching 8080 -- a monitor pointed at nothing, printing URLs for a port nothing listens on. Measured here on
-# 2026-11-15: the DRY run said --port 8081 --upstream http://127.0.0.1:8080 while native.env said PORT=8180.
-# A box fact is not a repo fact (notes/launch-methodology.md section 10). The repo default binds the Monitor to
-# loopback, because /api/* carries the engine's config and its request records; a box that serves the Monitor to
-# other machines says so in this file rather than in the repo, and the choice is then written down instead of
-# being whatever the last hand-typed command happened to inherit. Same file the engine launcher reads.
-LOCAL_ENV=${LOCAL_ENV:-$HOME/.config/r9700-stack/native.env}
-if [ -f "$LOCAL_ENV" ]; then set -a; . "$LOCAL_ENV"; set +a
-  # `set -a` because the file holds facts for the CHILD processes too, not only for this script. Sourcing alone
-  # makes shell variables: webui.py reads R9K_WEB_BIND from the environment as its --bind default, and without the
-  # export a sourced line does nothing at all -- measured the same day, a sidecar restarted from a hand-typed
-  # command that sourced the file came up on 127.0.0.1:8099 with the file saying 0.0.0.0.
-  echo "local env: $LOCAL_ENV"; fi
+# The machine-local file, sourced so that what the CALLER exported still wins: see the header of
+# serve/lib/localenv.sh -- it is also why this line sits above the port defaults below.
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/lib/localenv.sh"   # sourced so a typed value still wins
 PORT=${PORT:-8080}
 WPORT=${WEBUI_PORT:-$((PORT + 1))}
 UP=${UPSTREAM:-http://127.0.0.1:$PORT}

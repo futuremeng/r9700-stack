@@ -30,9 +30,13 @@ record when it says so out loud), bounded twice: by the count, and by refusing t
 its rated width. And the front door now serves the Monitor from a standalone sidecar (`PAGES=:8181`,
 `JOURNAL_ATTACH` read-only on the engine's own journal), so the report survives the engine; `:8180/monitor` remains
 the only page that can show the engine's resolved config, and the sidecar's About card says it is silent rather
-than printing caps nobody answered. Fixed on the way: `serve/webui.sh` defaulted its ports **before** sourcing the
-machine-local env file, so a box whose engine lives on 8180 got a sidecar pointed at 8080 — a monitor watching
-nothing, printing URLs for a port nothing listens on.
+than printing caps nobody answered. Two things that the move exposed, fixed with it: `serve/webui.sh` defaulted its
+ports **before** sourcing the machine-local env file, so a box whose engine lives on 8180 got a sidecar pointed at
+8080 — a monitor watching nothing, printing URLs for a port nothing listens on; and `tools/recipe-check.py` compared
+whatever payload the front door returned, so once that was the sidecar it read `serve/webui.py --port 8181 ...` as
+the serve's command line and reported 17 invented deviations ("no `--compilation-config`") on a box whose engine was
+exactly as configured. It now names the payload its flag claim rests on, follows the engine's own page for the argv
+when the front door is a monitor, and calls the flags **unprovable** rather than mismatched when nothing can answer.
 
 ## The admission gate stopped closing on a full pool; it closes on preemptions, and cheap requests pass a shut door
 

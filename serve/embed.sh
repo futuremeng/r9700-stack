@@ -69,7 +69,7 @@ LLAMA_SERVER=${LLAMA_SERVER:-$(command -v llama-server)}
 # RERANK_PORT (per task, settable in native.env) and then the task's own default.
 PORT_INLINE=${PORT:-}
 LOCAL_ENV=${LOCAL_ENV:-$HOME/.config/r9700-stack/native.env}
-[ -f "$LOCAL_ENV" ] && { set -a; . "$LOCAL_ENV"; set +a; echo "local env: $LOCAL_ENV"; }
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/lib/localenv.sh"   # sourced so a typed value still wins
 PORT=${PORT_INLINE:-$([ "$TASK" = rerank ] && echo "${RERANK_PORT:-$DEF_PORT}" || echo "${EMBED_PORT:-$DEF_PORT}")}
 BIND=${EMBED_BIND:-${R9K_WEB_BIND:-127.0.0.1}}
 CORES=${CORES:-$DEF_CORES}                # taskset range: stay off the engine's ~11 cores. On THIS box cpu 17

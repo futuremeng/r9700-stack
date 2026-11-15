@@ -20,8 +20,7 @@
 # live in serve/gateway.py and two copies of a default is how a launcher starts lying about the running one.
 
 GATEWAY_PORT=${GATEWAY_PORT:-8080}
-LOCAL_ENV=${LOCAL_ENV:-$HOME/.config/r9700-stack/native.env}
-[ -f "$LOCAL_ENV" ] && { set -a; . "$LOCAL_ENV"; set +a; echo "local env: $LOCAL_ENV"; }
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/lib/localenv.sh"   # sourced so a typed value still wins
 BIND=${GATEWAY_BIND:-${R9K_WEB_BIND:-127.0.0.1}}
 ENGINE_PORT=${ENGINE_PORT:-8180}
 EMBED_PORT=${EMBED_PORT:-8090}
@@ -98,6 +97,16 @@ for i in $(seq 1 15); do
 done
 [ "$code" = 200 ] || { echo "not healthy after 15 s (the engine behind it may not be up yet): $LOG" >&2; exit 1; }
 echo "gateway up: pid $PID on http://$BIND:$GATEWAY_PORT  (engine $ENGINE, embed $EMBED, rerank $RERANK, pages $PAGES)"
+# The page SOURCE is a choice, and a choice can point at a process that is not running. PAGES moved to a standalone
+# sidecar on 2026-11-15 so the Monitor would outlive the engine, but nothing here guarantees the sidecar is up:
+# after a reboot, or on a box where nobody starts it, every /monitor through this door is a failure. Say that, and
+# name both ways out. What must NOT happen is quietly pointing the pages back at the engine -- that reinstates the
+# exact state in which a wedged serve takes its own report down with it (notes/supervision.md §4).
+if ! curl -fsS -m 2 "$PAGES/health" >/dev/null 2>&1; then
+  echo "  WARN  the page source $PAGES is not answering: /monitor and /about through this door will fail." >&2
+  echo "        start it:  bash serve/webui.sh" >&2
+  echo "        or serve pages from the engine again: PAGES=$ENGINE in ${LOCAL_ENV:-$HOME/.config/r9700-stack/native.env}" >&2
+fi
 echo "  gate:     http://127.0.0.1:$GATEWAY_PORT/api/gate  -- why a request waited, and what the gate is set to"
 echo "  clients:  http://<box>:$GATEWAY_PORT/v1/chat/completions | /v1/embeddings | /v1/rerank"
 echo "  monitor:  http://<box>:$GATEWAY_PORT/monitor"

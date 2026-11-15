@@ -14,7 +14,7 @@
 EMBED_PORT=${EMBED_PORT:-8090}
 WPORT=${WATCH_PORT:-8091}
 LOCAL_ENV=${LOCAL_ENV:-$HOME/.config/r9700-stack/native.env}
-if [ -f "$LOCAL_ENV" ]; then set -a; . "$LOCAL_ENV"; set +a; echo "local env: $LOCAL_ENV"; fi
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/lib/localenv.sh"   # sourced so a typed value still wins
 BIND=${WATCH_BIND:-${EMBED_WATCH_BIND:-127.0.0.1}}
 LOG=${WATCH_LOG:-$HOME/logs/embed-watch-$WPORT.log}; mkdir -p "$(dirname "$LOG")"
 DIR=$(dirname "$(realpath "$0")")

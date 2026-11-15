@@ -47,15 +47,10 @@ fi
 # ones: HOST=127.0.0.1, which is also upstream's (`args.host or "127.0.0.1"`). This box is not served over loopback
 # -- `ss` shows 192.168.1.130 and 192.168.1.200 holding :8080 open -- so the bind address is a fact about the box,
 # not about the code, and it lives here where it survives a checkout reset and gets named in the log at every
-# launch instead of being remembered by whoever last typed the command. LOCAL_ENV= overrides the path.
-# notes/launch-methodology.md section 10.
-LOCAL_ENV=${LOCAL_ENV:-$HOME/.config/r9700-stack/native.env}
-if [ -f "$LOCAL_ENV" ]; then
-  # `set -a` so the file's facts reach the child processes as well as this script: sourcing alone only makes shell
-  # variables, and anything a child reads from the environment (serve/webui.py's R9K_WEB_BIND default, for one)
-  # would silently keep its own default. serve/webui.sh sources the same file the same way.
-  set -a; . "$LOCAL_ENV"; set +a; echo "local env: $LOCAL_ENV"
-fi
+# launch instead of being remembered by whoever last typed the command. LOCAL_ENV= overrides the path,
+# and a value the CALLER exported beats the file (serve/lib/localenv.sh -- the same order setup.py
+# reads the launchers in, which is the only way the tool and the launcher can mean the same launch).
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/lib/localenv.sh"   # sourced so a typed value still wins
 : ${HOST:=127.0.0.1}
 # stock ROCm 7.2-era vLLM wheels link OpenMPI; on a box without root we unpacked the runtime debs locally
 OPENMPI=${OPENMPI:-$HOME/opt/openmpi/usr/lib/x86_64-linux-gnu}

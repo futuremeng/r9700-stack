@@ -1870,16 +1870,22 @@ ck("this box's machine-local env exists, binds 0.0.0.0, and lives outside the re
 # the engine config and the request records), and this box reads the Monitor from other machines. The choice is
 # written in the machine-local file, not in the repo, and both launchers read that file the same way.
 _wsh = open(os.path.join(ROOT, "serve/webui.sh")).read()
+_libenv = open(os.path.join(ROOT, "serve/lib/localenv.sh")).read()
 ck("the sidecar's bind is resolved flag -> machine-local file -> repo default, and passed explicitly on the "
-   "command line so the running process states its own bind",
-   'LOCAL_ENV=${LOCAL_ENV:-$HOME/.config/r9700-stack/native.env}' in _wsh
+   "command line so the running process states its own bind (the file's PATH default lives in the helper now, and "
+   "webui.py still reads R9K_WEB_BIND from the environment)",
+   ': "${LOCAL_ENV:=$HOME/.config/r9700-stack/native.env}"' in _libenv and "lib/localenv.sh" in _wsh
    and 'BIND=${WEBUI_BIND:-${R9K_WEB_BIND:-127.0.0.1}}' in _wsh and 'ARGS+=(--bind "$BIND")' in _wsh
    and "bind $BIND" in _wsh)
-ck("a fact meant for a child process is sourced with set -a, in BOTH launchers",
+ck("a fact meant for a child process is sourced with set -a, in the one place every launcher now sources",
    # Sourcing alone only makes shell variables. Measured the same day: a sidecar restarted from a hand-typed
    # command that sourced the file came up on 127.0.0.1:8099 while the file said 0.0.0.0, because webui.py reads
-   # R9K_WEB_BIND out of the ENVIRONMENT as its --bind default.
-   'set -a; . "$LOCAL_ENV"; set +a' in _wsh and 'set -a; . "$LOCAL_ENV"; set +a' in lfsrc)
+   # R9K_WEB_BIND out of the ENVIRONMENT as its --bind default. Since 2026-11-15 the sourcing itself lives in
+   # serve/lib/localenv.sh -- which also keeps the file a DEFAULT, so an exported value from the caller wins.
+   'set -a; . "$LOCAL_ENV"; set +a' in _libenv
+   and all("lib/localenv.sh" in open(os.path.join(ROOT, "serve/" + n)).read()
+           for n in ("webui.sh", "native-flashnext.sh", "gateway.sh", "embed.sh", "embed-watch.sh")),
+   "the helper or a launcher went back to sourcing the file inline")
 ck("this box's file states the bind addresses -- the gateway that faces the LAN, and the engine behind it",
    all(k in _localenv().read_text() for k in ("HOST=127.0.0.1", "PORT=8180", "GATEWAY_BIND=0.0.0.0",
                                               "GATEWAY_PORT=8080", "EMBED_BIND=127.0.0.1")), str(_localenv()))
@@ -2210,7 +2216,7 @@ if _live_st is None:
     ck("gate end-to-end on the live payload (no live serve right now - skipped)", True)
 else:
     _fmm = "/tmp/r9700-recipe-flags-mm.json"
-    _s = dict(_live_st)
+    _s = dict(_mm_st)
     # The live serve matches this tree (that is what a green gate means), so the deviation has to be manufactured by
     # deciding multimodal the OTHER way than the tree does -- whichever way that is now.
     _s["argv"] = _mm_set(_s.get("argv") or "", not _mm_live)
@@ -2221,12 +2227,28 @@ else:
        _r.returncode == 1 and "launch flag(s) differ" in _r.stdout
        and ("--limit-mm-per-prompt" in _r.stdout or "--language-model-only" in _r.stdout), _r.stdout[:180])
     _fna = "/tmp/r9700-recipe-flags-noargv.json"
-    Path(_fna).write_text(json.dumps({k: v for k, v in _live_st.items() if k != "argv"}))
+    Path(_fna).write_text(json.dumps({k: v for k, v in _mm_st.items() if k != "argv"}))
     _r = subprocess.run([sys.executable, f"{ROOT}/tools/recipe-check.py", _fna],
                         capture_output=True, text=True, timeout=180)
     ck("gate: a payload with no argv says the FLAGS ARE UNPROVABLE instead of claiming they match "
        "(unprovable is not matching)",
        "UNPROVABLE" in _r.stdout and "every launch flag" not in _r.stdout, _r.stdout[:200])
+    ck("a MONITOR's own argv is never compared to the launcher: a sidecar's command line carries --port/--upstream "
+       "and none of the serve's flags, and comparing it invented 17 deviations on 2026-11-15 ("'"'"--compilation-config: "
+       "the live process was launched with nothing"'"'"') on a box whose engine was exactly as configured",
+       rc.looks_like_monitor("/x/serve/webui.py --port 8181 --upstream http://127.0.0.1:8180") is True
+       and rc.looks_like_monitor("/home/jiulu/venv-r9700/bin/vllm serve /models/M --port 8180") is False
+       and rc.looks_like_monitor("") is False)
+    _fsc = "/tmp/r9700-recipe-sidecar-payload.json"
+    Path(_fsc).write_text(json.dumps(_live_st))
+    _rs = subprocess.run([sys.executable, f"{ROOT}/tools/recipe-check.py", _fsc],
+                         capture_output=True, text=True, timeout=180)
+    ck("the front door's payload is a sidecar's right now, and the check still says something true: it either "
+       "reaches the engine's own page for the argv (saying so) or calls the flags unprovable -- it never reports "
+       "flags the serve passes as missing",
+       "--compilation-config" not in _rs.stdout and "--kv-cache-dtype" not in _rs.stdout
+       and ("PRODUCTION recipe" in _rs.stdout or "UNPROVABLE" in _rs.stdout), _rs.stdout[:300])
+    Path(_fsc).unlink(missing_ok=True)
     Path(_fmm).unlink(missing_ok=True)
     Path(_fna).unlink(missing_ok=True)
     # The mm-ON state of this page has never been read by a human, because reaching it means launching mm. So build
