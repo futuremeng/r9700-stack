@@ -859,3 +859,63 @@ The other half of the same complaint: the CPU-sidecar row (embeddings, rerank) i
 grid and held two cards, so a quarter of the row was empty — which reads as two serves missing rather than as a box
 that runs two. `section.sidecars` now sizes by its contents (`repeat(auto-fit, minmax(260px, 1fr))`), pinned in
 `tests/test_webui.py` because a rendered page shows the hole and nothing else says why.
+
+
+## 20. What the 11 fault lines actually are: two different faults on one card
+
+The page said "11 lines / 8 events" and nobody had asked what the eleven were. Read every one with its driver
+block (`journalctl -k --boot -o short-iso`, the 14 lines after each `[gfxhub] page fault`): they split into two
+families, and only one of them is the fault this whole file is about. All 11 name `0000:c3:00.0`.
+
+**Family B — 6 events, 6 lines, all of them a vLLM launch.** One line each (`MORE_FAULTS: 0x0`).
+
+| when | pid | what that pid was |
+|---|---|---|
+| 11-14 20:59:09 | 251454 | the 6.8-day launch's rank 0 (`_causal_conv1d_fwd_kernel` in its log) |
+| 11-15 05:11:18 | 466055 | `Worker_TP0` of the restarted production launch (`CatArrayBatchedCopy_contig`) |
+| 11-15 06:28:33 | 499003 | soak driver arm, `R9K_GDN_DEBUG=1` (§12's first hit, 431 s) |
+| 11-15 06:55:41 | 513343 | soak arm with `R9K_GDN_DEBUG_ALL=1` — named `layers.1` (§12) |
+| 11-15 09:25:56 | 565881 | soak arm on the #61174-patched venv (§14: the candidate is disproved) |
+| 11-15 09:52:00 | 591142 | `Worker_TP1` of the shuffled-card launch — on `c3:00.0` (§15) |
+
+```
+ring:24  Faulty UTCL2 client ID: SQC (data) (0xa)
+PERMISSION_FAULTS: 0x3   MAPPING_ERROR: 0x0   RW: 0x0   MORE_FAULTS: 0x0
+GCVM_L2_PROTECTION_FAULT_STATUS:0x00801430   in page … from client 10
+```
+
+`RW: 0x0` is a **read**. `SQC (data)` is the scalar/data path of a compute queue: a shader asked the VM for an
+address its page tables do not map, the gfxhub faulted it, and the driver tears down that process's VM context --
+which is the "illegal memory access / Worker proc VllmWorker-N died" line in the engine log, not a warning. One
+line per event because `MORE_FAULTS` was clear.
+
+**Family A — 2 events, 5 lines, neither one a vLLM launch.** Two and three lines because `MORE_FAULTS: 0x1`.
+
+| when | pid | what that pid was |
+|---|---|---|
+| 11-06 07:45:03 | 10904 | `logs/kvf8b-031139.log` -- a KV-cache-format bench, started 03:11:39 |
+| 11-08 11:49:25 | 97123 | `logs/pin033-A0.log` -- an experiment whose own tail is a GPU HANG dump (`VGPU(0x3a5ee800)`, `launch.dead.log` kept) |
+
+```
+ring:40  Faulty UTCL2 client ID: TCP (0x8)
+PERMISSION_FAULTS: 0x5   MAPPING_ERROR: 0x0   RW: 0x1   MORE_FAULTS: 0x1
+GCVM_L2_PROTECTION_FAULT_STATUS:0x00841051
+```
+
+Different ring, different UTCL2 client, `PERMISSION_FAULTS` 0x5 against 0x3, and **`RW: 0x1` -- a write** against
+a read. Nothing in §1-§19's mechanism (mixed prefill + spec-decode steps, `CatArrayBatchedCopy_contig`, the
+block-table rows) reaches a texture-client write on ring 40.
+
+What that changes, and what it does not:
+
+* "The same fault 11 times" was never true. The honest count is **6 events of the fault we are hunting**, and two
+  older events of a different shape from two experiments that are long over.
+* It does **not** weaken §15's conclusion, it widens it: `c3:00.0` has taken gfxhub page faults under two
+  unrelated workloads, on two different clients, on both a read and a write. A card that faults for two
+  different pieces of software in two different ways is more suspect as a card than one that faults for one
+  kernel.
+* The Monitor's count is deliberately the family-blind one for now: `kernel_faults()` matches
+  `[gfxhub] page fault` and nothing else, so 11 includes the 5 bench lines. That is the conservative choice
+  (a fault is never hidden), but it is now a known, stated imprecision rather than an assumption -- the field to
+  parse if the number ever needs to mean "our fault" specifically is `Faulty UTCL2 client ID` plus `RW`, both of
+  which are already in the journal block the reader is told to open.
