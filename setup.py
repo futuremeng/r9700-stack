@@ -606,6 +606,160 @@ def wait_up(port, proc=None, sess=None, secs=420):
 # into a degrading link turns one fault into a loop.
 WATCH_TICK = int(os.environ.get("WATCH_TICK", "10"))        # s between liveness probes
 
+# Restart on a death, or keep recording it? §4's rule ("seen, not resurrected") is still the default, and this
+# block does not quietly weaken it: WATCH_RESTART=1 has to be said out loud, and even then the watcher restarts
+# only a death whose log carries a signature this box has actually seen, only when no ranks are left behind, and
+# at most RESTART_MAX times inside RESTART_WINDOW_S. The reason to have it at all is measured: the 11-14 fault
+# and the 11-15 fault were both device faults (same card, same page-fault shape), both left the engine gone for
+# good, and both were followed by an hour or more of a LAN port answering "connection refused" while a human
+# found out by asking. A restart in that case is the correct first response -- provided it stops after a few
+# tries, because a serve that restarts into a degrading link turns one fault into a loop.
+RESTART_MAX = int(os.environ.get("RESTART_MAX", "3"))                    # restarts allowed inside the window
+RESTART_WINDOW_S = int(os.environ.get("RESTART_WINDOW_S", "3600"))       # the breaker's window
+
+# A crash can leave its ranks behind, and then nothing can come back: on 2026-11-15 06:28 the device fault killed
+# Worker_TP0 and left Worker_TP1/2/3 sitting on 32.3/32.3/32.2 GiB (rocm-smi: 32,371,838,976 B on each of three
+# cards) with the engine gone. Those ranks ignore SIGTERM, so the record read "alive", the watcher waited, and
+# the only way back was for a human to run STOP -- which is exactly the hour-plus of "connection refused" this
+# whole block exists to avoid. RESTART_STOP=1 (the default once WATCH_RESTART=1 has been said out loud) lets the
+# watcher run the RECIPE'S OWN stop -- `STOP=1 bash serve/<recipe>`, the same command the operator would type --
+# to clear ranks that outlived their engine, and only for a death that already passed the signature gate. It is
+# still not a free pass to kill somebody else's launch: it needs this launch's record, a known crash signature,
+# and the ranks still there WATCH_WEDGE_TICKS probes in a row (a launch that is merely loading has ranks and no
+# /health too, and stays untouched). RESTART_STOP=0 keeps the older, purely passive behaviour.
+RESTART_STOP = os.environ.get("RESTART_STOP", "1") == "1"
+RESTART_STOP_WAIT = int(os.environ.get("RESTART_STOP_WAIT", "120"))      # s to let the stop clear the ranks
+WATCH_WEDGE_TICKS = int(os.environ.get("WATCH_WEDGE_TICKS", "2"))        # silent probes before "wedged"
+
+# The signatures, each one from this box's own logs rather than from a list on the internet.
+CRASH_SIGS = (
+    ("illegal memory access",
+     "2026-11-15 05:11:18, ProcessGroupNCCL's report of the device fault (Worker VllmWorker-0 died unexpectedly)"),
+    ("EngineDeadError", "vLLM's own: the engine core is gone behind a live front door -- both 11-14 and 11-15"),
+    ("HSA_STATUS_ERROR", "the ROCr runtime's status for a memory/aperture fault on a kernel"),
+    ("died unexpectedly", "2026-11-15 05:11: 'Worker proc VllmWorker-0 died unexpectedly'"),
+)
+
+
+def crash_sig(tail):
+    """The first known crash signature in the log tail, or None. Deliberately narrow: `STOP=1`, a killed tmux
+    session and a machine reboot all end a launch with no signature here, and none of them should be answered
+    with a relaunch."""
+    for s, _ in CRASH_SIGS:
+        if s in tail:
+            return s
+    return None
+
+
+def log_tail(path, nbytes=262144):
+    """The end of the launch log, which is where the fault line is. A big log is read backwards because these
+    files run to hundreds of MB on a long launch (setup-005730.log was 240 MB with 6.8 days in it)."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            end = fh.tell()
+            fh.seek(max(0, end - nbytes))
+            return fh.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def gpu_links(root="/sys/bus/pci/devices"):
+    """[(bdf, speed, width, max_speed, max_width)] for the AMD display-class devices, straight from sysfs.
+
+    Read before a restart, because §4's warning is specifically about restarting INTO a degraded link, and the
+    negotiated link is the one fact in this box's failure family that can be measured before the relaunch rather
+    than after it. Free to read (ordinary user, no root, no /dev/kfd), and it is the same pair the Monitor's card
+    badge shows (Gen5 x16, or the generation it came up short at).
+    """
+    rows = []
+    for p in Path(root).glob("*"):
+        try:
+            if (p / "vendor").read_text().strip() != "0x1002":          # not AMD
+                continue
+            if not (p / "class").read_text().strip().startswith("0x0300"):   # not a display controller
+                continue
+            sp = float((p / "current_link_speed").read_text().split()[0])
+            ms = float((p / "max_link_speed").read_text().split()[0])
+            w, mw = int((p / "current_link_width").read_text()), int((p / "max_link_width").read_text())
+            rows.append((p.name, sp, w, ms, mw))
+        except (OSError, ValueError, IndexError):
+            continue                                                    # a card busy enough to refuse is not a rating
+    return rows
+
+
+def link_short(rows):
+    """One phrase per card running below what it rated -- the shape §4 says must not be restarted into.
+
+    Deliberately about the RATING rather than about error counters: this box carries dozens of correctable AERs a
+    minute through a weight load at a full 32.0 GT/s x16 (notes/webui.md), so a counter moving is not the signal;
+    a link that negotiated below its rating is."""
+    return [f"{bdf} at {sp} GT/s x{w}, rated {ms} GT/s x{mw}"
+            for (bdf, sp, w, ms, mw) in rows if sp < ms or w < mw]
+
+
+def stop_wedge_would(rec, restart, left, sig, enabled):
+    """Pure half of the wedge question, so tests/test_setup.py can hold it to its rules without a wedged box in
+    front of it: may this watcher run the recipe's OWN stop to clear ranks that outlived their engine?
+
+    All five have to be true: the switch is on (RESTART_STOP, default on once restarts are armed), a restart was
+    actually asked for (WATCH_RESTART -- a purely recording watcher never touches anybody's processes), ranks are
+    really there, the death carries a known crash signature (an operator's STOP or a killed session clears with no
+    signature and is never answered this way), and the record names a recipe whose stop we can run. Without the
+    signature gate, a watcher would be killing a launch that is merely slow to answer."""
+    return bool(enabled and restart and left and sig and rec and rec.get("recipe"))
+
+
+def stop_wedge(rec):
+    """Run the recipe's own stop: `STOP=1 bash serve/<recipe>` -- the exact command the operator would type, not a
+    hand-rolled kill. The launcher knows which processes are its ranks and how to stop ranks that ignore SIGTERM;
+    an ad-hoc `pkill` here would be a second, worse opinion about the same processes.
+
+    Returns (rc, last output line) for the record."""
+    script = ROOT / "serve" / rec["recipe"]
+    try:
+        p = subprocess.run(["bash", str(script)], env=dict(os.environ, STOP="1"),
+                           capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.SubprocessError) as e:
+        return 1, f"{type(e).__name__}: {e}"
+    lines = [x for x in (p.stdout + "\n" + p.stderr).splitlines() if x.strip()]
+    return p.returncode, (lines[-1] if lines else "no output")
+
+
+def restart_ok(rec, tail, left, now, hist, enabled, cap=RESTART_MAX, window=RESTART_WINDOW_S, links=None):
+    """(restart?, why). Pure, so tests/test_setup.py can hold the breaker to its rules without killing a box.
+
+    Four gates, in the order that costs nothing: switched on; a known crash signature in the log; no VLLM ranks
+    still alive (the 11-14 fault left its ranks running for 11 more minutes -- restarting into that makes two
+    launches fighting for four cards, which is a different and worse outage); and the breaker. `hist` is the
+    restart timestamps on the record, so the cap survives the watcher that set them.
+
+    `links` is the PCIe gate: a list of cards measured BELOW their rating (empty is healthy), or None when sysfs
+    would not say. A short link stops the restart -- that is the loop §4 warns about, and a four-card serve
+    loading 40 GB of weights through a link that came up at Gen3 is how one fault becomes an afternoon. An
+    unknown link does not stop it, and says so in the reason: refusing to recover because one sysfs file was
+    unreadable is its own outage, and the reader is told which case they are looking at.
+    """
+    if not enabled:
+        return False, "off (WATCH_RESTART unset): \u00a74's rule stands, seen not resurrected"
+    sig = crash_sig(tail)
+    if not sig:
+        return False, "no known crash signature in the log tail"
+    if left:
+        return False, f"{left} VLLM process(es) still alive: a wedge is not a crash, and a second launch into " \
+                      f"the same four cards is a worse outage than the one on screen"
+    if not rec or not rec.get("recipe"):
+        return False, "the record names no recipe to re-run"
+    if links:
+        return False, "PCIe link(s) below rating, not restarting into that (\u00a74): " + "; ".join(links)
+    recent = [t for t in (hist or []) if now - float(t) <= window]
+    if len(recent) >= cap:
+        return False, (f"breaker: {len(recent)} restart(s) in the last {window // 60} min "
+                       f"(RESTART_MAX={cap}) -- a serve restarting into a degrading link turns one fault into "
+                       f"a loop (notes/launch-methodology.md \u00a74)")
+    return True, f"{sig}; restart {len(recent) + 1} of {cap} in {window // 60} min" \
+        + ("" if links is not None else " (link state unreadable: not a block, but nobody measured it)")
+
 
 def superseded(prev, me, claimed_at):
     """Has another watcher taken this record over from us?
@@ -645,12 +799,18 @@ def watch_tick(prev, sess, dead, now, me=None, claimed_at=None):
     return "record", {"died_at": int(now), "reason": dead}
 
 
-def watch_dead(port, sess):
+def watch_dead(port, sess, prev=None, quiet=0):
     """Why the launch is gone, or None while it is still there.
 
     With tmux the session IS the probe (the pane closes when the pipeline ends, per start_tmux). Without one it
     is /health AND the process count: a launch still loading weights has no /health yet, and calling that dead
-    is how a watcher writes a lie into the record."""
+    is how a watcher writes a lie into the record.
+
+    The third case is the one that bit on 2026-11-15 06:28: the session stayed up (the pane's pipeline had not
+    closed), the ranks stayed alive holding 32 GiB a card, and /health went silent -- so every probe said "not
+    gone" and the record never got a death at all. A launch that had ALREADY answered /health once (the record's
+    up_at) and then goes quiet, twice in a row, with a known fault line at the end of its log, is not loading:
+    it crashed and its ranks are wedged. `prev=None` (a caller with no record) keeps the old, narrower answer."""
     if sess and out(["tmux", "has-session", "-t", sess])[0] != 0:
         return f"the tmux session {sess} holding it is gone"
     try:
@@ -659,9 +819,34 @@ def watch_dead(port, sess):
                 return None
     except (urllib.error.URLError, OSError):
         pass
-    if left_vllm():
-        return None                       # ranks present, no answer: still loading, or wedged -- not "gone"
-    return f"no /health answer on {port} and no VLLM process left"
+    n = left_vllm()
+    if not n:
+        return f"no /health answer on {port} and no VLLM process left"
+    if prev is not None and prev.get("up_at") and quiet >= WATCH_WEDGE_TICKS:
+        sig = crash_sig(log_tail(prev.get("log") or ""))
+        if sig:
+            return (f"no /health answer on {port}, {n} VLLM rank(s) still holding the GPUs, and '{sig}' in its "
+                    f"log: crashed and wedged (the ranks ignore SIGTERM)")
+    return None                           # ranks present, no answer: still loading -- not "gone"
+
+
+def restart_launch(rec):
+    """Re-run THIS launch through setup.py, not through a bespoke restart path.
+
+    That choice is the whole safety of the thing: the restart goes down the same code a human would use, so it
+    re-does the /health wait, the context check, the gateway bring-up, the recipe check and the watcher arming
+    instead of inventing a second, slightly different launch that nothing else in this repo tests. The recipe,
+    the pages choice, the stored configuration name and the extra flags this launch was given all come off the
+    record, because a restart that silently drops the flags someone typed is a restart into a different launch.
+    """
+    cmd = [sys.executable, str(ROOT / "setup.py"), "--yes", "--launch", rec["recipe"],
+           "--webui", rec.get("webui") or "same"]
+    if rec.get("config"):
+        cmd += ["--config", rec["config"]]
+    if rec.get("no_tmux"):
+        cmd += ["--no-tmux"]
+    cmd += list(rec.get("rest") or [])
+    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, start_new_session=True)
 
 
 def watch_loop(port, sess, log):
@@ -671,14 +856,24 @@ def watch_loop(port, sess, log):
     claim settles who speaks, and a superseded watcher exits saying so instead of quietly stamping the record
     from a port it picked up in an older run."""
     me, claimed = os.getpid(), int(time.time())
+    quiet = 0                                            # consecutive probes with no /health answer
     rec = state_read("launch.json")
+    # Would this watcher restart, and is that answer knowable afterwards? arm_watch puts it on the record; a
+    # watcher armed BY HAND carries no such field, so its own environment decides and the claim writes the
+    # decision down -- "would it have come back?" must not depend on remembering which shell started the watcher.
+    restart = (bool(rec.get("restart_on_crash")) if rec and "restart_on_crash" in rec
+               else os.environ.get("WATCH_RESTART", "0") == "1")
     if rec is not None and (rec.get("session") or None) == (sess or None):
-        state_update("launch.json", watcher=me, watcher_at=claimed)
+        # `restart_max` travels with the decision, not with the default: a record that says `restart_on_crash:
+        # false, restart_max: 3` reads as "it would come back, three times an hour" to whoever finds it at 05:00.
+        state_update("launch.json", watcher=me, watcher_at=claimed, restart_on_crash=restart,
+                     restart_max=(RESTART_MAX if restart else 0), restart_window_s=RESTART_WINDOW_S)
     else:
         warn("no launch.json for this session: the watcher reports on stdout only")
     while True:
-        d = watch_dead(port, sess)
         rec = state_read("launch.json")
+        d = watch_dead(port, sess, rec, quiet)
+        quiet = 0 if d is None else quiet + 1
         act, fields = watch_tick(rec, sess, d, time.time(), me, claimed)
         if act == "":
             time.sleep(WATCH_TICK)
@@ -689,10 +884,49 @@ def watch_loop(port, sess, log):
                        f"{rec.get('watcher_at')} -- that one speaks for this launch. Nothing written.")
             return 0
         line += f"this launch is gone: {d}"
+        restarted = None
         if act == "record":
             state_update("launch.json", **fields)
-            line += " -- recorded (launch.json: died_at, reason). Nothing restarted it: see " \
-                    "notes/launch-methodology.md \u00a74."
+            # The breaker's decision is printed either way, with the reason, because "why is the box back up"
+            # and "why is it still down" are the same question and both get asked at 05:00.
+            rst = state_read("restarts.json") or {}
+            hist = [t for t in (rst.get("at") or []) if isinstance(t, (int, float))]
+            tail = log_tail(rec.get("log") or log)
+            sig = crash_sig(tail)
+            left = left_vllm()
+            cleared = None
+            if stop_wedge_would(rec, restart, left, sig, RESTART_STOP):
+                say(line + f" -- {left} rank(s) are still holding the GPUs behind the fault; running this "
+                           f"launch's own stop (STOP=1 bash serve/{rec['recipe']}) so a relaunch has cards to "
+                           f"load onto. Ranks ignore SIGTERM; this is the command an operator would type.")
+                before, rc, out_txt = left, 1, ""
+                rc, out_txt = stop_wedge(rec)
+                deadline = time.time() + RESTART_STOP_WAIT
+                while left_vllm() and time.time() < deadline:
+                    time.sleep(3)
+                left = left_vllm()
+                cleared = {"at": int(time.time()), "rc": rc, "ranks_before": before, "ranks_after": left,
+                           "stop": f"STOP=1 bash serve/{rec['recipe']}", "last_line": out_txt}
+                say(line + f" -- after the stop: {left} rank(s) left ({out_txt})")
+            # RESTART_LINK=0 skips the sysfs gate (cards too busy to read, or an operator who has already looked
+            # at the links and just wants the serve back).
+            rows = gpu_links() if os.environ.get("RESTART_LINK", "1") != "0" else []
+            do, why = restart_ok(rec, tail, left, time.time(), hist, restart,
+                                 links=link_short(rows) if rows else None)
+            if do:
+                state_write("restarts.json", {
+                    "session": rec.get("session"), "at": hist + [int(time.time())],
+                    # the death outlives the record it was written into: the new launch rewrites launch.json,
+                    # so the reason and the signature live here as well
+                    "last": {"died_at": fields["died_at"], "reason": fields["reason"], "sig": sig,
+                             "recipe": rec.get("recipe"), "config": rec.get("config"),
+                             "cleared_ranks": cleared}})
+                p = restart_launch(rec)
+                restarted = f"{why} (setup.py pid {p.pid})"
+                line += f" -- RESTARTING: {restarted}. The new launch arms its own watcher and rewrites " \
+                        f"launch.json; the death stays in .r9700-state/restarts.json."
+            else:
+                line += f" -- nothing restarted it ({why}): see notes/launch-methodology.md \u00a74."
         else:
             line += " -- nothing written: that record is not this launch's, or its death is already on it"
         say(line)
@@ -712,7 +946,14 @@ def arm_watch(port, sess, log):
                              env=dict(os.environ, PORT=str(port), LOG=log or "",
                                       WATCH_SESSION=sess or ""),
                              stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, start_new_session=True)
-        state_update("launch.json", watcher=p.pid, watcher_at=int(time.time()))
+        armed = os.environ.get("WATCH_RESTART", "0") == "1"
+        state_update("launch.json", watcher=p.pid, watcher_at=int(time.time()),
+                     # what the watcher would do with a death, on the record, so the answer to "would it have
+                     # come back?" does not depend on remembering the shell that launched it -- and the cap is
+                     # written as 0 when it is off, because `restart_max: 3` beside `restart_on_crash: false`
+                     # reads like a crash would be answered
+                     restart_on_crash=armed,
+                     restart_max=(RESTART_MAX if armed else 0), restart_window_s=RESTART_WINDOW_S)
         return p.pid
     except OSError as e:
         warn(f"no watcher on this launch ({e}): died_at/reason will stay unset, so a death after /health is "
@@ -1527,6 +1768,33 @@ def start_tmux(sess, script, env, rest, log):
     return out(args + [cmd], timeout=60)
 
 
+def corpse_session(sess, left, rec):
+    """Is a live tmux session a corpse? (close it?, why)
+
+    start_tmux makes the session the liveness probe, and it is a good probe while anything is running -- but
+    neither a crash nor STOP closes it, and that turns the next launch away. Measured 2026-11-15: the launch
+    faulted at 06:28, `STOP=1` cleared its ranks, and at 06:45 `setup.py --launch native-flashnext.sh` still
+    refused with "a tmux session named r9700-native-flashnext is already up" -- a session holding nothing, 17
+    minutes after the engine stopped, was keeping the box down.
+
+    Refusing stays the default: a session with ranks in it, or one the record does not vouch for, or one whose
+    launch might still be loading, is not ours to close. Only the record's own session, with no VLLM process in
+    it and a record that says the launch is over (stamped dead, or it answered /health once and now holds
+    nothing), gets closed -- because that is the state in which the session IS the launch, and the launch is gone.
+    """
+    if left:
+        return False, f"{left} VLLM process(es) are running in it"
+    if not rec or (rec.get("session") or None) != (sess or None):
+        return False, "the record does not name this session, so it is somebody else's pane"
+    if rec.get("died_at") is not None:
+        return True, ("the record says this launch died "
+                      f"{time.strftime('%H:%M:%S', time.localtime(rec['died_at']))} and nothing is running in it")
+    if rec.get("up_at") is not None:
+        return True, "it answered /health once and now holds no VLLM process: the pane outlived the engine"
+    return False, ("the record does not say this launch is over -- a load that has not answered /health yet has "
+                   "no ranks either, and that is not a corpse")
+
+
 def launch_status():
     """Report the launch this script last started and whether it is still up.
 
@@ -1634,9 +1902,14 @@ def launch(cfg, have="docker"):
         if not cfg.no_tmux and shutil_which("tmux"):
             sess = "r9700-" + pick[:-3]
             if out(["tmux", "has-session", "-t", sess])[0] == 0:
-                bad(f"a tmux session named {sess} is already up -- not starting a second launch into it",
-                    f"tmux attach -t {sess}   (or ./setup.sh --no-tmux for a plain detached start)")
-                return
+                kill, why = corpse_session(sess, left_vllm(), state_read("launch.json"))
+                if not kill:
+                    bad(f"a tmux session named {sess} is already up -- not starting a second launch into it",
+                        f"tmux attach -t {sess}   ({why}; or ./setup.sh --no-tmux for a plain detached start)")
+                    return
+                say(f"    the session {sess} is a corpse: {why} -- closing it so the launch has a pane to "
+                    f"start in (that is what kept this box down for 17 min on 2026-11-15)")
+                out(["tmux", "kill-session", "-t", sess])
             rc, txt = start_tmux(sess, script, launcher_env(script.read_text(errors="replace"),
                                                             WEBUI_ENV[cfg.webui], log), cfg.rest, log)
             if rc != 0:
@@ -1670,6 +1943,9 @@ def launch(cfg, have="docker"):
     state_write("launch.json", {"recipe": pick, "webui": WEBUI_ENV[cfg.webui], "port": port, "path": have,
                                 "started": int(time.time()), "log": log, "session": sess,
                                 "pid": proc.pid if proc else None, "up_at": None, "died_at": None,
+                                # what to re-run, if a watcher is ever told to: the recipe alone is not this launch,
+                                # because the flags typed on top of it and the tmux choice are part of the shape
+                                "rest": list(cfg.rest), "no_tmux": bool(cfg.no_tmux),
                                 "config": getattr(cfg, "conf_name", None)})
     say(f"    waiting for http://127.0.0.1:{port}/health ...")
     what, dt, why = wait_up(port, proc, sess)
@@ -1693,8 +1969,13 @@ def launch(cfg, have="docker"):
         pid = arm_watch(port, sess, log)
         if pid:
             say(f"    watching it (pid {pid}): the moment it stops goes into .r9700-state/launch.json as "
-                f"died_at/reason, and the same line is appended to {log}. It records and does not restart "
-                f"(notes/launch-methodology.md \u00a74).")
+                f"died_at/reason, and the same line is appended to {log}. "
+                + ("It also restarts the launch on a KNOWN crash signature, up to "
+                   f"{RESTART_MAX} time(s) per {RESTART_WINDOW_S // 60} min (WATCH_RESTART=1)."
+                   if os.environ.get("WATCH_RESTART", "0") == "1" else
+                   "It records and does not restart (notes/launch-methodology.md \u00a74); WATCH_RESTART=1 arms "
+                   "the signature-plus-breaker restart.")
+                + "")
             if cfg.webui == "same":
                 note("this launch carries the Monitor page inside itself (WEBUI=same), so the page goes down "
                      "with it: the record, not a page, is what outlives the death. A sidecar "
@@ -1771,8 +2052,11 @@ def main():
     ap.add_argument("--watch", action="store_true",
                     help="internal (setup.py arms this itself, detached, once a launch answers /health): poll "
                          "that launch and write died_at/reason into .r9700-state/launch.json when it stops. "
-                         "Records only -- nothing here restarts a serve (notes/launch-methodology.md \u00a74). "
-                         "PORT, LOG and WATCH_SESSION come from the environment.")
+                         "Records by default; with WATCH_RESTART=1 it also re-runs the recorded launch through "
+                         "setup.py, but only for a death whose log carries a known crash signature, only with no "
+                         "VLLM ranks left, and only inside RESTART_MAX per RESTART_WINDOW_S "
+                         "(notes/launch-methodology.md \u00a74). PORT, LOG and WATCH_SESSION come from the "
+                         "environment.")
     ap.add_argument("--no-tmux", action="store_true",
                     help="start a native launch detached without tmux: no pane to watch while it loads and no "
                          "session to ask afterwards whether the launch is still up")

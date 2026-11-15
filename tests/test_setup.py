@@ -311,9 +311,152 @@ S.left_vllm = lambda: 4
 ck("a launch still loading weights (no /health yet, ranks present) is NOT called dead",
    S.watch_dead(59999, None) is None)
 S.left_vllm = real_left
+
+# The case every probe missed on 2026-11-15 06:28. The device fault killed Worker_TP0 and left TP1/TP2/TP3 behind
+# holding the cards (measured with rocm-smi straight after: 32,371,838,976 B used on each of three cards, with no
+# engine anywhere to serve on them), the tmux pane stayed open, and every liveness probe answered "not gone" -- so
+# the record carried no death at all and nothing could come back. The ranks re-title themselves VLLM::Worker_TPn,
+# which is why left_vllm() greps VLLM[::] and not "vllm serve".
+real_left = S.left_vllm
+with tempfile.TemporaryDirectory() as _wd:
+    _crash = Path(_wd) / "crash.log"
+    _crash.write_text("(APIServer pid=498590) ERROR 11-15 06:28:33 [async_llm.py:906] "
+                      "vllm.v1.engine.exceptions.EngineDeadError: EngineCore encountered an issue.\n")
+    _quiet = Path(_wd) / "quiet.log"
+    _quiet.write_text("INFO 11-15 06:28:00 [utils.py:343] [shutdown] EngineCore process manager: using 15.0s "
+                      "ROCm cleanup grace\n")
+    UPREC = {"session": "r9700-x", "up_at": 100, "died_at": None, "log": str(_crash)}
+    S.left_vllm = lambda: 3
+    _w = S.watch_dead(59999, None, UPREC, S.WATCH_WEDGE_TICKS) or ""
+    ck("ranks alive + no /health + a record that WAS up + a fault line: named crashed AND wedged, with the count",
+       "wedged" in _w and "3 VLLM rank(s)" in _w and "EngineDeadError" in _w, _w[:160])
+    ck("one silent probe is not enough: the ROCm cleanup grace alone runs 15 s, and a watcher that stamps during "
+       "it stamps a launch that might still come back",
+       S.watch_dead(59999, None, UPREC, S.WATCH_WEDGE_TICKS - 1) is None)
+    ck("a launch that has never answered /health is LOADING, not wedged, even with ranks up and a fault-looking log",
+       S.watch_dead(59999, None, {"session": "r9700-x", "up_at": None, "log": str(_crash)}, 9) is None)
+    ck("no fault line, no verdict: a launch that is merely silent is not one we would call crashed and clear",
+       S.watch_dead(59999, None, {"session": "r9700-x", "up_at": 100, "log": str(_quiet)}, 9) is None)
+    ck("a caller with no record gets the old, narrower answer (nothing to weigh the silence against)",
+       S.watch_dead(59999, None, None, 9) is None)
+    S.left_vllm = real_left
+R0 = {"recipe": "native-flashnext.sh", "session": "r9700-x"}
+ck("clearing those ranks with the recipe's own STOP takes all five: switch, armed restart, ranks, signature, "
+   "recipe -- and the case it must never cover is a launch that is only slow",
+   S.stop_wedge_would(R0, True, 3, "EngineDeadError", True) is True
+   and S.stop_wedge_would(R0, False, 3, "EngineDeadError", True) is False
+   and S.stop_wedge_would(R0, True, 0, "EngineDeadError", True) is False
+   and S.stop_wedge_would(R0, True, 3, None, True) is False
+   and S.stop_wedge_would({}, True, 3, "EngineDeadError", True) is False
+   and S.stop_wedge_would(R0, True, 3, "EngineDeadError", False) is False)
+ck("and the watcher runs STOP=1 on the recipe rather than a hand-rolled pkill: the launcher knows its own ranks",
+   'STOP="1"' in open(ROOTP / "setup.py").read() and "def stop_wedge(" in open(ROOTP / "setup.py").read())
+
+# ...and the other half of the same outage: a session that outlives its launch refuses the NEXT launch. Measured:
+# fault at 06:28, ranks cleared by STOP, and at 06:45 `setup.py --launch native-flashnext.sh` still said "a tmux
+# session named r9700-native-flashnext is already up" -- 17 minutes of a dead box kept down by an empty pane.
+ck("a pane the record says is over, holding no VLLM process, is a corpse: close it and launch",
+   S.corpse_session("r9700-x", 0, {"session": "r9700-x", "died_at": 1234})[0] is True
+   and S.corpse_session("r9700-x", 0, {"session": "r9700-x", "up_at": 1234, "died_at": None})[0] is True)
+ck("a pane with ranks in it, one the record does not vouch for, or one that may still be loading stays shut",
+   S.corpse_session("r9700-x", 4, {"session": "r9700-x", "died_at": 1234})[0] is False
+   and S.corpse_session("r9700-y", 0, {"session": "r9700-x"})[0] is False
+   and S.corpse_session("r9700-x", 0, {"session": "r9700-x", "up_at": None, "died_at": None})[0] is False)
+ck("and the launcher says which of the two it found instead of just refusing",
+   "corpse_session(sess, left_vllm()" in open(ROOTP / "setup.py").read())
 ck("the watcher is a flag on setup.py, so a reader who finds a stray python is pointed at the reason",
    "--watch" in subprocess.run([sys.executable, str(ROOTP / "setup.py"), "--help"],
                                capture_output=True, text=True).stdout)
+
+# ------------------------------------------------------------------- the restart breaker (WATCH_RESTART) ----
+# Two device faults, 2026-11-14 20:59 and 2026-11-15 05:11, both left the engine gone and the LAN port refusing
+# for an hour while a human found out by asking. The watcher can now re-run the launch -- but only for a death
+# this box has actually seen in its own logs, never into leftover ranks, and never more than a few times an hour.
+# Each rule below names the loop or the outage it exists to prevent.
+NOW = 1_000_000
+REC = {"recipe": "native-flashnext.sh", "webui": "same", "config": "262k", "session": "r9700-x"}
+ck("off unless told: the default stays \u00a74's rule, seen not resurrected",
+   S.restart_ok(REC, "illegal memory access", 0, NOW, [], False)[0] is False
+   and "off" in S.restart_ok(REC, "illegal memory access", 0, NOW, [], False)[1])
+ck("armed and signature'd: it restarts, and says which try of how many that is",
+   S.restart_ok(REC, "torch.AcceleratorError: CUDA error: an illegal memory access was encountered",
+                0, NOW, [], True, links=[]) == (True, "illegal memory access; restart 1 of 3 in 60 min"))
+ck("the signature has to be IN THE LOG, not assumed: a launch that was stopped is not a crash",
+   S.restart_ok(REC, "INFO 11-15 06:00:01 [core.py] Shutdown complete", 0, NOW, [], True)[1]
+   == "no known crash signature in the log tail")
+ck("ranks still alive stop it (the 11-14 fault left its ranks running for 11 more minutes: restarting into that "
+   "is two launches fighting for four cards)",
+   "still alive" in S.restart_ok(REC, "illegal memory access", 4, NOW, [], True)[1])
+ck("and so does a record that cannot say what to re-run",
+   "no recipe" in S.restart_ok({}, "illegal memory access", 0, NOW, [], True)[1])
+ck("the breaker: three restarts inside the window is a loop, not a recovery",
+   "breaker" in S.restart_ok(REC, "EngineDeadError", 0, NOW, [NOW - 10, NOW - 20, NOW - 30], True)[1])
+ck("the same three outside the window are history, not a blocker (the cap is per hour, not per life)",
+   S.restart_ok(REC, "EngineDeadError", 0, NOW, [NOW - 7200, NOW - 7300, NOW - 7400], True)[0] is True)
+ck("and the cap is the knob it looks like",
+   S.restart_ok(REC, "EngineDeadError", 0, NOW, [NOW - 10, NOW - 20], True, cap=2)[0] is False)
+# Every signature is a line this box printed, so the list is checked against the words in its logs rather than
+# against a list of things that can go wrong.
+for _sig, _line in (("illegal memory access",
+                     "torch.AcceleratorError: CUDA error: an illegal memory access was encountered"),
+                    ("died unexpectedly", "Worker proc VllmWorker-0 died unexpectedly"),
+                    ("EngineDeadError", "vllm.v1.engine.exceptions.EngineDeadError: Engine core died"),
+                    ("HSA_STATUS_ERROR", "HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION: 0x105")):
+    ck(f"the signature {_sig!r} matches the line it was copied from", S.crash_sig(_line) == _sig, _line[:80])
+ck("the words an operator's own STOP leaves behind are not a crash signature",
+   S.crash_sig("STOP=1 bash serve/native-flashnext.sh\ntmux kill-session -t r9700-native-flashnext") is None)
+# Measured rather than assumed, 2026-11-15 06:10: this is what this box's deliberate STOP actually leaves in the log
+# tail (the same tail the watcher would read), captured and run through crash_sig before the TEST launch started.
+# It matters because the alternative is a watcher that relaunches a four-card serve because an operator stopped it.
+ck("and the REAL tail a STOP left on this box reads as no signature: vLLM's teardown ends in resource_tracker "
+   "warnings, not a fault line",
+   S.crash_sig("/usr/lib/python3.12/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: "
+               "There appear to be 4 leaked semaphore objects to clean up at shutdown\n  warnings.warn('resource_"
+               "tracker: There appear to be %d '\n/usr/lib/python3.12/multiprocessing/resource_tracker.py:254: "
+               "UserWarning: resource_tracker: There appear to be 6 leaked shared_memory objects to clean up at "
+               "shutdown") is None)
+with tempfile.TemporaryDirectory() as td:
+    el = Path(td) / "engine.log"
+    el.write_bytes(b"x" * 100000 + b"\n(EngineCore) torch.AcceleratorError: CUDA error: an illegal memory access\n")
+    ck("the log is read from the END (a 6.8-day launch log is 240 MB; finding one line must not read it all)",
+       "illegal memory access" in S.log_tail(el, 4096) and "illegal memory access" not in S.log_tail(el, 8))
+    ck("a log that is not there reads as no signature rather than raising",
+       S.log_tail(Path(td) / "nope.log") == "" and S.crash_sig(S.log_tail(Path(td) / "nope.log")) is None)
+    real_popen, got = S.subprocess.Popen, []
+    S.subprocess.Popen = lambda cmd, **kw: got.append(list(cmd)) or type("P", (), {"pid": 4242})()
+    try:
+        S.restart_launch(dict(REC, rest=["--max-model-len", "262144"], no_tmux=True))
+    finally:
+        S.subprocess.Popen = real_popen
+    ck("a restart goes back through setup.py with the recipe, the pages choice, the stored config, the tmux "
+       "choice and the flags THIS launch was given (a restart that drops them is a restart into another launch)",
+       got and got[0][:5] == [sys.executable, str(ROOTP / "setup.py"), "--yes", "--launch",
+                              "native-flashnext.sh"]
+       and ["--config", "262k"] <= got[0] and "--no-tmux" in got[0]
+       and ["--max-model-len", "262144"] <= got[0], str(got[:1])[:240])
+_wsrc = (ROOTP / "setup.py").read_text().split("def watch_loop(")[1].split("def arm_watch(")[0]
+ck("and the watcher's own loop asks the breaker before it exits (a decision nothing calls is a decision nobody "
+   "gets)", "restart_ok(" in _wsrc and "restart_launch(" in _wsrc and "restarts.json" in _wsrc)
+# The PCIe gate: §4's warning is about restarting INTO a degraded link, so the negotiated link is asked about
+# before the relaunch, not after. It is about the RATING rather than the AER counters on purpose -- this box
+# carries dozens of correctables a minute at a full 32.0 GT/s x16 during a weight load.
+ck("a card that negotiated below its rating is not restarted into",
+   "below rating" in S.restart_ok(REC, "illegal memory access", 0, NOW, [], True,
+                                  links=["0000:c3:00.0 at 8.0 GT/s x16, rated 32.0 GT/s x16"])[1])
+ck("links at rating do not block it",
+   S.restart_ok(REC, "illegal memory access", 0, NOW, [], True, links=[])[0] is True)
+ck("an unreadable link does not block the recovery, and the reason says nobody measured it",
+   S.restart_ok(REC, "illegal memory access", 0, NOW, [], True, links=None)[0] is True
+   and "unreadable" in S.restart_ok(REC, "illegal memory access", 0, NOW, [], True, links=None)[1])
+ck("this box's healthy pair reads as healthy: 32.0 GT/s x16 against the same rating",
+   S.link_short([("0000:c3:00.0", 32.0, 16, 32.0, 16)]) == [])
+ck("a short link is named with its bus, what it came up at and what it was rated for",
+   S.link_short([("0000:c3:00.0", 8.0, 16, 32.0, 16), ("0000:c4:00.0", 32.0, 8, 32.0, 16)])
+   == ["0000:c3:00.0 at 8.0 GT/s x16, rated 32.0 GT/s x16",
+       "0000:c4:00.0 at 32.0 GT/s x8, rated 32.0 GT/s x16"], str(S.link_short([("a", 8.0, 16, 32.0, 16)])))
+_rows = S.gpu_links()
+ck(f"and the four cards on this box really do answer at rating ({len(_rows)} AMD display device(s) read)",
+   len(_rows) >= 4 and S.link_short(_rows) == [], f"short: {S.link_short(_rows)}; {_rows[:2]}")
 
 # ---------------------------------------------------------------------------- the tmux environment ----
 text = (ROOTP / "serve" / "native-flashnext.sh").read_text()
