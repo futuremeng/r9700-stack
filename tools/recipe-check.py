@@ -359,8 +359,13 @@ def main(argv):
                 print(f"  {d['key']}: this tree says {d['production']}, the live serve says engine={d['engine']} "
                       f"meta={d['meta']}")
         if not st.get("argv"):
-            print("\n  (no argv in the payload: an in-process page older than the launch-flag comparison, so the "
-                  "flags are unprovable here -- restart the serve to get one)")
+            # Same words, same weight, whichever verdict came first: "the flags are unprovable" is a claim about
+            # what was NOT checked, and it has to read identically whether or not the knobs happened to match.
+            # (It did not: with a debug TEST launch live, this branch -- the only one a non-PRODUCTION box reaches --
+            # printed a lowercase paraphrase and `tests/test_webui.py`'s gate check failed on the wording. Found
+            # 2026-11-15 while a soak launch was live, which is the only time it was ever reachable.)
+            print("\n  and the LAUNCH FLAGS ARE UNPROVABLE: the payload carries no argv, so an in-process page "
+                  "older than the flag comparison is answering -- restart the serve to make that claim provable")
         print(f"\nrestore with:")
         print(f"  STOP=1 bash serve/native-flashnext.sh")
         print(f"  tmux new-session -d -s r9700-native-flashnext 'WEBUI=same LOG=<the launch's log> "
