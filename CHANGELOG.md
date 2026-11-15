@@ -19,6 +19,13 @@ and a ~5,000 px tall page to scroll for six cards.
 - **`tests/test_webui.py` fails if a card is unplaced**: every `c-*` class in the markup must appear in the
   order rule, and the rule must not name a card the markup dropped. An unplaced card lands wherever the DOM puts
   it, which is exactly how the waste got there.
+- **Connect and This machine span both columns** (`grid-column:1/-1`), because both were being squeezed by the
+   half-width column rather than by the row pairing: the four GPU cards under `auto-fit minmax(190px,1fr)` came
+   out 3+1 at half width (a second row with one card in it) and one row of four across the page; the paste blocks
+   get the line length they were written for, and the two headline cells sit side by side. A spanning card starts
+   a row, so what remains pairs two-up — Model ~210 with Configuration ~300, recipe ~120 with This page ~250:
+   waste ~600 → ~200. Full width is not a licence for a 150ch paragraph, so prose in a spanning card keeps the
+   88ch measure the half-width cards already had.
 - A row that repeated the headline cell (`OpenAI / LiteLLM base_url` under a base_url printed four times larger,
   with its own Copy) is gone: a list that repeats the headline teaches the reader that lists are where the truth
   lives.
