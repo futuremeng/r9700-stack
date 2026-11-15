@@ -30,6 +30,17 @@ What this file can and cannot catch, said out loud (a check that asserts nothing
      line index outside the cache, and a token span outside the rows of x. Includes the guard firing on CPU
      tensors (one logger.error line, quiet when in range, layer 0 only) and a source check that the call sits
      before stock's `_forward_core`.
+  D. THAT THE DIAGNOSTIC DOES NOT MOVE THE THING IT MEASURES, source level plus a unit check on `gdn._dbg_here`:
+     `R9K_GDN_DEBUG=1` pays in host syncs, so it has to spend them where it loses no coverage. On this model (36
+     GDN layers, from config.json's `layer_types`) the debug block would otherwise run on all of them -- 3
+     synchronize() calls per layer per step, 108 per step -- which drains the launch queue and re-times the
+     prefill/decode overlap a mixed step is being chased for. The checks read the same per-step metadata on every
+     layer, so they run on layer 0 unless `R9K_GDN_DEBUG_ALL=1` asks for all of them.
+  E. THE SECOND FAULT'S STEP, needs vLLM (the bounds part needs no GPU) and the GPU replay needs one card: the
+     2026-11-15 05:11:18 step as its own arithmetic -- 23 spec rows of 3 tokens plus two new prefills of 160 and
+     156 tokens landing on pages allocated in that step -- bounded, replayed through stock's conv update + conv
+     fn, and `torch.cat`'d at the step's own q/k/v widths. Same limit as A and B: an index in range by arithmetic
+     that no longer names live memory is out of reach of all of it.
 
 Run:  python3 tests/test_conv1d_mixed_step.py            (A always; B and C skip if vLLM/GPU is missing)
       GPU=0 python3 tests/test_conv1d_mixed_step.py      (no GPU replay)
@@ -40,6 +51,8 @@ Run:  python3 tests/test_conv1d_mixed_step.py            (A always; B and C skip
 from __future__ import annotations
 
 import os
+import pathlib
+import re
 import sys
 
 fail = 0
@@ -176,6 +189,15 @@ def bounds():
        bp([0], 1146, 610, 700) == [])
     ck("a step whose non-spec tokens exceed the rows of x is named (the other walk in that kernel)",
        any("rows of x" in s for s in bp([7], 1146, 701, 700)), str(bp([7], 1146, 701, 700)))
+    # The two span rules, added for the SECOND fault (its named kernel was a torch.cat, which reads a RANGE).
+    ck("the two partitions of one step counted twice is named (non-spec 316 + spec 69 > 380 act)",
+       any("the two partitions of one step" in s for s in bp([7], 1146, 316, 380, spec_cu_last=69)),
+       str(bp([7], 1146, 316, 380, spec_cu_last=69)))
+    ck("... and the same numbers are clean when act is the honest 385",
+       bp([7], 1146, 316, 385, spec_cu_last=69) == [], str(bp([7], 1146, 316, 385, spec_cu_last=69)))
+    ck("num_actual_tokens above the rows of the buffer we actually hand over is named (385 act, 384 rows)",
+       any("rows of the tensors handed to stock" in s for s in bp([7], 1146, 316, 385, rows=384)),
+       str(bp([7], 1146, 316, 385, rows=384)))
     ck("no prefill rows: nothing to check, nothing reported", bp([], 1146, 0, 90) == [])
     ck("the check reports several problems at once (one line is enough to read in the log)",
        len(bp([1146], 1146, 4000, 700)) == 2, str(bp([1146], 1146, 4000, 700)))
@@ -203,6 +225,7 @@ def bounds():
     class FakeMd:
         num_prefills, num_decodes, num_spec_decodes, num_actual_tokens = 1, 0, 30, 700
         non_spec_query_start_loc = torch.tensor([0, 610], dtype=torch.int32)
+        spec_query_start_loc = torch.tensor([0, 90], dtype=torch.int32)
         spec_state_indices_tensor = None
 
     G.logger = FakeLog()
@@ -221,16 +244,63 @@ def bounds():
         layer.prefix = "model.layers.7.gdn"
         md.non_spec_state_indices_tensor = torch.tensor([9999], dtype=torch.int32)
         G._fallback_check(layer, md)
-        ck("only layer 0 pays for it (the block table is per-step, so one layer sees what all of them do)",
-           seen == [], str(seen[:2]))
+        ck("the helper checks whichever layer it is handed -- the CALLER decides who pays, through _dbg_here. "
+           "It used to filter here on a hardcoded .layers.0., and that is why the 2026-11-15 06:55 hit named the "
+           "dying layer (layers.1, stage counts 615/614/614) and still could not say what was wrong with its "
+           "indices: the one layer that mattered had never been looked at",
+           len(seen) == 1 and "leaves the conv-state cache" in seen[0], str(seen)[:200])
+        ck("the helper's own body carries no layer test at all (its docstring may tell the story; its code may not)",
+           '.layers.0." not in self.prefix' not in open(str(pathlib.Path(__file__).resolve().parent.parent /
+                                                         "r9700_vllm" / "models" / "gdn.py")).read()
+                                                        .split("def _fallback_check")[1].split("def _debug_check")[0])
+        seen.clear()
+        layer = FakeLayer()
+        md.non_spec_state_indices_tensor = torch.tensor([654], dtype=torch.int32)
+        md.num_actual_tokens = 700
+        G._fallback_check(layer, md, rows=699)              # one row fewer than the metadata claims
+        ck("and the wired-up guard takes the rows of the real buffer, so a metadata claiming one row more is "
+           "named before stock's cat reads it",
+           len(seen) == 1 and "rows of the tensors handed to stock" in seen[0] and "699" in seen[0], str(seen)[:220])
     finally:
         G.logger = real_logger
 
     src = open(os.path.join(os.path.dirname(__file__), "..", "r9700_vllm", "models", "gdn.py")).read()
-    fb = src.split("dbg = DEBUG and not torch.cuda.is_current_stream_capturing()")[-1]
-    ck("the guard is on the path the faulting step took: it runs before stock _forward_core is called",
-       "_fallback_check(self, md)" in fb and "self._forward_core(" in fb
-       and fb.index("_fallback_check(self, md)") < fb.index("self._forward_core("))
+    fb = src.split("dbg = _dbg_here(self) and not torch.cuda.is_current_stream_capturing()")[-1]
+    ck("the guard is on the path the faulting step took: it runs before stock _forward_core is called, and it is "
+       "handed the rows of the buffer being handed over",
+       "_fallback_check(self, md, rows=qkvz.shape[0])" in fb and "self._forward_core(" in fb
+       and fb.index("_fallback_check(self, md, rows=qkvz.shape[0])") < fb.index("self._forward_core("))
+
+    # D. the diagnostic's own cost, kept where it loses nothing (see the docstring above).
+    print("\nD. R9K_GDN_DEBUG spends its syncs on layer 0, not on every GDN layer")
+    ck("both debug blocks ask _dbg_here, and no block asks bare DEBUG",
+       src.count("dbg = _dbg_here(self) and not torch.cuda.is_current_stream_capturing()") == 2
+       and "dbg = DEBUG" not in src, f"_dbg_here sites: {src.count('dbg = _dbg_here(self)')}")
+    body = src.split("def gdn_core(")[1].split("def _trace(")[0]
+    syncs = [i for i in range(len(body)) if body.startswith("torch.cuda.synchronize()", i)]
+    unguarded = [body[max(0, i - 260):i] for i in syncs if "if dbg:" not in body[max(0, i - 260):i]]
+    ck(f"every sync inside gdn_core sits under an `if dbg:` ({len(syncs)} of them) -- an unguarded one is paid "
+       "on every step whether or not anyone is diagnosing",
+       bool(syncs) and not unguarded, f"{len(syncs)} syncs, {len(unguarded)} unguarded")
+    import torch
+    from r9700_vllm.models import gdn as G
+
+    class Lay:
+        def __init__(self, n):
+            self.prefix = f"model.layers.{n}.gdn"
+
+    d0, d1 = G.DEBUG, G.DEBUG_ALL
+    try:
+        G.DEBUG, G.DEBUG_ALL = True, False
+        ck("with DEBUG on, layer 0 pays and layer 7 does not (the metadata is per step, so one layer sees the "
+           "whole step)", G._dbg_here(Lay(0)) and not G._dbg_here(Lay(7)))
+        G.DEBUG_ALL = True
+        ck("R9K_GDN_DEBUG_ALL=1 is the escape hatch, and it is opt-in",
+           G._dbg_here(Lay(7)) and G._dbg_here(Lay(22)))
+        G.DEBUG, G.DEBUG_ALL = False, True
+        ck("and none of it costs anything with DEBUG off, whatever DEBUG_ALL says", not G._dbg_here(Lay(0)))
+    finally:
+        G.DEBUG, G.DEBUG_ALL = d0, d1
 
 
 # ------------------------------------------------------------------------ B. replay it on a real GPU ---
@@ -292,9 +362,150 @@ def replay():
     torch.cuda.empty_cache()
 
 
+# ------------------------------- E. the SECOND fault's step: two prefills arriving into 23 spec rows ---------
+def mixed():
+    """2026-11-15 05:11:18, from the engine's own SchedulerOutput dump (logs/setup-044236.log:10254).
+
+    23 spec-decoding requests at 3 tokens each (one real token + two MTP drafts, every draft still -1), plus TWO
+    NEW requests of 160 and 156 prefill tokens: `total_num_scheduled_tokens=385`, `kv_cache_usage=0.5913`,
+    `num_running_reqs=25`, `num_waiting_reqs=0`, `new_block_ids_to_zero=[246, 464]`. Both new requests report
+    `num_computed_tokens=0`, so neither got a prefix hit: 316 of the 385 tokens are prefill, which is above
+    `R9K_GDN_PREFILL_MAX=256`, so `_prefill_ok` is false and the step went to stock's `_forward_core` -- the same
+    door the 11-14 fault went through. The kernel the driver named this time is
+    `at::native::CatArrayBatchedCopy_contig` (a `torch.cat`), grid `[13312, 3, 1]`, not the conv.
+
+    Arm A bounded the 11-14 arithmetic (one 610-token prefill into 30 spec rows). This is different arithmetic and
+    had never been bounded: TWO prefills, landing on GDN state pages allocated **in this very step** (that is what
+    `new_block_ids_to_zero` says), sharing the step with 23 spec rows. What it cannot catch is unchanged from A:
+    an argument that is in range by arithmetic and no longer describes live memory -- for both faults, the
+    surviving suspect. So the finding here is again a negative, and negatives are what narrows this.
+    """
+    print("\nE. the 2026-11-15 05:11 step: two prefills (160, 156) arriving into 23 spec rows of 3 tokens")
+    from r9700_vllm.models.gdn import _bounds_problems as bp
+
+    LINES = 1146                       # conv-state lines at this recipe (arm B measures the same launch shape)
+    # Which group of the six is the GDN state, and which pages this step had to zero, read out of the dump itself
+    # rather than asserted from memory: every new request carries six block-id groups, the LAST one is the mamba
+    # group (one page per request), and `new_block_ids_to_zero` is the engine saying which pages it zeroed for them.
+    dline, pages, zeroed = "", [], []
+    for cand in (os.path.expanduser("~/logs/setup-044236.log"), "/home/jiulu/logs/setup-044236.log"):
+        if os.path.exists(cand):
+            with open(cand, errors="replace") as fh:
+                for ln in fh:
+                    if "Dumping scheduler output" in ln:
+                        dline = ln
+                        break
+            break
+    if dline:
+        for m in re.finditer(r"block_ids=\((.*?)\),num_computed_tokens", dline):
+            groups = re.findall(r"\[([^\]]*)\]", m.group(1))
+            pages.append([int(x) for x in groups[-1].split(",") if x.strip()])
+        z = re.search(r"new_block_ids_to_zero=\[([^\]]*)\]", dline)
+        zeroed = [int(x) for x in z.group(1).split(",")] if z else []
+        ck(f"the dump read here: {len(pages)} new requests, mamba group = {[p for p in pages]}, "
+           f"new_block_ids_to_zero = {zeroed} -- the last of the six groups is the GDN page, and it is the page "
+           "the step zeroed",
+           len(pages) == 2 and all(len(p) == 1 for p in pages) and sorted(sum(pages, [])) == sorted(zeroed),
+           f"pages {pages}, zeroed {zeroed}")
+        ck("both new requests start with nothing computed (no prefix hit), which is what puts 316 prefill tokens "
+           "in one step",
+           len(re.findall(r"num_computed_tokens=0,", dline)) >= 2,
+           str(re.findall(r"num_computed_tokens=\d+,", dline)[:4]))
+        ck("and 23 of the 25 running requests are spec rows with 2 draft tokens each (the dump's own -1, -1)",
+           dline.count("[-1, -1]") == 23, f"{dline.count('[-1, -1]')} spec rows in the dump")
+    else:
+        print("  skip   the 05:11 dump is not on this box (~/logs/setup-044236.log): the shapes below are the ones "
+              "read from it on 2026-11-15, not re-read now")
+    ck("the step's own token arithmetic: 385 = 23x3 + 160 + 156, and 316 of them are prefill -- above 256, so "
+       "stock's path (the 11-14 door, again)", 23 * 3 + 160 + 156 == 385 and 160 + 156 == 316 > 256)
+    lines_new = sum(pages, []) or [246, 464]          # from the dump when it is on this box, else as read on 11-15
+    ck("the two walks of the guard, on THIS shape: both new pages inside 1146 lines, 316 non-spec tokens inside "
+       f"385 rows of x -- nothing to report ({lines_new})",
+       bp(lines_new, LINES, 316, 385) == [], str(bp(lines_new, LINES, 316, 385)))
+    ck("the spans of THIS step add up under the new rules: 316 non-spec + 69 spec = the 385 the dump reports, and "
+       "385 rows exist",
+       bp(lines_new, LINES, 316, 385, spec_cu_last=23 * 3, rows=385) == [],
+       str(bp(lines_new, LINES, 316, 385, spec_cu_last=23 * 3, rows=385)))
+    ck("and the check still bites on this shape if the step is read wrongly (one token too many in the span)",
+       any("rows of x" in s for s in bp(lines_new, LINES, 386, 385)), str(bp(lines_new, LINES, 386, 385)))
+    ck("a page index one line past the cache is still the fault it was for the 11-14 step",
+       any("leaves the conv-state cache" in s for s in bp(lines_new + [LINES], LINES, 316, 385)))
+    print("  note: the 23 spec rows' own line indices are NOT in the dump (only new requests carry block_ids in "
+          "it), so what is bounded here is the two new pages and the token spans -- stated, not glossed.")
+
+    if os.environ.get("GPU", "1") == "0":
+        print("  skip   GPU=0")
+        return
+    try:
+        import torch
+        from vllm.model_executor.layers.mamba.ops.causal_conv1d import causal_conv1d_fn, causal_conv1d_update
+        from vllm.v1.attention.backends.utils import compute_causal_conv1d_metadata
+    except Exception as e:                                                      # noqa: BLE001
+        print(f"  skip   no GPU-capable vLLM here: {type(e).__name__}: {e}")
+        return
+    if not torch.cuda.is_available():
+        print("  skip   torch.cuda.is_available() is false")
+        return
+    dev, DIM, W = torch.device("cuda"), 2560, 4      # qkv_size at TP4 (key 2048*2 + value 6144)/4, conv width 4
+    bf = torch.bfloat16
+    # the spec half: 23 rows of 3 tokens, each on its own legal conv-state line, 2 of the 2 drafts accepted
+    # (this launch's measured mean acceptance length is 2.38-2.59, so 2 is the ordinary case rather than the good one)
+    xs = torch.randn(69, DIM, dtype=bf, device=dev)
+    states = torch.zeros(LINES, DIM, W - 1, dtype=bf, device=dev)
+    weight = torch.randn(DIM, W, dtype=bf, device=dev)
+    bias = torch.randn(DIM, dtype=bf, device=dev)
+    cu = torch.arange(0, 70, 3, dtype=torch.int32, device=dev)
+    sidx = torch.arange(1, 24, dtype=torch.int32, device=dev)
+    acc = torch.full((23,), 2, dtype=torch.int32, device=dev)
+    # the prefill half: two rows of 160 and 156 tokens on the pages this step allocated (246, 464), no initial state
+    xp = torch.randn(316, DIM, dtype=bf, device=dev)
+    qsl = torch.tensor([0, 160, 316], dtype=torch.int32, device=dev)
+    cidx = torch.tensor((sum(pages, []) or [246, 464]), dtype=torch.int32, device=dev)
+    has = torch.tensor([False, False], dtype=torch.bool, device=dev)
+    nums, bptr, toff = compute_causal_conv1d_metadata(torch.tensor([0, 160, 316], dtype=torch.int32), device=dev)
+
+    class MD:
+        pass
+
+    md = MD()
+    md.nums_dict, md.batch_ptr, md.token_chunk_offset_ptr = nums, bptr, toff
+    ok, msg = True, ""
+    try:
+        upd = causal_conv1d_update(xs, states, weight, bias, "silu", conv_state_indices=sidx,
+                                   num_accepted_tokens=acc, query_start_loc=cu, max_query_len=3,
+                                   validate_data=False, out=torch.empty_like(xs))
+        torch.cuda.synchronize()
+        pre = causal_conv1d_fn(xp.transpose(0, 1), weight, bias, conv_states=states, query_start_loc=qsl,
+                               cache_indices=cidx, has_initial_state=has, activation="silu", metadata=md,
+                               validate_data=True)
+        torch.cuda.synchronize()
+    except Exception as e:                                                      # noqa: BLE001
+        ok, msg = False, f"{type(e).__name__}: {e}"
+    ck("the mixed step replays: spec conv update (23 rows x 3) then the prefill conv (160+156) on the pages this "
+       "step allocated, sync'd between the two", ok, msg)
+    if ok:
+        ck("the spec rows' lines and the two new lines are all that moved; neighbours untouched",
+           bool(states[246].float().abs().sum() > 0) and bool(states[464].float().abs().sum() > 0)
+           and bool(states[24].float().abs().sum() > 0)
+           and bool(states[0].float().abs().sum() == 0 and states[100].float().abs().sum() == 0))
+        # the cat the driver named: a contiguous torch.cat over the step's own q/k/v widths at TP4
+        # (qkv_size 2560 = q 512 + k 512 + v 1536). A synthetic cat cannot reproduce a stale-pointer read, and
+        # this does not claim to; what it establishes is that this step's sizes are not themselves a fault.
+        q, k = torch.randn(385, 512, dtype=bf, device=dev), torch.randn(385, 512, dtype=bf, device=dev)
+        v = torch.randn(385, 1536, dtype=bf, device=dev)
+        cat = torch.cat([q, k, v], dim=-1)
+        torch.cuda.synchronize()
+        ck("the same step's torch.cat at q/k/v widths (512/512/1536, the CatArrayBatchedCopy_contig family) is "
+           "in shape and finite -- a synthetic cat cannot catch a stale buffer, and does not claim to",
+           tuple(cat.shape) == (385, 2560) and bool(torch.isfinite(cat.float()).all()), str(tuple(cat.shape)))
+    del xs, xp, states, weight, bias, q, k, v
+    torch.cuda.empty_cache()
+
+
 if __name__ == "__main__":
     geom()
     bounds()
     replay()
+    mixed()
     print("\nPASS" if fail == 0 else "FAIL", f"({fail} failing)")
     sys.exit(1 if fail else 0)

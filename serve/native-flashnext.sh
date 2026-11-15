@@ -76,6 +76,18 @@ export R9K_FOLD R9K_AR_QUANT R9K_HC_FP8 R9K_HC_FP8_DECODE R9K_HC_FP8_DECODE_MAXM
        R9K_HC_FP8_DOWN R9K_HC_FREE_BF16 R9K_FP8_BLOCK R9K_FP8_QA R9K_DRAFT_LMHEAD R9K_TARGET_LMHEAD
 for v in $(env | grep -o '^R9K_[A-Z0-9_]*'); do export "$v"; done
 
+# GDN diagnosis, off in production: 1 runs host range checks on the stock path plus stage syncs, on layer 0 only
+# (r9700_vllm/models/gdn.py:_dbg_here, notes/bug-causal-conv1d-oob.md §8). It is spelled ${NAME:=} here rather
+# than left to the loop above on purpose: tmux starts its session in the tmux SERVER's environment, and a knob this
+# file does not mention silently stops existing at the shell that typed it (launch-methodology.md §4). The proof it
+# crossed is the plugin's own boot line (`r9700 gdn debug armed`) and /proc/<pid>/environ, not the command typed.
+# R9K_GDN_DEBUG_ALL=1 pays for it on all 36 GDN layers instead, which is what localizes a fault to a layer -- the
+# per-step metadata is the same for every layer, so it costs ~3 host syncs x 36 per step and moves the timing it is
+# chasing; it is a reproduction knob, never a production one. Both are named here for the same tmux reason.
+: ${R9K_GDN_DEBUG:=0}
+: ${R9K_GDN_DEBUG_ALL:=0}
+export R9K_GDN_DEBUG R9K_GDN_DEBUG_ALL
+
 export HIP_VISIBLE_DEVICES=${GPUS:-0,1,2,3} VLLM_ROCM_USE_AITER=${AITER:-0} HSA_ENABLE_IPC_MODE_LEGACY=0
 export GPU_MAX_HW_QUEUES=${HWQ:-1} HSA_ENABLE_MWAITX=${MWAITX:-1} OMP_NUM_THREADS=8
 : ${R9K_MTP_QUANT_ROWS:=32768}   # bf16->MXFP4 requant chunk: 2.68 GiB of fp32 temporaries at 2^18 rows, 0.34 GiB here

@@ -50,6 +50,7 @@ logger = init_logger("vllm." + __name__)
 
 MAX_SPEC_TOKENS = 8            # per sequence (num_spec + 1); stock's MAX_FUSED_GDN_MTP_TOKENS
 DEBUG = os.environ.get("R9K_GDN_DEBUG", "0") == "1"   # per-stage syncs + host range checks (slow; diagnosis only)
+DEBUG_ALL = os.environ.get("R9K_GDN_DEBUG_ALL", "0") == "1"   # pay that cost on EVERY GDN layer, not just layer 0
 FUSED = os.environ.get("R9K_GDN_FUSED", "1") == "1"   # 0: always stock's core + norm inside the op (diagnosis)
 PREFILL_MAX = int(os.environ.get("R9K_GDN_PREFILL_MAX", "256") or 0)   # prefill tokens per step; 0 = stock's chunked core
 CONV = os.environ.get("R9K_GDN_PREFILL_CONV", "r9k") != "stock"         # the conv in front of it: ours, or stock's Triton
@@ -532,6 +533,22 @@ def _fused_ok(self, md) -> bool:
             and self.kv_cache[1].dtype in (torch.float32, torch.bfloat16))
 
 
+def _dbg_here(self) -> bool:
+    """Where R9K_GDN_DEBUG's cost is worth paying: layer 0, or every layer with R9K_GDN_DEBUG_ALL=1.
+
+    Nothing is lost in coverage by the restriction, and something is lost without it. What the checks read -- the
+    block table, the token counts, the index tensors -- is per STEP: layer 0 sees exactly what the other 35 GDN
+    layers of that step will see, which is the same reason `_trace` and `_fallback_check` are layer-0 things.
+    What the restriction buys is the step's shape. Without it the debug block puts 2 syncs and 2 log lines after
+    every stage of every layer (3 more on the fallback path): this model has 36 GDN layers (config.json's
+    layer_types: 36 linear_attention, 12 full_attention), so 3 synchronize() calls per layer per step is 108 of
+    them. That drains the launch queue and changes the timing of the prefill/decode overlap a mixed step is being
+    chased for. A fault that lives in a later layer still faults and the driver still names its kernel; when layer
+    0 comes up clean and the fault is still there, that is what R9K_GDN_DEBUG_ALL=1 is for.
+    """
+    return DEBUG and (DEBUG_ALL or ".layers.0." in self.prefix)
+
+
 def gdn_core(qkvz: torch.Tensor, ba: torch.Tensor, out: torch.Tensor, layer_name: LayerNameType) -> None:
     """out [T, Hv * 128] bf16 <- norm(core(conv(qkvz), ba), z): one fused launch after the conv update for a pure
     spec-decode batch; one (two with spec-decode sequences aboard) after stock's conv for a step with short prefills;
@@ -554,7 +571,7 @@ def gdn_core(qkvz: torch.Tensor, ba: torch.Tensor, out: torch.Tensor, layer_name
         conv_state = self.kv_cache[0] if is_conv_state_dim_first() else self.kv_cache[0].transpose(-1, -2)
         conv_weights = self.conv1d.weight.view(self.conv1d.weight.size(0), self.conv1d.weight.size(2))
         x = qkvz[:n_act, :qkv_size]
-        dbg = DEBUG and not torch.cuda.is_current_stream_capturing()
+        dbg = _dbg_here(self) and not torch.cuda.is_current_stream_capturing()
         if dbg:
             _debug_check(self, qkvz, ba, out, x, idx, cu, acc, N, n_act, T)
         # max_query_len sizes the conv window's candidate columns. With one page per request the KV group's block
@@ -602,9 +619,9 @@ def gdn_core(qkvz: torch.Tensor, ba: torch.Tensor, out: torch.Tensor, layer_name
             return
         if md.num_prefills > 0 and md.prefill_state_indices is not None:
             self.kv_cache[4][md.prefill_state_indices.long()] = 0     # stock prefill below: no live record
-    dbg = DEBUG and not torch.cuda.is_current_stream_capturing()
+    dbg = _dbg_here(self) and not torch.cuda.is_current_stream_capturing()
     if dbg:
-        _fallback_check(self, md)                       # the stock kernels' indices, checked before they run
+        _fallback_check(self, md, rows=qkvz.shape[0])         # the stock kernels' indices AND spans, checked first
         torch.cuda.synchronize()
         logger.info("r9700 gdn debug %s: fallback T=%d md=%s", self.prefix, T, None if md is None else
                     f"prefills={md.num_prefills} decodes={md.num_decodes} spec={md.num_spec_decodes} act={md.num_actual_tokens}")
@@ -637,7 +654,7 @@ def _trace(self, tag, md, mixed, b, a, z, out, idx, cu, acc, N, kv):
                 cs(mixed[:L]), cs(b[:L]), cs(a[:L]), cs(z[:L]), cs(out[:L]), st, rec, fl)
 
 
-def _bounds_problems(vals, lines, cu_last, n_act, pad_ids=(-1, 0)):
+def _bounds_problems(vals, lines, cu_last, n_act, spec_cu_last=0, rows=None, pad_ids=(-1, 0)):
     """Pure (host ints in, strings out): the range rules for the indices STOCK's GDN kernels index with.
 
     Split out from `_fallback_check` so tests/test_conv1d_mixed_step.py can feed it the shapes -- including the
@@ -650,7 +667,17 @@ def _bounds_problems(vals, lines, cu_last, n_act, pad_ids=(-1, 0)):
     kernels -- PAD_SLOT_ID = -1 and NULL_BLOCK_ID = 0 (`v1/attention/backends/utils.py:51`, and gdn_attn fills
     the padded non-spec slots with the latter). The kernel cannot tell a padding slot from a real block 0, but
     that costs nothing here: the block pool reserves block 0 as its null block and never hands it to a request
-    (`v1/core/kv_cache_utils.py:1606`)."""
+    (`v1/core/kv_cache_utils.py:1606`).
+
+    The two span rules (added 2026-11-15, for the SECOND fault) come from where that one landed:
+    `at::native::CatArrayBatchedCopy_contig`, which is a `torch.cat`, and stock's `_forward_core` cats
+    `(query, key, value)` -- three inputs, and the driver's grid for it was [13312, **3**, 1]. A cat reads a
+    RANGE, not one element, so the thing to bound is not only the state-line index but the token spans each
+    partition of the step reads: `non_spec_query_start_loc[-1]` plus `spec_query_start_loc[-1]` against
+    `num_actual_tokens`, and `num_actual_tokens` against the rows of the buffer we actually hand over
+    (`rows`). A metadata that counts a token twice, or counts one more row than the tensor has, is exactly how a
+    cat ends up reading past the end of live memory while every index in it stays "in range".
+    """
     bad = []
     real = [v for v in vals if v not in pad_ids]
     if real and (min(real) < 0 or max(real) >= lines):
@@ -658,31 +685,45 @@ def _bounds_problems(vals, lines, cu_last, n_act, pad_ids=(-1, 0)):
                    f"{lines} lines ({len(vals)} indices, {len(vals) - len(real)} padding)")
     if cu_last > n_act:
         bad.append(f"non-spec query tokens {cu_last} > num_actual_tokens {n_act} (the rows of x the conv reads)")
+    if spec_cu_last and cu_last + spec_cu_last > n_act:
+        bad.append(f"non-spec {cu_last} + spec {spec_cu_last} query tokens = {cu_last + spec_cu_last} > "
+                   f"num_actual_tokens {n_act} (the two partitions of one step reading rows that are not there)")
+    if rows is not None and n_act > rows:
+        bad.append(f"num_actual_tokens {n_act} > rows of the tensors handed to stock ({rows})")
     return bad
 
 
-def _fallback_check(self, md) -> None:
+def _fallback_check(self, md, rows=None) -> None:
     """R9K_GDN_DEBUG=1: host range checks on the STOCK path -- the one gdn.py hands a step to when `_prefill_ok`
     is false (a step above R9K_GDN_PREFILL_MAX prefill tokens, or a mixed prefill+spec step with stock pages).
 
     `_debug_check` covers our own paths and says so loudly; the 2026-11-14 fault was in a *stock* conv call
-    whose arguments nobody checked (notes/bug-causal-conv1d-oob.md §7). Costs host syncs, so it is diagnosis
-    only -- and it runs on layer 0 only: the block table and the token counts are per-step, so layer 0 sees
-    what every other layer of that step will see."""
-    if md is None or ".layers.0." not in self.prefix or not len(self.kv_cache):
+    whose arguments nobody checked (notes/bug-causal-conv1d-oob.md §7), and the 2026-11-15 one was in a stock
+    `torch.cat`, which reads ranges -- hence the span rules and `rows`, the number of rows we actually pass.
+
+    Costs host syncs, so it is diagnosis only -- and the CALLER decides which layers pay, through `_dbg_here`
+    (layer 0 unless `R9K_GDN_DEBUG_ALL=1`). It used to filter here as well, on a hardcoded `.layers.0.` test, and
+    that cost us the localization on 2026-11-15 06:55: with `DEBUG_ALL` the stage syncs printed on all 36 layers
+    and named the dying one (`layers.1`, §12 of the note) -- but the range check had already refused to look at any
+    layer but 0, so the index that killed it went unexamined. One place decides, and it is not this one.
+    """
+    if md is None or not len(self.kv_cache):
         return
     vals = []
     for t in (getattr(md, "non_spec_state_indices_tensor", None), getattr(md, "spec_state_indices_tensor", None)):
         if t is not None:
             vals += t.flatten().to("cpu").tolist()
     cu = getattr(md, "non_spec_query_start_loc", None)
+    scu = getattr(md, "spec_query_start_loc", None)
     cu_last = int(cu[-1]) if cu is not None else 0
-    bad = _bounds_problems(vals, self.kv_cache[0].shape[0], cu_last, int(md.num_actual_tokens))
+    spec_cu_last = int(scu[-1]) if scu is not None else 0
+    bad = _bounds_problems(vals, self.kv_cache[0].shape[0], cu_last, int(md.num_actual_tokens),
+                           spec_cu_last=spec_cu_last, rows=rows)
     if bad:
-        logger.error("r9700 gdn fallback %s: BAD %s | prefills=%d decodes=%d spec=%d act=%d lines=%d "
-                     "idx min/max=%s/%s", self.prefix, "; ".join(bad), md.num_prefills, md.num_decodes,
-                     md.num_spec_decodes, md.num_actual_tokens, self.kv_cache[0].shape[0],
-                     min(vals, default=0), max(vals, default=0))
+        logger.error("r9700 gdn fallback %s: BAD %s | prefills=%d decodes=%d spec=%d act=%d rows=%s lines=%d "
+                     "non_spec_cu=%s spec_cu=%s idx min/max=%s/%s", self.prefix, "; ".join(bad), md.num_prefills,
+                     md.num_decodes, md.num_spec_decodes, md.num_actual_tokens, rows,
+                     self.kv_cache[0].shape[0], cu_last, spec_cu_last, min(vals, default=0), max(vals, default=0))
 
 
 def _debug_check(self, qkvz, ba, out, x, idx, cu, acc, N, n_act, T) -> None:
@@ -745,6 +786,12 @@ def register_ops() -> None:
     from ..ops import _LIB
     direct_register_custom_op("gdn_core", gdn_core, mutates_args=["out"], fake_impl=_gdn_core_fake,
                               target_lib=_LIB)
+    if DEBUG:
+        # The proof a diagnosis knob crossed the tmux boundary is the engine's own log and /proc/<pid>/environ, not
+        # the command somebody typed (launch-methodology.md §12). This is the first of the two, and it states the
+        # SCOPE, because "DEBUG on" used to mean "on every GDN layer, 108 syncs a step" and no longer does.
+        logger.info("r9700 gdn debug armed: host range checks + stage syncs on layer 0 only%s",
+                    " (R9K_GDN_DEBUG_ALL=1: every layer)" if DEBUG_ALL else "")
     _OPS_DONE = True
 
 
