@@ -1,5 +1,36 @@
 # Changelog
 
+## "The Monitor keeps dropping": the front door was closing the connection under the browser
+
+Reported from the LAN: `http://192.168.1.120:8080/monitor` intermittently drops, and opening `/api/status`
+directly shows every request **canceled**. "Canceled" is the browser giving up, so the question was what the
+browser was waiting on. Probe: Chrome's exact headers, one keep-alive connection per thread, the three endpoints
+the page polls, 12 polls each at 2 s, against the LAN address — **6 of 12 `/api/sidecars` polls timed out**
+(>4.5 s), while `/api/status` (205 KB) and `/api/requests` answered in 11 ms. Three stacked causes:
+
+1. **`/api/sidecars` returned from `handle()`, ending the keep-alive connection.** Chrome sends its next poll down
+   the same socket and gets an EOF or a BrokenPipe — reported as canceled, retried on a new connection, which is
+   why it looked intermittent rather than broken. Every endpoint had been answering in well under 200 ms the
+   whole time: the page was failing on the **connection**, not on the numbers. Fixed: the inline endpoints honour
+   keep-alive like the proxied ones. The probe goes to 36/36, twice.
+2. **`embed-watch.serve_args()` forked `pgrep -f` once per `/state.json` request.** On a 192-thread box with a
+   few hundred vLLM processes that scan is expensive; with the gateway fanning out to two watchers every 2 s and
+   the page retrying what it aborted, it became a fork storm and answers took past 4.5 s. Memoised for 20 s —
+   the value only changes when the serve is restarted. `/state.json` under three concurrent polls:
+   **0.20 s → 0.083 s**.
+3. **The gateway re-fetched watcher state on every request**, a front door amplifying its own polling: every
+   extra tab and every aborted retry bought two more watcher fetches, which is the multiplier that fed (2).
+   Cached 1.5 s behind a single flight, `asyncio.shield` so one client aborting cannot cancel the fetch the other
+   waiters are blocked on. `/api/sidecars`: 1245 ms → 203 ms → **0-150 ms** at steady state.
+
+Also fixed, because the log showed it: a browser abort (the page aborts a poll at 4 s, by design) escaped
+`handle()` as *Unhandled exception in client_connected_cb* — a traceback per abort and the upstream socket left
+to the GC. Six simulated aborts now produce no log line and no fd drift (13 fds held).
+
+Two checks in `tests/test_gateway.py` (16 now) that both fail on the old code: a keep-alive connection must
+survive the gateway's own `/api/sidecars` (four polls, one socket), and five concurrent polls must cost **one**
+round of watcher fetches.
+
 ## One port on the box: a gateway on :8080, the engine and both CPU serves behind it on loopback
 
 Asked to put everything on 8080 and share one Monitor page. `serve/gateway.py` (stdlib asyncio, no framework) reads

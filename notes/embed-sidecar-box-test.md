@@ -212,6 +212,15 @@ acceptable):
 127.0.0.1:8091 / :8093  embed-watch pages, aggregated by the gateway at GET /api/sidecars
 ```
 
+**A symptom worth recording** (reported from the LAN the same day: the Monitor intermittently dropped, and
+`/api/status` opened in a browser showed every request **canceled**): the gateway closed the **keep-alive
+connection** after answering its own `/api/sidecars`, so the page's next poll down that socket hit an EOF and
+Chrome labelled it canceled -- while every endpoint answered in under 200 ms. Two amplifiers behind it, both
+real: the watcher forked `pgrep -f` once per state request, and the gateway re-fetched watcher state once per
+browser poll. What found it was a probe that reproduced the CLIENT's connection behaviour (Chrome's headers, one
+keep-alive socket per thread, the three endpoints the page polls, 12 polls each at 2 s, against the LAN address)
+rather than its URLs: 6 of 12 polls timed out before the fix, 36/36 after.
+
 **Order of operations for any restart here** (this is the 2026-11-01 trap, `notes/load-oom-svm-wedge.md`):
 
 ```

@@ -59,6 +59,7 @@ def free_port():
 # -- fake upstreams -------------------------------------------------------------------------------------
 # One server, three roles: it answers with what it received, so the body checks need no fixture.
 LOG = {"engine": [], "embed": [], "rerank": []}
+STATE_HITS = {"n": 0}
 
 
 def _read_request(c, on_headers=None):
@@ -154,6 +155,7 @@ def state_server(port, slow_s=0.45):
         while True:
             c, _ = srv.accept()
             _read_request(c)
+            STATE_HITS["n"] += 1
             time.sleep(slow_s)
             body = json.dumps({"health": 200, "rates": {"rate": 1112.0}, "serve": {"threads": "15", "ctx": "8192"},
                                "host": {"committed_as_kb": 89397784, "embed_rss_kb": 1618092}}).encode()
@@ -217,7 +219,10 @@ env = {**os.environ, "GATEWAY_PORT": str(GW), "GATEWAY_BIND": "127.0.0.1",
        # pages really go to a different upstream than the chat path does.
        "ENGINE": f"http://127.0.0.1:{SLOW}", "EMBED": f"http://127.0.0.1:{EMB}",
        "RERANK": f"http://127.0.0.1:{RER}", "PAGES": f"http://127.0.0.1:{ENG}",
-       "SIDECAR_STATE": f"/v1/embeddings=http://127.0.0.1:{STA}/state.json,embed=http://127.0.0.1:{STA}/state.json"}
+       "SIDECAR_STATE": f"/v1/embeddings=http://127.0.0.1:{STA}/state.json,embed=http://127.0.0.1:{STA}/state.json",
+       # no caching in the main run, so the checks below really do drive watcher fetches; the cache gets its own
+       # gateway a few lines further down, with its own port
+       "SIDECAR_TTL": "0"}
 GWLOG = tempfile.NamedTemporaryFile(prefix="r9700-gateway-test-", suffix=".log", delete=False)
 gw = subprocess.Popen([sys.executable, os.path.join(ROOT, "serve/gateway.py")], env=env,
                       stdout=subprocess.DEVNULL, stderr=GWLOG)
@@ -347,6 +352,45 @@ try:
     ck("keep-alive: two requests down one connection both get answered",
        b"/a" in r1 and b"/b" in r2 and len(LOG["engine"]) - n_before == 2,
        f"{st1} {st2} upstream saw {len(LOG['engine']) - n_before}")
+
+    # The same, across the endpoint the gateway answers ITSELF. It used to `return` after /api/sidecars, which
+    # closed the keep-alive connection under a browser that had more polls to send down it: the next request
+    # met an EOF or a BrokenPipe and Chrome labelled it "canceled". Every endpoint was answering in under
+    # 200 ms the whole time -- the Monitor "kept dropping" because of the connection, not the numbers.
+    s = socket.create_connection(("127.0.0.1", GW), timeout=10)
+    seq = []
+    for p in ("/api/sidecars", "/v1/models", "/api/sidecars", "/v1/models"):
+        s.sendall(f"GET {p} HTTP/1.1\r\nhost: x\r\n\r\n".encode())
+        stx, body = read_one(s)
+        seq.append(stx)
+    s.close()
+    ck("a keep-alive connection survives the gateway's own /api/sidecars (four polls, one socket)",
+       seq.count("HTTP/1.1 200 OK") == 4, str(seq))
+
+    # (7) the front door must not amplify its own polling. The watchers refresh every 2 s; a Monitor tab polls
+    # every 2 s; behind a cache-less fan-out every extra tab and every aborted retry buys two more watcher
+    # fetches, and on the box that multiplier fed a fork storm that made the page give up.
+    GW2 = free_port()
+    gw2 = subprocess.Popen([sys.executable, os.path.join(ROOT, "serve/gateway.py")],
+                           env={**env, "GATEWAY_PORT": str(GW2), "SIDECAR_TTL": "8"},
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(100):
+        try:
+            socket.create_connection(("127.0.0.1", GW2), timeout=1).close()
+            break
+        except OSError:
+            time.sleep(0.1)
+    before = STATE_HITS["n"]
+    ths = [threading.Thread(target=lambda: http(GW2, "/api/sidecars", timeout=20)) for _ in range(5)]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join()
+    hits = STATE_HITS["n"] - before
+    gw2.terminate()
+    gw2.wait(timeout=5)
+    ck("five concurrent /api/sidecars polls cost ONE round of watcher fetches (single flight + short TTL)",
+       hits <= 2, f"the state server saw {hits} hits for 5 polls (2 = one round, both entries point at it)")
 
     # (6) the hop stays cheap: 40 small requests through the gateway vs the same upstream directly
     def med(path_via_gw):

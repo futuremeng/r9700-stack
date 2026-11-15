@@ -158,23 +158,24 @@ def _state_fetch(url):
         return json.loads(r.read().decode("utf-8", "replace"))
 
 
-async def sidecars(writer):
-    """GET /api/sidecars -- the embed-watch pages' state in one blob, so the Monitor has ONE page for the
-    engine and the CPU serves. With no SIDECAR_STATE configured it answers [] and the card does not appear.
-
-    An entry may be `name=url` (the Monitor card labels itself from `name`); a bare url gets sidecar1, 2... --
-    the split is on the first = BEFORE the ://, so a url carrying a query string still works.
-
-    The watcher states are fetched CONCURRENTLY: each takes ~0.2 s on this box (the watcher holds a cache, but
-    its own metric scrape competes for the GIL), and serially that made this endpoint the slowest thing the
-    gateway answers -- 0.42 s for two serves, 1.2 s+ under three concurrent polls."""
-    pairs = []
+def _state_pairs():
+    out = []
     for i, e in enumerate(SIDECAR_STATE, 1):
         if "://" in e and "=" in e and e.index("=") < e.index("://"):
             name, url = e.split("=", 1)
         else:
             name, url = f"sidecar{i}", e
-        pairs.append((name, url))
+        out.append((name, url))
+    return out
+
+
+async def _fetch_states():
+    """Fetch every watcher's state.json CONCURRENTLY and off the loop, and encode the blob once.
+
+    The concurrency matters: each watcher answers in ~0.2 s, so serially this was the slowest thing the gateway
+    answers (0.42 s for two). Off the loop matters more -- it used to call urllib straight from an async
+    handler, which parked the whole front door for the duration."""
+    pairs = _state_pairs()
     got = await asyncio.gather(*[asyncio.to_thread(_state_fetch, u) for _, u in pairs],
                                return_exceptions=True)
     out = []
@@ -183,7 +184,37 @@ async def sidecars(writer):
             d = {"error": f"{type(d).__name__}: {d}", "health": None, "rates": {}, "host": {}, "serve": {}}
         d["name"], d["url"] = name, url
         out.append(d)
-    body = json.dumps({"sidecars": out, "at": time.time()}).encode()
+    return json.dumps({"sidecars": out, "at": time.time()}).encode()
+
+
+SC = {"body": None, "t": 0.0, "task": None}
+SC_TTL = float(os.environ.get("SIDECAR_TTL", "1.5"))
+
+
+async def sidecars(writer):
+    """GET /api/sidecars -- the embed-watch pages' state in one blob, so the Monitor has ONE page for the
+    engine and the CPU serves. With no SIDECAR_STATE configured it answers [] and the card does not appear.
+
+    An entry may be `name=url` (the Monitor card labels itself from `name`); a bare url gets sidecar1, 2... --
+    the split is on the first = BEFORE the ://, so a url carrying a query string still works.
+
+    Cached for SC_TTL seconds behind a SINGLE FLIGHT. The watchers refresh their own numbers every poll (2 s),
+    so a front door that re-fans-out on every browser poll is amplifying its own traffic: each extra tab, and
+    every retry of a poll the page aborted at 4 s, bought two more watcher fetches. On 2026-11-15 that was the
+    multiplier behind a fork storm inside the watcher (its own per-request pgrep, fixed there too) that left 6
+    of 12 polls unanswered. The shield keeps one client aborting from cancelling the fetch the other clients
+    are waiting on."""
+    now = time.time()
+    if SC["body"] is not None and now - SC["t"] < SC_TTL:
+        body = SC["body"]
+    else:
+        if SC["task"] is None or SC["task"].done():
+            SC["task"] = asyncio.create_task(_fetch_states())
+        try:
+            body = await asyncio.shield(SC["task"])
+            SC["t"], SC["body"] = time.time(), body
+        except Exception:                                          # noqa: BLE001 -- stale beats absent
+            body = SC["body"] or b'{"sidecars": [], "at": 0}'
     writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\n"
                  b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
     await writer.drain()
@@ -204,9 +235,17 @@ async def handle(reader, writer):
             headers = await read_headers(reader)
         except (asyncio.IncompleteReadError, ValueError):
             return
+        keep = version != b"HTTP/1.0" and b"connection: close" not in headers.lower()
         if path == "/api/sidecars":
+            # Answered here, and the CONNECTION stays open. The first version returned, ending the keep-alive
+            # connection under a browser that still had polls to send down it: the next request on that socket
+            # gets an EOF or a BrokenPipe, and Chrome reports it as "canceled" -- which is what "the Monitor
+            # keeps dropping" looked like while every endpoint answered in well under 200 ms. A page that polls
+            # three endpoints every 2 s reuses one connection; the front door may not close it.
             await sidecars(writer)
-            return
+            if not keep:
+                return
+            continue
         try:
             host, port = split_url(upstream(path))
             uread, uwrite = await asyncio.open_connection(host, port)
@@ -216,7 +255,6 @@ async def handle(reader, writer):
                          + str(len(msg)).encode() + b"\r\n\r\n" + msg)
             await writer.drain()
             return
-        keep = version != b"HTTP/1.0" and b"connection: close" not in headers.lower()
         uwrite.write(line + headers)                          # body streamed, never buffered
         await uwrite.drain()
         # The request body and the response are copied CONCURRENTLY, and 1xx is forwarded without being treated
@@ -255,8 +293,26 @@ async def handle(reader, writer):
             return
 
 
+async def client(reader, writer):
+    """One client connection. A browser that aborts a poll -- the pages abort at 4 s, by design -- resets the
+    socket mid-request, and that is ordinary HTTP, not an incident. Letting it escape into asyncio's default
+    handler printed a traceback per abort and left the upstream connection to the GC (the first version did:
+    "Unhandled exception in client_connected_cb", ConnectionResetError, twice in the log of a quiet hour)."""
+    try:
+        await handle(reader, writer)
+    except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError, asyncio.CancelledError,
+            OSError):
+        pass
+    finally:
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except (OSError, ConnectionResetError):
+            pass
+
+
 async def main():
-    srv = await asyncio.start_server(handle, BIND, PORT)
+    srv = await asyncio.start_server(client, BIND, PORT)
     print(f"gateway: http://{BIND}:{PORT}/  engine={ENGINE} embed={EMBED} rerank={RERANK} pages={PAGES} "
           f"sidecars={len(SIDECAR_STATE)}")
     async with srv:

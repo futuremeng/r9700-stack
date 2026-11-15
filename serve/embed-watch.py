@@ -129,10 +129,10 @@ def read_host():
     return h
 
 
-def serve_args():
-    """What the running serve was actually started with -- its own cmdline. The launcher's ${VAR:=default} lines
-    are the recipe, not the live answer: THREADS defaults to the number of online cpus inside CORES, which only
-    embed.sh knows (read off the box 2026-11-15: the recipe card said THREADS 8 while the serve ran -t 15)."""
+_ARGS_CACHE = {"t": 0.0, "out": {}}
+
+
+def _serve_args_now():
     try:
         for p in subprocess.run(["pgrep", "-f", PGREP], capture_output=True, text=True, timeout=3).stdout.split():
             cmd = Path(f"/proc/{p}/cmdline").read_bytes().decode("utf-8", "replace").split("\0")
@@ -145,6 +145,25 @@ def serve_args():
     except (OSError, subprocess.SubprocessError, ValueError):
         pass
     return {}
+
+
+def serve_args(maxage=20.0):
+    """What the running serve was actually started with -- its own cmdline. The launcher's ${VAR:=default} lines
+    are the recipe, not the live answer: THREADS defaults to the number of online cpus inside CORES, which only
+    embed.sh knows (read off the box 2026-11-15: the recipe card said THREADS 8 while the serve ran -t 15).
+
+    MEMOISED, and that is not a micro-optimisation: the lookup shells out to `pgrep -f`, which on this box (192
+    threads, a few hundred vLLM/worker processes) costs enough that doing it once PER /state.json request turned
+    a Monitor tab polling every 2 s into a fork storm -- with the gateway fetching two watchers per poll, 6 of
+    12 polls stopped answering inside the page's 4 s abort. A 20 s staleness window on a value that only changes
+    when the serve is restarted is the cheap trade; the card would be wrong for 20 s only after a restart, and a
+    restarted serve is restarted by a human who will look at the page anyway."""
+    now = time.time()
+    if now - _ARGS_CACHE["t"] < maxage:
+        return dict(_ARGS_CACHE["out"])
+    out = _serve_args_now()
+    _ARGS_CACHE["t"], _ARGS_CACHE["out"] = now, dict(out)
+    return dict(out)
 
 
 def rates():
