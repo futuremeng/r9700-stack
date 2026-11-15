@@ -89,6 +89,17 @@ for v in $(env | grep -o '^R9K_[A-Z0-9_]*'); do export "$v"; done
 export R9K_GDN_DEBUG R9K_GDN_DEBUG_ALL
 
 export HIP_VISIBLE_DEVICES=${GPUS:-0,1,2,3} VLLM_ROCM_USE_AITER=${AITER:-0} HSA_ENABLE_IPC_MODE_LEGACY=0
+
+# The knob that decides whether a mixed prefill+spec-decode step reaches stock's `_forward_core` at all
+# (r9700_vllm/models/gdn.py:378 `_prefill_ok`: our short-prefill core runs when the step's prefill tokens are
+# <= this AND the step has no plain (non-drafting) decode rows). 256 is where the one-page conv work was
+# validated and what every performance number in PROGRESS.md was taken with; the fault steps in
+# notes/bug-causal-conv1d-oob.md carried ~300-600 prefill tokens, i.e. just past it, which is why raising it is a
+# trigger-side dodge for the device fault. Named here (not left to code defaults) for the tmux reason above and
+# so tools/recipe-check.py can hold the live serve to it. NOT raised in production: past ~240 tokens on this
+# model the token-by-token core is slower on the GPU than the chunked kernels (~1.8 us per token per layer).
+: ${R9K_GDN_PREFILL_MAX:=256}
+export R9K_GDN_PREFILL_MAX
 export GPU_MAX_HW_QUEUES=${HWQ:-1} HSA_ENABLE_MWAITX=${MWAITX:-1} OMP_NUM_THREADS=8
 : ${R9K_MTP_QUANT_ROWS:=32768}   # bf16->MXFP4 requant chunk: 2.68 GiB of fp32 temporaries at 2^18 rows, 0.34 GiB here
 export R9K_MTP_QUANT_ROWS PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
