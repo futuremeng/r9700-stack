@@ -22,10 +22,12 @@ nonzero exit. So this file tests framing, not features:
   (6) the hop is cheap. 40 sequential small GETs through the gateway vs straight to the same upstream: the
       median difference must stay under 2 ms, which is what a body-parsing proxy costs. If someone replaces
       this file with a framework, this check fails rather than quietly shipping the latency.
-  (7) the admission gate: it closes on the ENGINE's own kv_cache_usage_perc and num_requests_waiting, holds a
-      new chat request (no upstream connection) instead of refusing it, opens again under the low threshold,
-      never holds a path that cannot take a KV hit, never starves its own /metrics read, keeps its promise
-      about the hold ceiling, refuses only when told to, and OPENS when the gauge cannot be read.
+  (7) the admission gate: it closes on the ENGINE's own harm signals -- a preemption counter that moved, a KV
+      pool near full -- NOT on a pool that is merely busy or an engine that is merely queueing its own work, so a
+      batch of 100k-token prompts cannot shut the door on everything for its whole duration. It holds a new chat
+      request (no upstream connection) instead of refusing it, re-opens on a window that ends, lets a request
+      declaring a small body through a shut door (the ones v1 starved), bounds how many it will hold at all, keeps
+      its ceiling promise, refuses only when told to, and OPENS when the gauge cannot be read.
 
 Nothing here needs a GPU, a model, or the box's real serve: the upstreams are three sockets on loopback.
 """
@@ -66,7 +68,7 @@ LOG = {"engine": [], "embed": [], "rerank": []}
 STATE_HITS = {"n": 0}
 # What the fake engine says about itself. Mutable from the checks, because the gate's decision variable is the
 # engine's own gauge and the only honest way to test a threshold is to move the number it reads.
-GAUGE = {"kv": 0.10, "run": 0, "wait": 0}
+GAUGE = {"kv": 0.10, "run": 0, "wait": 0, "prem": 0}
 METRICS = {}                                    # port -> bytes, for an engine whose /metrics has no gauges
 SLOW_METRICS = set()                            # ports whose /metrics hangs, so the gauge goes stale
 
@@ -82,6 +84,7 @@ def metrics_text(port):
             'vllm:kv_cache_usage_perc{engine="0",model_name="Qwen3.8"} %.4f\n' % j["kv"] +
             'vllm:num_requests_running{engine="0",model_name="Qwen3.8"} %d.0\n' % j["run"] +
             'vllm:num_requests_waiting{engine="0",model_name="Qwen3.8"} %d.0\n' % j["wait"] +
+            'vllm:num_preemptions_total{engine="0",model_name="Qwen3.8"} %d.0\n' % j.get("prem", 0) +
             'vllm:num_requests_waiting_by_reason{engine="0",model_name="Qwen3.8",reason="capacity"} 7.0\n'
             'vllm:num_requests_waiting_by_reason{engine="0",model_name="Qwen3.8",reason="deferred"} 9.0\n').encode()
 
@@ -447,10 +450,10 @@ try:
     # a step while its TOKENS are what eat the 902,153-token pool -- one 80k row is 8.9% of it, the footprint
     # of 53 short rows. The slow windows of the 6.8-day launch sat at kv 84-100% with a waiting queue (TTFT p99
     # 376 s, max 1 960 s); the fine launch ran the SAME --max-num-seqs 32. So the gate reads the pool.
-    def bring(extra):
+    def bring(extra, base=None):
         p = free_port()
         pr = subprocess.Popen([sys.executable, os.path.join(ROOT, "serve/gateway.py")],
-                              env={**GENV, **extra, "GATEWAY_PORT": str(p)},
+                              env={**(base or GENV), **extra, "GATEWAY_PORT": str(p)},
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(100):
             try:
@@ -463,7 +466,13 @@ try:
     GENV = {**env, "GATE_DISABLE": "0", "ENGINE": f"http://127.0.0.1:{ENG}", "GATE_METRICS_S": "0.1",
             "GATE_STALE_S": "2", "GATE_KV_HIGH": "0.85", "GATE_KV_LOW": "0.78", "GATE_WAIT": "1",
             "GATE_HOLD_S": "1.5"}
-    GAUGE.update({"kv": 0.10, "run": 1, "wait": 0})
+    # The shipped defaults, which the v1 thresholds in GENV above deliberately override: the shipped policy is the
+    # one a reader of the Monitor sees, so it has to be tested as shipped, not as tuned.
+    DEFAULTS = {k: v for k, v in GENV.items() if k not in ("GATE_KV_HIGH", "GATE_KV_LOW", "GATE_WAIT", "GATE_HOLD_S")}
+    # A body that declares more than GATE_SMALL_BYTES: the hold path needs a request big enough to be the kind of
+    # request the door exists for. The v1-era one-line body is now, correctly, a request that always passes.
+    BIG = '{"pad":"' + "y" * 9000 + '"}'
+    GAUGE.update({"kv": 0.10, "run": 1, "wait": 0, "prem": 0})
     GP, ggate = bring({})
 
     def gstate(p=GP):
@@ -481,7 +490,7 @@ try:
        "protecting", gstate()["closed"] and "of 902,153 tokens" in gstate()["why"], gstate()["why"][:160])
     threading.Timer(0.5, lambda: GAUGE.__setitem__("kv", 0.20)).start()   # the pool frees itself mid-hold
     t0 = time.time()
-    st, b = http(GP, "/v1/chat/completions", "POST", '{"x":1}', timeout=15)
+    st, b = http(GP, "/v1/chat/completions", "POST", BIG, timeout=15)
     held = time.time() - t0
     ck("a closed gate holds a chat request and then SERVES it (held, not dropped, not answered by the gateway)",
        held >= 0.35 and json.loads(b)["role"] == "engine", f"waited {held:.2f} s, {st}")
@@ -503,13 +512,15 @@ try:
        closed_hi and mid["closed"] and not gstate()["closed"],
        f"0.95->{closed_hi} 0.82->{mid['closed']} 0.70->{gstate()['closed']}")
 
-    # the second signature of the collapse windows: the engine queueing. It closes the gate on its own, at any
-    # pool fraction -- and it must read num_requests_waiting{, NOT the *_by_reason family.
+    # The second signature of the collapse windows: the engine queueing. As a KNOB it still works (GATE_WAIT=1
+    # here), and it must read num_requests_waiting{, NOT the *_by_reason family -- a request the scheduler is
+    # holding for a reason is not a queue the engine grew. As SHIPPED policy it is off: see the defaults block
+    # below, where a full pool plus a 17-deep engine queue and no preemption leaves the door open on purpose.
     GAUGE.update({"kv": 0.10, "wait": 3})
     time.sleep(0.3)
     g = gstate()
-    ck("the engine queueing closes the gate by itself, and reads num_requests_waiting{ rather than a "
-       "*_by_reason counter", g["closed"] and "waiting 3" in g["why"], g["why"][:160])
+    ck("GATE_WAIT=1 makes the engine queue close the gate by itself, reading num_requests_waiting{ rather than "
+       "a *_by_reason counter", g["closed"] and "waiting 3" in g["why"], g["why"][:160])
     GAUGE["wait"] = 0
 
     # what must never be held: /health is what setup.py's watcher polls, /metrics is what the gate reads itself,
@@ -538,7 +549,7 @@ try:
     # the ceiling is a promise: a client never waits longer than GATE_HOLD_S, and the engine still gets the
     # request -- a gate that trades a 30-minute TTFT for a hung connection has not improved anything.
     t0 = time.time()
-    st, b = http(GP, "/v1/chat/completions", "POST", '{"x":1}', timeout=20)
+    st, b = http(GP, "/v1/chat/completions", "POST", BIG, timeout=20)
     waited = time.time() - t0
     g = gstate()
     ck("the hold ceiling holds: passed after ~GATE_HOLD_S with the ENGINE's answer, and counted as expired",
@@ -551,7 +562,7 @@ try:
     GAUGE["kv"] = 0.99
     time.sleep(0.3)
     n_before = sum(1 for m, p, _n, _e in LOG["engine"] if p == "/v1/chat/completions")
-    st, b = http(GF, "/v1/chat/completions", "POST", '{"x":1}', timeout=10)
+    st, b = http(GF, "/v1/chat/completions", "POST", BIG, timeout=10)
     d = json.loads(b)
     n_after = sum(1 for m, p, _n, _e in LOG["engine"] if p == "/v1/chat/completions")
     ck("GATE_HOLD_S=0 refuses with a 503 that names the pressure, and the request never reaches the engine",
@@ -590,7 +601,7 @@ try:
     SLOW_METRICS.add(HANG)
     time.sleep(1.4)
     t0 = time.time()
-    st, b = http(GH, "/v1/chat/completions", "POST", '{"x":1}', timeout=20)
+    st, b = http(GH, "/v1/chat/completions", "POST", BIG, timeout=20)
     waited, g = time.time() - t0, gstate(GH)
     SLOW_METRICS.discard(HANG)
     GAUGE["kv"] = 0.10
@@ -612,6 +623,86 @@ try:
        and g["why"] == "off", f"{time.time()-t0:.2f}s {str(g)[:120]}")
     gdis.terminate()
     gdis.wait(timeout=5)
+
+    # ---- the shipped policy, tested as shipped ---------------------------------------------------------------
+    # 2026-11-15, read off the live box: a batch of ~100k-token data-processing prompts parked the pool at
+    # 0.87-0.90 with 17 requests waiting on scheduling capacity, and num_preemptions_total moved ONCE all day.
+    # v1 read exactly that as "shut the door": 180 of 180 polls closed, 14 requests held, 9 of them admitted
+    # anyway after waiting the whole 25 s ceiling. The batch was not harming anything -- the KV was already held,
+    # and the engine was queueing its own work correctly -- so the door was pure latency on every new arrival,
+    # and the cheap small requests were the ones made to wait. These are the four assertions that policy needs.
+    GD2, gdef = bring({}, base=DEFAULTS)
+    GAUGE.update({"kv": 0.30, "run": 5, "wait": 0, "prem": 0})
+    time.sleep(0.4)                       # start open: the pool's latch would otherwise carry the last test's 0.99
+    GAUGE.update({"kv": 0.88, "wait": 17})
+    time.sleep(0.4)
+    t0 = time.time()
+    st, b = http(GD2, "/v1/chat/completions", "POST", BIG, timeout=10)
+    busy, g = time.time() - t0, gstate(GD2)
+    ck("a full pool and a 17-deep engine queue and NO preemption leave the door open: the engine queueing its "
+       "own work is the engine's job, and a second queue in front of it changes nothing about the KV already held",
+       not g["closed"] and busy < 0.6 and json.loads(b)["role"] == "engine", f"{g['why'][:120]} after {busy:.2f} s")
+
+    # A preemption counter that MOVED is the harm: blocks taken back from a running request, which is what the
+    # 11-14 slow window's 68 victims paid a whole re-prefill for. It is cumulative since engine start, so the
+    # gate compares polls; a jump covers a poll it missed.
+    GAUGE["prem"] = 3
+    time.sleep(0.5)
+    g = gstate(GD2)
+    t0 = time.time()
+    st, b = http(GD2, "/v1/chat/completions", "POST", BIG, timeout=15)
+    held = time.time() - t0
+    ck("preemption activity closes the door, and the reason names the count and the window rather than a level",
+       g["closed"] and "preemption" in g["why"], g["why"][:160])
+    ck("the shipped hold ceiling is 5 s, not v1's 25 -- a bound that is usually reached is a delay, not a bound",
+       5.0 <= held <= 7.0 and json.loads(b)["role"] == "engine" and gstate(GD2)["counters"]["expired"] >= 1,
+       f"waited {held:.2f} s: {gstate(GD2)['counters']}")
+
+    # ...and the window is a WINDOW. A pool threshold (re-open below 0.78) never happens under a long batch, which
+    # is how v1 ended up shut forever; a quiet-preemptions window ends on its own.
+    GW2, gwin = bring({"GATE_PREEMPT_S": "1.2"}, base=DEFAULTS)
+    GAUGE["prem"] = 4
+    time.sleep(0.4)                       # pool is 0.88 here: below HIGH 0.92, so only the preemption axis is shut
+    shut = gstate(GW2)["closed"]
+    time.sleep(1.6)
+    back = gstate(GW2)
+    ck("the preemption shutdown expires: after GATE_PREEMPT_S with nothing preempting, the door re-opens",
+       shut and not back["closed"], f"shut={shut} -> {back['closed']}: {back['why'][:100]}")
+
+    # The ones v1 starved: a 200-token question behind a shut door. It passes on its declared size, header only --
+    # the pipe still never reads a body to decide anything.
+    GAUGE.update({"kv": 0.97, "prem": 5})
+    time.sleep(0.4)
+    shut = gstate(GW2)["closed"]
+    t0 = time.time()
+    st, b = http(GW2, "/v1/chat/completions", "POST", '{"x":1}', timeout=10)
+    small, g = time.time() - t0, gstate(GW2)
+    ck("a request declaring a small body passes a shut door, counted, while a big one would be held",
+       shut and small < 0.4 and g["counters"]["small_passed"] >= 1 and g["config"]["GATE_SMALL_BYTES"] == 8192,
+       f"door shut={shut}; small waited {small:.2f} s; {g['counters']}")
+
+    # Never a second queue: past GATE_MAX_HELD the gate admits instead of holding, because a gate with an
+    # unbounded hold queue has just become a queue with extra steps -- and the engine already has one.
+    GM, gheld = bring({"GATE_MAX_HELD": "1", "GATE_HOLD_S": "3"}, base=DEFAULTS)
+    GAUGE.update({"kv": 0.99})
+    time.sleep(0.4)
+    t1 = threading.Thread(target=lambda: http(GM, "/v1/chat/completions", "POST", BIG, timeout=15))
+    t1.start()
+    time.sleep(0.4)                                                             # one request is now being held
+    t0 = time.time()
+    st, b = http(GM, "/v1/chat/completions", "POST", BIG, timeout=15)
+    second = time.time() - t0
+    t1.join(timeout=10)                                                         # the first leaves at its ceiling
+    g = gstate(GM)
+    ck("at most GATE_MAX_HELD are ever held: the second arrival is admitted instead of queued behind it",
+       second < 1.0 and g["counters"]["held_over"] >= 1 and g["counters"]["expired"] >= 1,
+       f"second waited {second:.2f} s: {g['counters']}")
+    for pr in (gdef, gwin):
+        pr.terminate()
+        pr.wait(timeout=5)
+    gheld.terminate()
+    gheld.wait(timeout=5)
+    GAUGE.update({"kv": 0.10, "run": 1, "wait": 0, "prem": 0})
     gg = gstate()
     ggate.terminate()
     ggate.wait(timeout=5)

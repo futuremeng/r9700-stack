@@ -1,5 +1,21 @@
 # Changelog
 
+## The admission gate stopped closing on a full pool; it closes on preemptions, and cheap requests pass a shut door
+
+A batch of data-processing prompts (median 542 prompt tokens, **p95 105,058**, max 108,992) parked the KV pool at
+0.87-0.90 with 14-17 requests waiting on scheduling capacity, while `num_preemptions_total` moved **once**. v1's
+thresholds (shut at 0.85, re-open below 0.78, shut on `waiting >= 1`) read that as an emergency: the gate's own
+history showed **180 of 180 polls closed**, and of 14 held requests **9** were admitted anyway after waiting the
+whole 25 s ceiling. The door was a permanent 25-second tax on arrivals, and a door shut on a full-but-not-thrashing
+pool protects nothing -- the KV is already held, and a second queue in front of the engine cannot free a block.
+
+Shipped policy: close when the preemption counter **moves** (shut 20 s after the last event -- a window that ends,
+unlike a pool line a resident batch makes unreachable) or when `kv >= 0.92`; hysteresis latches the pool axis only;
+`GATE_WAIT` defaults to 0 because a queue is what saturation looks like, not what thrash looks like. Three escapes:
+a request declaring a body <= 8192 B passes a shut door (header only, still no body parsed, no token estimate), at
+most 8 are ever held before the gate admits instead of queueing, and the ceiling is 5 s because a bound reached by
+9 of 14 holds is a delay. `notes/admission-gate.md` §6 has the ledger; `tests/test_gateway.py` now tests the shipped
+defaults, not the tuned ones.
 ## Production moves to `R9K_GDN_PREFILL_MAX=1024`: a mitigation whose price was measured, not a fix
 
 The knob decides per step whether the GDN core is ours or stock's `_forward_core`; the six device faults arrived on

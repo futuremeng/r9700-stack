@@ -656,5 +656,23 @@ ck("the answer never comes from /proc/<pid>/fd: every rank keeps all four render
    "list identifies nothing (measured while hunting, 2026-11-15)",
    "kfd/proc" in _csrc and "/fd" not in _csrc, _csrc.strip().splitlines()[1].strip()[:80])
 
+# ---------------------------------------------------------------------- the gate's knobs are reachable ----
+# A knob the launcher cannot pass is a knob that does not exist. The gate's DEFAULTS live in serve/gateway.py and
+# serve/gateway.sh forwards overrides only, so the shell's name list and the names the program reads have to agree;
+# 2026-11-15's policy rewrite added four knobs (preemption window, small-body pass, hold bound, and the waiting
+# trigger going to 0) and a forgotten name there would be invisible until someone set it and saw nothing happen.
+# Read from the sources, not from the README.
+_gsrc = (ROOTP / "serve" / "gateway.py").read_text()
+_gsh = (ROOTP / "serve" / "gateway.sh").read_text()
+_gread = set(re.findall(r'os\.environ\.get\("(GATE_[A-Z_]+)"', _gsrc))
+_gnamed = set((re.search(r'^GATENAMES="([^"]+)"', _gsh, re.M) or type("", (), {"group": lambda s, i: ""})()).group(1).split())
+ck("every GATE_* name gateway.py reads is named in gateway.sh's passthrough list -- an unnamed knob is a knob the "
+   "launch cannot set, and the engine would silently run on the default",
+   len(_gread) >= 8 and _gread <= _gnamed, f"reads {len(_gread)}, missing {sorted(_gread - _gnamed)}")
+ck("gateway.sh forwards gate overrides but states no default for any of them -- two copies of a default are two "
+   "policies, and only one of them shows up in the running process",
+   not re.search(r'^\s*(?:export )?GATE_[A-Z_]+:?=', _gsh, re.M),
+   [l.strip()[:60] for l in _gsh.splitlines() if re.match(r"^\s*(?:export )?GATE_[A-Z_]+:?=", l)][:3])
+
 print("PASS" if fail == 0 else "FAIL", f"({fail} failing)")
 sys.exit(1 if fail else 0)

@@ -100,9 +100,22 @@ the gate works on the fraction `/metrics` reports.
 ## 3. Knobs, and where they live
 
 Defaults live in `serve/gateway.py` and are the ones this box runs; `serve/gateway.sh` passes an override
-through and prints it (`GATE_DISABLE GATE_KV_HIGH GATE_KV_LOW GATE_WAIT GATE_MAX_INFLIGHT GATE_HOLD_S
-GATE_METRICS_S GATE_STALE_S GATE_POOL_TOKENS`), and nothing goes in `~/.config/r9700-stack/native.env` because
-these are measured thresholds, not local bindings (§10's rule).
+through and prints it, and nothing goes in `~/.config/r9700-stack/native.env` because these are measured
+thresholds, not local bindings (§10's rule). The names the shell forwards:
+
+```
+GATE_DISABLE GATE_KV_HIGH GATE_KV_LOW GATE_PREEMPT_S GATE_WAIT GATE_MAX_INFLIGHT GATE_SMALL_BYTES
+GATE_MAX_HELD GATE_HOLD_S GATE_METRICS_S GATE_STALE_S GATE_POOL_TOKENS
+```
+
+`tests/test_setup.py` holds that list against the `os.environ.get("GATE_...")` names `gateway.py` actually reads,
+in both directions: a knob the launcher cannot pass is a knob that does not exist, and a default written in the
+shell as well as the program is two policies with only one of them visible in the running process.
+
+Shipped values after §6: shut at `GATE_KV_HIGH=0.92`, re-open the pool axis at `GATE_KV_LOW=0.85`, stay shut
+`GATE_PREEMPT_S=20` s after the last observed preemption, `GATE_WAIT=0` (an engine queue alone never closes the
+door), `GATE_SMALL_BYTES=8192` (a declared body that small passes a shut door), `GATE_MAX_HELD=8` (never hold
+more than this many at once), `GATE_HOLD_S=5` (the ceiling on any single hold).
 
 `GATE_MAX_INFLIGHT` (0 = off) is the sequence axis, kept because the two budgets are independent: a fan-out of
 short requests is a different problem from one 200k request, and only the second one moves the pool gauge.
@@ -122,9 +135,13 @@ no gateway is in front, exactly as the sidecar row behaves.
   (`775,852 of 902,153 tok`). The reason line carries the gateway's own first clause and its **title** carries
   the gateway's full string with the token count: that arithmetic lives in one place, and the 24-character budget
   of the tightest 4-up card is what puts the long form in the title.
-* *Holds at the door*: the running total of held requests, then `released R . expired E`, with `refused F` joining
-  the line only when it is not zero (a gate refusing traffic quietly is the one thing worth running wide for).
-  released/expired/refused/admitted are all stated in the gloss.
+* *Holds at the door*: the running total of held requests, then `expired E . small S`, with `refused F` and
+  `over O` joining the line only when they are not zero -- either one is the gate choosing traffic over protection,
+  which is exactly the count worth running wide for. `expired` against `held` is the ratio that says whether the
+  ceiling is acting as a bound or just as a delay; `small` is the count of cheap requests that had to be let
+  through a shut door, which is the sign a pool threshold was starving the wrong traffic. released / refused /
+  admitted / held_now / held_over are all stated in the gloss, and a gateway old enough to lack the newer counters
+  gets the older `released . expired` pairing rather than a column of zeros.
 
 ## 4. Proved, on this box
 
@@ -171,3 +188,72 @@ a step that mixed new prefills with spec-decode rows, which with prefix caching 
 `_forward_core` -- and 05:11 took the fault at **kv 59% with nothing waiting**. The gate would not have closed
 for either. It addresses the slow windows, which are a different failure with different numbers
 (`notes/bug-causal-conv1d-oob.md` is the crash's file).
+
+## 6. The batch that made the door permanent (2026-11-15 afternoon)
+
+The gate went into production at 0.85/0.78 with `GATE_WAIT=1`, and a few hours later a batch of
+data-processing requests arrived -- prompt tokens with a median of 542 but a **p95 of 105,058** and a max of
+108,992 in the last 100 rows. What the gauges looked like while it ran, sampled over 36 s:
+
+```
+kv_cache_usage 0.87-0.90      running 5      waiting 14-17, all of it reason="capacity"
+num_preemptions_total 1.0     (cumulative since launch: ONE preemption, all day)
+```
+
+and the gate's own history said:
+
+```
+hist: 180 of 180 polls closed      counters: held 14, released 4, expired 9, admitted 93
+why:  kv 0.905 >= 0.78 (816,271 of 902,153 tokens); engine waiting
+```
+
+Three separate mistakes are visible in those four lines.
+
+**A threshold below a workload's steady state is not a threshold, it is a permanent state.** Five resident
+100k-token contexts are ~500k tokens = 55% of the pool on their own; the batch parked the pool at 0.87-0.90 for
+its whole duration. `GATE_KV_LOW=0.78` is a line that batch can never cross, so the door never re-opened: 180 of
+180 polls. Nothing about the pressure was transient.
+
+**A queue is not thrash.** `waiting 17` with `reason="capacity"` is the scheduler admitting it has no blocks for
+more rows; `num_preemptions_total` moving is the pool actually taking blocks back from a running request. The
+first is saturation (normal, and the engine handles it in an order it chose), the second is the harm that made the
+11-12 and 11-14 slow windows 68 victims pay a whole re-prefill each. v1 keyed on the first and never looked at the
+second. On this batch the difference was not academic: **one preemption** while the door was shut for three
+minutes and counting.
+
+**Holding at the door does not reduce the pressure that is already there.** The KV those 17 requests are waiting
+for is held by requests already running. A second queue in front of the engine cannot free a block; all it can do
+is delay an arrival, and the delays land worst on the requests that would have cost almost nothing.
+
+And the ceiling measured the damage: of 14 held requests, **4** went because the pool fell back under the re-open
+line and **9** went because they waited the whole 25 s and were admitted anyway. A bound that is usually reached
+is not a bound, it is a 25-second tax -- which is what "new requests can't get in" actually was.
+
+So the policy changed from LEVEL to HARM, and the door got three escapes:
+
+| | v1 | shipped now |
+|---|---|---|
+| closes on | `kv >= 0.85` **or** `waiting >= 1` | `num_preemptions_total` moved (shut 20 s after the last event) **or** `kv >= 0.92` |
+| re-opens | below `kv 0.78` (unreachable under a long batch) | window expiry (always ends) / pool below 0.85 |
+| hysteresis latch | the whole door | the pool axis only |
+| small requests | held like everything else | a declared body <= 8192 B passes a shut door |
+| hold queue | unbounded | at most 8 held, past that it admits |
+| ceiling | 25 s (hit by 9 of 14 holds) | 5 s |
+
+The preemption signal is a *delta* between polls, not the cumulative value: the counter has been sitting at 1
+since the launch, and a gate that closed on a nonzero cumulative count would be shut forever in the other
+direction. `num_requests_waiting_by_reason` is still deliberately not read as a queue -- the brace on
+`num_requests_waiting{` is there for that reason, and the test fixture keeps emitting two `by_reason` lines with
+values that would close the door wrongly.
+
+Header-only, still. `GATE_SMALL_BYTES` reads the `Content-Length` the pipe already holds in order to frame the
+upstream request; it never turns that number into a token estimate, and it never reads a body to make a decision.
+The claim it needs is only "this is a 200-token question, not a 100k-token document", which is the distinction the
+door was getting wrong.
+
+Held in tests (`tests/test_gateway.py` §(8), against the shipped defaults rather than the tuned ones the other
+checks use): a full pool plus a 17-deep engine queue and no preemption leaves the door **open**; a preemption
+counter that moved closes it and names the window in the reason; the shipped ceiling is 5 s; the preemption
+shutdown **expires** (1.2 s window, re-opened 1.6 s later with the pool at 0.88 -- the case v1 could not exit);
+a small declared body passes a shut door and is counted; and at `GATE_MAX_HELD=1` the second arrival is admitted
+instead of queued behind the first.

@@ -197,12 +197,16 @@ sidecar has only been up a few minutes - the label says what was averaged.">1 h<
       <div class="small slot" id="wd-preempt-note">—</div>
     </div>
   </section>
-  <!-- row 4: the gateway's admission gate (serve/gateway.py), which holds a NEW chat/completion request while the
-       engine's own KV pool is at the cliff. It lives on this page because the pool is the budget the slow
-       windows of this box ran into, and a request that arrived late is otherwise unanswerable: the engine's
-       queue says what it is doing now, the gate's counters say what a request waited for and when. Built from
-       GET /api/gate, which only the gateway answers -- on the engine's own port that route does not exist, and
-       there the section hides itself, exactly as the sidecar row does. -->
+  <!-- row 4: the gateway's admission gate (serve/gateway.py). It lives on this page because a request that
+       arrived late is otherwise unanswerable: the engine's queue says what it is doing now, the gate's counters
+       say what a request waited for and why. Since 2026-11-15 it closes on HARM -- a preemption counter that
+       moved, or a pool at GATE_KV_HIGH -- and not on the pool being merely full or the engine merely queueing,
+       because a batch of long prompts parks the pool above any threshold that would ever release, and closing on
+       that was measured as +25 s on every new arrival for no protection at all. The Preemptions card in the row
+       above is the same signal the gate keys on: read them together, and the gate's own history strip below is
+       the door's answer over the last three minutes. Built from GET /api/gate, which only the gateway answers --
+       on the engine's own port that route does not exist, and there the section hides itself, exactly as the
+       sidecar row does. -->
   <section class="grid grid--4 gate" id="gate" hidden>
     <div class="card">
       <div class="label"><span class="dot" id="gate-dot"></span>Admission gate</div>

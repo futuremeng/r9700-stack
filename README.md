@@ -582,6 +582,17 @@ through it: +0.8 ms on a small request, engine ITL unchanged (13.0 -> 12.8 ms at
 request line and pipes bytes, because a proxy that parses bodies costs 2-3 ms. `tests/test_gateway.py` keeps that
 promise; [notes/embed-sidecar-box-test.md](notes/embed-sidecar-box-test.md) has the numbers and the restart order.
 
+In front of the engine it also runs an **admission gate**, and its trigger is harm, not fullness: it holds a new
+chat/completion request when the engine's `num_preemptions_total` **moved** (blocks taken back from a running
+request) or its pool reached `GATE_KV_HIGH=0.92`, and it does **not** close because the pool is busy or the engine
+has a queue. That distinction was bought with the numbers in
+[notes/admission-gate.md](notes/admission-gate.md) §6: a batch of 100k-token prompts held the pool at 0.87-0.90 and
+the engine queue at 17 all afternoon with **one** preemption, and the earlier thresholds kept the door shut for
+180 of 180 polls while 9 of 14 held requests waited the entire ceiling and went through anyway. A request declaring
+a body of `GATE_SMALL_BYTES=8192` B or less passes a shut door (the ones a pool threshold starves are the cheap
+ones), no more than `GATE_MAX_HELD=8` are ever held at once, and the ceiling on a hold is 5 s. Its state -- reason,
+gauges, counters, and a 180-poll history strip -- is on the Monitor's fourth row and at `GET /api/gate`.
+
 **3. Check it.**
 
 ```sh

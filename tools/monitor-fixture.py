@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Build a Monitor fixture: today's live status plus yesterday's finished rows, for the render harness.
 
-    ~/venv-r9700/bin/python tools/monitor-fixture.py [JOURNAL] [BASE] [OUT] [--rows N] [--wedged]
+    ~/venv-r9700/bin/python tools/monitor-fixture.py [JOURNAL] [BASE] [OUT] [--rows N] [--wedged] [--gate-v2]
+
+`--gate-v2` replaces whatever the live gateway reported with the SHIPPED gate's payload shape (preemption window,
+small_passed, held_over), so the row can be rendered against a gateway that has not been restarted yet.
 
 `--wedged` replaces the watchdog fields with the branch a healthy box never shows: a wedged launch (ranks still
 holding the GPUs while /health is silent) and several fault lines across fewer events on one card. Keep it in the
@@ -70,22 +73,30 @@ def main(argv):
              "host": {"committed_as_kb": 89397784, "embed_rss_kb": 1171012}}], "at": time.time()}
     # The gateway's admission gate (GET /api/gate), for the same reason the sidecars are here: the render
     # harness fails any slot in monitor.html the page never writes, so a card that only exists while a gateway
-    # is answering would fail the offline render. The fallback is deliberately the HELD branch -- closed on a
-    # pool reading, with the token count inside the reason -- because that is the branch a live idle box will
-    # not show you, and it is the one the row exists for. Numbers of the shape this box produces at kv 0.86 of
-    # a 902,153-token pool; the strip is 18 open polls followed by 12 shut ones, which is what a load ramp
-    # looks like on a 1 s axis.
+    # is answering would fail the offline render. The fallback is deliberately the HELD branch, and the branch it
+    # shows is the SHIPPED policy's: shut because a preemption counter moved (not because the pool is merely full),
+    # with the pool clause as the second reason, and the counters carrying the two escapes the shipped gate has --
+    # small_passed (cheap requests admitted through a shut door) and held_over (admitted because the hold queue hit
+    # its bound). Numbers of the shape this box produces at 0.86 of a 902,153-token pool; the strip is 18 open
+    # polls followed by 12 shut ones, which is what a load ramp looks like on a 1 s axis.
     try:
         with urllib.request.urlopen(f"{base}/api/gate", timeout=5) as f:
             gate = json.load(f)
     except OSError:
-        gate = {"closed": True, "why": "kv 0.860 >= 0.85 (775,851 of 902,153 tokens); engine waiting 3",
-                "gauges": {"kv": 0.86, "run": 24.0, "wait": 3.0, "at": time.time()}, "err": None,
-                "inflight": 27, "polls": 4210, "hist": [0] * 18 + [1] * 12, "hist_n": 180,
+        gate = {}
+    if "--gate-v2" in argv or not gate.get("config"):
+        gate = {"closed": True,
+                "why": "7 preemption(s) observed, door shut 12 s more (window 20 s); "
+                       "kv 0.860 >= 0.85 (775,851 of 902,153 tokens)",
+                "gauges": {"kv": 0.86, "run": 24.0, "wait": 3.0, "prem": 7.0, "at": time.time()}, "err": None,
+                "inflight": 27, "polls": 4210, "thrash_left": 12.0, "prem_seen": 7, "pool_shut": True,
+                "hist": [0] * 18 + [1] * 12, "hist_n": 180,
                 "gated": ["/v1/chat/completions", "/v1/completions"],
-                "counters": {"held": 41, "released": 33, "expired": 6, "refused": 0, "admitted": 812},
-                "config": {"GATE_ON": True, "GATE_KV_HIGH": 0.85, "GATE_KV_LOW": 0.78, "GATE_WAIT": 1,
-                           "GATE_MAX_INFLIGHT": 0, "GATE_HOLD_S": 25.0, "GATE_METRICS_S": 1.0,
+                "counters": {"held": 41, "held_now": 2, "released": 26, "expired": 11, "refused": 0,
+                             "admitted": 812, "small_passed": 214, "held_over": 4},
+                "config": {"GATE_ON": True, "GATE_KV_HIGH": 0.92, "GATE_KV_LOW": 0.85, "GATE_PREEMPT_S": 20.0,
+                           "GATE_WAIT": 0, "GATE_MAX_INFLIGHT": 0, "GATE_SMALL_BYTES": 8192, "GATE_MAX_HELD": 8,
+                           "GATE_HOLD_S": 5.0, "GATE_METRICS_S": 1.0,
                            "GATE_STALE_S": 5.0, "pool_tokens": 902153}, "at": time.time()}
     # The watchdog row's inputs (webui's KFD rank->card join and its kernel-journal fault count). Same reason the
     # gate and sidecar blocks are here: the render harness fails any slot the page never writes, so a row that

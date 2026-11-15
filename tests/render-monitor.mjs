@@ -444,15 +444,29 @@ for (const [id, key, rateKey] of [["spans-gentot", "generation_tokens", "generat
     const short = b.span_s < AVG_W[lbl] * 0.8;
     // A span may be left out for either reason the page states in its own comment: the two windows are the same
     // window (a launch 16 minutes old has a 900 s "15m" and a 960 s "1h" holding the same count), or the line with
-    // every span in it would not fit the tightest 4-up column. Either way the figures that ARE printed have to match
-    // the payload, which is what the rest of this loop checks; a span simply vanishing is BAD.
-    const fullLine = shown.map(([l2, b2]) => `${l2} ${Math.round(b2[key]).toLocaleString("en-US")}`).join(" \u00b7 ");
+    // EVERY span in it would not fit the tightest 4-up column -- which is the page's own rule, so the width test
+    // has to measure the line the page would have printed, not the subset this loop happens to iterate. Either way
+    // the figures that ARE printed have to match the payload, and a span that is dropped for width has to be named
+    // in the slot's title rather than vanish; that is what the rest of this loop checks.
+    const allSpans = Object.entries((STAT?.avg || {})).filter(([, bb]) => isnum(bb?.[key]));
+    const widestLine = allSpans.map(([l2, b2]) => `${l2} ${Math.round(b2[key]).toLocaleString("en-US")}`)
+                                .join(" \u00b7 ");
+    const tooWide = widestLine.length > 24;
     const redundant = shown.some(([l2, b2]) => l2 !== lbl && isnum(b2[key])
       && Math.abs(b2[key] - b[key]) <= Math.max(1, 0.02 * Math.abs(b2[key]))
       && Math.abs(b2.span_s - b.span_s) <= 0.15 * Math.max(b2.span_s, b.span_s));
-    if (!short && !line.includes(lbl + " ") && !redundant && fullLine.length <= 24) {
+    if (!short && !line.includes(lbl + " ") && !redundant && !tooWide) {
       console.log(`BAD  ${id}: ${lbl} has ${b[key]} over ${Math.round(b.span_s)}s and the line omits it`
-                  + " (no span here is redundant, and the line would fit)"); process.exitCode = 1;
+                  + ` (nothing here is redundant, and ${widestLine.length} characters of spans do fit 24)`)
+        ; process.exitCode = 1;
+    }
+    if (!short && !line.includes(lbl + " ") && !redundant && tooWide) {
+      const ti = ((byId.get(id) || new El()).title || "");
+      if (!ti.includes(lbl + " ")) {
+        console.log(`BAD  ${id}: dropped ${lbl} because ${widestLine.length} characters do not fit 24, but the`
+                    + " title never names it -- a span dropped for width is only honest if it is still said");
+        process.exitCode = 1;
+      }
     }
     if (short && line.includes(lbl + " ")) {
       console.log(`BAD  ${id}: prints ${lbl} for a span of ${Math.round(b.span_s)}s -- a young window wearing an old label`); process.exitCode = 1;
@@ -610,16 +624,32 @@ console.log(`  caption slots now: ${t("gen-note1")} | ${t("gen-note2")}`);
       }
     }
     const ctr = ((byId.get("gate-counters") || new El()).title || "");
-    for (const k of ["released", "expired"]) {
+    const hasSmall = Number.isFinite(GPAY.counters?.small_passed), hasOver = Number.isFinite(GPAY.counters?.held_over);
+    // expired and small are the two counts that decide whether the door is doing anything at all: expired against
+    // held says whether the ceiling is a bound or just a delay, and small says how many cheap requests had to be
+    // let through a shut door (which is the sign a pool threshold was starving the wrong traffic). An older
+    // gateway reports neither and its page prints released/expired instead, so what is required follows the
+    // payload rather than the page.
+    for (const k of ["expired", hasSmall ? "small" : "released"]) {
       if (!new RegExp(k + " \\d").test(g2("gate-counters"))) {
         console.log(`BAD  the counters line does not carry ${k}: "${g2("gate-counters")}"`); process.exitCode = 1;
       }
     }
-    // the two counters the tight line drops are dropped only when they are zero (refused) or always in the gloss
-    for (const k of ["refused", "admitted"]) {
+    // the counters the tight line drops have to be stated in the gloss, or they are just hidden numbers
+    for (const k of ["released", "refused", "admitted", "held"]
+             .concat(hasSmall ? ["small"] : []).concat(hasOver ? ["over"] : [])) {
       if (!new RegExp(k + " \\d").test(ctr)) {
         console.log(`BAD  the counters gloss never states ${k} -- a number hidden from the line has to be in the title`);
         process.exitCode = 1;
+      }
+    }
+    // the ceiling line names the two timers the door runs on. The window is the one that lets the door re-open
+    // under a long batch; a pool release line alone could not (2026-11-15: 180 of 180 polls shut). It is only
+    // required when the gateway in front of the page reports one -- an older gateway does not, and its page
+    // degrades to the poll interval on purpose.
+    for (const k of Number.isFinite(GPAY.config?.GATE_PREEMPT_S) ? ["hold", "win"] : ["hold"]) {
+      if (!new RegExp(k + " \\d").test(g2("gate-ceil"))) {
+        console.log(`BAD  the ceiling line does not name ${k}: "${g2("gate-ceil")}"`); process.exitCode = 1;
       }
     }
     // the strip draws a base line even with no history, so a visible row must never have an empty spark box

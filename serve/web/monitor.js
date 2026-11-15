@@ -1210,16 +1210,20 @@ async function paintGate() {
   spark($("gate-spark"), g.hist, { baseLo: 0, baseHi: 1 });
   $("gate-spark").dataset.tone = g.closed ? "warn" : "ok";
   // The reason the gateway gave is one line here and the whole string in the title. The line takes the gateway's
-  // own first clause ("kv 0.860 >= 0.85") and the title carries its exact full string, token count and all
-  // ("kv 0.860 >= 0.85 (775,650 of 902,153 tokens)"): the tokens are that arithmetic, and a second copy of it in
-  // the page is the copy that goes out of date. The tightest 4-up card holds 24 characters at 12 px -- the
-  // budget the render harness measures -- so the long form goes where it is still readable in full.
+  // own first clause ("3 preemption(s) observed, door shut 12 s more") and the title carries its exact full
+  // string, token count and all ("kv 0.860 >= 0.92 (775,650 of 902,153 tokens)"): the tokens are that arithmetic,
+  // and a second copy of it in the page is the copy that goes out of date. The tightest 4-up card holds 24
+  // characters at 12 px -- the budget the render harness measures -- so the long form goes where it is still
+  // readable in full.
   const whyClause = (g.why || "").split(";")[0].split(" (")[0].trim();
   slot("gate-why", !c.GATE_ON ? "off" : g.closed ? (whyClause || "at the cliff")
-       : (g.err ? "open: no gauge" : "under the line"),
+       : (g.err ? "open: no gauge" : "no harm signal"),
        (g.why || "") + (g.err ? ` ${g.err}` : "")
-       + " -- the gate reads the engine's gauges (kv, waiting) rather than estimating the body it has not parsed, "
-       + "and it fails OPEN when those gauges are missing or stale: a front door that stops serving because its "
+       + " -- the door closes on the engine's own harm signals: num_preemptions_total MOVING (blocks taken back "
+       + "from a running request) and a pool at GATE_KV_HIGH. It does not close because the engine has a queue: a "
+       + "batch of long prompts parks the pool above any useful threshold for its whole duration, and closing on "
+       + "that costs every new arrival seconds while protecting KV that is already held (notes/admission-gate.md). "
+       + "It fails OPEN when the gauges are missing or stale: a front door that stops serving because its "
        + "telemetry broke is worse than no gate.");
   // The pool in tokens, which is the axis the threshold is really about (0.85 of 902,153 is a number of tokens,
   // and one 80k request is 53 short ones). The percent is on the engine's own KV card; the waiting count is on
@@ -1227,21 +1231,39 @@ async function paintGate() {
   slot("gate-level", isnum(gg.kv)
        ? `${dnum(Math.round(gg.kv * (c.pool_tokens || 0)))} of ${dnum(c.pool_tokens || 0)} tok`
        : "no gauge reading",
-       `engine gauges: kv ${gg.kv}, running ${gg.run}, waiting ${gg.wait}; in flight through this gateway `
-       + `${g.inflight}. A sequence costs 1.8 ms of step time and its own tokens of pool, so the pool is the `
-       + "budget a long request spends (notes/admission-gate.md).");
-  slot("gate-counters", `released ${dnum(n.released || 0)} \u00b7 expired ${dnum(n.expired || 0)}`
-       // refused is the one that only exists under the other policy (GATE_HOLD_S=0), and it is worth the line
-       // running wide when it is not zero: a silent nonzero refused would be the gate refusing traffic quietly.
-       + (n.refused ? ` \u00b7 refused ${dnum(n.refused)}` : ""),
-       "released: it went when the pool fell back below the re-open threshold; expired: it went anyway after the "
-       + "ceiling, because a 30-minute TTFT is the failure this exists to prevent, not something to reach for. "
-       + `Since the gateway started: released ${n.released}, expired ${n.expired}, refused ${n.refused} (a 503, `
-       + `which only GATE_HOLD_S=0 issues), and admitted ${n.admitted} never met a shut door.`);
-  slot("gate-ceil", `hold ${c.GATE_HOLD_S}s \u00b7 poll ${c.GATE_METRICS_S}s`,
+       `engine gauges: kv ${gg.kv}, running ${gg.run}, waiting ${gg.wait}, preemptions ${gg.prem} (cumulative; `
+       + "the gate compares polls, so it closes when that counter moves). A sequence costs 1.8 ms of step time and "
+       + "its own tokens of pool, so the pool is the budget a long request spends (notes/admission-gate.md).");
+  const hasSmall = isnum(n.small_passed);
+  slot("gate-counters", hasSmall ? `expired ${dnum(n.expired || 0)} \u00b7 small ${dnum(n.small_passed)}`
+       // an older gateway has no small-pass escape to report; show its released/expired pair rather than a 0 that
+       // would read as "nothing came through".
+       : `released ${dnum(n.released || 0)} \u00b7 expired ${dnum(n.expired || 0)}`
+       // refused is the one that only exists under the other policy (GATE_HOLD_S=0), and held-over is the one that
+       // only exists when the hold queue hits its bound; both are worth the line running wide when they are not
+       // zero, because either one is the gate choosing traffic over protection and a silent count would hide that.
+       + (n.refused ? ` \u00b7 refused ${dnum(n.refused)}` : "") + (n.held_over ? ` \u00b7 over ${dnum(n.held_over)}` : ""),
+       "expired: it went anyway after the ceiling, because a 30-minute TTFT is the failure this exists to prevent, "
+       + "not something to reach for. small: requests whose declared body is under GATE_SMALL_BYTES, admitted "
+       + "through a shut door -- they are the ones a pool threshold starves, and they are not what fills the pool. "
+       + "Since the gateway started: " + [`held ${dnum(n.held ?? 0)}` + (isnum(n.held_now) ? ` (${dnum(n.held_now)}`
+       + ` holding now)` : ""), `released ${dnum(n.released ?? 0)}`, `expired ${dnum(n.expired ?? 0)}`].concat(
+         hasSmall ? [`small ${dnum(n.small_passed)}`] : []).concat(
+         isnum(n.held_over) ? [`over ${dnum(n.held_over)} (admitted because GATE_MAX_HELD was reached)`] : [],
+         [`refused ${dnum(n.refused ?? 0)} (a 503, which only GATE_HOLD_S=0 issues)`,
+          `admitted ${dnum(n.admitted ?? 0)} never met a shut door`]).join(", ")
+       + ". expired against held is the ratio that says whether the ceiling is a bound or just a delay.");
+  slot("gate-ceil", isnum(c.GATE_PREEMPT_S) ? `hold ${c.GATE_HOLD_S}s \u00b7 win ${c.GATE_PREEMPT_S}s`
+       // an older gateway's payload has no preemption window to name; show its poll rate rather than print
+       // 'undefined' into the page.
+       : `hold ${c.GATE_HOLD_S}s \u00b7 poll ${c.GATE_METRICS_S}s`,
        `${g.polls} polls so far; gauges older than ${c.GATE_STALE_S}s count as unknown, and unknown opens the `
-       + "door. The ceiling is a promise -- past it the request goes through rather than hanging, because this "
-       + "box's slow window reached a 1 960 s TTFT and trading that for a hung connection improves nothing.");
+       + `door. hold: the ceiling on any single hold (shipped 5 s, because 9 of v1's 14 holds ended by hitting its `
+       + `25 s -- a bound usually reached is a delay). window: how long after the LAST preemption the door stays `
+       + `shut, which is what makes the shutdown end under a long batch. pool axis: shut at ${c.GATE_KV_HIGH}, `
+       + `re-open at ${c.GATE_KV_LOW}. small: a declared body <= ${c.GATE_SMALL_BYTES} B passes a shut door. `
+       + `held: never more than ${c.GATE_MAX_HELD} at once, past that the gate admits rather than queueing, and `
+       + `poll every ${c.GATE_METRICS_S}s.`);
 }
 
 // -- one tick -------------------------------------------------------------------------------------

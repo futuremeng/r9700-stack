@@ -42,10 +42,13 @@ PYTHON=${PYTHON:-$HOME/r9700-stack/.venv/bin/python}
 LOG=${LOG:-$HOME/logs/gateway-$GATEWAY_PORT.log}; mkdir -p "$(dirname "$LOG")"
 PIDF=${PIDF:-$HOME/.r9700-state/gateway-$GATEWAY_PORT.pid}; mkdir -p "$(dirname "$PIDF")"
 
-# The gate (serve/gateway.py): it holds a NEW chat/completion request while the engine's own KV pool is at the
-# cliff, because that pool -- not the sequence count -- is the budget the slow windows of this box ran into.
-# Defaults are in gateway.py; these are the overrides, and what is live gets printed rather than implied.
-GATENAMES="GATE_DISABLE GATE_KV_HIGH GATE_KV_LOW GATE_WAIT GATE_MAX_INFLIGHT GATE_HOLD_S GATE_METRICS_S GATE_STALE_S GATE_POOL_TOKENS"
+# The gate (serve/gateway.py): it holds a NEW chat/completion request while the engine shows HARM -- its
+# preemption counter moving, or its KV pool at GATE_KV_HIGH -- because that pool, not the sequence count, is the
+# budget the slow windows of this box ran into, and a door shut on a merely full pool was measured as pure delay.
+# Defaults are in gateway.py; these are the overrides, and what is live gets printed rather than implied. A knob
+# missing from GATENAMES is a knob the tmux launch cannot set, so tests/test_setup.py holds this list against the
+# names gateway.py actually reads.
+GATENAMES="GATE_DISABLE GATE_KV_HIGH GATE_KV_LOW GATE_PREEMPT_S GATE_WAIT GATE_MAX_INFLIGHT GATE_SMALL_BYTES GATE_MAX_HELD GATE_HOLD_S GATE_METRICS_S GATE_STALE_S GATE_POOL_TOKENS"
 GATEENV=(); GATEDESC=""
 for n in $GATENAMES; do
   v=${!n:-}
