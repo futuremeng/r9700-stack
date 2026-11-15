@@ -1786,3 +1786,23 @@ Three things this row had to get right, all of them checked rather than assumed:
 
 `tools/monitor-fixture.py` now carries a gate payload of its own, deliberately the **HELD** branch, because that
 is the branch a live idle box will not show you and the one the row exists for.
+
+## The handler's `hub` was a class attribute: the last monitor built answered on every port
+
+`build(cfg)` used to end with `H.hub = hub`. `hub` is looked up on the handler **class**, so a second `build()` in
+the same process did not add a second monitor — it re-pointed the first one's socket at the second one's state. The
+suite runs several sidecars in one process, so the symptom was absurd and specific: a request made through the
+proxy instance appeared nowhere, and `/api/requests` on its port answered `{"mode": "observe"}` from a hub created
+further down the file. Nothing raised; one card was simply empty.
+
+`build()` now creates a handler subclass per hub (`class _H(H): pass; _H.hub = hub`). A production process still
+has exactly one hub, so this changed no behaviour anyone is relying on — the point is that the file no longer
+contains a landmine for whoever runs a second monitor in the same process, which is exactly what the alert-channel
+test needed to do (configure and test a channel on an instance that is not the one answering the front door).
+
+The general lesson is the one `notes/webui.md` keeps re-learning in a new form: **a page that renders blank has
+usually thrown or silently mis-wired something earlier**, and the fix is a harness that renders the real JS against
+a real payload (`tests/render-about.mjs`, `tests/render-monitor.mjs`) rather than a test that greps the file. The
+Alerts card passed every static string check while its loader never fetched `/api/notify` at all — the card was
+hidden, the facts were empty, and `test_webui.py` was green. It took the render harness, which asks whether the
+page actually wrote anything into the section, to notice.

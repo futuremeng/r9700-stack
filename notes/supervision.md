@@ -65,6 +65,46 @@ does not die with the engine — the Monitor was merged into the serve (`WEBUI=s
 wedged launch was itself wedged. The front door now serves pages from a standalone sidecar (`PAGES=:8181`, which
 ATTACHES the engine's request journal read-only so the dead launch's rows stay on screen).
 
-Two things are still missing to make the loop close: `ALERT_CMD` has no channel configured on this box (the alert
-waits for someone to open the page), and the card swap that would separate "this silicon" from "this slot and
-chain" is scheduled against nothing.
+The loop is closed on one axis and open on the other: the channel now exists (§5), so a standing claim reaches a
+phone, and what remains unscheduled is the physical test — moving the card to separate "this silicon" from "this
+slot and chain".
+## 5. A claim that reaches nobody is a note to yourself (2026-11-15 evening)
+
+§3 ended with a standing `ALERT.json` and a Monitor card that instructs. That is still a document. On 2026-11-15
+the box knew, six times over, that `c3:00.0` keeps faulting — and the only way to find out was to already be
+looking at the page. An alert that depends on someone opening a page is not an alert; it is a note that says
+"somewhere there is something you should have been told".
+
+The channel is a DingTalk robot (`serve/notify.py`), configured from the About page and sent by both programs that
+can raise a claim: the watcher (at a death, before it relaunches) and `tools/fault-report.py --raise-if-due`
+(hand-run, when the window already says what a crash would have said). One file, imported by both, because two
+implementations of one POST is how a keyword filter ends up refusing the message while both programs believe they
+sent it.
+
+Four things this forced into the design, all of them the same failure seen from a different angle:
+
+* **The POST returning 200 is not the delivery.** DingTalk answers a message that fails its security-keyword
+  filter — or a dead token, or a rate limit — with `200` and a body of `{"errcode": 310000, ...}`. A notifier that
+  looked at the status line would have recorded "sent" and moved on. The send is judged by the **errcode**, and the
+  errcode is kept in the ledger line and in `ALERT.json.notify`, so three days later the honest answer to "did you
+  get a message?" is in a file rather than in someone's memory.
+* **The keyword `R9700` is in the title AND the body.** The robot's filter is a substring rule configured in the
+  group; a message without it never reaches the group at all, and the only symptom is that JSON error above.
+  Encoding it twice and in the builder (not in the caller's prose) is what makes the copy in `§3` and the copy on
+  the phone the same message.
+* **Configured is not working.** The page's card answers from `.r9700-state/notify-last.json` — the last attempt,
+  including the robot's refusal — not from the presence of a channel file. `Save` says the file landed; `Send test`
+  says the robot accepted, and a test message says in its own text that it is a test, so a channel check at an odd
+  hour cannot be mistaken for a new incident.
+* **A stored webhook is a bearer credential for a group.** `.r9700-state/notify.json` is written 0600, the page
+  reads the channel **masked** (`host`, `path`, `token: withheld`, `@-lists counted`), the write endpoint wants a
+  token that only a form loaded from this page has, and an empty webhook field means "the one already on the box" —
+  because re-checking a channel must not require pasting the secret out of a chat window again.
+
+The Monitor's fault card gained the delivery as part of its headline: `Hardware: page faults · pinged`, or
+`· NOT pinged`, or `· no channel`. A red card that no one could have seen is the failure mode of every monitoring
+system ever built, and the suffix is the only place it is admitted.
+
+Still open, deliberately: the robot posts to a group, and a group is where a claim becomes a shared judgement
+("is this worth swapping the card for?") rather than one person's backlog. If the alert stops being read, the fix
+is the threshold (`HW_ALERT_N`), not the channel.

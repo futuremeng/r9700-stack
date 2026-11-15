@@ -845,9 +845,13 @@ these numbers runs.
    years of hindsight: deaths per day, median uptime between them, which cards and which fault shapes dominate.
    A per-card rate turns into a claim on its own: `HW_ALERT_N` page-fault events on ONE PCI function inside
    `HW_ALERT_WINDOW_S` (3 / 7 days by default) raises a standing `.r9700-state/ALERT.json`, appends
-   `alerts.jsonl`, runs `ALERT_CMD` if this box has a channel, and turns the Monitor's fault card from a count
+   `alerts.jsonl`, **pings a phone** through the webhook configured on the About page (`.r9700-state/notify.json`,
+   mode 0600 — `ALERT_CMD` still works for anything else), and turns the Monitor's fault card from a count
    into an instruction — *this card, this many times, swap it with a neighbour and see whether the faults move*
-   ([notes/supervision.md](notes/supervision.md)). `WATCH_RESTART=1` then lets a low-probability crash reset
+   ([notes/supervision.md](notes/supervision.md)). The delivery belongs to the claim: `ALERT.json` carries what the
+   robot answered, the card says `pinged` or `NOT pinged`, and `tools/fault-report.py --alert-test` asks the robot
+   again without raising anything — DingTalk refuses a wrong keyword with HTTP 200 plus a JSON `errcode`, so "the
+   POST returned 200" is not evidence that a human was told. `WATCH_RESTART=1` then lets a low-probability crash reset
    itself instead of waiting for a human — bounded by `RESTART_MAX` per `RESTART_WINDOW_S`, and refused into a
    PCIe link that is running below rating, because restarting into a degrading GPU turns a repairable machine
    into an outage nobody can explain.

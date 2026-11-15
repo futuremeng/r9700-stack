@@ -1,5 +1,47 @@
 # Changelog
 
+## A raised alert now reaches a phone: the alert channel lives on the About page, and the robot's answer is kept with the claim
+
+The hardware alert from the previous entry was, on this box, a file plus a line in a log. `ALERT_CMD` was commented
+out in `~/.config/r9700-stack/native.env`, so six events on `c3:00.0` over one boot were "known" in the precise
+sense that nothing had to be done to learn them and nothing was done either. A claim that depends on somebody
+opening the Monitor is a note to yourself, so the claim got a channel: a DingTalk robot, configured from
+**About → Alerts**, sent by whichever program raised it.
+
+One sender, `serve/notify.py`, imported by `setup.py` (raises at a death, before any relaunch) and by
+`serve/webui.py` (configures, tests, reports). Two implementations of one POST is how a message ends up refused by
+the robot's security-keyword filter while both programs believe they sent it. Keyword `R9700`, written into the
+title **and** the body by the builder rather than by whoever wrote the prose.
+
+What the robot's answer changes about the shape of the code: DingTalk returns **HTTP 200** for a message it then
+refuses — the delivery is the `errcode` inside the body (`310000 keywords not in content`, a dead token, a rate
+limit). So `sent` is decided by that number, and it is stored in three places a human can later check: the ledger
+line in `alerts.jsonl`, `ALERT.json.notify` (which the Monitor reads), and `.r9700-state/notify-last.json` (which
+the card reads). The Monitor's fault headline became `Hardware: page faults · pinged` / `· NOT pinged` /
+`· no channel`, because a red card nobody could have seen is the failure mode of every monitor ever built.
+
+The card (`About → Alerts`) is deliberately unable to show what it stored: `.r9700-state/notify.json` is written
+`0600`, `GET /api/notify` answers **masked** (`host`, `path`, `token: withheld`, `@`-lists *counted* not listed — a
+phone number on a status page is a second leak), and `POST /api/notify` requires the write token the page was given.
+An empty webhook field means "the channel already on the box", because finding out that a keyword is wrong should
+not require pasting the secret out of a chat window. `Send test` labels its own message as a test, so a channel
+check at 03:00 cannot read as a new incident. `tools/fault-report.py --alert-test` asks the robot the same question
+from a shell and prints its errcode; `--raise-if-due` now reports the delivery in the row it writes.
+
+Found on the way, and fixed: `build()` ended with `H.hub = hub`, and `hub` resolves on the handler **class** — so a
+second monitor built in the same process silently re-pointed the first one's socket at the second one's state. In
+the suite that looked like an empty request list, and `curl` on the proxy's port answered `"mode": "observe"` from
+an instance created 300 lines later. `build()` now makes a handler subclass per hub
+([notes/webui.md](notes/webui.md)). The alert card also passed every static string check while its loader never
+fetched `/api/notify` at all — card hidden, facts empty, `test_webui.py` green — which is why the checks now live in
+`tests/render-about.mjs`, which asks whether the page actually wrote into the section.
+
+Tests: a fake robot on loopback whose recorded body is the assertion (markdown, keyword in title and text, the
+`@`-lists the operator typed), `errcode 310000` proving a 200 is not a delivery, `0600` on the channel file,
+masking checked by absence (`access_token=` and the mobile must not appear in any element), the three
+configured/refused/never-attempted card states, and `test_setup.py` holding that `setup.py` and the page name the
+**same** channel files and that `oapi.dingtalk.com` appears in exactly one program in this tree.
+
 ## A death leaves a ledger line, a per-card rate becomes a hardware alert, and the page no longer dies with the engine
 
 The 2026-11-15 wedge had three separate failures in it, and only the first one was the crash. (1) The launch log
