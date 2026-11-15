@@ -92,13 +92,23 @@ export HIP_VISIBLE_DEVICES=${GPUS:-0,1,2,3} VLLM_ROCM_USE_AITER=${AITER:-0} HSA_
 
 # The knob that decides whether a mixed prefill+spec-decode step reaches stock's `_forward_core` at all
 # (r9700_vllm/models/gdn.py:378 `_prefill_ok`: our short-prefill core runs when the step's prefill tokens are
-# <= this AND the step has no plain (non-drafting) decode rows). 256 is where the one-page conv work was
-# validated and what every performance number in PROGRESS.md was taken with; the fault steps in
-# notes/bug-causal-conv1d-oob.md carried ~300-600 prefill tokens, i.e. just past it, which is why raising it is a
-# trigger-side dodge for the device fault. Named here (not left to code defaults) for the tmux reason above and
-# so tools/recipe-check.py can hold the live serve to it. NOT raised in production: past ~240 tokens on this
-# model the token-by-token core is slower on the GPU than the chunked kernels (~1.8 us per token per layer).
-: ${R9K_GDN_PREFILL_MAX:=256}
+# <= this AND the step has no plain (non-drafting) decode rows). 256 is where the one-page conv work was validated;
+# the steps that carried the six device faults in notes/bug-causal-conv1d-oob.md held ~300-600 prefill tokens,
+# just past it, which makes raising it a trigger-side dodge for that fault.
+#
+# RAISED TO 1024 FOR PRODUCTION on 2026-11-15, with the price measured rather than assumed (tuning/prefill_ttft.py,
+# stock-path 1300-token control row matching to 0.2% between runs): +45 ms TTFT at conc 1 and +48 ms at conc 8 for
+# a 900-token prefill, level with stock's at 610 tokens, decode untouched (46.8 / 46.9 tok/s per request in the
+# soak). Matched instrumentation, 256 hit the fault four times in 45-536 s and 1024 came through two 20-minute
+# arms clean.
+#
+# What is NOT claimed: that this is a fix, or that the dodge was proven protective -- the arm that would decide
+# that (a soak whose long arrivals exceed 1 024 tokens, so stock's core keeps running regularly) was deferred in
+# favour of uptime, and the uninstrumented 256 control ran 20 clean minutes too. If a fault returns with 1024
+# armed, the fingerprint is specific and worth keeping in mind: the only steps still reaching stock's core are
+# those with more than 1 024 prefill tokens (measured in the 1024 arms: `prefills=5 ... act=2047`,
+# `prefills=15 ... act=5913`).
+: ${R9K_GDN_PREFILL_MAX:=1024}
 export R9K_GDN_PREFILL_MAX
 export GPU_MAX_HW_QUEUES=${HWQ:-1} HSA_ENABLE_MWAITX=${MWAITX:-1} OMP_NUM_THREADS=8
 : ${R9K_MTP_QUANT_ROWS:=32768}   # bf16->MXFP4 requant chunk: 2.68 GiB of fp32 temporaries at 2^18 rows, 0.34 GiB here

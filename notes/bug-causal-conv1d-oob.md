@@ -766,3 +766,18 @@ happening — and thereby stop being observable, which is the same trade already
 the box is moved to 1024, the follow-up that keeps the diagnosis alive is a soak whose long arrivals exceed 1 024
 tokens, so stock's core still runs regularly: if the fault comes back there, the dodge is not protective and the
 trigger hypothesis is wrong; if it does not, the trigger is confirmed as stock's core on that card.
+
+### Decided, 12:39 the same day
+
+Production moved to `R9K_GDN_PREFILL_MAX=1024` (recipe default, so `tools/recipe-check.py` holds it and the engine
+prints `steps with <= 1024 prefill tokens` as proof it crossed). Uptime was chosen over the deciding arm: the box
+has been down ~2 h across this hunt, and the mitigation is measured as cheap (+45 ms of TTFT at 900 tokens, decode
+unaffected) while the diagnosis has no cheaper next step than moving a card by hand.
+
+What that trades, stated plainly: with 1024 armed the fault should stop arriving, so the fault also stops being
+observable -- the same objection that settled automatic restart, and accepted here because the mitigation is
+priced and the remaining unknown (does removing the trigger remove the fault?) is a question about a card that has
+already been identified as the constant across six faults. If a fault does return, it is informative in a new way:
+the surviving stock-core steps are only prefills over 1 024 tokens (`prefills=5 … act=2047`, `prefills=15 …
+act=5913` in the 1024 arms), so a hit under 1024 means the trigger is broader than the stock core and §10-§12's
+localisation was too narrow.

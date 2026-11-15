@@ -1,5 +1,22 @@
 # Changelog
 
+## Production moves to `R9K_GDN_PREFILL_MAX=1024`: a mitigation whose price was measured, not a fix
+
+The knob decides per step whether the GDN core is ours or stock's `_forward_core`; the six device faults arrived on
+mixed steps carrying ~300-600 prefill tokens, just past the old 256. Matched instrumentation: 256 hit four times in
+45-536 s of the mixed-step soak, 1024 came through two 20-minute arms clean (routing proven by counters -- layer 0
+logged 36-64 fallback steps instead of 348, and every survivor carried >1 024 prefill tokens).
+
+Priced with `tuning/prefill_ttft.py`, whose 1300-token row is stock's path under both values and matched to 0.2 %:
+**+45 ms TTFT at conc 1 and +48 ms at conc 8 for a 900-token prefill**, level with stock's at 610, decode untouched
+(46.8 / 46.9 tok/s per request). Moved at 12:39.
+
+Not claimed, and written down as not claimed: that the dodge is protective (the deciding arm -- a soak whose long
+arrivals exceed 1 024 tokens, keeping stock's core in play -- was deferred in favour of uptime), and that the
+uninstrumented control was ever reproduced: uninstrumented, 256 also ran 20 clean minutes, so the minutes-wide hit
+rate is partly a property of the probe. If a fault returns with 1024 armed, the fingerprint is narrow -- the only
+steps still reaching stock's core are prefills over 1 024 tokens.
+
 ## The device fault follows a physical card, not a rank: the card-order discriminator
 
 `GPUS=3,0,1,2` (recipe knob → `HIP_VISIBLE_DEVICES`) puts a different card under rank 0, and the answer came back
