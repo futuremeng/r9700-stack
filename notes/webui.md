@@ -1755,3 +1755,34 @@ The one thing the change did not fix, named so it does not read as fixed: pointe
 `r9700_vllm` in a sidecar running outside the serve's venv — the fields are absent by design and the header prints
 what is there. The merged page on the serve's own port (`:8080`) reads `vLLM 0.32.0 · plugin 0.4.2 · 4f4d1b2a` and
 exits 0. Point the harness at `:8080` when the header is the thing under test.
+
+### The gate row: two cards whose data is not the engine's (2026-11-15)
+
+`serve/gateway.py` grew an admission gate (the arithmetic and the thresholds are in
+`notes/admission-gate.md`), and the page grew a row for it: *Admission gate* (state word, a 180-poll shut/open
+strip on a fixed 0-1 axis, the reason, the pool in tokens) and *Holds at the door* (the running total of held
+requests, then `released R · expired E`, with `refused F` joining only when it is not zero). The section is
+`hidden` until `GET /api/gate` answers, which is the sidecar rule reused for the same reason: the page is also
+reachable on the engine's own port, where no gateway is in front of it, and two cards of em-dashes in the grid
+would be the page's own bug.
+
+Three things this row had to get right, all of them checked rather than assumed:
+
+* **The copy fits the tightest card it can be laid out in.** `render-monitor.mjs` measures every slot against
+  `floor(((981-64-42)/4 - 42) / 7.2)` = 24 characters, and the first version of this row printed 46 and 47. The
+  gateway's full reason string (`kv 0.860 >= 0.85 (775,851 of 902,153 tokens); engine waiting 3`) is 60, so the
+  line carries its first clause and the **title** carries the exact full string. That is also what keeps the
+  token arithmetic in one place: the page never reformats it, and the harness asserts the title starts with the
+  payload's `why` verbatim.
+* **The strip is the poller's record, not something `/api/gate` rebuilds on read.** A page that asks during a
+  shut window and a page that asks after it would otherwise disagree about whether the door was shut. A poll with
+  unusable gauges draws **open**, not blank: fail-open has to be visible, or a gap blames the traffic for a
+  telemetry fault.
+* **The harness reads the payload the page was fed.** It keeps `LAST_GATE` exactly the way it keeps `LAST_STATUS`,
+  after two checks of its own failed on a freshly restarted gateway: one had fetched `/api/gate` separately (one
+  poll of history at paint time, a dozen by the time we asked), and one counted the sparkline element's children
+  and called 1 a rendering failure — every spark on this page has one child, the svg, and the paths live inside
+  it.
+
+`tools/monitor-fixture.py` now carries a gate payload of its own, deliberately the **HELD** branch, because that
+is the branch a live idle box will not show you and the one the row exists for.

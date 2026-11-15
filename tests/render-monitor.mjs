@@ -86,6 +86,7 @@ const store = () => { const m = new Map(); return { getItem: (k) => (m.has(k) ? 
   setItem: (k, v) => m.set(k, v), removeItem: (k) => m.delete(k) }; };
 
 let LAST_STATUS = null;
+let LAST_GATE = null;                         // the gate payload the PAGE was fed, same reason as LAST_STATUS
 const ctx = {
   // The host's AbortController/AbortSignal, deliberately: api() passes ctl.signal to fetch, and in live mode that
   // fetch is the real Node one -- a signal built from a class defined inside the vm would be rejected as the
@@ -105,12 +106,17 @@ const ctx = {
       if (String(u).split("?")[0] === "/api/status") {
         try { LAST_STATUS = await r.clone().json(); } catch (e) { /* a page poll we did not need */ }
       }
+      if (String(u).split("?")[0] === "/api/gate") {
+        try { LAST_GATE = await r.clone().json(); } catch (e) { /* ditto */ }
+      }
       return r;
     }
     const p = String(u).split("?")[0];
     const body = p === "/api/status" ? FIX.status : p === "/api/requests" ? FIX.requests
-               : p === "/api/sidecars" ? (FIX.sidecars ?? null) : null;
+               : p === "/api/sidecars" ? (FIX.sidecars ?? null)
+               : p === "/api/gate" ? (FIX.gate ?? null) : null;
     if (p === "/api/status") LAST_STATUS = body;                  // the harness reads the same payload
+    if (p === "/api/gate") LAST_GATE = body;
     if (body === null) return { ok: false, status: 404, json: async () => ({ error: "not in fixture" }) };
     return { ok: true, status: 200, json: async () => body };
   },
@@ -546,6 +552,85 @@ if (t("trend-note") !== fastNote) {
   console.log("BAD  pressing the 90 s trend button did not restore the fast ring"); process.exitCode = 1;
 }
 console.log(`  caption slots now: ${t("gen-note1")} | ${t("gen-note2")}`);
+
+// -- the admission gate row (serve/gateway.py's GET /api/gate) ------------------------------------
+// Two things worth a check, both learned from the sidecar row above: the row is there and FILLED when the route
+// answers, and it is HIDDEN -- not two cards of em-dashes -- when it does not (the page is also reachable on the
+// engine's own port, where no gateway is in front of it). And the words it prints are the GATEWAY's: its reason
+// string already carries the token count the gate is protecting, so a second copy of that arithmetic in the page
+// is what would go out of date.
+{
+  // The payload the PAGE was fed (the fetch stub clones every /api/gate the page asks for), not a fetch of our
+  // own: on a freshly restarted gateway the page paints with one poll of history while a second fetch seconds
+  // later has a dozen, and that disagreement says when we asked, not what the page rendered. Same lesson the
+  // brand-line check above learned. It also answers "does this route exist on this port?" with what the page
+  // actually saw, which is the question the row's hiding rule is about.
+  const GPAY = LAST_GATE;
+  const sec = byId.get("gate") || new El();
+  const g2 = (id) => t(id).replace(/\s+/g, " ").trim();
+  // the sparkline element holds ONE svg child; the paths are inside it. (Counting the sparkline's own children
+  // would say 1 for every spark on the page, which is what this check first did.)
+  const sparkEl = (byId.get("gate-spark") || new El());
+  const strip = (((sparkEl.children || [])[0]) || new El()).children.length;
+  console.log(`\ngate row: hidden=${sec.hidden} | ${g2("gate-state")} | ${g2("gate-why")}`
+              + ` | ${g2("gate-level")} | held ${g2("gate-held")} | ${g2("gate-counters")} | ${g2("gate-ceil")}`
+              + ` | strip ${strip} node(s), ${GPAY?.hist?.length ?? 0} polls of history`);
+  if (GPAY && sec.hidden) {
+    console.log("BAD  /api/gate answers and the row is hidden -- that row is the only record a held request has");
+    process.exitCode = 1;
+  }
+  if (!GPAY && !sec.hidden) {
+    console.log("BAD  /api/gate does not answer and the row is showing anyway (em-dashes left in the grid)");
+    process.exitCode = 1;
+  }
+  if (GPAY) {
+    for (const id of ["gate-state", "gate-why", "gate-level", "gate-held", "gate-counters", "gate-ceil"]) {
+      if (!g2(id) || g2(id) === "\u2014") {
+        console.log(`BAD  #${id} still holds the markup placeholder while the row is visible`); process.exitCode = 1;
+      }
+    }
+    const want = GPAY.config?.GATE_ON ? (GPAY.closed ? "Held" : "Open") : "Off";
+    if (g2("gate-state") !== want) {
+      console.log(`BAD  the gate card says "${g2("gate-state")}" for a payload whose state is "${want}"`);
+      process.exitCode = 1;
+    }
+    // The gateway's reason is not reformatted by the page: the visible line is its FIRST CLAUSE (the tight 4-up
+    // card holds 24 characters), and the exact full string -- the one carrying the token count the gate is
+    // protecting -- is the element's title. Copying that arithmetic into the page's own words is what goes stale.
+    if (GPAY.closed && GPAY.why) {
+      const clause = GPAY.why.split(";")[0].split(" (")[0].trim();
+      if (g2("gate-why") !== clause) {
+        console.log(`BAD  the page rewrote the gate's reason: "${g2("gate-why")}" wants the clause "${clause}"`);
+        process.exitCode = 1;
+      }
+      const ti = ((byId.get("gate-why") || new El()).title || "").trim();
+      if (!ti.startsWith(GPAY.why.trim())) {
+        console.log(`BAD  #gate-why's title does not carry the gateway's own string: "${ti.slice(0, 90)}"`);
+        process.exitCode = 1;
+      }
+    }
+    const ctr = ((byId.get("gate-counters") || new El()).title || "");
+    for (const k of ["released", "expired"]) {
+      if (!new RegExp(k + " \\d").test(g2("gate-counters"))) {
+        console.log(`BAD  the counters line does not carry ${k}: "${g2("gate-counters")}"`); process.exitCode = 1;
+      }
+    }
+    // the two counters the tight line drops are dropped only when they are zero (refused) or always in the gloss
+    for (const k of ["refused", "admitted"]) {
+      if (!new RegExp(k + " \\d").test(ctr)) {
+        console.log(`BAD  the counters gloss never states ${k} -- a number hidden from the line has to be in the title`);
+        process.exitCode = 1;
+      }
+    }
+    // the strip draws a base line even with no history, so a visible row must never have an empty spark box
+    if (!strip) {
+      console.log("BAD  the gate's history strip drew nothing"); process.exitCode = 1;
+    }
+    if ((GPAY.hist || []).length >= 2 && strip < 3) {
+      console.log(`BAD  ${GPAY.hist.length} polls of history and the strip drew ${strip} node(s)`); process.exitCode = 1;
+    }
+  }
+}
 
 // The page swallows render errors into its notice bar, so a broken section can look like an empty one.
 const bar = t("error");

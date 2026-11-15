@@ -5,7 +5,7 @@ h2{margin:0;font-size:var(--st-fs-lg);font-weight:700}
 .sub{margin:5px 0 0;color:var(--st-ink-muted)}
 .controls{display:flex;align-items:center;gap:8px}
 section{margin:18px 0}
-.engine .value,.engine .label{font-variant-numeric:tabular-nums}
+.engine .value,.engine .label,.gate .value,.gate .label{font-variant-numeric:tabular-nums}
 .sparkline{display:block;margin-top:8px}
 .model{font:12px var(--st-font-mono);color:var(--st-ink-muted);margin-top:8px;overflow-wrap:anywhere}
 .auth{margin-top:16px}

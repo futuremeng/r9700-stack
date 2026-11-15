@@ -63,8 +63,27 @@ def main(argv):
             {"name": "/v1/rerank", "health": 200, "rates": {"rate": 1014.0, "busy": 1.0, "deferred": 0.0},
              "serve": {"threads": "16", "ctx": "4096", "batch": "512"},
              "host": {"committed_as_kb": 89397784, "embed_rss_kb": 1171012}}], "at": time.time()}
+    # The gateway's admission gate (GET /api/gate), for the same reason the sidecars are here: the render
+    # harness fails any slot in monitor.html the page never writes, so a card that only exists while a gateway
+    # is answering would fail the offline render. The fallback is deliberately the HELD branch -- closed on a
+    # pool reading, with the token count inside the reason -- because that is the branch a live idle box will
+    # not show you, and it is the one the row exists for. Numbers of the shape this box produces at kv 0.86 of
+    # a 902,153-token pool; the strip is 18 open polls followed by 12 shut ones, which is what a load ramp
+    # looks like on a 1 s axis.
+    try:
+        with urllib.request.urlopen(f"{base}/api/gate", timeout=5) as f:
+            gate = json.load(f)
+    except OSError:
+        gate = {"closed": True, "why": "kv 0.860 >= 0.85 (775,851 of 902,153 tokens); engine waiting 3",
+                "gauges": {"kv": 0.86, "run": 24.0, "wait": 3.0, "at": time.time()}, "err": None,
+                "inflight": 27, "polls": 4210, "hist": [0] * 18 + [1] * 12, "hist_n": 180,
+                "gated": ["/v1/chat/completions", "/v1/completions"],
+                "counters": {"held": 41, "released": 33, "expired": 6, "refused": 0, "admitted": 812},
+                "config": {"GATE_ON": True, "GATE_KV_HIGH": 0.85, "GATE_KV_LOW": 0.78, "GATE_WAIT": 1,
+                           "GATE_MAX_INFLIGHT": 0, "GATE_HOLD_S": 25.0, "GATE_METRICS_S": 1.0,
+                           "GATE_STALE_S": 5.0, "pool_tokens": 902153}, "at": time.time()}
     out.write_text(json.dumps({"status": status, "requests": {"requests": keep},
-                               "sidecars": sidecars}, indent=1))
+                               "sidecars": sidecars, "gate": gate}, indent=1))
     print(f"{out}: status from {src}, {len(keep)} rows from {journal}")
     for r in keep[-3:]:
         t = r.get("timings") or {}

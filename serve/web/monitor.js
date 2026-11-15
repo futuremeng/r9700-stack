@@ -1064,6 +1064,66 @@ async function paintSidecars() {
   });
 }
 
+// -- the gateway's admission gate ----------------------------------------------------------------
+// GET /api/gate is answered only by serve/gateway.py. On the engine's own port that route does not exist, and a
+// 404 hides the row rather than leaving two cards of em-dashes -- the sidecar rule, for the same reason.
+// Why the row exists at all: the engine's cards say what the KV pool is doing, and they cannot say what the
+// front door did about it. A request that waited 20 s in the gateway and then ran at full speed is invisible in
+// every engine counter (it never reached the engine while it waited); these two cards are its only record.
+// The numbers behind the thresholds are in notes/admission-gate.md: step_ms ~= 13.6 + 1.79 x N + 14.9 ns x
+// resident tokens, so the pool (902,153 tokens on this box) is the budget a long request spends, not the
+// sequence count.
+async function paintGate() {
+  let g = null;
+  try { g = await api("/api/gate"); } catch (e) { g = null; }        // no gateway on this port
+  const sec = $("gate");
+  if (!g || !g.config) { sec.hidden = true; return; }
+  sec.hidden = false;
+  const c = g.config, n = g.counters || {}, gg = g.gauges || {};
+  // open = the door is up (live); holding = traffic is waiting (busy, not danger: a hold is the gate working);
+  // off = the operator switched it off (dot--off is the file's "not running" dot).
+  $("gate-dot").className = `dot${!c.GATE_ON ? " dot--off" : g.closed ? " dot--busy" : " dot--live"}`;
+  text("gate-state", !c.GATE_ON ? "Off" : g.closed ? "Held" : "Open");
+  // the headline is the running total since the gateway started, not "right now": a hold is a thing that
+  // happened to a request, and the number a reader wants after the fact is how many it happened to.
+  text("gate-held", dnum(n.held ?? 0));
+  spark($("gate-spark"), g.hist, { baseLo: 0, baseHi: 1 });
+  $("gate-spark").dataset.tone = g.closed ? "warn" : "ok";
+  // The reason the gateway gave is one line here and the whole string in the title. The line takes the gateway's
+  // own first clause ("kv 0.860 >= 0.85") and the title carries its exact full string, token count and all
+  // ("kv 0.860 >= 0.85 (775,650 of 902,153 tokens)"): the tokens are that arithmetic, and a second copy of it in
+  // the page is the copy that goes out of date. The tightest 4-up card holds 24 characters at 12 px -- the
+  // budget the render harness measures -- so the long form goes where it is still readable in full.
+  const whyClause = (g.why || "").split(";")[0].split(" (")[0].trim();
+  slot("gate-why", !c.GATE_ON ? "off" : g.closed ? (whyClause || "at the cliff")
+       : (g.err ? "open: no gauge" : "under the line"),
+       (g.why || "") + (g.err ? ` ${g.err}` : "")
+       + " -- the gate reads the engine's gauges (kv, waiting) rather than estimating the body it has not parsed, "
+       + "and it fails OPEN when those gauges are missing or stale: a front door that stops serving because its "
+       + "telemetry broke is worse than no gate.");
+  // The pool in tokens, which is the axis the threshold is really about (0.85 of 902,153 is a number of tokens,
+  // and one 80k request is 53 short ones). The percent is on the engine's own KV card; the waiting count is on
+  // the Requests card. Repeating either here would cost the characters this line needs for the tokens.
+  slot("gate-level", isnum(gg.kv)
+       ? `${dnum(Math.round(gg.kv * (c.pool_tokens || 0)))} of ${dnum(c.pool_tokens || 0)} tok`
+       : "no gauge reading",
+       `engine gauges: kv ${gg.kv}, running ${gg.run}, waiting ${gg.wait}; in flight through this gateway `
+       + `${g.inflight}. A sequence costs 1.8 ms of step time and its own tokens of pool, so the pool is the `
+       + "budget a long request spends (notes/admission-gate.md).");
+  slot("gate-counters", `released ${dnum(n.released || 0)} \u00b7 expired ${dnum(n.expired || 0)}`
+       // refused is the one that only exists under the other policy (GATE_HOLD_S=0), and it is worth the line
+       // running wide when it is not zero: a silent nonzero refused would be the gate refusing traffic quietly.
+       + (n.refused ? ` \u00b7 refused ${dnum(n.refused)}` : ""),
+       "released: it went when the pool fell back below the re-open threshold; expired: it went anyway after the "
+       + "ceiling, because a 30-minute TTFT is the failure this exists to prevent, not something to reach for. "
+       + `Since the gateway started: released ${n.released}, expired ${n.expired}, refused ${n.refused} (a 503, `
+       + `which only GATE_HOLD_S=0 issues), and admitted ${n.admitted} never met a shut door.`);
+  slot("gate-ceil", `hold ${c.GATE_HOLD_S}s \u00b7 poll ${c.GATE_METRICS_S}s`,
+       `${g.polls} polls so far; gauges older than ${c.GATE_STALE_S}s count as unknown, and unknown opens the `
+       + "door. The ceiling is a promise -- past it the request goes through rather than hanging, because this "
+       + "box's slow window reached a 1 960 s TTFT and trading that for a hung connection improves nothing.");
+}
+
 // -- one tick -------------------------------------------------------------------------------------
 async function refresh() {
   if (paused) return;
@@ -1092,6 +1152,8 @@ async function refresh() {
         + "with WEBUI_MODE=proxy." : "";
     renderStatus(s);
     paintSidecars();                       // its own fetch, its own failure: never gates the engine's numbers
+    paintGate();                           // same: a gateway route the engine's port does not answer is not a
+                                           // reason to hold up the engine's own cards
     list();
     if (selected) {
       const row = records.find((r) => rid(r) === selected);
