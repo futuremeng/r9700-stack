@@ -110,8 +110,10 @@
         path under “Weights live at” is where the checkpoint is, not a name a client can ask for — asking by it
         gets a 404 that lists the aliases this serve does accept. The base URL above is the address <em>this
         browser reached the serve on</em>, not what a sidecar dials internally, so it pastes correctly on the
-        machine you are sitting at. The API key is never printed here: if the serve has one, name it in the
-        environment.</p>
+        machine you are sitting at. On a box that runs a gateway in front, the address printed above belongs to
+        the gateway: the same URL answers <code>/v1/chat/completions</code>, <code>/v1/embeddings</code> and
+        <code>/v1/rerank</code>, and the process behind it binds loopback — the Configuration card names both.
+        The API key is never printed here: if the serve has one, name it in the environment.</p>
     </section>
 
     <section class="card">

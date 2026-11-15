@@ -45,6 +45,15 @@ function render() {
   const c = s.config || {}, meta = s.meta || {}, models = s.models || [];
   const model = s.model_name || models[0]?.id || null;
   const host = s.host || {};
+  // Which port is which. Since 2026-11-15 this box answers ONE port to the LAN and keeps the engine on loopback
+  // behind serve/gateway.py, so "Listening on 127.0.0.1:8180" sits on the same page as a base_url on :8080.
+  // Unstated, those two lines read as a contradiction; the address the browser used is the one to dial, and the
+  // other endpoints answering on it are not this engine's.
+  const sc = s.sidecars || [];
+  const routes = sc.map((x) => x.name || "").filter((n) => n.startsWith("/"));
+  const bar = (location.origin || "").replace(/\/$/, "");
+  const mm = bar.match(/^https?:\/\/[^/]*?:(\d+)$/);
+  const fronted = !!(mm && s.port && String(s.port) !== mm[1]);
   brandStack(s);
   text("mode", s.mode === "proxy" ? "recording requests"
     : s.mode === "merged" ? "inside this serve (serve/plugin)" : "observing (read-only)");
@@ -103,6 +112,9 @@ function render() {
       + ` · pid ${env.pid}` : null],
     ["Its command line", s.argv || null, 1],
     ["Listening on", s.bind ? `${s.bind}:${s.port ?? "?"}` : null],
+    ...(fronted ? [["Reached through", `${bar} — the address in this browser's bar. Something fronts it: this `
+        + `process answers only on ${s.bind}:${s.port}, which is why the base_url on this page is not this port.`]]
+      : []),
     ["Machine-local env file", efile.path || null, 1],
     ["The three lists below", "recipe = what the launcher asked for · engine config = what the engine resolved · "
       + "env and file = what the processes hold. They can disagree, and recipe-check is the check that does."],
@@ -238,6 +250,11 @@ function render() {
     ["Through this page", s.mode === "proxy" ? `${origin} (point clients here to record them)`
       : s.mode === "merged" ? `${origin} (this IS the serve)` : "not routed here — use the base_url above"],
     ["Weights live at", models[0]?.root ? `${models[0].root} — not a name a client can ask for` : null],
+    // The same URL answering /v1/embeddings is not this engine answering it: those are llama.cpp serves on the
+    // CPU with their own model names. An About page that names only the chat model implies the port does not
+    // answer anything else, which stopped being true on 2026-11-15.
+    ...(routes.length ? [["Also on this port", `${routes.join(" · ")} — other serves on this box (CPU llama.cpp), `
+        + `with their own model names; their cards are on the Monitor.`]] : []),
   ]);
   const curl = `curl ${origin}/v1/chat/completions \\\n`
     + `  -H 'Content-Type: application/json'${s.key_needed ? ` \\\n  -H 'Authorization: Bearer $KEY'` : ""} \\\n`
@@ -275,8 +292,11 @@ function render() {
 
 async function load() {
   try {
-    const [s, host] = await Promise.all([api("/api/status"), api("/api/host")]);
-    status = {...s, host};
+    const [s, host, sc] = await Promise.all([api("/api/status"), api("/api/host"),
+                                             api("/api/sidecars").catch(() => null)]);
+    // /api/sidecars exists only behind the gateway; a 404 is "this page is on the engine's own port", not an
+    // error, so it is swallowed here rather than routed to notice().
+    status = {...s, host, sidecars: (sc && sc.sidecars) || []};
     $("api-key").value = apiKey;
     render();
     notice("");

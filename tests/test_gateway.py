@@ -214,7 +214,7 @@ env = {**os.environ, "GATEWAY_PORT": str(GW), "GATEWAY_BIND": "127.0.0.1",
        # pages really go to a different upstream than the chat path does.
        "ENGINE": f"http://127.0.0.1:{SLOW}", "EMBED": f"http://127.0.0.1:{EMB}",
        "RERANK": f"http://127.0.0.1:{RER}", "PAGES": f"http://127.0.0.1:{ENG}",
-       "SIDECAR_STATE": f"embed=http://127.0.0.1:{STA}/state.json"}
+       "SIDECAR_STATE": f"/v1/embeddings=http://127.0.0.1:{STA}/state.json,embed=http://127.0.0.1:{STA}/state.json"}
 GWLOG = tempfile.NamedTemporaryFile(prefix="r9700-gateway-test-", suffix=".log", delete=False)
 gw = subprocess.Popen([sys.executable, os.path.join(ROOT, "serve/gateway.py")], env=env,
                       stdout=subprocess.DEVNULL, stderr=GWLOG)
@@ -245,7 +245,11 @@ try:
     st, b = http(GW, "/api/sidecars")
     d = json.loads(b)
     ck("/api/sidecars is answered by the gateway itself, with the configured name and the watcher's numbers",
-       d["sidecars"][0]["name"] == "embed" and d["sidecars"][0]["rates"]["rate"] == 1112.0, b[:120])
+       d["sidecars"][0]["name"] == "/v1/embeddings" and d["sidecars"][0]["rates"]["rate"] == 1112.0, b[:120])
+    # the name is allowed to be a route: the split has to land on the FIRST = and only when it precedes ://, or
+    # "/v1/embeddings=http://host/s?x=1" would come back named "/v1/embeddings=http://host/s?x".
+    ck("a name that is itself a path, in front of a url that carries =, still splits once",
+       [x["name"] for x in d["sidecars"]] == ["/v1/embeddings", "embed"], str([x["name"] for x in d["sidecars"]]))
     _hd = http(GW, "/monitor", "HEAD")
     ck("HEAD gets headers and no body", "200" in _hd[0] and _hd[1] == b"", repr(_hd)[:160])
 

@@ -57,10 +57,10 @@ def main(argv):
             sidecars = json.load(f)
     except OSError:
         sidecars = {"sidecars": [
-            {"name": "embed", "health": 200, "rates": {"rate": 1112.4, "busy": 0.0, "deferred": 0.0},
+            {"name": "/v1/embeddings", "health": 200, "rates": {"rate": 1112.4, "busy": 0.0, "deferred": 0.0},
              "serve": {"threads": "15", "ctx": "8192", "batch": "512"},
              "host": {"committed_as_kb": 89397784, "embed_rss_kb": 1618092}},
-            {"name": "rerank", "health": 200, "rates": {"rate": 1014.0, "busy": 1.0, "deferred": 0.0},
+            {"name": "/v1/rerank", "health": 200, "rates": {"rate": 1014.0, "busy": 1.0, "deferred": 0.0},
              "serve": {"threads": "16", "ctx": "4096", "batch": "512"},
              "host": {"committed_as_kb": 89397784, "embed_rss_kb": 1171012}}], "at": time.time()}
     out.write_text(json.dumps({"status": status, "requests": {"requests": keep},

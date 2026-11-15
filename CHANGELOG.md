@@ -40,6 +40,13 @@ the **request line and nothing else**, opens the upstream, and pipes bytes both 
   hides when `/api/sidecars` is not there (the page is also served on the engine's own port). Slots are declared
   in the markup, so `tests/render-monitor.mjs` measures them: all six land inside the 24-character tight case,
   and `tools/monitor-fixture.py` now carries a `sidecars` payload so a card that stopped rendering fails a test.
+- **About now says which port is which.** Through the front door the page reported `Listening on
+  127.0.0.1:8180` while the base_url it prints (from `location.origin`, already correct) said `:8080` -- two
+  true lines that read as a contradiction. It adds `Reached through <origin>` when the browser's port is not the
+  process's, and `Also on this port: /v1/embeddings · /v1/rerank` when a gateway is answering, so the About page
+  stops implying the box serves only one model. `render-about.mjs` checks both rows **both ways** (a serve on its
+  own port must not claim a front door), and `SIDECAR_STATE` entries are now named by the route they serve
+  (`/v1/embeddings=http://...`), because the alternative was a second copy of the routing table in the page.
 - **The cutover was done in the order the 2026-11-01 wedge requires**: stop, watch `Committed_AS` fall 86.1 ->
   7.4 GiB and all four cards' VRAM to 0, then relaunch -- never relaunch while the previous server's pages are
   still mapped. Final layout: `0.0.0.0:8080` gateway, `127.0.0.1:8180` engine, `:8090/:8092` the two llama.cpp

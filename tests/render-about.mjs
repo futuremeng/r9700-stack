@@ -5,7 +5,7 @@
 // with no error anywhere (the same failure mode notes/webui.md records for the Monitor, where a `${unit}` in a
 // function with no `unit` parameter blanked a card).
 //
-//   tests/render-about.mjs http://127.0.0.1:8099      # a running Monitor
+//   tests/render-about.mjs http://127.0.0.1:8080      # a running serve (8080 is the front door here)
 //   tests/render-about.mjs /tmp/status.json           # a saved /api/status payload
 //
 // Exit 0 when the page rendered and every claim below held.
@@ -16,7 +16,7 @@ import vm from "node:vm";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.join(HERE, "..", "serve", "web");
-const ARG = process.argv[2] || "http://127.0.0.1:8099";
+const ARG = process.argv[2] || "http://127.0.0.1:8080";
 const FIX = ARG.endsWith(".json") ? JSON.parse(readFileSync(ARG, "utf8")) : null;
 // A saved payload may be the bare /api/status JSON or one wrapped in {status: ..., host: ...} (what the page's own
 // dump writes). Normalize once, so the PAGE and the CHECKS below are looking at the same object -- reading
@@ -67,7 +67,8 @@ const ctx = {
   AbortController, AbortSignal, isNaN, parseInt, parseFloat, isFinite, encodeURIComponent,
   decodeURIComponent, Intl, localStorage: store(), sessionStorage: store(),
   navigator: { clipboard: { writeText: async () => {} }, userAgent: "render-about" },
-  location: { origin: FIX ? "http://127.0.0.1:8099" : BASE },
+  location: { origin: FIX ? "http://127.0.0.1:8080" : BASE },   // the fixture poses as a client of the
+                                                             // front door, which is what the page now sees
   fetch: async (u, o) => {
     if (!FIX) return globalThis.fetch(BASE + u, o);
     const p = String(u).split("?")[0];
@@ -178,6 +179,23 @@ if (!mmDisagree && /Recipe and process disagree/.test(mmtxt)) {
 if (S.meta_mtime && !/written/.test(t("launch-src"))) {
   B("the launch card does not say which launch its recipe describes");
 }
+
+// The front door. This box answers ONE port to the LAN and keeps the engine on loopback behind
+// serve/gateway.py, so the About page has to say which port the browser actually reached, and what else that
+// port routes to (/v1/embeddings, /v1/rerank are not this engine answering). Both rows are conditional, so the
+// check runs both ways: a serve standing on its own port must NOT claim a front door it does not have.
+const ORIGIN = FIX ? "http://127.0.0.1:8080" : BASE;
+const OP = String(ORIGIN).match(/^https?:\/\/[^/]*?:(\d+)$/);
+const fronted = !!(OP && S.port && String(S.port) !== OP[1]);
+const SC = (FIX && FIX.sidecars) || await globalThis.fetch(`${BASE}/api/sidecars`)
+  .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+const cfg = t("facts-config"), api = t("facts-api");
+console.log(`\nfront door: browser on ${ORIGIN}, this process on ${S.bind}:${S.port}`
+            + (SC && SC.sidecars ? ` · other routes: ${SC.sidecars.map((x) => x.name).join(" ")}` : " · no gateway"));
+if (fronted && !/Reached through/.test(cfg)) B("the config card does not say which port the browser reached");
+if (!fronted && /Reached through/.test(cfg)) B("the config card names a front door the payload does not show");
+if (SC && SC.sidecars && !/Also on this port/.test(api)) B("the API card does not name the other routes on this port");
+if ((!SC || !SC.sidecars) && /Also on this port/.test(api)) B("the API card names sidecar routes with no gateway answering");
 
 const bar = t("error");
 if (bar) { console.log("\nPAGE NOTICE:", bar); bad++; }

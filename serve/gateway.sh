@@ -31,9 +31,10 @@ EMBED=${EMBED:-http://127.0.0.1:$EMBED_PORT}
 RERANK=${RERANK:-http://127.0.0.1:$RERANK_PORT}
 PAGES=${PAGES:-$ENGINE}                     # or the webui sidecar (http://127.0.0.1:8081) for a page that
                                            # survives the engine dying -- see notes/launch-methodology.md §5
-# name=url pairs: the Monitor's card labels itself from the name (serve/gateway.py splits on the first =
-# before ://, so the URLs may carry query strings)
-SIDECAR_STATE=${SIDECAR_STATE:-embed=http://127.0.0.1:$WATCH_PORT/state.json,rerank=http://127.0.0.1:$RERANK_WATCH_PORT/state.json}
+# name=url pairs. The name IS the route the serve answers on (/v1/embeddings=..., /v1/rerank=...), so the
+# gateway is not asked to keep a second copy of its own routing table: the Monitor card and the About page
+# label themselves from it. A bare name (embed=...) still works -- it just cannot be read as a route.
+SIDECAR_STATE=${SIDECAR_STATE:-/v1/embeddings=http://127.0.0.1:$WATCH_PORT/state.json,/v1/rerank=http://127.0.0.1:$RERANK_WATCH_PORT/state.json}
 PYTHON=${PYTHON:-$HOME/r9700-stack/.venv/bin/python}
 [ -x "$PYTHON" ] || PYTHON=$(command -v python3)
 LOG=${LOG:-$HOME/logs/gateway-$GATEWAY_PORT.log}; mkdir -p "$(dirname "$LOG")"
