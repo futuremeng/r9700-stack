@@ -667,3 +667,43 @@ Where that leaves the hunt, in order of what one launch buys:
 2. **Move the card** (or swap two) and re-run the same soak: separates silicon from slot. Hands and downtime.
 3. **`AMD_SERIALIZE_KERNEL=3`** — now less interesting than it was: naming the faulting kernel of a card-local
    page fault tells us which kernel tripped over the card, not why the card trips.
+
+## 16. "Run without that card" at TP3 is closed: the checkpoint will not shard three ways, and it fails before any memory question is asked
+
+§15 ranked the cheapest mitigation as `GPUS=1,2,3 TP=3` — four-card TP with the faulting card left out, which
+would have been both a dodge the box could serve on today and a seventh confirmation. Tried (named TEST launch,
+`GPUS=1,2,3 TP=3 NSEQ=32 NBT=8192 R9K_GDN_DEBUG=1`, `~/logs/TEST-3card-1115-1015.log`; the `NSEQ`/`NBT` were
+pinned so the soak would drive the same step shape as the arms that hit at 250-536 s, rather than the recipe's
+unmeasured TP2/TP3 defaults of 8/4096):
+
+```
+(Worker_TP2) ERROR [multiproc_executor.py:953] WorkerProc failed to start.
+  ... vllm/model_executor/models/... initialize_model ...
+  File "vllm/distributed/utils.py", line 61, in divide
+    ensure_divisibility(numerator, denominator)
+AssertionError: 16 is not divisible by 3
+```
+
+Same assert on all three workers. The 16 is the GDN head count: this checkpoint declares
+`linear_num_key_heads = 16`, `linear_num_value_heads = 48`, `num_attention_heads = 24`,
+`num_key_value_heads = 2`, `vision_config.num_heads = 16` — so **TP must divide 16**: 1, 2, 4, 8. TP3 is not a
+configuration this model can take.
+
+What that also costs is the *other* half of the experiment. The point of a TP3 attempt was partly to learn what
+the KV pool looks like when weights are ~33 % heavier per card; the assert fires inside `initialize_model`,
+**before vLLM profiles memory at all**, so no capacity number is available from a TP3 attempt at any cost. (The
+recipe lowered `gpu-memory-utilization` to 0.94 on its own for non-TP4 shapes and still took the failure —
+evidence it is a sharding wall, not a memory one.)
+
+So the remaining ways to keep serving while the card question stay open are:
+
+1. **TP2 on two healthy cards** (`GPUS=1,2 TP=2`): shards fine arithmetically, but capacity halves, and at the
+   recipe's TP2 defaults (`NSEQ=8`) the running-sequence counts that every fault arrived at (23-31) may never be
+   reached — a weaker test *and* a much worse box. Not the cheap option it looks like.
+2. **Dodge the trigger rather than the card, at TP4.** `R9K_GDN_PREFILL_MAX=1024` keeps mixed short-prefill steps
+   off the stock `_forward_core` — the path §10-§12 localised the fault to — and is still untested. §15 says the
+   card is implicated; it does not say software cannot avoid tripping it. A trigger-side mitigation is a
+   mitigation, not a fix, and has to be reported that way.
+3. **Replace or move the card** (§15's silicon-vs-slot question, plus a real fix).
+
+Recipe note added next to the TP defaults, so nobody spends another boot cycle rediscovering the wall.

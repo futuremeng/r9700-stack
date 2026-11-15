@@ -123,6 +123,14 @@ fi
 : ${NSEQ:=$([ "${TP:-4}" = 4 ] && echo 32 || echo 8)}
 : ${NBT:=$([ "${TP:-4}" = 4 ] && echo 8192 || echo 4096)}
 
+# TP3 does not exist for this checkpoint, and the shape of that wall is worth knowing before anyone reaches for it:
+# model construction calls vllm's divide() on the GDN head counts, and `linear_num_key_heads = 16` (with
+# `linear_num_value_heads = 48`, `num_key_value_heads = 2`, `vision_config.num_heads = 16`) means TP must divide
+# 16 -- so 1, 2, 4, 8. As of 2026-11-15 the attempt fails with `AssertionError: 16 is not divisible by 3` inside
+# `initialize_model`, which is BEFORE any KV/memory profiling: a TP3 experiment buys no capacity measurement at
+# all, it just fails faster than an OOM would. Measured while trying to run without the faulting card
+# (GPUS=1,2,3 TP=3, notes/bug-causal-conv1d-oob.md §16): `~/logs/TEST-3card-1115-1015.log`.
+
 # Context. The checkpoint itself declares text_config.max_position_embeddings = 262144, and this box's own
 # request ledger says 262144 is the traffic it carries: 1,483 kept requests, p99 prompt 245,792 tokens, 1,195 of
 # them at or above 32,000. A 32,768 default is therefore not conservative, it refuses four requests in five.
