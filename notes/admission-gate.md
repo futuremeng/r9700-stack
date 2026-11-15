@@ -257,3 +257,23 @@ counter that moved closes it and names the window in the reason; the shipped cei
 shutdown **expires** (1.2 s window, re-opened 1.6 s later with the pool at 0.88 -- the case v1 could not exit);
 a small declared body passes a shut door and is counted; and at `GATE_MAX_HELD=1` the second arrival is admitted
 instead of queued behind the first.
+
+Went live at **14:43:50** by restarting the front door alone (`STOP=1 bash serve/gateway.sh`, then start; ~2 s).
+The engine and its tmux session were untouched: same engine pid, `/health` 200, and no new `[gfxhub]` line in the
+kernel journal (still 09:52:00 on `c3:00.0`). The last v1 readings before the bounce: **`held 45, released 4,
+expired 41`** with the door shut on 180 of 180 polls, at kv 0.837 and `waiting 33`. The new process, three seconds
+after it started, with the batch draining:
+
+```
+closed=False  why=""   gauges: kv 0.141  run 5  wait 0  prem 20
+counters:     held 0  held_now 0  released 0  expired 0  refused 0  admitted 7  small_passed 4
+```
+
+and the Monitor row carries the same thing in words: `Open | no harm signal | 132,368 of 902,153 tok | held 0 |
+expired 0 . small 4 | hold 5s . win 20s`.
+
+Two things worth noticing in that line. `prem 20` does **not** close the door: 19 preemptions happened before this
+process ever polled, and the baseline is the first reading rather than zero -- the cumulative count is history, and
+only movement is harm. And restarting the front door resets the counters: `held/expired/small_passed` are since-
+this-gateway-process, which is the same trade the engine's own counters make. The history that mattered from the
+old process is in this file, not in the process.
