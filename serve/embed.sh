@@ -136,7 +136,10 @@ fi
 
 ARGS=(-m "$MODEL" "${TASK_ARGS[@]}" --metrics --host "$BIND" --port "$PORT"
       -t "$THREADS" -c "$CTX" -b "$BATCH" -ngl 0)
-# the name /v1/models shows and what clients put in "model"; llama.cpp answers any value either way.
+# the name /v1/models shows and what clients put in "model"; llama.cpp answers any value either way, so this is
+# not a correctness knob -- it is the difference between an About page that hands over `model: qwen3-embed`
+# (copy, paste, done) and one that hands over `/home/jiulu/models/qwen3-embedding-0.6b-q8_0.gguf`.
+SERVED_NAME=${SERVED_NAME:-$([ "$TASK" = rerank ] && echo "${RERANK_SERVED_NAME:-qwen3-rerank}" || echo "${EMBED_SERVED_NAME:-qwen3-embed}")}
 [ -n "$SERVED_NAME" ] && ARGS+=(--alias "$SERVED_NAME")
 [ -n "$CHAT_TEMPLATE" ] && ARGS+=(--chat-template "$CHAT_TEMPLATE")
 # mmap is the whole memory argument of this launcher: no mlock, no no-mmap anywhere. If LLAMA_EXTRA

@@ -206,8 +206,8 @@ acceptable):
 0.0.0.0:8080   serve/gateway.py       /v1/chat|/metrics -> engine, /v1/embeddings -> :8090,
                                       /v1/rerank -> :8092, /monitor /about /web/ /api/ -> engine plugin
 127.0.0.1:8180 vllm serve (Qwen3.8, 262k)
-127.0.0.1:8090 llama-server --embedding --pooling last  (cores 16-31, -t 15 -c 8192)
-127.0.0.1:8092 llama-server --rerank                    (cores 32-47, -t 16 -c 4096)
+127.0.0.1:8090 llama-server --embedding --pooling last --alias qwen3-embed   (cores 16-31, -t 15 -c 8192)
+127.0.0.1:8092 llama-server --rerank --alias qwen3-rerank                    (cores 32-47, -t 16 -c 4096)
 127.0.0.1:8091 / :8093  embed-watch pages, aggregated by the gateway at GET /api/sidecars
 ```
 

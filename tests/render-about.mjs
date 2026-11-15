@@ -197,6 +197,19 @@ if (!fronted && /Reached through/.test(cfg)) B("the config card names a front do
 if (SC && SC.sidecars && !/Also on this port/.test(api)) B("the API card does not name the other routes on this port");
 if ((!SC || !SC.sidecars) && /Also on this port/.test(api)) B("the API card names sidecar routes with no gateway answering");
 
+// What this page is FOR, for anyone arriving to configure a client: the two strings at a size that outranks the
+// prose, and one block that pastes without editing. Each goes blank silently if the payload or the wiring breaks,
+// and the page still says "render: ok" -- which is the class of rot only a check like this catches.
+const cbase = t("connect-base"), cmodel = t("connect-model"), cenv = t("agent-env");
+console.log(`\nconnect: ${cbase}  ·  model ${cmodel}\n${cenv}`);
+if (cbase !== ORIGIN.replace(/\/$/, "")) B(`the base_url cell says "${cbase}", not the address this page was served on`);
+if (S.model_name && cmodel !== S.model_name) B(`the model cell says "${cmodel}", not ${S.model_name}`);
+if (!/OPENAI_BASE_URL=\S+\/v1/.test(cenv)) B("the agent config block has no OPENAI_BASE_URL ending in /v1");
+if (S.model_name && !cenv.includes(`OPENAI_MODEL=${S.model_name}`)) B("the agent config block does not carry the model name");
+if (SC && (SC.sidecars || []).length && !/this port also routes/.test(cenv)) B("the agent config block hides the other routes on this port");
+if (SC && (SC.sidecars || []).some((x) => x.serve && x.serve.alias) && !/model qwen3-|model [a-z0-9.-]+\)/.test(cenv))
+  B("the agent config block names the sidecar routes without their model names");
+
 const bar = t("error");
 if (bar) { console.log("\nPAGE NOTICE:", bar); bad++; }
 console.log(`\nsections the page wrote into: ${shown.sort().join(" ")}`);

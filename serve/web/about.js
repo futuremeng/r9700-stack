@@ -50,7 +50,10 @@ function render() {
   // Unstated, those two lines read as a contradiction; the address the browser used is the one to dial, and the
   // other endpoints answering on it are not this engine's.
   const sc = s.sidecars || [];
-  const routes = sc.map((x) => x.name || "").filter((n) => n.startsWith("/"));
+  // A sidecar entry carries the route as its name (that is how the gateway is configured) and, when the serve was
+  // started with --alias, the model name a client should send. Both are things a config file needs verbatim.
+  const routes = sc.map((x) => ({ path: x.name || "", model: ((x.serve || {}).alias || "").trim() }))
+    .filter((r) => r.path.startsWith("/"));
   const bar = (location.origin || "").replace(/\/$/, "");
   const mm = bar.match(/^https?:\/\/[^/]*?:(\d+)$/);
   const fronted = !!(mm && s.port && String(s.port) !== mm[1]);
@@ -253,9 +256,28 @@ function render() {
     // The same URL answering /v1/embeddings is not this engine answering it: those are llama.cpp serves on the
     // CPU with their own model names. An About page that names only the chat model implies the port does not
     // answer anything else, which stopped being true on 2026-11-15.
-    ...(routes.length ? [["Also on this port", `${routes.join(" · ")} — other serves on this box (CPU llama.cpp), `
-        + `with their own model names; their cards are on the Monitor.`]] : []),
+    ...(routes.length ? [["Also on this port", `${routes.map((r) => r.model ? `${r.path} (model ${r.model})`
+        : r.path).join(" · ")} — other serves on this box (CPU llama.cpp), answering their own model names; `
+        + `their cards are on the Monitor.`]] : []),
   ]);
+
+  // The headline of this card, and the point of the whole page for anyone arriving to configure something: the
+  // two strings they are about to type into a config file, plus one block that pastes without editing. Rendered
+  // from the address this page was SERVED on, so behind a gateway it names the front door rather than the
+  // loopback port the process happens to hold.
+  text("connect-base", origin || null);
+  text("connect-model", model || null);
+  document.querySelector("[data-copy-target=connect-base]").dataset.copy = origin;
+  document.querySelector("[data-copy-target=connect-model]").dataset.copy = name;
+  const agentEnv = `# OpenAI-compatible. The SDK and LiteLLM want the /v1; curl does not.\n`
+    + `OPENAI_BASE_URL=${apiBase}\n`
+    + `OPENAI_API_KEY=${s.key_needed ? "<your key, never printed here>" : "none"}\n`
+    + `OPENAI_MODEL=${name}\n`
+    + (routes.length ? `# this port also routes: ${routes.map((r) => r.model ? `${r.path} (model ${r.model})`
+        : r.path).join("  ·  ")}\n` : "")
+    + `# reasoning is separate on this launch: content can come back empty if max_tokens all goes to reasoning_content`;
+  $("agent-env").textContent = agentEnv;
+  document.querySelector("[data-copy-target=agent-env]").dataset.copy = agentEnv;
   const curl = `curl ${origin}/v1/chat/completions \\\n`
     + `  -H 'Content-Type: application/json'${s.key_needed ? ` \\\n  -H 'Authorization: Bearer $KEY'` : ""} \\\n`
     + `  -d '{"model": "${name}", "messages": [{"role": "user", "content": "hello"}],\n`
@@ -275,10 +297,12 @@ function render() {
     + `m = r.choices[0].message\n`
     + `print(m.content)                              # None when max_tokens was all spent on reasoning\n`
     + `print(getattr(m, "reasoning_content", None))  # where ${rsn ? `this serve's --reasoning-parser ${rsn}` : "a reasoning parser"} puts it`;
-  for (const [id, text_] of [["litellm-yaml", yaml], ["litellm-py", py]]) {
-    $(id).textContent = text_;
-    document.querySelector(`[data-copy-target=${id}]`).dataset.copy = text_;
-  }
+  for (const [id, text_] of [["litellm-yaml", yaml], ["litellm-py", py]]) $(id).textContent = text_;
+  // Wired one by one rather than in the loop above: a copy button whose wiring is built from a template literal
+  // is invisible to the static check that every data-copy-target in the markup gets a copy payload (the same
+  // lesson the Monitor's slot table learned -- a write path the checker cannot see is a check that goes blind).
+  document.querySelector("[data-copy-target=litellm-yaml]").dataset.copy = yaml;
+  document.querySelector("[data-copy-target=litellm-py]").dataset.copy = py;
 
   facts($("facts-self"), [
     ["Upstream this page dials", s.upstream || null],

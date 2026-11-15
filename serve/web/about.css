@@ -11,3 +11,16 @@ dl.facts{margin-top:16px}
 
 /* captions for the copy-paste blocks (curl, LiteLLM x2) */
 .code-cap{margin:18px 0 0}
+
+/* The two strings a client config is built from. A URL and a model name want a monospace face and a size that
+   can be read across the room, because the job they are doing is transcription: someone reads them, or copies
+   them, into a config file. The box is deliberately not a code block -- a code block on this page means
+   "multi-line paste", and these are single values that happen to be long. */
+.connect-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:12px;margin-top:16px}
+.connect-cell{background:var(--st-surface-2);border:1px solid var(--st-line);border-radius:10px;padding:10px 12px;
+  position:relative}
+.connect-cell .label{display:block;margin-bottom:2px}
+.connect-cell .value{font-family:var(--st-font-mono);font-weight:700;font-size:var(--st-fs-lg);line-height:1.3;
+  letter-spacing:0;margin-top:6px;overflow-wrap:anywhere}
+.connect-cell .st-btn{margin-top:10px;background:transparent;border:1px solid var(--st-line);opacity:.85}
+.connect-cell .st-btn:hover{opacity:1}

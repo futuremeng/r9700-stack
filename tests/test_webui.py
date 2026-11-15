@@ -2717,6 +2717,16 @@ ck("a slot is one line: nowrap, ellipsis, tabular digits",
                            for x in ("white-space:nowrap", "text-overflow:ellipsis",
                                      "font-variant-numeric:tabular-nums")),
    _wc.split(".slot{")[1][:180] if ".slot{" in _wc else "no .slot rule in web.css")
+# Every Copy button on the About page: the markup declares the button, the JS hands it the string. A button whose
+# wiring is built from a template literal is a button the checker cannot see, so the wiring is written one line
+# per target and this check is the reason it stays that way. (A dead Copy button is invisible on screen: the
+# click does nothing and no error appears.)
+_ab = open(os.path.join(ROOT, "serve/web/about.html")).read()
+_ajs = open(os.path.join(ROOT, "serve/web/about.js")).read()
+_ct = set(re.findall(r'data-copy-target="([a-z0-9-]+)"', _ab))
+_cw = set(re.findall(r'\[data-copy-target=([a-z0-9-]+)\].{0,6}?\.dataset\.copy', _ajs, re.S))
+ck("every Copy button in the About markup has its payload wired, and nothing is wired to a button not in the markup",
+   _ct == _cw and _ct, f"markup: {sorted(_ct)}; wired: {sorted(_cw)}")
 ck("the rate row is three slots per card and the trend row two, so the two rows are the same shape",
    len(re.findall(r'id="note-[a-z]+"', _wh)) == 4 and len(re.findall(r'id="spans-[a-z]+"', _wh)) == 4
    and len(re.findall(r'id="poll-[a-z]+"', _wh)) == 4

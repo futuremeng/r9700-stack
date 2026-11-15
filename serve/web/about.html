@@ -87,6 +87,26 @@
       <span class="card-title">Connect your tools</span>
       <p class="muted">Any OpenAI-compatible client works with these. The base URL is the serve itself —
         <span id="api-note">this page is a sidecar, not a proxy, unless it was started with <code>--proxy</code>.</span></p>
+      <!-- The two strings an agent config is built out of, at a size that outranks everything under them, each
+           with its own Copy. They used to be two rows in a definition list of eight: coming here to copy one
+           string meant reading a reference. Below them, one block that pastes into a client without editing. -->
+      <div class="connect-grid">
+        <div class="connect-cell">
+          <div class="label">Base URL — the address this page was served on</div>
+          <div class="value" id="connect-base">—</div>
+          <button class="st-btn" data-copy-target="connect-base">Copy</button>
+        </div>
+        <div class="connect-cell">
+          <div class="label">Model name — goes in <code>model</code></div>
+          <div class="value" id="connect-model">—</div>
+          <button class="st-btn" data-copy-target="connect-model">Copy</button>
+        </div>
+      </div>
+      <div class="label code-cap">Agent config — paste this, edit nothing</div>
+      <div class="code-block">
+        <pre class="code" id="agent-env"></pre>
+        <button class="st-btn" data-copy-target="agent-env">Copy</button>
+      </div>
       <dl class="facts" id="facts-api"></dl>
       <div class="code-block">
         <pre class="code" id="curl"></pre>

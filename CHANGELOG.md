@@ -48,6 +48,26 @@ the **request line and nothing else**, opens the upstream, and pipes bytes both 
   arbiter: whoever claimed last writes, a superseded one exits saying so, and the claim *time* decides so a stale
   holder cannot silence a live one. Proved on the box, not just in `tests/test_setup.py`: the superseded watcher
   logged `this watcher is superseded: the record names pid 406251 ... Nothing written.` within one 10 s tick.
+- **The About page now leads with what people came to copy.** `Base URL` and `Model name` sit at the top of the
+  Connect card at display size, each with its own Copy, and under them one block that pastes into a client
+  without editing:
+
+  ```
+  # OpenAI-compatible. The SDK and LiteLLM want the /v1; curl does not.
+  OPENAI_BASE_URL=http://<box>:8080/v1
+  OPENAI_API_KEY=none
+  OPENAI_MODEL=Qwen3.8
+  # this port also routes: /v1/embeddings (model qwen3-embed)  ·  /v1/rerank (model qwen3-rerank)
+  ```
+
+  Those two strings used to be rows one and two of an eight-row definition list -- coming to copy one meant
+  reading a reference. The sidecar names in the last line are new too: `serve/embed.sh` now passes `--alias` by
+  default (`qwen3-embed` / `qwen3-rerank`, overridable per task with `EMBED_SERVED_NAME` / `RERANK_SERVED_NAME`),
+  because without it llama.cpp advertises the **checkpoint path** as the model name and that is what a page
+  copying you would offer; `embed-watch.py` carries `--alias` through in its `serve` block and the About page
+  prints it beside each route. Copy wiring is now one line per target, checked against the markup in
+  `test_webui.py`: the loop that used to do it built the selector from a template literal, so a dead Copy button
+  -- which shows nothing on screen and does nothing on click -- was unchecked.
 - **About now says which port is which.** Through the front door the page reported `Listening on
   127.0.0.1:8180` while the base_url it prints (from `location.origin`, already correct) said `:8080` -- two
   true lines that read as a contradiction. It adds `Reached through <origin>` when the browser's port is not the

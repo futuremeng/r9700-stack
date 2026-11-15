@@ -138,7 +138,7 @@ def serve_args():
             cmd = Path(f"/proc/{p}/cmdline").read_bytes().decode("utf-8", "replace").split("\0")
             if "-m" in cmd and "--port" in cmd:
                 out = {}
-                for flag, key in (("-t", "threads"), ("-c", "ctx"), ("-b", "batch")):
+                for flag, key in (("-t", "threads"), ("-c", "ctx"), ("-b", "batch"), ("--alias", "alias")):
                     if flag in cmd:
                         out[key] = cmd[cmd.index(flag) + 1]
                 return out
