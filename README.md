@@ -98,7 +98,7 @@ You run the stock vLLM ROCm image with this plugin installed. From there:
    `max_num_seqs`, mixed-length soaks and long-context needles on every configuration before a tag; paired GSM8K
    (McNemar) and HumanEval on the numerics.
 
-Current release: **v0.4.4** (2026-11-15), [release notes](notes/release-v0.4.4.md), [CHANGELOG.md](CHANGELOG.md).
+Current release: **v0.4.5** (2026-11-15), [release notes](notes/release-v0.4.5.md), [CHANGELOG.md](CHANGELOG.md).
 On the four-card native box this fork runs, the main KV cache is fp8 e4m3 by default - see the 262k table below.
 
 ## Features
@@ -658,10 +658,11 @@ small budget returns `content = None`). A Copy button that has nothing to copy s
 string and printing "Copied" — that is how a dead one survived a rename of the id it was wired to.
 
 Both pages' headers name the build that is answering: the plugin's version, and the branch, commit and dirtiness of
-the tree that plugin was loaded from - on the launch running today, `vLLM 0.32.0 · plugin 0.4.4 · f33fe493`, with a
-`*` on the commit when the tree has uncommitted edits, and the same facts as a row in About. It is the build that
-**answered**, not the build this checkout holds: that serve came up at `f33fe493` while the tree has since moved
-past it, and the header went on naming the older one - which is the whole point, and why the About page
+the tree that plugin was loaded from - on the launch running today, `vLLM 0.32.0 · plugin 0.4.4 · a3d1e53e*`, with
+a `*` on the commit when the tree has uncommitted edits, and the same facts as a row in About. It is the build that
+**answered**, not the build this checkout holds: that serve came up at `a3d1e53e` with the day's work still
+uncommitted in the tree it started from (the `*` is that moment, recorded once, at sidecar start), and the header
+goes on naming it while the tree has since moved to 0.4.5 - which is the whole point, and why the About page
 labels the same facts as three sources that are allowed to disagree. "Is the live serve the new one?" used to cost
 an ssh and a look at the launch log; now it is a glance, and the string survives into the screenshot someone sends.
 
