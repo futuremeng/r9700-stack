@@ -213,22 +213,54 @@ fallback path — the one that ran here — never runs it.
 
 ## 8. What would settle the fault, in order of cost
 
-1. ~~Shape/geometry~~ — done, §7: in range, and the step replays clean.
+1. ~~Shape/geometry~~ — done, §7: in range, and the step replays clean. **Now also for the second fault**
+   (`tests/test_conv1d_mixed_step.py` arm E, 2026-11-15): the 05:11 step read out of the engine's own dump — 23
+   spec rows of 3 tokens (drafts still `-1, -1`) plus two new prefills of 160 and 156 tokens landing on GDN pages
+   the step itself zeroed (`new_block_ids_to_zero=[246, 464]`, which the dump's sixth block group agrees with) —
+   is **also** in range by arithmetic, and its conv update → conv → `torch.cat` at the step's own q/k/v widths
+   (512/512/1536) replays clean on a real card with syncs between the stages. Two deaths, two named kernels, two
+   step shapes, both in range: the arithmetic is not it, which is what leaves an index that is in range and no
+   longer names live memory.
 2. **Instrument the fallback path** — *done, 2026-11-14* (`gdn.py:_bounds_problems` / `_fallback_check`, and
    12 checks in `tests/test_conv1d_mixed_step.py` arm C). With `R9K_GDN_DEBUG=1` the fallback now bounds, before
    stock's kernels run, the two walks that kernel can make: every conv-state line index in
    `non_spec_state_indices_tensor` / `spec_state_indices_tensor` against `conv_state.size(0)`, and the non-spec
    token span against `num_actual_tokens`. It costs host syncs, so it stays behind the existing `DEBUG` gate
    (default off) and it runs on **layer 0 only** — the block table and the token counts are per-step, so layer 0
-   sees what all 48 layers of that step will see. Off, it is one `if` per layer. This is the check that would
+   sees what all 36 GDN layers of that step will see (config.json's `layer_types`: 36 `linear_attention`, 12
+   `full_attention`). Off, it is one `if` per layer. This is the check that would
    have named a bad line index in the log instead of leaving the device to name it: our own paths already had
    that assertion in `_debug_check` (`idx max >= state blocks`); the path this fault ran never did.
    A detail the check forced out: the conv kernel skips a slot whose index equals `NULL_BLOCK_ID = 0`, so it
    cannot tell padding from a real block 0 — harmless, because the block pool reserves block 0 as its null
    block (`kv_cache_utils.py:1606`), and now said in the code rather than remembered.
-3. **Reproduce with the pool, not the shape**: ~12 requests at ≥ 200k tokens to drive `kv_cache_usage` to
-   ~0.998, then a steady arrival of 500–700-token prompts (the dumped step). Against a *spare* launch, not the
-   box behind traffic — a hit costs the 10-minute NCCL teardown.
+   **Fixed 2026-11-15, before anyone could run it in anger:** that layer-0 restriction lived inside
+   `_fallback_check` alone, so the rest of the `DEBUG` block still paid itself on every layer — 3
+   `torch.cuda.synchronize()` calls per layer per step on each of the two paths, **108 per step** across 36
+   layers, which drains the launch queue and moves the very prefill/decode overlap a reproduction is chasing.
+   Both call sites now ask `_dbg_here(self)`: layer 0 unless `R9K_GDN_DEBUG_ALL=1` says otherwise. Nothing is
+   lost, because the metadata is per step, and a fault that lives in a later layer still faults and still gets
+   its kernel named by the driver. Checked in `tests/test_conv1d_mixed_step.py` arm D: no bare `dbg = DEBUG` is
+   left in the file, every sync inside `gdn_core` sits under an `if dbg:`, and `_dbg_here` is exercised as a
+   function (layer 0 yes, layer 7 no, both with `DEBUG_ALL`, neither with `DEBUG` off).
+3. **Reproduce the step, not the pool** — *restated 2026-11-15, because the second fault refuted the plan as
+   written.* It used to say: drive `kv_cache_usage` to ~0.998 with ~12 requests at ≥200k tokens, then a steady
+   arrival of 500–700-token prompts. The 2026-11-15 05:11:18 fault took the same class of device fault on a step
+   at **`kv_cache_usage=0.591`, `running=25`, `waiting=0`**, so pool pressure is not a condition. What the two
+   deaths have in common, and nothing else measured does: a step mixing **new prefills with spec-decode rows**,
+   on the same card, with the same fault shape — a **read** (`PERMISSION_FAULTS: 0x3`, `RW: 0x0`,
+   `MAPPING_ERROR: 0x0`) at a page-aligned address, `[gfxhub] page fault` on `0000:c3:00.0`. The kernels named
+   differ: 11-14 `_causal_conv1d_fwd_kernel` (grid `[9856, 10, 1]`, addr `0x738f7a313000`); 11-15
+   `at::native::CatArrayBatchedCopy_contig` (grid `[13312, 3, 1]`, addr `0x766adbac9000`). Two different kernels
+   reading past the end of the same allocation is exactly why the guard is written as a **bounds check on the
+   arguments** rather than as a fix to one kernel: the named kernel may be the first innocent reader rather than
+   the one that produced the bad index. So: a spare launch, `R9K_GDN_DEBUG=1` (cheap enough to leave on for a
+   soak now that it is layer 0), mixed steps of 500–700-token prefills arriving into spec-decoding requests, run
+   at **low** pool pressure as well as high — two arms, since the pool is no longer believed to matter. Against a
+   *spare* launch, never the box behind traffic: a hit costs the ~10-minute NCCL teardown (§6), and
+   `tools/recipe-check.py` will call whatever runs afterwards non-PRODUCTION. Since 2026-11-15 05:58 the watcher
+   can be told to bring such a soak back after a hit (`WATCH_RESTART=1`, four gates:
+   launch-methodology.md §4) — which is the difference between an overnight soak and a scheduled outage.
 4. `AMD_SERIALIZE_KERNEL=3` if (3) does not hit: names the faulting kernel rather than the first innocent
    reader, at the cost of every timing the protocol produces.
 5. If it returns and stays unreproducible, the mitigation is a config change: `R9K_GDN_PREFILL_MAX=1024` puts
@@ -264,3 +296,374 @@ Re-checked after writing, because two numbers in this note were wrong the first 
   six back-to-back afterwards; it is full of timing windows (0.2 s polls, 0.12 s streams, sleeps) and the failure
   was not reproduced while hunting it. Left as a known flake rather than papered over: if it comes back, the
   run prints which check.
+
+## 10. It reproduces: 431 s of synthetic mixed-step load, and layer 0 was clean on every step
+
+`tools/soak-mixed-step.py` (added the same day) drives the shape §8 item 3 asks for: a standing population of
+requests decoding with MTP, a **pair** of ~210-token arrivals every 1.0-1.5 s (a pair, because one short prefill
+is under `R9K_GDN_PREFILL_MAX=256` and goes to our kernel while the pair is over it and goes to stock's -- the door
+both faults went through), a 610-token arrival every 6 s (the 11-14 shape), fresh unique prompts so prefix caching
+cannot dissolve the mixed step, and `--max-load` as a valve so the queue matches the dumps rather than growing
+without bound (the first unmetered 2-minute smoke reached 37 waiting; the dumps sat at 25/0 and 31/13). It aims at
+the engine on `:8180`, not the gateway: the admission gate is built to suppress exactly this regime, so testing
+the fault past the gate would be testing the gate.
+
+Run: TEST launch at 06:11 (`~/logs/TEST-gdnmixed-1115-0612.log`, `R9K_GDN_DEBUG=1` layer 0, `WATCH_RESTART=1`),
+soak started 06:21:22. **Hit at 06:28:33, 431 s in** -- the driver's first failing request was a short arrival
+answered `HTTP 500`, and `/health`, `/metrics` and the page all went silent inside the same second.
+
+The kernel journal, verbatim (this is the third fault of the family and the same card as the other two):
+
+```
+Nov 15 06:28:33 kernel: amdgpu 0000:c3:00.0: [gfxhub] page fault (src_id:0 ring:24 vmid:8 pasid:14055)
+Nov 15 06:28:33 kernel: amdgpu 0000:c3:00.0:  Process python3 pid 499003 thread python3 pid 499003
+Nov 15 06:28:33 kernel: amdgpu 0000:c3:00.0:   in page starting at address 0x0000748241794000 from client 10
+Nov 15 06:28:33 kernel: amdgpu 0000:c3:00.0: GCVM_L2_PROTECTION_FAULT_STATUS:0x00801430
+Nov 15 06:28:33 kernel: amdgpu 0000:c3:00.0:          Faulty UTCL2 client ID: SQC (data) (0xa)
+Nov 15 06:28:33 kernel: amdgpu 0000:c3:00.0:          PERMISSION_FAULTS: 0x3   MAPPING_ERROR: 0x0   RW: 0x0
+```
+
+pid 499003 is `Worker_TP0`. Same card as 11-14 20:59 and 11-15 05:11; same read (`RW: 0x0`,
+`PERMISSION_FAULTS: 0x3`, `MAPPING_ERROR: 0x0` -- a mapping that is there but not readable, not a walk failure).
+`Faulty UTCL2 client ID: SQC (data)` is new information: the read came in on the **scalar** data path, which is
+how a kernel reaches its own arguments and buffer descriptors, so "an index that is in range but no longer names
+live memory" is consistent with what the hardware says. Unlike the two earlier faults, the driver did not print a
+`kernel: <symbol>` line this time (ring 24 rather than the trap ring), so the faulting kernel is unnamed.
+
+The step it died on is the step we were asking for. The last instrumented steps on that worker:
+
+```
+06:28:30 gdn debug ... fallback T=505 md=prefills=2 decodes=0 spec=29 act=505
+06:28:31 gdn debug ... fallback T=501 md=prefills=2 decodes=0 spec=28 act=501
+06:28:32 gdn debug ... fallback T=481 md=prefills=1 decodes=0 spec=29 act=481   (then core ok, then norm ok)
+```
+
+`running=30`, `kv=37.5 %`, `waiting=0`. So §8 item 3's other conclusion is confirmed on the box, twice now:
+**pool pressure is not a condition of this fault.**
+
+What the guard did, counted over the whole launch for `Worker_TP0`: **1150 `fallback T=` lines, 1150 `fallback
+core ok`, 1150 `fallback norm ok`, and 0 `BAD`.** No step is missing a stage. That is the important negative of
+the run, and it says the stock `_forward_core` (its conv, its `torch.cat`, its norm) of **layer 0** completed for
+every step the instrumentation saw, including the last one it saw. Combined with the worker's own reported stack
+-- which vLLM itself warns is where the error surfaced, not where it was caused --
+
+```
+gpu/model_runner.py:1735 execute_model -> add_requests -> sampler.apply_staged_writes
+  -> states.py:75 apply_staged_writes -> temperature.copy_to_uva
+  -> buffer_utils.py:38  return self._uva[:n]     torch.AcceleratorError: illegal memory access
+```
+
+-- the picture is: an already-launched kernel faulted, and the first place the driver could tell the process was
+a host->device copy of the sampler's per-request temperatures for the requests being added.
+
+So the two live hypotheses are now separated by a knob rather than by reasoning. `R9K_GDN_DEBUG_ALL=1` makes all
+36 GDN layers print `T=` / `core ok` / `norm ok`; if a fault lands with a `T=` and no `core ok`, that layer's stock
+`_forward_core` is the faulting kernel, named at last. If every layer prints `norm ok` right up to the fault, GDN
+is out of it entirely and the hunt moves to the kernels that step also runs (the sampler's staged writes, the MTP
+draft, attention). That run is in progress as this is written (`~/logs/TEST-gdnall-1115-0700.log`,
+`tools/soak-mixed-step.py --minutes 25 --pop 12 --max-load 24 --period 1.5`): 22k debug lines/minute, ~11 MB
+per 2.5 min, which is affordable and did not stop the fault the first time round.
+
+Two things this run also established about the harness itself:
+
+- **The layer-0 instrumentation does not mask the fault.** Stage syncs and host reads of the index tensors were
+  live on every step and it still faulted in 7 minutes. The soak-plus-guard pair is therefore a usable standing
+  reproduction, not a fragile one.
+- **The guard's span rules were added before the hit, from the `torch.cat` clue, and are now in the file**:
+  `_bounds_problems` also checks `non_spec_query_start_loc[-1] + spec_query_start_loc[-1] <= num_actual_tokens`
+  and `num_actual_tokens <= rows` (the rows of the buffer actually handed to stock, `qkvz.shape[0]`, which
+  `_fallback_check` now receives). A cat reads a *range*, and the 05:11 grid `[13312, 3, 1]` has three in the
+  second dimension, which is how many tensors `torch.cat((query, key, value), dim=-1)` -- `qwen_gdn_linear_attn.py`
+  lines 1026 and 1116 -- passes. On the 05:11 step as dumped, the new rules are clean too (316 + 69 = 385 rows,
+  385 present): `tests/test_conv1d_mixed_step.py` arm C fires them on purpose-built shapes and arm E holds them
+  clean on the dumped one.
+
+## 11. What a hit costs, measured: the ranks stay, the pane stays, and the box stays down
+
+The 431-second soak did to the box what the two field faults did, and the failure of *recovery* is now measured
+rather than assumed:
+
+- The fault killed `Worker_TP0` and left the other three ranks alive: `pgrep -cf "VLLM[::]"` returned 3, and
+  rocm-smi showed **32,371,838,976 / 32,371,949,568 / 32,296,308,736 B used** on the other three cards (card 0
+  back down to 374,820,864). Those ranks ignore SIGTERM. (The process titles are `VLLM::Worker_TPn`, which is why
+  `left_vllm()` greps `VLLM[::]` and a `pgrep -f "vllm serve"` finds nothing in a crash.)
+- The tmux session survived: `pane_pid=498588 cmd=bash dead=0`, 26 minutes after its engine stopped.
+- With `WATCH_RESTART=1` armed, `RESTART_MAX=3 / 3600 s`, and a watcher polling every 10 s, **the record never got
+  a death at all**: `died_at: null`, no `restarts.json`. `watch_dead()` required either the session to be gone or
+  no ranks left, and it had neither. The §4 rule ("seen, not resurrected") failed in *both* directions at once:
+  it was never seen, so nothing could resurrect it, and an operator who did not look found a refusing port.
+- Worse, once the ranks were cleared by hand (`STOP=1`), the *empty* session still refused the next launch:
+  `FAIL a tmux session named r9700-native-flashnext is already up -- not starting a second launch into it`. That
+  corpse pane was the reason the box was still down at 06:45.
+
+Fixed in `setup.py` the same morning, all of it host-testable and all of it gated:
+
+1. `watch_dead(port, sess, prev, quiet)` can now say **"crashed and wedged"**: no `/health`, ranks present, a
+   record that had already answered `/health` once (`up_at`), at least `WATCH_WEDGE_TICKS` (2) silent probes in a
+   row, and a known crash signature in the log tail. A launch that is merely loading has ranks and no `/health`
+   too, and is still not called dead -- that is the same test as before, kept.
+2. `RESTART_STOP=1` (default on once `WATCH_RESTART=1` has been said out loud; `RESTART_STOP=0` restores the old
+   passivity) lets the watcher clear those ranks with **the recipe's own stop** --
+   `STOP=1 bash serve/<recipe>` -- rather than a hand-rolled `pkill`, because the launcher knows its ranks and an
+   ad-hoc kill would be a second, worse opinion about the same processes. The predicate `stop_wedge_would()` is
+   pure and needs all five: switch on, restart armed, ranks really there, a signature, and a record that names a
+   recipe. A purely recording watcher never touches anybody's processes.
+3. `corpse_session(sess, left, rec)` turns the launcher's refusal into a decision: close the pane when the record
+   says this launch is over and nothing is running in it; refuse when there are ranks, when the record does not
+   vouch for the session, or when the launch might still be loading (a load with no ranks and no `/health` yet is
+   not a corpse).
+
+10 checks in `tests/test_setup.py` hold those three to their rules, including the two that must stay `None`/`False`
+(loading, and silent-but-no-fault-line). And the *other* direction got proved on the box without being planned:
+at 06:42:46 the armed watcher logged `this launch is gone: the tmux session r9700-native-flashnext holding it is
+gone -- nothing restarted it (no known crash signature in the log tail)` for a deliberate `STOP=1`. A stop is not
+a crash, and the box now knows that in production rather than only in a test.
+
+## 12. `R9K_GDN_DEBUG_ALL=1` named the dying layer: `layers.1`, inside stock's `_forward_core`
+
+Second soak, same shape, one knob different: `R9K_GDN_DEBUG=1 R9K_GDN_DEBUG_ALL=1` (`~/logs/TEST-gdnall-1115-0700.log`,
+soak from 06:47). **Hit at 06:55:41, ~536 s in**: `[gfxhub] page fault` again on `0000:c3:00.0`, `pid 513343` =
+`Worker_TP0`, page `0x000076f7e1208000`, `PERMISSION_FAULTS: 0x3`, `RW: 0x0`, `Faulty UTCL2 client ID: SQC (data)`.
+
+Then the instrument paid for itself. Counting, for the dead worker only, how many times each of the three stages
+printed per GDN layer (36 of them, `layers.N.linear_attn: fallback T=` / `fallback core ok` / `fallback norm ok`):
+
+```
+layers instrumented: 36 | layers whose three counts differ: {1: [615, 614, 614]}
+```
+
+**One layer of 36 is short by one: `layers.1` printed its step 615 times and its `core ok` 614 times.** The last
+line that worker ever wrote about a step is the `T=` of layer 1 (`fallback T=469 md=prefills=1 ...`), while TP1,
+TP2 and TP3 all printed `core ok` and `norm ok` for the same step. And the raise site in the worker's own traceback
+is the stage sync that brackets exactly that call:
+
+```
+File "/home/jiulu/r9700-stack/r9700_vllm/models/gdn.py", line 633, in gdn_core
+    torch.cuda.synchronize()
+  ... frame above: <string> __vllm_inlined_submods__5   (the compiled model's inlined GDN submodule)
+```
+
+That is the localization §8 was after. It also retires run 1's red herring: the sampler's `copy_to_uva` stack was
+where the driver *told* the process, not where the damage was -- vLLM says so in the same traceback, and here the
+sync placed moments after `_forward_core` caught it instead. So: a kernel launched by **stock's `_forward_core` for
+GDN layer 1**, on **one rank of four**, on a step whose prefill+spec mix three other ranks survived.
+
+The guard did not catch it, and the reason is a bug in the guard rather than in the theory: `_fallback_check` kept
+its **own** hardcoded `.layers.0.` test even after the call site learned to ask `_dbg_here(self)`, so with
+`DEBUG_ALL` every layer paid for the syncs while only layer 0 ever had its indices read. The dying layer's
+`non_spec_state_indices_tensor` / `spec_state_indices_tensor` / spans were never looked at. Fixed the same day --
+the helper now checks whichever layer it is handed and the **caller** decides who pays -- with the check in
+`tests/test_conv1d_mixed_step.py` rewritten to say so, plus a source check that no `.layers.0.` test comes back
+inside the helper.
+
+Third soak, 07:04 (`~/logs/TEST-gdnall2-1115-0720.log`), same shape (`--pop 16 --max-load 30 --period 1.0`,
+`running=30`, `kv≈38 %`) with **all 36 layers bounds-checked**: **720 s with no fault and 0 `BAD` lines**. The rate
+across the three runs is therefore 431 s, 536 s, and >720 s -- stochastic at about one hit per ten minutes of that
+shape, which is the same order as two faults in ~12 h of real traffic. What run 3 bought is coverage: the next hit
+gets its offending index printed by the layer that died, in the log, before the device names it in a page fault.
+
+Recovery, this time proved in the field rather than in `tests/`: `.r9700-state/restarts.json` carries
+
+```
+"at": [06:36:37, 06:55:57], "sig": "illegal memory access", "session": "r9700-native-flashnext"
+```
+
+with the watcher's own line `this launch is gone: the tmux session ... is gone -- RESTARTING: illegal memory access;
+restart 2 of 3 in 60 min`. The 06:55 fault was answered 16 s later by a fresh launch through `setup.py` -- which is
+the whole point of the mechanism, and it is now the fourth time this box has faulted and the first time it came back
+without a human.
+
+Two honest caveats from the same records:
+
+- **The wedge path never fired.** Both restarts have `cleared_ranks: null`: in each case the tmux session had
+  already gone, so the ordinary death predicate applied and `RESTART_STOP` was not needed. It stays a tested path
+  without field service, and §11's measurement of the wedge still stands.
+- **The signature gate reads the log tail, and a tail is long.** The 06:36:37 restart happened after an operator ran
+  `STOP=1` on the wedged launch: the fault line from 06:28 was still inside the 256 KiB tail, so the watcher read it
+  as a crash and relaunched. That is the right answer for "the engine died and I cleared it" and the wrong one for
+  "I want it down" -- so stopping a launch on purpose while a watcher is armed means taking the watcher down first
+  (`.r9700-state/launch.json` names its pid). A narrower predicate (signature only after the last shutdown marker)
+  is a candidate follow-up; it is not written yet, and saying so here is cheaper than being surprised by it.
+
+## 13. Upstream has already fixed a bug whose mechanism this is: vllm#61174, and our wheel does not have it
+
+Asked whether there is a better way than a hand-written shadow path, the answer turned out to be a search of
+upstream rather than more instrumentation. Method, since `api.github.com` is unauthenticated and out of quota on
+this box: `git clone --filter=blob:none --depth=4000 https://github.com/vllm-project/vllm.git` (4 000 commits,
+2026-09-15 … 2026-11-15 — the whole window since our pinned 0.32.0 wheel) and read the log for the code the fault
+window touches: `v1/worker/gpu/block_table.py`, `v1/worker/mamba_utils.py`, `v1/core/single_type_kv_cache_manager.py`,
+`model_executor/layers/mamba/**`, `models/qwen4_exp/amd/**`, and messages matching `conv1d`, `mamba`, `GDN`,
+`piecewise`, `stale`, `illegal memory`, `num_speculative_blocks`.
+
+**Found: `61bb5908` — "[Bugfix][Spec Decode] Clear stale shared block-table rows" (#61174, 2026-10-17), in
+`vllm/v1/worker/gpu/block_table.py`.** `BlockTables` keeps one **shared** `input_block_tables` buffer that the
+step's kernels -- including everything replayed out of a captured piecewise graph at a padded batch size -- read
+by row. Before the fix, `gather_block_tables` only zeroed rows up to `num_reqs_padded` *of this step*, and
+`get_dummy_block_tables` only zeroed up to its own count; rows left behind by an **earlier, larger batch** stay
+behind. The fix adds `_num_dirty_rows` and clears `max(needed, dirty)` rows in both places. Its own test docstring:
+*"A smaller target batch must leave no stale rows for larger draft graphs."*
+
+That is the mechanism §10-§12 left standing, told from the other side:
+
+- every index in the dumps is **in range** (§7, arm E, and the span rules), because a stale block id is a *valid*
+  id -- it just names a block that has since been freed and reallocated, which is how an in-range read lands on an
+  unmapped page;
+- the fault is a **read** on the **scalar** path (`SQC (data)`), consistent with a kernel following a block id from
+  a table row rather than with arithmetic on its own bounds;
+- it needs a step where batch size **moves** (this box pads to cudagraph sizes 1,2,4,8,16,24,32,...; `running`
+  swings 23→31 constantly, so a 32-row step is followed by a 24-row one within seconds) and both faults were on
+  such a step (23-30 spec rows plus 1-2 new prefills);
+- and the mamba/GDN state path is where it lands: the pre-fix code already carries the comment *"dummy runs write
+  mamba state to the reserved null block rather than through the previous real step's (stale) block ids, which may
+  point at blocks since freed and reallocated"* -- §5.7 of the same file, one function away.
+
+**Verified on this box rather than assumed.** Upstream's test file (`tests/v1/worker/test_gpu_block_table.py` at
+that commit) copied into `tests/test_vllm_stale_block_table_rows.py`, run against the installed wheel:
+
+```
+before the patch:  7 failed     # rows 5-8 of the shared table still hold [5,5,5] [6,6,6] [7,7,7] [8,8,8] / 99s
+after the patch:   7 passed
+```
+
+(the copy drops upstream's `skipif(not current_platform.is_cuda())` marker -- on a ROCm build that is `False`, so
+upstream's own regression test for a mamba-state block-table bug **never runs on the platform where it bites**.)
+The patch is `patches/vllm-0.32.0-61174-clear-stale-block-table-rows.patch`; the `_gather_block_tables_kernel`
+in our 0.32 is byte-identical to upstream's pre-fix copy, so it applies cleanly (`patch -p1`, 60 lines, python
+bookkeeping only). It is **applied to `~/venv-r9700` at 08:49:31** (`stat` on both files agrees) and reported by
+`setup.sh`'s box walk
+(`VPATCHES` / `venv_patches()` in `setup.py`, plus `patches/README.md`), because the venv is a frozen artifact and
+a patched 0.32.0 must not be mistaken for a stock one. **The running engine -- launched 07:18:15, well before 08:49:31 -- predates it and does not carry it** --
+that is what the walk's "a launch that started BEFORE the patch does not carry it" line is for.
+
+What the same search ruled OUT, recorded so nobody spends an hour on it twice:
+
+- `6fa67afe` *"[Core] Retire stale Mamba spec blocks in prefill checkpoint steps"* (#59759) — **already in our
+  build**, line for line, including the post-fix comment. Not our missing piece.
+- `c6b2d6ec` *"[ROCm] Pad Qwen4Exp PLE n-gram inputs for piecewise CUDA graph replays"* (#62675) — our build
+  **lacks** it, and the mechanism (a PIECEWISE replay reading a buffer arranged for a different request count) is
+  the same family, **but** our checkpoint has `ple_layer_ids = None` / `ngram_size = None`, so the PLE path it
+  fixes never runs here. Not applicable.
+- `2f6f7861` *int32 token-offset overflows in GDN prefill / checkpoint kernels* (#63761) — the hunks land in
+  `mamba/checkpoint.py::store_cache_checkpoints_kernel` and the FLA chunk kernels; our 0.32 `checkpoint.py` is a
+  different 169-line file without that kernel (it is the KDA path), and the arithmetic at our shapes
+  (state lines ≤ 1 146, step ≤ 8 192 tokens) is ~2 orders of magnitude from 2³¹. Not this fault.
+
+Still to earn, before this is called a fix instead of a candidate: a soak arm at the shape that hit at 431 s and
+536 s, run on a launch that actually carries the patch, **twice clean** (≈2 × 20 min). A single clean arm is a
+coin flip at this rate.
+
+## 14. §13's candidate is disproved: the fault came back 250 s into a launch that carried #61174
+
+Arm 1 of the plan at the end of §13 — a launch **with the patch in it**, same shape as the run that hit at 431 s
+(`R9K_GDN_DEBUG=1` layer 0, `--pop 16 --max-load 30 --period 1.0`), named
+`~/logs/TEST-patch61174-a1-1115.log`, soak from 09:21:33:
+
+- **Fault at 09:25:56, ~250 s in** — the *fastest* of the four, against 431 s (unpatched, layer 0) and 536 s
+  (unpatched, every layer). `[gfxhub] page fault` on `0000:c3:00.0`, `pid 565881` = `Worker_TP0`, page
+  `0x000072c85aa48000`, `PERMISSION_FAULTS: 0x3`, `MAPPING_ERROR: 0x0`, `RW: 0x0`,
+  `Faulty UTCL2 client ID: SQC (data)` — indistinguishable from the other three.
+- Instrumentation ran and said nothing: layer-0 stage counts **348 `fallback T=` / 348 `core ok` / 348 `norm ok`
+  on all four workers**, 0 `BAD`.
+- That the patch was really in the process, proved rather than assumed: the installed file's mtime is 08:49:31,
+  that launch's first vLLM-timestamped line is `INFO 11-15 09:18:06` (its own clock, ~29 min after the
+  patch; the fault line itself is `09:25:56`, ~7.5 min of serving), and
+  `r9700_webui.patch_text()` in that same venv prints `#61174 present`. (`/proc/<pid>` mtimes are NOT process
+  start times — that trap was walked into once while writing this; `ps -o lstart=` is the honest source.)
+
+So **clearing the stale shared block-table rows is not this fault** — the upstream bug is real (7 failing tests
+became 7 passing) and the box keeps the patch for that, but the device fault family is untouched by it. One
+hypothesis retired by experiment, which is the point of having a reproduction that takes four minutes.
+
+What the four faults now say when lined up together:
+
+| when | kv_usage | running/waiting | seconds into a fresh launch | rank | card |
+| --- | --- | --- | --- | --- | --- |
+| 11-14 20:59 | 99.8 % | 31 / 13 | ~6.8 days | (not recorded) | `c3:00.0` |
+| 11-15 05:11 | 59.1 % | 25 / 0 | ~28 min | TP0 | `c3:00.0` |
+| 11-15 06:28 | 37.5 % | 30 / 0 | 431 s | TP0 | `c3:00.0` |
+| 11-15 06:55 | 30.2 % | 24 / 0 | 536 s | TP0 | `c3:00.0` |
+| 11-15 09:25 | 35 % | 30 / 0 | 250 s | TP0 (patched) | `c3:00.0` |
+
+**Every one of them is the same physical card, and every one where the rank is known is `Worker_TP0`** (which is
+what `HIP_VISIBLE_DEVICES=0,1,2,3` puts on `c3:00.0`). Nothing else in the table is a condition: pool pressure
+spans 30 % to 99.8 %, queue spans 0 to 13, uptime spans 4 minutes to 6.8 days, and the patch is on or off.
+
+That leaves two live hypotheses, and one cheap experiment tells them apart:
+
+1. **A rank-0 code path.** Rank 0 does things the other three do not (it owns the sampler's staging, the draft
+   head's output path, and it is the rank whose `input_batch` staging the scheduler touches first). The fault
+   following the *rank* would mean software.
+2. **That card.** `c3:00.0` is one specific 0x1002 display device; a page-table or VRAM fault on it would follow
+   the *card* no matter which rank sits on it.
+
+**The discriminator: permute the card order and run the same soak.** `GPUS=3,0,1,2` in the launch (a named TEST
+launch, `HIP_VISIBLE_DEVICES` follows `GPUS` in `serve/native-flashnext.sh`) moves a different physical card under
+rank 0. If the fault moves to the new rank-0 card, it is the rank's code and `AMD_SERIALIZE_KERNEL=3` (or the
+per-layer shadow path) is the next step. If the fault stays on `c3:00.0` with rank 0 sitting elsewhere, the hunt
+becomes that card: swap it out, or run the soak with `GPUS=1,2,3` on three cards and see whether the fourth is the
+variable. Either way the answer costs one launch and about five minutes of soak, because the shape now reproduces
+in minutes rather than days.
+
+## 15. The card-order discriminator: the fault follows the **card**, not the rank
+
+`GPUS=3,0,1,2` (a named TEST launch, `~/logs/TEST-gpuswap-1115-0950.log`, `R9K_GDN_DEBUG=1` layer 0, soak
+`--pop 16 --max-load 30 --period 1.0` from 09:51:13). The recipe passes `GPUS` straight into
+`HIP_VISIBLE_DEVICES`, so this puts a different physical card under rank 0.
+
+**Ground truth for "which card is under which rank", taken while the engine was alive** — saved to
+`~/logs/gpuswap-rankcard-1115.txt`, and now a tool (`tools/gpu-rank-map.py`):
+
+```
+KFD enumeration (what HIP_VISIBLE_DEVICES indexes): idx0 c3:00.0  idx1 c6:00.0  idx2 03:00.0  idx3 06:00.0
+engine launched with HIP_VISIBLE_DEVICES=3,0,1,2
+  Worker_TP0  pid 591141  holds 28.8 GiB on 06:00.0
+  Worker_TP1  pid 591142  holds 28.8 GiB on c3:00.0     <-- the old fault card, now under rank 1
+  Worker_TP2  pid 591143  holds 28.8 GiB on c6:00.0
+  Worker_TP3  pid 591144  holds 28.8 GiB on 03:00.0
+```
+
+It reads `/sys/class/kfd/kfd/proc/<pid>/vram_<gpu_id>` (KFD's per-process, per-GPU record: the owning rank shows
+~28.8 GiB, the others a few MB of scratch) and maps `gpu_id` → PCI through the topology nodes' `location_id`
+(`49920 = 0xc300`). `/proc/<pid>/fd` is **not** a way to do this: every rank holds all four `renderD*` open for
+P2P, so the fd list identifies nothing — tried, and it printed all four for all four.
+
+**The answer came back in 45 seconds — the fastest hit of all six:**
+
+```
+Nov 15 09:52:00 kernel: amdgpu 0000:c3:00.0: [gfxhub] page fault ... pid 591142
+(EngineCore pid=591055) ERROR 09:52:02 Worker proc VllmWorker-1 died unexpectedly
+```
+
+`pid 591142` = `Worker_TP1` = the rank sitting on `c3:00.0` under the new order. Same read shape
+(`PERMISSION_FAULTS: 0x3`, `MAPPING_ERROR: 0x0`, `RW: 0x0`, `SQC (data)`), 0 `BAD`, and the four ranks printed
+identical stage counts (63 `fallback T=` / 63 `core ok` / 63 `norm ok` each) — no rank ahead of the others, which
+is what a software race would usually leave behind.
+
+So under a configuration where rank 0 and card `c3:00.0` are **different things**, the fault chose the card.
+Rank-local code (the sampler staging on rank 0, the draft head's output path, "TP0 does X first") is ruled out as
+the carrier. Six faults, one card.
+
+What this does **not** separate, and it cannot be separated by any config change:
+
+- **the silicon vs the slot.** A permutation moves ranks between cards; it cannot move a card to another slot or
+  another root complex. `c3:00.0` sits on its own chain (`c3 → c2/c1 → root`) — so "this GPU" and "this slot/chain"
+  are still one hypothesis. Telling them apart means moving the card (or swapping two of them) by hand.
+- **whether the link is implicated.** It probably is not: `c3:00.0` and its functions carry **zero** AER counters
+  (`TOTAL_ERR_COR 0`, no BadTLP/BadDLLP/Timeout). The noisy device on this box is `0000:04:00.0` — BadTLP 579,
+  BadDLLP 3, Timeout 20 — which is a downstream port on the **`06:00.0`** chain, a different card and a different
+  failure mode. Recording both here so the two never get merged into one story. (Note the near-identical device
+  names `04:00.0` and `c4:00.0`: they are different ports on different chains.)
+
+Honest limits: one hit under the swapped configuration (at 45 s, so it is cheap to repeat); the hit rate is not a
+trend across these runs (45 s, 250 s, 431 s, 536 s under different instrumentation and topologies — whatever the
+distribution is, it is minutes-wide and it is not the interesting part).
+
+Where that leaves the hunt, in order of what one launch buys:
+
+1. **Run without that card**: `GPUS=1,2,3` with `TP=3` (the recipe's own knobs). If the shape keeps hitting in
+   minutes with `c3:00.0` in the group and stays clean for two arms without it, that is both a mitigation the box
+   can serve on today and a seventh confirmation. Needs a boot check first — three cards means ~33 % more weights
+   per card, and whether the KV pool survives that is a measurement, not a guess.
+2. **Move the card** (or swap two) and re-run the same soak: separates silicon from slot. Hands and downtime.
+3. **`AMD_SERIALIZE_KERNEL=3`** — now less interesting than it was: naming the faulting kernel of a card-local
+   page fault tells us which kernel tripped over the card, not why the card trips.

@@ -95,13 +95,82 @@ wrong:
   no pane to watch while the engine loads four minutes of weights, and no session to ask afterwards whether the
   launch is still up.
 
-A tmux session still dies if the tmux server is killed, and nothing here restarts a serve that died. What the
-box has for that is (a) a watcher `setup.py` arms once the launch answers `/health` (`--watch`, detached; it
-writes `died_at`/`reason` into `launch.json` and appends one line to the launch's log), and (b) the Monitor
-sidecar (notes/webui.md) — either outlives the launch, which is the honest version of "supervised": seen, not
-resurrected. A unit that restarts a four-card serve automatically is not in place and is not recommended before
-the PCIe/reseat story (notes/incident-2026-11-03, `tools/reseat-check.py`) is settled: a serve that restarts
-into a degrading link turns a fault into a loop — this box has such a link (card4's chain, 678 correctables).
+A tmux session still dies if the tmux server is killed. What the box has for that is (a) a watcher `setup.py`
+arms once the launch answers `/health` (`--watch`, detached; it writes `died_at`/`reason` into `launch.json` and
+appends one line to the launch's log), and (b) the Monitor sidecar (notes/webui.md) — either outlives the launch,
+which is the honest version of "supervised": **seen**. Resurrecting it used to be refused outright, and the reason
+it gave was the right reason: *a serve that restarts into a degrading link turns a fault into a loop*. That is now
+available **under that condition**, as a watcher option rather than a unit, and the default is still off.
+
+`WATCH_RESTART=1` lets the watcher re-run the launch, and four gates have to agree first
+(`restart_ok()`, pure, so `tests/test_setup.py` can hold it to its rules without killing a box):
+
+1. **Someone asked.** Default off; the answer the watcher prints names which case it is in, and the launch record
+   carries `restart_on_crash` / `restart_max` / `restart_window_s` so "would it have come back?" is answerable
+   after the fact without remembering which shell armed the watcher. A hand-armed watcher takes its own
+   environment and writes that onto the record at claim time.
+2. **The log says it is the crash we know.** `CRASH_SIGS` is this box's own words — `illegal memory access`,
+   `EngineDeadError`, `died unexpectedly`, `HSA_STATUS_ERROR`, each carrying the timestamp it was copied from.
+   A `STOP=1`, a killed session and a reboot produce none of them and get no restart.
+3. **No ranks left behind.** The 2026-11-14 fault left its ranks alive for 11 more minutes; restarting into that
+   is two launches fighting for four cards, which is a worse outage than the one on screen. So this gate makes
+   the recovery *wait* for the wedge to drain — honest limitation, stated: for that death the serve would have
+   come back around 21:10, not 20:59.
+4. **The breaker, and the link.** At most `RESTART_MAX` (3) inside `RESTART_WINDOW_S` (3600 s), and only while no
+   AMD display device is running below its rated link (`gpu_links()` reads `current_link_speed/_width` against
+   `max_link_speed/_width` — free to read, no root, no `/dev/kfd`). It is deliberately about the **rating** and
+   not the AER counters, because this box carries dozens of correctables a minute at a full 32.0 GT/s ×16 during a
+   weight load: a counter moving is not the signal, a link that negotiated short is. An unreadable link does not
+   block the recovery, and the reason line says nobody measured it.
+
+What it re-runs is the recorded launch through `setup.py` itself (`--yes --launch <recipe> --webui <mode>
+--config <name>` plus the `rest` flags and the `--no-tmux` choice, now recorded), not a bespoke restart path: the
+restart then does the `/health` wait, the context check, the gateway bring-up and the watcher arming like any
+other launch. The death survives the relaunch in `.r9700-state/restarts.json`, because the new launch rewrites
+`launch.json`.
+
+Armed on this box since 2026-11-15 05:58 (`WATCH_RESTART=1`, 3 per 60 min), and dry-run against real inputs
+rather than assumed: the live launch's own log tail carries no signature → no restart; the tail of the launch that
+really died at 05:11 (`setup-044236.log`) yields `EngineDeadError` → `(True, 'EngineDeadError; restart 1 of 3 in
+60 min')`; the four cards read 32.0 GT/s ×16 against the same rating, so the link gate is open.
+
+**A crash can hide from every one of those gates at once, and on 2026-11-15 06:28 it did.** A soak hit the device
+fault (notes/bug-causal-conv1d-oob.md §10) and left: `Worker_TP0` dead, `VLLM::Worker_TP1/2/3` alive and holding
+32.37/32.37/32.30 GiB (they ignore SIGTERM), `/health` refusing, and the **tmux session still open**
+(`pane_current_command=bash`, `dead=0`). The watcher was armed and polling every 10 s, and the record went on
+saying `died_at: null` for 26 minutes: `watch_dead()` needed the session gone **or** no ranks left, and it had
+neither. So the §4 rule failed in both directions at once — it was never *seen*, so it could never be resurrected.
+Then the empty pane took over: with the ranks cleared by hand, `setup.py --launch native-flashnext.sh` answered
+`a tmux session named r9700-native-flashnext is already up` and the box stayed down another 17 minutes.
+
+Three changes, all host-tested (`tests/test_setup.py`), all behind the same opt-in:
+
+- `watch_dead(port, sess, prev, quiet)` can now return **crashed and wedged**: no `/health`, ranks present, a
+  record that had already answered `/health` once (`up_at`), `WATCH_WEDGE_TICKS` (2) silent probes in a row, and a
+  known signature in the log tail. The loading case is still protected — a launch loading weights has ranks and no
+  `/health` too, and with no `up_at` it is not called dead.
+- `RESTART_STOP=1` (default once restarts are armed; `=0` keeps the old passivity) runs the **recipe's own**
+  `STOP=1 bash serve/<recipe>` to clear ranks that outlived their engine — the operator's command, not an ad-hoc
+  `pkill`, because the launcher knows its ranks. `stop_wedge_would()` is the pure predicate: switch, armed
+  restart, ranks really present, signature, and a record naming a recipe. Gate 3 above stops being "wait for the
+  wedge to drain" and becomes "drain it", so the 11-14 gap between 20:59 and 21:10 shrinks to ~2 probes plus the
+  stop.
+- `corpse_session(sess, left, rec)` decides the launcher's refusal instead of holding it: close a pane the record
+  says is over with nothing running in it; refuse for one with ranks, one the record does not vouch for, or one
+  that might still be loading.
+
+And the gate that must never fire on a stop was proved on the box rather than in a test: at 06:42:46, after a
+deliberate `STOP=1`, the armed watcher logged `this launch is gone: the tmux session … is gone — nothing restarted
+it (no known crash signature in the log tail)`.
+
+**Current state of that switch on this box (2026-11-15, 07:40): off.** The launch is watched in **record-only**
+mode — `launch.json` says `restart_on_crash: false`, `restart_max: 0`, and the watcher's own environment carries
+no `WATCH_RESTART`. The reason is the operator's, and it is the right call: **restarting a faulted four-card serve
+is availability, not a fix**, and a box that quietly comes back can also quietly stop producing the evidence the
+fault needs. Recording stays on because 2026-11-14's 1 h 48 m of nobody knowing is a worse failure than a manual
+relaunch. The mechanism above stays implemented, tested, and used for **soak** launches, where a hit is the point
+and the thing worth protecting is the run rather than the traffic (both of today's field restarts were on TEST
+launches, `restarts.json` `at: [06:36:37, 06:55:57]`).
 
 The watcher exists because of 2026-11-14: the launch answered `/health`, so `setup.py` exited, and the engine
 faulted five days later. `launch.json` went on saying `up_at` with `died_at: null` and the death sat unnoticed
