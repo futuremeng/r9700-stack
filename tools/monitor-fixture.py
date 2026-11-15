@@ -94,7 +94,7 @@ def main(argv):
                        "kv 0.860 >= 0.85 (775,851 of 902,153 tokens)",
                 "gauges": {"kv": 0.86, "run": 24.0, "wait": 3.0, "prem": 7.0, "at": time.time()}, "err": None,
                 "inflight": 27, "polls": 4210, "thrash_left": 12.0, "prem_seen": 7, "pool_shut": True,
-                "hist": [0] * 18 + [1] * 12, "hist_n": 180,
+                "hist": [0] * 18 + [1] * 12, "hist_n": 900, "hist_span_s": 900,
                 "gated": ["/v1/chat/completions", "/v1/completions"],
                 "counters": {"held": 41, "held_now": 2, "released": 26, "expired": 11, "refused": 0,
                              "admitted": 812, "small_passed": 214, "held_over": 4},

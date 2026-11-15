@@ -29,6 +29,11 @@
 #        LOCAL_ENV (default the same ~/.config/r9700-stack/native.env the other launchers read; only
 #        EMBED_BIND is honoured here).
 
+# The machine-local file FIRST: it is where this box says where things live, and it stays a DEFAULT --
+# what the caller exported wins over it (serve/lib/localenv.sh, and the same order setup.py reads).
+# Sourcing it below a `${NAME:-default}` line makes the script's own default an override: gateway.sh's
+# GATEWAY_PORT and embed.sh's LLAMA_SERVER were both frozen before the file ever got a vote.
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/lib/localenv.sh"
 TASK=${TASK:-embed}                        # embed -> --embedding --pooling last; rerank -> --rerank
                                            # (llama.cpp's --rerank sets embedding=true AND pooling=rank, so
                                            # passing both flags is not how you get a reranker: TASK swaps them)
@@ -69,7 +74,6 @@ LLAMA_SERVER=${LLAMA_SERVER:-$(command -v llama-server)}
 # RERANK_PORT (per task, settable in native.env) and then the task's own default.
 PORT_INLINE=${PORT:-}
 LOCAL_ENV=${LOCAL_ENV:-$HOME/.config/r9700-stack/native.env}
-. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/lib/localenv.sh"   # sourced so a typed value still wins
 PORT=${PORT_INLINE:-$([ "$TASK" = rerank ] && echo "${RERANK_PORT:-$DEF_PORT}" || echo "${EMBED_PORT:-$DEF_PORT}")}
 BIND=${EMBED_BIND:-${R9K_WEB_BIND:-127.0.0.1}}
 CORES=${CORES:-$DEF_CORES}                # taskset range: stay off the engine's ~11 cores. On THIS box cpu 17

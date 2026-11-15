@@ -674,19 +674,19 @@ ck("gateway.sh forwards gate overrides but states no default for any of them -- 
    not re.search(r'^\s*(?:export )?GATE_[A-Z_]+:?=', _gsh, re.M),
    [l.strip()[:60] for l in _gsh.splitlines() if re.match(r"^\s*(?:export )?GATE_[A-Z_]+:?=", l)][:3])
 
-_wsh = (ROOTP / "serve" / "webui.sh").read_text().splitlines()
-ck("serve/webui.sh sources the machine-local env file BEFORE it defaults its ports -- a box that moved its engine "
-   "to 8180 otherwise gets a sidecar pointed at 8080: a monitor watching nothing, printing URLs for a port nothing "
-   "listens on (measured here on 2026-11-15: the DRY run said --port 8081 --upstream http://127.0.0.1:8080 while "
-   "native.env said PORT=8180)",
-   next(i for i, l in enumerate(_wsh) if "lib/localenv.sh" in l and not l.lstrip().startswith("#"))
-   < next(i for i, l in enumerate(_wsh) if l.startswith("PORT=${PORT:-")))
-ck("every launcher gets its machine-local file through serve/lib/localenv.sh: a launcher that sources the file "
-   "directly makes a box fact an OVERRIDE, and `PORT=8100 bash serve/webui.sh` -- that script's own documented "
-   "usage line -- came back watching 8180",
-   all("lib/localenv.sh" in (ROOTP / "serve" / n).read_text() and '. "$LOCAL_ENV"' not in
-       (ROOTP / "serve" / n).read_text()
-       for n in ("native-flashnext.sh", "gateway.sh", "webui.sh", "embed.sh", "embed-watch.sh")))
+_bad_order = {}
+for _n in ("native-flashnext.sh", "gateway.sh", "webui.sh", "embed.sh", "embed-watch.sh"):
+    _L = (ROOTP / "serve" / _n).read_text().splitlines()
+    _src = next((i for i, l in enumerate(_L) if "lib/localenv.sh" in l and not l.lstrip().startswith("#")), None)
+    _first = [l.strip()[:38] for i, l in enumerate(_L)
+              if _src is not None and i < _src and re.match(r"^[A-Za-z_]+=\$\{[A-Za-z_]+:?[-=]", l)]
+    if _src is None or _first:
+        _bad_order[_n] = _first or ["no serve/lib/localenv.sh sourcing at all"]
+ck("every launcher sources the machine-local file BEFORE its first ${NAME:-default}: a default frozen above the "
+   "sourcing outranks the file AND the operator typing NAME=... -- gateway.sh froze GATEWAY_PORT and embed.sh froze "
+   "LLAMA_SERVER that way, and serve/webui.sh's PORT is what gave a box whose engine lives at 8180 a sidecar "
+   "watching 8080",
+   not _bad_order, str(_bad_order)[:240])
 _lr = subprocess.run(["bash", "-c", "PORT=8100 WEBUI_PORT=8101 DRY=1 bash serve/webui.sh"], cwd=str(ROOTP),
                      capture_output=True, text=True, timeout=90)
 ck("the file is a DEFAULT, not an override: what the caller exported wins, which is also the order setup.py reads "

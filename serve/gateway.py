@@ -171,6 +171,11 @@ GATE_MAX_HELD = int(os.environ.get("GATE_MAX_HELD", "8"))        # never a secon
 GATE_HOLD_S = float(os.environ.get("GATE_HOLD_S", "5"))          # v1's 25 s was the usual exit, not the exception
 GATE_POLL_S = float(os.environ.get("GATE_METRICS_S", "1.0"))
 GATE_STALE_S = float(os.environ.get("GATE_STALE_S", "5"))
+# How many polls of shut/open history the gate keeps. It used to be 180 (~3 min), which is enough to watch a pool
+# climb into a cliff and not enough to answer the question that actually gets asked afterwards: "was the door shut
+# at 15:05?" An afternoon of traffic is the evidence for whether this policy is a tax or a relief, so the ring is
+# ~15 min at the default poll rate, and the payload says what span it covers rather than making the reader multiply.
+GATE_HIST = int(os.environ.get("GATE_HIST", "900"))
 GATED = ("/v1/chat/completions", "/v1/completions")
 G = {"kv": None, "run": None, "wait": None, "at": 0.0, "err": None, "closed": False, "why": "",
      # preemption watch: the counter's last value, when it last moved, and until when the door stays shut.
@@ -183,10 +188,9 @@ G = {"kv": None, "run": None, "wait": None, "at": 0.0, "err": None, "closed": Fa
      "small_passed": 0, "held_over": 0, "polls": 0,
      # One entry per poll: 1 shut, 0 open. A poll whose gauges were unusable draws 0 on purpose: fail-open is
      # shown, not hidden, because a strip that goes blank when the reading dies would blame the traffic for a
-     # telemetry fault. 180 polls ~= 3 min at the default GATE_METRICS_S -- long enough to watch a pool climb
-     # into the cliff and stay there, short enough that one bar is one decision a reader can line up against a
-     # request row. The span is tunable already (hist_n x GATE_METRICS_S), so hist_n stays a constant.
-     "hist": [], "hist_n": 180,
+     # telemetry fault. The ring is GATE_HIST polls (~15 min at the default 1 s), and the payload carries the span
+     # so a reader does not have to multiply two numbers to know how far back the strip reaches.
+     "hist": [], "hist_n": GATE_HIST,
      "task": None}
 
 # vLLM 0.32 spells them this way (verified against the live /metrics, 2026-11-15). `num_requests_waiting{` is
@@ -348,6 +352,7 @@ def gate_blob():
                        "thrash_left": max(0.0, G["thrash_until"] - time.time()),
                        "prem_seen": G["prem_seen"], "pool_shut": G["pool_shut"],
                        "hist": G["hist"], "hist_n": G["hist_n"],
+                       "hist_span_s": int(round(G["hist_n"] * GATE_POLL_S)),
                        "gated": list(GATED),
                        "counters": {k: G[k] for k in ("held", "held_now", "released", "expired", "refused",
                                                       "admitted", "small_passed", "held_over")},
@@ -356,7 +361,8 @@ def gate_blob():
                                   "GATE_MAX_INFLIGHT": GATE_MAX_INFLIGHT, "GATE_SMALL_BYTES": GATE_SMALL_BYTES,
                                   "GATE_MAX_HELD": GATE_MAX_HELD,
                                   "GATE_HOLD_S": GATE_HOLD_S, "GATE_METRICS_S": GATE_POLL_S,
-                                  "GATE_STALE_S": GATE_STALE_S, "pool_tokens": G["pool_tokens"]},
+                                  "GATE_STALE_S": GATE_STALE_S, "GATE_HIST": GATE_HIST,
+                                  "pool_tokens": G["pool_tokens"]},
                        "at": time.time()}).encode()
 
 

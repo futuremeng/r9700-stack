@@ -1229,6 +1229,15 @@ async function paintGate() {
   text("gate-held", dnum(n.held ?? 0));
   spark($("gate-spark"), g.hist, { baseLo: 0, baseHi: 1 });
   $("gate-spark").dataset.tone = g.closed ? "warn" : "ok";
+  // How far back the strip reaches, printed rather than inferred. The strip exists to answer "was the door shut at
+  // 15:05?", and that is only checkable if the span is stated: a ring of polls without a span is a picture that
+  // cannot be lined up against a request row from an hour ago.
+  if (isnum(g.hist_span_s)) {
+    $("gate-spark").title = `${(g.hist || []).length} polls over `
+      + `${g.hist_span_s >= 120 ? Math.round(g.hist_span_s / 60) + " min" : g.hist_span_s + " s"}`
+      + " -- one bar is one poll of the door, shut or open. A poll whose gauges were missing or stale draws OPEN: "
+      + "fail-open is shown, not hidden, so a telemetry fault is never mistaken for traffic.";
+  }
   // The reason the gateway gave is one line here and the whole string in the title. The line takes the gateway's
   // own first clause ("3 preemption(s) observed, door shut 12 s more") and the title carries its exact full
   // string, token count and all ("kv 0.860 >= 0.92 (775,650 of 902,153 tokens)"): the tokens are that arithmetic,

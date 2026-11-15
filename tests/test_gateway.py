@@ -545,6 +545,17 @@ try:
     ck("the history strip is one entry per poll and says which of them were shut",
        2 <= len(h) <= gstate()["hist_n"] and sum(h) >= 1 and h == h[-len(h):],
        f"{len(h)} polls, {sum(h)} shut: {h[-12:]}")
+    _g = gstate()
+    ck("and the ring holds GATE_HIST=900 polls rather than the 180 that could only speak about the last three "
+       "minutes, while the payload states the span the ring ACTUALLY covers at this poll rate -- what an afternoon "
+       "of traffic leaves behind is the question 'was the door shut at 15:05?', and a strip without a span cannot "
+       "answer it (notes/admission-gate.md §6)",
+       _g["hist_n"] >= 600 and abs(_g.get("hist_span_s", 0) - _g["hist_n"] * float(GENV["GATE_METRICS_S"])) < 1,
+       f"hist_n {_g['hist_n']}, span {_g.get('hist_span_s')} s, poll {GENV['GATE_METRICS_S']} s")
+    _gsrc = open(os.path.join(ROOT, "serve/gateway.py")).read()
+    ck("as SHIPPED that ring is 15 minutes: 900 polls at the shipped 1 s poll interval",
+       'GATE_HIST", "900"' in _gsrc and 'GATE_METRICS_S", "1.0"' in _gsrc,
+       [l.strip()[:70] for l in _gsrc.splitlines() if "GATE_HIST" in l or "GATE_METRICS_S\"" in l][:3])
 
     # the ceiling is a promise: a client never waits longer than GATE_HOLD_S, and the engine still gets the
     # request -- a gate that trades a 30-minute TTFT for a hung connection has not improved anything.

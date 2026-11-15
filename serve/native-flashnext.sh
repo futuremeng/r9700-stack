@@ -3,6 +3,12 @@
 # Same knobs as serve/serve.sh, but vllm runs straight out of a venv instead of the pinned ROCm 10 image.
 # Why: this box has no docker and no root (serve.sh's `sudo docker run` is not available).
 #   VENV=~/venv-r9700  GPUS=0,1,2,3 TP=4 OFFLOAD_GB=0 NSEQ=16 bash serve/native-flashnext.sh
+# The machine-local file BEFORE any default in this script: `: ${NAME:=}` lines below honour what is
+# already in the environment, so a `${MODEL:-...}` frozen above the sourcing would outrank the file that
+# exists to state box facts (and outrank an operator typing MODEL=... too). Same order setup.py reads the
+# launchers in: environment -> file -> the script's own default. serve/lib/localenv.sh.
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/lib/localenv.sh"
+
 MODEL=${MODEL:-$HOME/models/Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ}
 VENV=${VENV:-$HOME/venv-r9700}
 REPO=${REPO:-$(dirname "$(realpath "$0")")/..}
@@ -47,10 +53,6 @@ fi
 # ones: HOST=127.0.0.1, which is also upstream's (`args.host or "127.0.0.1"`). This box is not served over loopback
 # -- `ss` shows 192.168.1.130 and 192.168.1.200 holding :8080 open -- so the bind address is a fact about the box,
 # not about the code, and it lives here where it survives a checkout reset and gets named in the log at every
-# launch instead of being remembered by whoever last typed the command. LOCAL_ENV= overrides the path,
-# and a value the CALLER exported beats the file (serve/lib/localenv.sh -- the same order setup.py
-# reads the launchers in, which is the only way the tool and the launcher can mean the same launch).
-. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/lib/localenv.sh"   # sourced so a typed value still wins
 : ${HOST:=127.0.0.1}
 # stock ROCm 7.2-era vLLM wheels link OpenMPI; on a box without root we unpacked the runtime debs locally
 OPENMPI=${OPENMPI:-$HOME/opt/openmpi/usr/lib/x86_64-linux-gnu}

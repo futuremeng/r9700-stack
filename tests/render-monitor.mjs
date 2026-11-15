@@ -588,7 +588,9 @@ console.log(`  caption slots now: ${t("gen-note1")} | ${t("gen-note2")}`);
   const strip = (((sparkEl.children || [])[0]) || new El()).children.length;
   console.log(`\ngate row: hidden=${sec.hidden} | ${g2("gate-state")} | ${g2("gate-why")}`
               + ` | ${g2("gate-level")} | held ${g2("gate-held")} | ${g2("gate-counters")} | ${g2("gate-ceil")}`
-              + ` | strip ${strip} node(s), ${GPAY?.hist?.length ?? 0} polls of history`);
+              + ` | strip ${strip} node(s), ${GPAY?.hist?.length ?? 0} polls`
+              + (Number.isFinite(GPAY?.hist_span_s) ? ` over ${Math.round(GPAY.hist_span_s / 60)} min` : "")
+              + " of history");
   if (GPAY && sec.hidden) {
     console.log("BAD  /api/gate answers and the row is hidden -- that row is the only record a held request has");
     process.exitCode = 1;
@@ -667,6 +669,16 @@ console.log(`  caption slots now: ${t("gen-note1")} | ${t("gen-note2")}`);
     }
     if ((GPAY.hist || []).length >= 2 && strip < 3) {
       console.log(`BAD  ${GPAY.hist.length} polls of history and the strip drew ${strip} node(s)`); process.exitCode = 1;
+    }
+    // A strip is the answer to "was the door shut at 15:05?", and the question needs the span to be checkable: a
+    // ring of polls with no stated span is a picture that cannot be lined up against anything.
+    if (Number.isFinite(GPAY.hist_span_s)) {
+      const sti = (sparkEl.title || "");
+      const want = GPAY.hist_span_s >= 120 ? `${Math.round(GPAY.hist_span_s / 60)} min` : `${GPAY.hist_span_s} s`;
+      if (!sti.includes(want) || !sti.includes(String((GPAY.hist || []).length))) {
+        console.log(`BAD  the history strip does not state its span and poll count (wants "${(GPAY.hist || []).length}`
+                    + ` polls over ${want}"); it said "${sti.slice(0, 120)}"`); process.exitCode = 1;
+      }
     }
   }
 }

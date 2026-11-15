@@ -11,10 +11,14 @@
 #   FORE=1 bash serve/embed-watch.sh           # foreground
 # Knobs: EMBED_PORT (the llama-server port, 8090), WATCH_PORT (8091), WATCH_BIND (loopback default, same
 #        chain as webui.sh: flag > LOCAL_ENV's EMBED_WATCH_BIND > repo default), POLL_S, KEY, LOCAL_ENV, LOG.
+# The machine-local file FIRST: it is where this box says where things live, and it stays a DEFAULT --
+# what the caller exported wins over it (serve/lib/localenv.sh, and the same order setup.py reads).
+# Sourcing it below a `${NAME:-default}` line makes the script's own default an override: gateway.sh's
+# GATEWAY_PORT and embed.sh's LLAMA_SERVER were both frozen before the file ever got a vote.
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/lib/localenv.sh"
 EMBED_PORT=${EMBED_PORT:-8090}
 WPORT=${WATCH_PORT:-8091}
 LOCAL_ENV=${LOCAL_ENV:-$HOME/.config/r9700-stack/native.env}
-. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/lib/localenv.sh"   # sourced so a typed value still wins
 BIND=${WATCH_BIND:-${EMBED_WATCH_BIND:-127.0.0.1}}
 LOG=${WATCH_LOG:-$HOME/logs/embed-watch-$WPORT.log}; mkdir -p "$(dirname "$LOG")"
 DIR=$(dirname "$(realpath "$0")")

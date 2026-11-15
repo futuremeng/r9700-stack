@@ -19,8 +19,12 @@
 # and the admission gate's GATE_* set (below) -- passed through only when set, because the gate's defaults
 # live in serve/gateway.py and two copies of a default is how a launcher starts lying about the running one.
 
+# The machine-local file FIRST: it is where this box says where things live, and it stays a DEFAULT --
+# what the caller exported wins over it (serve/lib/localenv.sh, and the same order setup.py reads).
+# Sourcing it below a `${NAME:-default}` line makes the script's own default an override: gateway.sh's
+# GATEWAY_PORT and embed.sh's LLAMA_SERVER were both frozen before the file ever got a vote.
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/lib/localenv.sh"
 GATEWAY_PORT=${GATEWAY_PORT:-8080}
-. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/lib/localenv.sh"   # sourced so a typed value still wins
 BIND=${GATEWAY_BIND:-${R9K_WEB_BIND:-127.0.0.1}}
 ENGINE_PORT=${ENGINE_PORT:-8180}
 EMBED_PORT=${EMBED_PORT:-8090}
@@ -47,7 +51,7 @@ PIDF=${PIDF:-$HOME/.r9700-state/gateway-$GATEWAY_PORT.pid}; mkdir -p "$(dirname 
 # Defaults are in gateway.py; these are the overrides, and what is live gets printed rather than implied. A knob
 # missing from GATENAMES is a knob the tmux launch cannot set, so tests/test_setup.py holds this list against the
 # names gateway.py actually reads.
-GATENAMES="GATE_DISABLE GATE_KV_HIGH GATE_KV_LOW GATE_PREEMPT_S GATE_WAIT GATE_MAX_INFLIGHT GATE_SMALL_BYTES GATE_MAX_HELD GATE_HOLD_S GATE_METRICS_S GATE_STALE_S GATE_POOL_TOKENS"
+GATENAMES="GATE_DISABLE GATE_KV_HIGH GATE_KV_LOW GATE_PREEMPT_S GATE_WAIT GATE_MAX_INFLIGHT GATE_SMALL_BYTES GATE_MAX_HELD GATE_HOLD_S GATE_METRICS_S GATE_STALE_S GATE_HIST GATE_POOL_TOKENS"
 GATEENV=(); GATEDESC=""
 for n in $GATENAMES; do
   v=${!n:-}
