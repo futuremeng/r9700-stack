@@ -786,8 +786,9 @@ localisation was too narrow.
 
 Three of this hunt's answers arrived late because the page in front of the operator did not carry the fact: which
 **physical card** each rank sits on (§15 needed a permuted launch, a live `tools/gpu-rank-map.py` and a kernel
-journal read by hand), whether the driver had **page-faulted at all** since boot (six times — and the engine's own
-log never says which card), and whether the step shape that faults is even being **asked for** any more (§17's
+journal read by hand), whether the driver had **page-faulted at all** since boot (eight events, eleven driver
+lines — and the engine's own log never says which card), and whether the step shape that faults is even being
+**asked for** any more (§17's
 whole interpretability problem: "no faults since 1024" is worth nothing unless someone knows that big prefills are
 still arriving). So `serve/webui.py` now reads all three, and the Monitor has a row for them.
 
@@ -798,9 +799,13 @@ still arriving). So `serve/webui.py` now reads all three, and the Monitor has a 
   where it is asked: `rank TP1 holds 28.8 GiB · pid 591142`.
 * **Driver page faults, this boot** — `kernel_faults()`, counting `[gfxhub] page fault` lines out of
   `journalctl -k --boot -g …`, per PCI function, with the following `Process … pid N` line paired to its fault.
-  Total in the row, per-card counts on the cards. Two honesty rules, both earned today: journalctl's `-A` is
+  The number was ambiguous the moment it landed on the page: **11 lines across 8 events** since this boot, three of
+  them in the same second on 11-06 07:45:03. So the headline is events (distinct stamp+card) and the per-card slot
+  carries lines — "11 faults" overstates how many times the machine died, and "8 faults" hides that the driver
+  logged more than one fault for some of them, which is itself a fact about the fault. Two honesty rules, both
+  earned today: journalctl's `-A` is
   `--after-boot` and not "lines after the match", so a mistyped flag prints a usage line and **nothing** on
-  stdout — which is how this read first reported "0 faults" on a box that had had six; and an unreadable journal
+  stdout — which is how this read first reported "0 faults" on a box that had had eight that boot; and an unreadable journal
   reports `unknown`, never zero, because "no faults" and "cannot see the kernel log" are different claims and only
   one of them is evidence about a card.
 * **Engine state, including `wedged`** — `engine_state()`: health plus how many ranks KFD still reports as
@@ -821,6 +826,10 @@ not left as four em-dash cards — when the sidecar is too old to have made the 
 the row from re-wrapping; a raw ISO timestamp in a slot also trips the harness's bare-negative rule, which is the
 harness telling the truth about how a reader would misread it.
 
-Not yet visible: the Monitor runs **inside** the serve (`serve/plugin`, mode `merged`), so these fields appear on
-the next launch, not on the one running now. Against the pre-change sidecar the row correctly hides itself — which
-is the fixture proving its hiding rule rather than a bug.
+First seen on the page at 13:20 the same day, after a restart: the Monitor runs **inside** the serve
+(`serve/plugin`, mode `merged`), so these fields can only arrive with a launch. Before that restart the row correctly
+hid itself against the pre-change sidecar — the hiding rule proven by the thing it was written for, not by a test.
+What the first look showed: `Answering · 4 rank(s) own the GPUs`, the four ranks on the four cards in the order the
+default enumeration gives (TP0 on c3:00.0 — the card under every fault), and `faults 11 (c3:00.0 ×11)`. The 11 is
+lines, not events: the events split shipped minutes after this launch started, so it arrives with the next one —
+which is the same rule as everything else here, stated because it would otherwise read as a discrepancy.
