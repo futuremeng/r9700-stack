@@ -40,6 +40,7 @@ this script only checks what a running container would need from the guest.
 """
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -872,6 +873,37 @@ HW_ALERT_N = int(os.environ.get("HW_ALERT_N", "3"))
 HW_ALERT_WINDOW_S = int(os.environ.get("HW_ALERT_WINDOW_S", str(7 * 24 * 3600)))
 ALERT_CMD = (os.environ.get("ALERT_CMD") or "").strip()      # your channel: ntfy, mail, desktop, whatever
 
+# A webhook an operator pasted into the About page, written 0600. It lives in the state directory and not in the
+# env because it is a credential, and a credential in a launcher is a credential in a log line (the launch line is
+# printed at every start, and `setup.py` prints it on purpose).
+NOTIFY_FILE = "notify.json"
+NOTIFY_LAST = "notify-last.json"      # the last send attempt, so the page can answer "does the channel work?"
+NOTIFY_SRC = Path(__file__).resolve().parent / "serve" / "notify.py"
+_notifier_cache = None
+
+
+def notifier():
+    """`serve/notify.py`, loaded once. (module, None) or (None, why).
+
+    The wire format lives in ONE file because the alert is RAISED here (by the watcher, seconds before a relaunch)
+    and CONFIGURED and TESTED in the page process (`serve/webui.py`, where the webhook is pasted). Two
+    implementations of one POST is how an alert ends up silently refused by the robot's keyword filter while both
+    programs believe they sent it.
+
+    A missing notifier is a warning, never a swallowed alert: the claim is still in ALERT.json, on the Monitor, and
+    in alerts.jsonl. What is lost is the ping to a phone, and that gets said out loud in the ledger line.
+    """
+    global _notifier_cache
+    if _notifier_cache is None:
+        try:
+            spec = importlib.util.spec_from_file_location("r9700_notify", NOTIFY_SRC)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _notifier_cache = (mod, None)
+        except (OSError, ValueError, ImportError, AttributeError) as exc:
+            _notifier_cache = (None, f"cannot load {NOTIFY_SRC}: {type(exc).__name__}: {exc}")
+    return _notifier_cache
+
 JOURNAL_CMD = ("journalctl", "-k", "--boot", "--no-pager", "-o", "short-iso", "-g",
                "gfxhub] page fault|Faulty UTCL2|RW: 0x|Process .* pid")
 J_FAULT = re.compile(r"amdgpu (?:[0-9a-f]{4}:)?([0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]):\s*\[gfxhub\] page fault")
@@ -1025,18 +1057,29 @@ def ledger_append(name, row):
         os.fsync(fh.fileno())
 
 
-def raise_alert(v, rec, sig=None, command=None, at=None):
+def raise_alert(v, rec, sig=None, command=None, at=None, raised_by=None):
     """Assert the hardware alert where the operator will see it and where the history keeps it.
 
     ALERT.json is the live claim (the Monitor reads it and the About page can), alerts.jsonl is every time it
-    was claimed, and ALERT_CMD -- if the box wires one -- is the message out to a human. The command gets the
-    path of ALERT.json as argv[1] and in $ALERT_PATH, so a hook never has to re-derive where the evidence is."""
+    was claimed, and the message out to a human is either the webhook in `.r9700-state/notify.json` (configured
+    from the About page, sent by `serve/notify.py`) or `ALERT_CMD` if the box wires one. The command gets the
+    path of ALERT.json as argv[1] and in $ALERT_PATH, so a hook never has to re-derive where the evidence is.
+
+    The claim is written BEFORE anything is sent: a POST that hangs while the machine is being restarted must not
+    cost the record. The delivery result goes into the ledger line, because "it was alerted" and "a robot refused
+    it because the keyword was wrong" look identical in a file that does not say which happened.
+    """
     what, do = alert_words(v)
     row = {"at": int(time.time() if at is None else at), "card": v["card"], "count": v["count"],
            "window_s": v["window_s"], "since": v["since"], "until": v["until"], "cards": v["cards"],
            "families": v["families"], "what": what, "do": do, "sig": sig,
            "session": (rec or {}).get("session"), "recipe": (rec or {}).get("recipe"),
-           "config": (rec or {}).get("config"), "log": (rec or {}).get("log")}
+           "config": (rec or {}).get("config"), "log": (rec or {}).get("log"),
+           # which program asserted it. A claim raised by hand next to an outage is a normal thing to do, and the
+           # ledger has to say that a human did it rather than imply a death triggered it.
+           "raised_by": raised_by}
+    sent = notify_alert(row)                               # the POST happens after the claim is on disk
+    row["notify"] = sent                                   # so the PAGE can say "and nobody was told"
     state_write(ALERT_FILE, row)
     ledger_append(ALERT_LEDGER, row)
     cmd = ALERT_CMD if command is None else command
@@ -1047,6 +1090,34 @@ def raise_alert(v, rec, sig=None, command=None, at=None):
         except (OSError, subprocess.SubprocessError) as exc:
             warn(f"ALERT_CMD failed ({type(exc).__name__}: {exc}) -- the alert is still in {ALERT_FILE}")
     return row
+
+
+def notify_alert(row, now=None):
+    """Send the standing alert to the configured webhook. Returns the delivery result, safe to put in a ledger line:
+    it never carries the webhook, and it always says whether a human was actually told.
+
+    Three states are kept apart on purpose, because collapsing them is how a broken channel reads as a working
+    one: no channel configured, a channel file that cannot be read or has no webhook in it, and a robot that took
+    the POST and answered with a non-zero errcode (a keyword mismatch, or a dead token).
+    """
+    mod, err = notifier()
+    if mod is None:
+        warn(f"{err} -- the alert is on the page and in the ledger, but nobody was pinged")
+        return {"sent": False, "at": int(time.time() if now is None else now), "error": err}
+    cfg, cerr = mod.load(STATE / NOTIFY_FILE)
+    if cerr:
+        warn(f"alert channel: {cerr}")
+        return {"sent": False, "at": int(time.time() if now is None else now), "error": cerr}
+    if cfg is None:
+        return {"sent": False, "at": int(time.time() if now is None else now),
+                "error": f"no webhook configured (the About page, or {STATE / NOTIFY_FILE})"}
+    res = mod.post(cfg, row)
+    mod.remember(STATE / NOTIFY_LAST, res, mod.mask(cfg))
+    if res.get("sent"):
+        say(f"alert sent to the webhook ({res.get('errmsg') or 'ok'})")
+    else:
+        warn(f"alert NOT delivered: {res.get('error')}")
+    return res
 
 
 def gateway_counters(port=None):

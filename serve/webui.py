@@ -31,6 +31,7 @@ import http.client
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -1017,6 +1018,41 @@ def _epoch(stamp):
 
 
 ALERT_DEFAULT = str(Path(__file__).resolve().parent.parent / ".r9700-state" / "ALERT.json")
+NOTIFY_DEFAULT = str(Path(__file__).resolve().parent.parent / ".r9700-state" / "notify.json")
+NOTIFY_LAST_DEFAULT = str(Path(__file__).resolve().parent.parent / ".r9700-state" / "notify-last.json")
+
+# The webhook's wire format is not reimplemented here: setup.py raises the alert and this process configures and
+# tests the channel, and two implementations of one POST is how an alert ends up silently refused by the robot's
+# keyword filter while both programs believe they sent it. The import is guarded, not fatal: a serve whose pages
+# cannot reach the notifier still alerts on the page and in the ledger, and says why the ping did not go out.
+try:
+    import notify as NOTIFY                        # serve/notify.py -- same directory as this file
+    NOTIFY_ERROR = None
+except ImportError as exc:                         # pragma: no cover - the file ships with the repo
+    NOTIFY, NOTIFY_ERROR = None, f"serve/notify.py is not importable: {exc}"
+
+
+def notify_view(cfg_path=NOTIFY_DEFAULT, last_path=NOTIFY_LAST_DEFAULT, token=None):
+    """What a page may know about the alert channel: where it points, whether it WORKED, and never the token.
+
+    Read on demand rather than cached: an operator saving a webhook from the About page expects the page to agree
+    with the file they just changed, and two small local files per poll is nothing next to the /metrics read.
+    """
+    out = {"path": str(cfg_path), "configured": False, "channel": None, "error": None,
+           "keyword_default": (getattr(NOTIFY, "KEYWORD", "R9700")), "last": None,
+           "notifier_error": NOTIFY_ERROR}
+    if NOTIFY is None:
+        out["error"] = NOTIFY_ERROR
+        return out
+    cfg, err = NOTIFY.load(cfg_path)
+    out["error"] = err
+    if cfg:
+        out["configured"] = True
+        out["channel"] = NOTIFY.mask(cfg)
+    out["last"] = NOTIFY.last(last_path)
+    if token:
+        out["token"] = token                       # the write token; see H.notify_write
+    return out
 
 
 def live_alert(path=None, now=None):
@@ -2351,6 +2387,11 @@ class Hub:
         # The standing hardware alert (setup.py raises it; nothing here raises it). Read by mtime like the recipe:
         # the file an operator is waiting on is a file that changes while the page is up.
         self.alert, self.alert_error, self.alert_mtime = None, None, None
+        # The write token for the alert-channel form (`POST /api/notify`). It is NOT authentication -- anyone who can
+        # load this page can read it from GET /api/notify. What it stops is a POST from a page that is not this one:
+        # another site in the same browser can send the request but cannot read the token to echo it back. On a
+        # monitor started with --key, every /api/* including this one needs the key on top.
+        self.notify_token = secrets.token_urlsafe(24)
         self.launch = None                                  # set below, once the meta file has been read
         self.meta_mtime, self.meta_error = None, None
         self.key_needed, self.smi_error = False, None
@@ -2604,6 +2645,11 @@ class Hub:
                     # again" stopped being the answer.
                     payload["alert"] = self.alert
                     payload["alert_error"] = self.alert_error
+                    # Whether that claim has a CHANNEL, and whether the channel has ever delivered. Masked -- host,
+                    # path, keyword and the last errcode, never the token. A red card with no channel is a claim
+                    # nobody was told about, and the page should say so instead of letting the colour imply a ping.
+                    payload["notify"] = notify_view(self.cfg.get("notify") or NOTIFY_DEFAULT,
+                                                    self.cfg.get("notify_last") or NOTIFY_LAST_DEFAULT)
                     payload["port"] = self.cfg.get("port")
                     payload["slot_map"] = self.slotmap
                     payload["launch"] = self.launch
@@ -2762,6 +2808,12 @@ class Hub:
                     "source": "engine" if self.eng is not None else "relay"}
         if path == "/api/host":
             return self.host
+        if path == "/api/notify":
+            # The masked channel, the last send attempt, and the token the About page's form must echo. The token is
+            # handed to any client that can load the page on purpose (see H.notify_write for what it does and does
+            # not guard).
+            return notify_view(self.cfg.get("notify") or NOTIFY_DEFAULT,
+                               self.cfg.get("notify_last") or NOTIFY_LAST_DEFAULT, token=self.notify_token)
         return None
 
 
@@ -2858,6 +2910,9 @@ class H(BaseHTTPRequestHandler):
         return self.forward("GET")
 
     def do_POST(self):
+        path = urllib.parse.urlsplit(self.path).path
+        if path == "/api/notify":
+            return self.notify_write()          # our own endpoint, never relayed to the serve
         return self.forward("POST")
 
     def do_DELETE(self):
@@ -2871,6 +2926,92 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Allow", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header("Content-Length", "0")
         self.end_headers()
+
+    # -- the alert channel (About page's form): save, clear, or send a test
+    def notify_write(self):
+        """Write the alert channel from the page, and answer whether it WORKS.
+
+        Why an endpoint at all, instead of a file an operator edits: the webhook is a bearer credential for a group,
+        and the person setting it needs to know that the robot will take the message. A DingTalk robot answers a
+        wrong keyword or a dead token with HTTP 200 and a JSON errcode, so "configured" and "working" are different
+        facts and only a send can tell them apart. The send result -- and the errcode -- is recorded in
+        notify-last.json so the answer survives the page that asked.
+
+        What the token guards, stated plainly: it is NOT authentication (anyone who can load this page can read it
+        from GET /api/notify). It stops a POST from a page that is not this one: another site in the same browser
+        can fire the request but cannot read the token to echo it back. On a monitor started with --key, every
+        /api/* here needs the key on top, including this one. What is never echoed back is the webhook: the response
+        carries the masked channel, so a saved credential cannot be read out of this endpoint by anything that can
+        GET it.
+        """
+        if NOTIFY is None:
+            return self.json(503, {"error": {"message": NOTIFY_ERROR or "no notifier"}})
+        try:
+            body = json.loads(self.read_body() or b"{}")
+        except ValueError:
+            return self.json(400, {"error": {"message": "the body must be JSON"}})
+        if not isinstance(body, dict):
+            return self.json(400, {"error": {"message": "the body must be a JSON object"}})
+        want = self.hub.notify_token.encode()
+        got = str(body.get("token") or "").encode("utf-8", "replace")
+        if not hmac.compare_digest(got, want):
+            return self.json(403, {"error": {"message": "missing or wrong write token -- GET /api/notify hands it "
+                                                        "to the page that shows the form"}})
+        cfgp = self.hub.cfg.get("notify") or NOTIFY_DEFAULT
+        lastp = self.hub.cfg.get("notify_last") or NOTIFY_LAST_DEFAULT
+        if body.get("clear"):
+            try:
+                os.unlink(cfgp)
+                return self.json(200, {"ok": True, "cleared": True, "at": int(time.time())})
+            except OSError as exc:
+                return self.json(500, {"error": {"message": f"could not clear {cfgp}: {exc}"}})
+
+        def clip(v, cap=24):
+            """@-lists, trimmed and capped: the robot accepts a list, a form field accepts anything, and a 400 is
+            cheaper than a robot that ignores a malformed one."""
+            if isinstance(v, str):
+                v = [x for x in re.split(r"[ ,;]+", v)]
+            return [str(x).strip() for x in (v or []) if str(x).strip()][:cap]
+
+        # The form is write-only: this page never shows a saved webhook back, so an EMPTY webhook field means "the
+        # one already on the box". That is what makes re-checking a channel possible -- finding out your keyword is
+        # wrong should not require pasting the secret out of a chat window again.
+        posted = str(body.get("webhook") or "").strip()
+        stored, serr = NOTIFY.load(cfgp)
+        if serr:
+            return self.json(500, {"error": {"message": serr}})
+        if not posted:
+            if stored is None:
+                return self.json(400, {"error": {"message": "no webhook to test: paste the robot's webhook (this "
+                                                            "page never shows a saved one back)"}})
+            cfg = dict(stored)
+        else:
+            ok, why = NOTIFY.validate(posted)
+            if not ok:
+                return self.json(400, {"error": {"message": why}})
+            cfg = {"webhook": posted}
+        cfg.setdefault("keyword", NOTIFY.KEYWORD)
+        cfg["keyword"] = str(body.get("keyword") or "").strip() or cfg["keyword"]
+        for k, field in (("at_users", "at_users"), ("at_mobiles", "at_mobiles")):
+            if body.get(field) is not None:
+                cfg[k] = clip(body.get(field))
+            else:
+                cfg.setdefault(k, [])
+        cfg["is_at_all"] = bool(body.get("is_at_all")) if body.get("is_at_all") is not None \
+            else bool(cfg.get("is_at_all"))
+        cfg["updated_at"] = int(time.time())
+        cfg["updated_by"] = self.address_string()
+        mode = NOTIFY.save(cfgp, cfg)
+        sent = None
+        if body.get("test"):
+            with self.hub.lock:
+                alert = self.hub.alert
+            sent = NOTIFY.post(cfg, alert or {"what": "channel check -- no alert is standing",
+                                              "do": "nothing: the question was whether the message arrives"},
+                               test=True)
+            NOTIFY.remember(lastp, sent, NOTIFY.mask(cfg))
+        return self.json(200, {"ok": True, "saved": str(cfgp), "mode": oct(mode),
+                               "channel": NOTIFY.mask(cfg), "sent": sent})
 
     # -- the relay. Non-event-stream responses are read whole (so Content-Length is honest); SSE is
     # pumped chunk-for-chunk with our own framing, and the counters are lifted off the deltas as
@@ -3014,14 +3155,19 @@ def build(cfg):
               threading.Thread(target=hub.slow_poll, daemon=True),
               threading.Thread(target=hub.gpu_poll, daemon=True)):
         t.start()
-    H.hub = hub
+    # A handler class PER hub. `hub` is a class attribute, so assigning it on H would hand every socket in this
+    # process to the last hub built -- one port's request list, journal and key answering behind another port's
+    # socket. Two monitors in one process is not a configuration anyone should be punished for running.
+    class _H(H):
+        pass
+    _H.hub = hub
     ThreadingHTTPServer.allow_reuse_address = True
     ThreadingHTTPServer.daemon_threads = True
     # Loopback by default: every URL this tool prints says 127.0.0.1, and a socket on "" answers on
     # every interface -- which would hand /api/* (the engine's config, the request records, the
     # kernel-log summary) to anyone who can route to the box. --bind 0.0.0.0 stays for the operator
     # who means that, and says so on the line it prints.
-    return hub, ThreadingHTTPServer((cfg.get("bind", "127.0.0.1"), cfg["port"]), H)
+    return hub, ThreadingHTTPServer((cfg.get("bind", "127.0.0.1"), cfg["port"]), _H)
 
 
 def main(argv=None):
@@ -3052,13 +3198,20 @@ def main(argv=None):
                     help="fill what the sysfs refuses from rocm-smi (empty = off; pass a command to override "
                          "the default -- opens /dev/kfd on every poll, so keep it off while measuring)")
     ap.add_argument("--version", default=os.environ.get("R9K_WEB_VERSION", ""), help="engine version to show")
+    ap.add_argument("--notify", default=os.environ.get("R9K_NOTIFY", NOTIFY_DEFAULT),
+                    help="where the alert channel (a webhook an operator saves from the About page) is stored; "
+                         "written 0600, read by setup.py's watcher when it raises an alert")
+    ap.add_argument("--notify-last", default=os.environ.get("R9K_NOTIFY_LAST", NOTIFY_LAST_DEFAULT),
+                    help="where the last send attempt is recorded, so the page can answer 'does the channel work?' "
+                         "from an attempt rather than from the file being present")
     ap.add_argument("--verbose", action="store_true")
     a = ap.parse_args(argv)
     cfg = {"port": a.port, "bind": a.bind, "upstream": a.upstream.rstrip("/"),
            "mode": "proxy" if a.proxy else "observe",
            "key": a.key, "poll": a.poll, "keep": a.keep, "meta": a.meta,
            "gpus": a.gpus, "pci": a.pci, "journal": a.journal, "journal_attach": a.journal_attach, "smi": (SMI_DEFAULT if a.smi == "1" else a.smi.split()) if a.smi else None,
-           "timeout": 600.0, "verbose": a.verbose, "version": a.version}
+           "timeout": 600.0, "verbose": a.verbose, "version": a.version,
+           "notify": a.notify, "notify_last": a.notify_last}
     _, srv = build(cfg)
     print(f"webui: http://127.0.0.1:{cfg['port']}/monitor  bind {cfg['bind']}  upstream {cfg['upstream']}  "
           f"mode {cfg['mode']}  keep {cfg['keep']}  poll {cfg['poll']}s", flush=True)

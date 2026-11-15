@@ -107,6 +107,9 @@ const ctx = {
           // a fixture may carry the bare list or the whole {sidecars: [...], at: ...} response; feed the page the
           // response shape, which is what the endpoint answers
           ? (Array.isArray(FIX.sidecars) ? {sidecars: FIX.sidecars} : FIX.sidecars) : null)
+      // The alert channel: the fixture carries exactly what the endpoint answers (masked -- the server never
+      // hands a token to a page), or nothing at all for the older-build case.
+      : p === "/api/notify" ? ((FIX && FIX.notify) || null)
       : null;
     if (body === null) return { ok: false, status: 404, json: async () => ({ error: "not in fixture" }) };
     return { ok: true, status: 200, json: async () => body };
@@ -308,6 +311,50 @@ for (const [row, f] of [["model", (c) => t(`ep-${c}-model`)], ["base_url", (c) =
   console.log(`  ${row.padEnd(16)} ${COLS.map(f).join("  |  ")}`);
 console.log(`  Copy buttons carrying a payload: ${wired.length - empty.length}/${wired.length}`
             + (empty.length ? ` (empty: ${empty.join(" ")})` : ""));
+
+// -- the alert channel card -------------------------------------------------------
+// The page is where an operator pastes a webhook, so two things have to hold. The credential never comes back --
+// a page that echoes it is a page any script on it can read. And "saved" must never render as "working": the
+// robot answers a wrong keyword or a dead token with HTTP 200 and a JSON errcode, so the card has to show that
+// answer, not the file's existence.
+const NT = (FIX && FIX.notify)
+  || await globalThis.fetch(`${BASE}/api/notify`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+const alertSec = byId.get("alert-card") || new El();
+const alertFacts = t("facts-alert");
+console.log(`\nalert channel: hidden=${alertSec.hidden}`
+            + (NT ? ` | configured=${NT.configured} | ${alertFacts.replace(/ {2,}/g, " | ")}`
+                  : " | no /api/notify answering"));
+if (!NT) {
+  if (!alertSec.hidden) B("the Alerts card is shown with no /api/notify answering -- an older build has nothing to "
+                          + "configure and the card would be a form wired to a 404");
+} else {
+  if (!alertFacts) B("the payload answers the alert channel and the card is blank");
+  if (NT.configured) {
+    if (!/token withheld/.test(alertFacts)) {
+      B("a saved webhook is shown without saying the token is withheld");
+    }
+    if (NT.channel && NT.channel.host && !alertFacts.includes(NT.channel.host)) {
+      B("the card does not name the host the channel points at");
+    }
+    if (!NT.channel || NT.channel.webhook !== undefined) {
+      B("the payload handed the page a webhook field -- the endpoint must answer masked");
+    }
+  } else if (!/not set/.test(alertFacts)) {
+    B("no channel is configured and the card does not say so -- a red Monitor card would imply a ping nobody sent");
+  }
+  const last = (NT.last || {}).result;
+  if (last) {
+    if (last.sent && !/accepted by the robot/.test(alertFacts)) B("a delivered send is not reported as delivered");
+    if (!last.sent && !/NOT delivered/.test(alertFacts)) B("a refused send is rendered as if it had worked");
+    if (!last.sent && last.error && !alertFacts.includes(String(last.error).slice(0, 24))) {
+      B(`the refusal reason is missing from the card: ${last.error}`);
+    }
+  } else if (!/never attempted/.test(alertFacts)) {
+    B("no send has ever been attempted and the card claims otherwise");
+  }
+  const leak = [...byId.values()].filter((e) => /access_token=/.test(e.textContent || "")).map((e) => e.id);
+  if (leak.length) B(`a webhook token form is on the page in ${leak.join(", ")} -- the channel is masked for a reason`);
+}
 
 const bar = t("error");
 if (bar) { console.log("\nPAGE NOTICE:", bar); bad++; }

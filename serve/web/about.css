@@ -27,6 +27,9 @@ dl.facts{margin-top:16px}
 .about .c-machine{order:2;grid-column:1/-1}
 .about .c-model{order:3}.about .c-mm{order:4}
 .about .c-config{order:5}.about .c-launch{order:6}.about .c-page{order:7}
+# Alerts is a full-width row of its own at the end: it is a two-column form with a status line, and the
+# grid's first screen is for what the box IS, not for how it is wired to a phone.
+.about .c-alert{order:8;grid-column:1/-1}
 
 /* Full width is permission to be wide, not permission to set a 150ch line of prose: the paragraphs in a
    spanning card keep the measure the half-width cards already had. */

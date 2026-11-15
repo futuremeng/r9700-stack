@@ -2,6 +2,11 @@
 // loop beyond a slow refresh, because nothing here is a live curve (that is the Monitor's job).
 "use strict";
 let status = null;
+// The alert channel as the box last saved it (masked: host, path, keyword, and the last send attempt's errcode),
+// plus whatever the operator's own Save/Send click just returned. The webhook itself never reaches this page: the
+// form is write-only, because a credential echoed back by an endpoint is a credential any script on the page can
+// read.
+let notifyPay = null, alertMsg = "", alertBusy = false;
 
 function esc(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({
@@ -388,13 +393,94 @@ function render() {
     ["Records kept", String(s.requests_kept ?? 0)],
     ["Series read", isnum(s.metrics_seen) ? `${s.metrics_seen} vllm:* series` : null],
   ]);
+  paintAlert(notifyPay);
   text("updated", `Read ${clock(s.at)}`);
 }
 
+// -- the alert channel ------------------------------------------------------------
+// The Monitor asserts a hardware claim (`.r9700-state/ALERT.json`); this card decides whether anyone is TOLD.
+// It is here rather than in an env file for two reasons: the webhook is a bearer credential for a group and must
+// not live in a launcher that prints its own command line at every start, and the person who pastes it needs the
+// answer to "will the robot take this?" -- a DingTalk robot refuses a wrong keyword or a dead token with HTTP 200
+// and a JSON errcode, so "saved" and "working" are different facts and only a send tells them apart.
+function paintAlert(nt) {
+  const sec = $("alert-card");
+  if (!nt) { sec.hidden = true; return; }              // no /api/notify: an older monitor build, no card
+  sec.hidden = false;
+  const ch = nt.channel || null, last = nt.last || null, res = (last || {}).result || null;
+  facts($("facts-alert"), [
+    ["Channel", ch ? `${ch.host}${ch.path} · token withheld`
+         : "not set -- a raised alert stays on the Monitor and in alerts.jsonl, and nobody is pinged"],
+    ["Keyword", ch ? ch.keyword : (nt.keyword_default || null)],
+    ["@-ed", ch ? `${ch.at_users_n} userId(s), ${ch.at_mobiles_n} mobile(s)`
+                + (ch.is_at_all ? ", and everyone" : "") : null],
+    ["Saved", ch && ch.updated_at ? `${clock(ch.updated_at)}${ch.updated_by ? ` by ${ch.updated_by}` : ""}` : null],
+    ["Last send", res ? (res.sent ? `accepted by the robot (${res.errmsg || "errcode 0"})`
+            : `NOT delivered: ${res.error || `errcode ${res.errcode}`}`)
+            : "never attempted -- use Send test"],
+    ...(last && last.at ? [["Attempted at", clock(last.at)]] : []),
+    ...(nt.notifier_error ? [["Notifier", nt.notifier_error]] : []),
+    ...(nt.error ? [["Channel file", nt.error]] : []),
+  ]);
+  if (!alertBusy) {
+    const out = $("notify-result");
+    out.textContent = alertMsg
+      || (ch ? "The channel is saved on the box (0600). Send test asks the robot and prints what it said."
+             : "Paste the robot's webhook, then Send test. The message always carries the keyword; without it the "
+                + "robot refuses the alert and nothing reaches the group.");
+  }
+}
+
+async function saveNotify(what) {
+  // what: "save" | "test" | "clear". A test with an empty webhook field uses the stored channel, so an operator
+  // can re-check a channel they configured last week without pasting the secret out of a chat window again.
+  const body = {token: (notifyPay || {}).token, keyword: $("notify-keyword").value.trim(),
+                is_at_all: $("notify-atall").getAttribute("aria-checked") === "true"};
+  // A blank @ field sends NOTHING rather than an empty list, so it means "keep what is stored": the page never
+  // shows the stored mobiles back (they are personal data), and sending [] would silently unsubscribe them.
+  const users = splitList($("notify-users").value), mobiles = splitList($("notify-mobiles").value);
+  if (users.length) body.at_users = users;
+  if (mobiles.length) body.at_mobiles = mobiles;
+  if (what === "clear") body.clear = true;
+  else {
+    const w = $("notify-webhook").value.trim();
+    if (w) body.webhook = w;
+    else if (what === "save") { alertMsg = "Nothing to save: the webhook field is empty, and the saved channel "
+                                         + "stays as it was."; paintAlert(notifyPay); return; }
+  }
+  alertBusy = true;
+  alertMsg = what === "test" ? "sending…" : "saving…";
+  paintAlert(notifyPay);
+  try {
+    const r = await api("/api/notify", body);
+    const sent = r && r.sent;
+    alertMsg = (r.cleared ? "channel cleared -- alerts stay on the page and in the ledger"
+               : `saved to ${r.saved} (mode ${r.mode.replace("0o", "")})`) + (sent
+               ? (sent.sent ? " · the robot accepted the test message"
+                            : ` · the robot REFUSED it: ${sent.error || `errcode ${sent.errcode}`}`)
+               : "");
+    $("notify-webhook").value = "";                      // never leave a pasted secret sitting in a DOM field
+    notifyPay = await api("/api/notify").catch(() => notifyPay);
+  } catch (e) {
+    alertMsg = `${what} failed: ${e.message}`;
+  } finally {
+    alertBusy = false;
+    paintAlert(notifyPay);
+  }
+}
+
+const splitList = (s) => String(s || "").split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean);
+
 async function load() {
   try {
-    const [s, host, sc] = await Promise.all([api("/api/status"), api("/api/host"),
-                                             api("/api/sidecars").catch(() => null)]);
+    const [s, host, sc, nt] = await Promise.all([api("/api/status"), api("/api/host"),
+                                                 api("/api/sidecars").catch(() => null),
+                                                 // /api/notify exists only on a build with the alert card. A 404
+                                                 // here is "older monitor", not a fault, and the card hides itself;
+                                                 // letting it reach notice() would put a red line on a page that is
+                                                 // answering everything else.
+                                                 api("/api/notify").catch(() => null)]);
+    notifyPay = nt;
     // /api/sidecars exists only behind the gateway; a 404 is "this page is on the engine's own port", not an
     // error, so it is swallowed here rather than routed to notice().
     status = {...s, host, sidecars: (sc && sc.sidecars) || []};
@@ -417,6 +503,13 @@ function notice(message, info) {
 $("key-btn").onclick = () => { $("api-key").focus(); $("api-key").select(); };
 $("key-save").onclick = async () => { setKey($("api-key").value); await load(); };
 $("api-key").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); $("key-save").click(); } };
+$("notify-save").onclick = () => saveNotify("save");
+$("notify-test").onclick = () => saveNotify("test");
+$("notify-clear").onclick = () => saveNotify("clear");
+$("notify-atall").onclick = () => {
+  const on = $("notify-atall").getAttribute("aria-checked") !== "true";
+  $("notify-atall").setAttribute("aria-checked", on ? "true" : "false");
+};
 document.addEventListener("need-key", () => $("api-key").focus());
 bindTheme();
 

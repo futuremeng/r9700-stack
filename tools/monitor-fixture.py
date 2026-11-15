@@ -149,7 +149,14 @@ def main(argv):
                                  "see whether the faults move with it",
                            "session": "r9700-native-flashnext", "recipe": "native-flashnext.sh",
                            "config": "262k", "log": "/home/jiulu/logs/setup-132052.log",
-                           "sig": "illegal memory access", "age_s": 1800.0}
+                           "sig": "illegal memory access", "age_s": 1800.0,
+                           # The delivery attempt, refused. This is the branch a healthy box never shows and the
+                           # one that matters most: a red card that nobody could have seen is the failure mode of
+                           # every monitor, and DingTalk answers a wrong keyword with 200 + a JSON error that only
+                           # the errcode reveals. The fixture carries the REFUSAL so the page is tested saying it.
+                           "notify": {"sent": False, "at": int(time.time()) - 1790, "errcode": 310000,
+                                      "errmsg": "keywords not in content", "http": 200,
+                                      "error": "errcode 310000: keywords not in content"}}
     if forced or "prompt_bound" not in live:
         live.update({"prompt_bound": 1000.0, "prompt_big": 2, "prompt_n": 65, "prompt_big_pct": 3.1,
                      "prompt_big_all": 41, "prompt_n_all": 1180, "prompt_big_all_pct": 3.5})

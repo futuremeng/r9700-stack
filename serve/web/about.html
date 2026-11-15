@@ -229,6 +229,54 @@
         The API key is never printed here: if the serve has one, name it in the environment.</p>
     </section>
 
+    <section class="card c-alert" id="alert-card" hidden>
+      <span class="card-title">Alerts</span>
+      <dl class="facts" id="facts-alert"></dl>
+      <div class="st-field">
+        <label class="st-label" for="notify-webhook">Robot webhook
+          <output>stored on the box at 0600, and never shown back — paste it once</output></label>
+        <div class="auth-row">
+          <input class="st-input" id="notify-webhook" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="https://oapi.dingtalk.com/robot/send?access_token=…">
+          <button class="st-btn st-btn--primary" id="notify-save">Save</button>
+          <button class="st-btn" id="notify-test">Send test</button>
+          <button class="st-btn" id="notify-clear">Clear</button>
+        </div>
+      </div>
+      <div class="st-field">
+        <label class="st-label" for="notify-keyword">Keyword
+          <output>the robot refuses a message that does not carry it</output></label>
+        <div class="auth-row"><input class="st-input" id="notify-keyword" type="text" autocomplete="off"
+                                     placeholder="R9700"></div>
+      </div>
+      <div class="st-field">
+        <label class="st-label" for="notify-users">@ userIds
+          <output>comma separated; blank keeps what is stored</output></label>
+        <div class="auth-row"><input class="st-input" id="notify-users" type="text" autocomplete="off"
+                                     placeholder="user123, user456"></div>
+      </div>
+      <div class="st-field">
+        <label class="st-label" for="notify-mobiles">@ mobiles
+          <output>comma separated; blank keeps what is stored; the robot shows these to the group</output></label>
+        <div class="auth-row"><input class="st-input" id="notify-mobiles" type="text" autocomplete="off"
+                                     placeholder="180xxxx0000"></div>
+      </div>
+      <div class="rowline"><span>Alert everyone in the group</span>
+        <button class="st-toggle" id="notify-atall" role="switch" aria-checked="false"
+                aria-label="Alert everyone in the group"></button></div>
+      <p class="small note" id="notify-result"></p>
+      <p class="small note">What this sends: the hardware claim the Monitor is showing — <em>N driver page faults on
+        one PCI function inside the window</em> — with the two sentences the Monitor shows (what was counted, and the
+        physical action) and the per-card fault shapes. It is sent by <code>setup.py</code> at the moment a rank dies,
+        <strong>after</strong> the ledger line in <code>.r9700-state/faults.jsonl</code> is written and before any
+        relaunch, so a machine that resets itself cannot later claim nothing happened.
+        Three things that bite: the message always carries the keyword above, because the robot's security filter
+        drops anything that does not and answers with a JSON errcode rather than an error; the webhook is a bearer
+        credential for the group, so this page shows its host and path only, and the file is <code>0600</code>;
+        and <em>Saved</em> is not <em>working</em> — the <em>Last send</em> row above is the robot's own answer,
+        recorded in <code>.r9700-state/notify-last.json</code> by whichever process sent it.</p>
+    </section>
+
     <section class="card c-page">
       <span class="card-title">This page</span>
       <div class="st-field">

@@ -1176,11 +1176,30 @@ function paintWatchdog(s) {
   if (al) {
     text("wd-faults", `${dnum(al.count, 0)}`);
     const win = Math.max(1, Math.round((al.window_s || 0) / 86400));
+    // Whether a HUMAN was told is part of the claim, not a detail under it. A red card that nobody could have
+    // seen is the failure mode of every monitoring system ever built, and the robot's refusal (wrong keyword,
+    // dead token) is otherwise invisible until someone asks "did you get a message?" three days later.
+    const nv = al.notify || null;
+    // Three answers, not two. A claim raised before any channel existed is neither delivered nor refused, and
+    // calling that "no channel" would be false the moment someone configures one -- so the page asks its own
+    // /api/notify and says `untested`, which is the one thing an operator can act on.
+    const told = nv ? (nv.sent ? "pinged" : "NOT pinged")
+                    : (s.notify && s.notify.configured ? "untested" : "no channel");
+    if (lbl) text("wd-fault-label", `Hardware: page faults \u00b7 ${told}`);
     slot("wd-fault-note", `${al.card} \u00d7${dnum(al.count, 0)} / ${win} d`.slice(0, 24),
          `${al.what || ""} \u2014 ${al.do || ""} \u2014 raised `
          + `${isnum(al.age_s) ? `${Math.round(al.age_s / 60)} min` : "?"} ago by setup.py's watcher; the shape of `
          + "each fault (read/write, UTCL2 client, ring) is in the alert, and one crash can log several driver "
-         + "lines, so the count is events, not lines.");
+         + "lines, so the count is events, not lines. "
+         + (nv ? `The ping: ${nv.sent ? "accepted by the robot" : "REFUSED by the robot"} \u2014 errcode `
+               + `${nv.errcode === null || nv.errcode === undefined ? "?" : nv.errcode}, `
+               + `${JSON.stringify(nv.errmsg || nv.error || "")}, attempted ${nv.at || "?"}.`
+               : ((s.notify && s.notify.configured)
+                 ? "No send attempt recorded for THIS alert: it was raised before the channel existed (or by a "
+                   + "build that did not send). A channel is configured \u2014 About \u2192 Alerts, or "
+                   + "tools/fault-report.py --alert-test."
+                 : "No send attempt recorded and no channel configured: this claim stays on the page and in "
+                   + "alerts.jsonl and nobody is pinged. Set one on About \u2192 Alerts.")));
   } else if (s.alert_error) {
     text("wd-faults", "?");
     slot("wd-fault-note", "alert unreadable", String(s.alert_error));

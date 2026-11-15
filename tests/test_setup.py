@@ -826,6 +826,40 @@ try:
     ck("ALERT_CMD gets the alert as stdin and the evidence path in $ALERT_PATH, so a hook never re-derives "
        "where the ledger lives", _hooked.exists() and json.loads(_hooked.read_text())["card"] == "c3:00.0",
        _hooked.read_text()[:80] if _hooked.exists() else "hook never ran")
+    ck("the claim carries WHETHER A HUMAN WAS TOLD, in the live file the page reads and not only in the ledger: "
+       "an alert nobody was told about is an alert nobody acted on, and 'the card is red' has to be able to mean "
+       "that the channel refused it",
+       (_aj.get("notify") or {}).get("sent") is False and "webhook" in str((_aj.get("notify") or {}).get("error")),
+       str(_aj.get("notify"))[:160])
+    ck("and a claim raised by hand says who raised it, so the ledger never implies a death that did not happen",
+       S.raise_alert(_v, {"session": "s"}, None, raised_by="tools/fault-report.py --raise-if-due",
+                     at=_now)["raised_by"] == "tools/fault-report.py --raise-if-due",
+       str(_aj.get("raised_by")))
+    _wsrc2 = (ROOTP / "serve/webui.py").read_text()
+    ck("the supervisor and the page name the SAME channel files: a webhook saved from the About page is the one "
+       "the watcher sends through, and the attempt the page shows is the attempt the watcher made",
+       S.NOTIFY_FILE == "notify.json" and S.NOTIFY_LAST == "notify-last.json"
+       and f'"{S.NOTIFY_FILE}"' in _wsrc2 and f'"{S.NOTIFY_LAST}"' in _wsrc2
+       and ".r9700-state" in _wsrc2 and "--notify" in _wsrc2 and "--notify-last" in _wsrc2,
+       "one pair of files, named from the state dir on both sides")
+    _ssrc = (ROOTP / "setup.py").read_text()
+    ck("setup.py carries no second copy of the sender: it loads serve/notify.py BY PATH, and the robot's URL "
+       "appears in exactly one file in this tree -- two implementations of one POST is how an alert ends up "
+       "refused by the keyword filter while both programs believe they sent it",
+       'spec_from_file_location("r9700_notify", NOTIFY_SRC)' in _ssrc
+       and 'NOTIFY_SRC = Path(__file__).resolve().parent / "serve" / "notify.py"' in _ssrc
+       and "oapi.dingtalk.com" not in _ssrc
+       and sum((ROOTP / f).read_text().count("oapi.dingtalk.com")
+               for f in ("setup.py", "serve/webui.py", "serve/gateway.py")) == 0,
+       "the wire format lives in serve/notify.py only")
+    ck("a notifier that cannot be loaded is stated as the reason no ping went out, and the claim still lands: "
+       "what is lost is the phone, and the ledger says so",
+       'f"cannot load {NOTIFY_SRC}' in _ssrc and "never a swallowed alert" in str(S.notifier.__doc__ or ""),
+       "a swallowed alert would be a lie by omission")
+    ck("the alert is asserted BEFORE the restart act in the watcher's own sequence -- an alert printed after a "
+       "relaunch that wedged is an alert lost to the failure it was warning about",
+       _wsrc.index("HARDWARE ALERT") < _wsrc.index("if do:") and _wsrc.index("ledger_append(FAULT_LEDGER")
+       < _wsrc.index("if do:"), "ledger and alert first, then the reset")
     S.ledger_append(S.FAULT_LEDGER, _row)
     S.ledger_append(S.FAULT_LEDGER, _row)
     ck("the ledger is append-only and fsynced: two deaths, two lines, and launch.json is never touched by it",

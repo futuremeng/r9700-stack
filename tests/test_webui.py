@@ -843,6 +843,125 @@ ck("an alert file that cannot be parsed is None PLUS an error, never a bare None
 ck("and the page gets both fields, so 'no alert' and 'the alert could not be read' are distinguishable there too",
    '"alert"' in src and "payload[\"alert\"]" in src and "alert_error" in src,
    "payload fields for the standing alert")
+# -- the alert channel: a webhook set from the About page, and the robot's own answer -------------------
+# The card and the sender share one implementation (serve/notify.py) because the alert is RAISED by the supervisor
+# and CONFIGURED/TESTED in the page process. What these checks hold apart: no channel, an unreadable channel file,
+# a robot that took the POST and refused it, and a robot that accepted it. "Configured" is not "working", and only
+# the robot's errcode tells them apart.
+N = W.NOTIFY
+ck("the notifier is one importable file (serve/notify.py), not a copy in each program",
+   N is not None and all(hasattr(N, k) for k in ("validate", "save", "load", "mask", "build", "post", "remember",
+                                                 "last", "KEYWORD")), str(N))
+ck("a webhook is refused BEFORE it is sent when it is not https, not a DingTalk robot, or has no access_token -- "
+   "half a URL pasted out of a chat window is an everyday accident, and POSTing a secret in the clear is not a "
+   "thing a typo should be allowed to do",
+   N.validate("https://oapi.dingtalk.com/robot/send?access_token=abc")[0] is True
+   and "clear" in N.validate("http://oapi.dingtalk.com/robot/send?access_token=abc")[1]
+   and "not a DingTalk robot" in N.validate("https://example.com/robot/send?access_token=abc")[1]
+   and "access_token" in N.validate("https://oapi.dingtalk.com/robot/send")[1]
+   and N.validate("")[0] is False)
+ck("loopback is the one exempt host, and only because that POST crosses no wire -- it is what lets this suite run "
+   "a fake robot and read the body it was handed instead of trusting a mock",
+   N.validate("http://127.0.0.1:9/robot/send?access_token=x")[0] is True)
+_npath = _tmp / "notify" / "notify.json"
+_mode = N.save(_npath, {"webhook": "https://oapi.dingtalk.com/robot/send?access_token=SECRETV",
+                        "keyword": "R9700", "at_users": ["u1"], "at_mobiles": ["18000000000"], "is_at_all": False})
+_cfg, _err = N.load(_npath)
+ck("the channel file is 0600: it is a bearer credential for a group, so a readable repo would be the right to post "
+   "to that group",
+   _mode == 0o600 and _err is None and _cfg["webhook"].endswith("SECRETV"), oct(_mode))
+ck("mask() is the only form a page may see: host and path, the token withheld, and MOBILES COUNTED rather than "
+   "listed -- a phone number on a status page is a second leak",
+   (lambda m: m["host"] == "oapi.dingtalk.com" and m["token"] == "withheld" and "SECRETV" not in json.dumps(m)
+    and "18000000000" not in json.dumps(m) and m["at_mobiles_n"] == 1 and m["at_users_n"] == 1)(N.mask(_cfg)))
+(_tmp / "notify" / "broken.json").write_text("{not json")
+(_tmp / "notify" / "noweb.json").write_text(json.dumps({"keyword": "R9700"}))
+ck("load() keeps the states apart: no file is 'not configured' (no error), while an unparseable file and a file "
+   "with no webhook in it are both errors -- an operator who just clicked Save deserves to be told the save did "
+   "not land where the sender reads",
+   N.load(_tmp / "notify" / "none.json") == (None, None)
+   and N.load(_tmp / "notify" / "broken.json")[0] is None and "not JSON" in N.load(_tmp / "notify"
+                                                                                  / "broken.json")[1]
+   and N.load(_tmp / "notify" / "noweb.json")[0] is None and "no webhook" in N.load(_tmp / "notify"
+                                                                                   / "noweb.json")[1])
+_t, _body = N.build({"card": "c3:00.0", "count": 6, "window_s": 7 * 86400,
+                     "what": "6 driver page faults on 0000:c3:00.0 within 7 d",
+                     "do": "swap this card with a neighbour and see whether the faults move with it",
+                     "cards": {"c3:00.0": 6}, "families": {"read / SQC (data) / ring 24": 6},
+                     "session": "r9700-native-flashnext", "log": "/home/jiulu/logs/setup-132052.log"})
+ck("every message carries the robot's keyword in the TITLE and in the BODY: the filter drops anything without it "
+   "and answers with a JSON errcode that reads like a network hiccup unless someone made it a rule",
+   N.KEYWORD in _t and _body.startswith(f"### {N.KEYWORD}"), _t)
+ck("the phone says what the page says: the two sentences (what was counted, and the physical action), the "
+   "per-card counts and the fault shapes -- not just the word 'alert'",
+   "0000:c3:00.0" in _body and "swap this card" in _body and "read / SQC (data) / ring 24" in _body
+   and "r9700-native-flashnext" in _body, _body[:200])
+_big = N.build({"card": "c3:00.0", "count": 6, "what": "x" * 4000, "do": "swap"})[1]
+ck("a body the robot would truncate is truncated OUT LOUD, with the pointer to the full claim on the box",
+   len(_big) <= N.BODY_LIMIT and "truncated" in _big and "ALERT.json" in _big, f"{len(_big)} chars")
+ck("a test message says it is a test -- a channel check at 03:00 must not read as a new incident",
+   "not a new fault" in N.build({"card": "c3:00.0", "count": 0}, test=True)[1])
+
+
+class FakeRobot(BaseHTTPRequestHandler):
+    """A DingTalk robot on loopback, so the send path is tested with bytes rather than a mock: it records the body
+    it was given and answers with the errcode the case is about. 310000 is the real code for "the security keyword
+    is not in the message", and a notifier that treats HTTP 200 as success would call that a delivery."""
+    errcode, errmsg, got, hits = 0, "ok", None, 0
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        FakeRobot.got = json.loads(self.rfile.read(n) or b"{}")
+        FakeRobot.hits += 1
+        FakeRobot.path = self.path
+        out = json.dumps({"errcode": FakeRobot.errcode, "errmsg": FakeRobot.errmsg}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+
+_rv = ThreadingHTTPServer(("127.0.0.1", 0), FakeRobot)
+threading.Thread(target=_rv.serve_forever, daemon=True).start()
+ROBOT_URL = f"http://127.0.0.1:{_rv.server_address[1]}/robot/send?access_token=SECRETV"
+_res = N.post({"webhook": ROBOT_URL, "keyword": "R9700", "at_users": ["u1"], "at_mobiles": ["180x"]},
+              {"card": "c3:00.0", "count": 6, "what": "6 faults", "do": "swap the card"})
+ck("a send the robot accepted is reported as sent, with the robot's own answer attached",
+   _res["sent"] is True and _res["errcode"] == 0, json.dumps(_res)[:160])
+ck("the body it was handed is what the card shows: markdown, the keyword in title and text, and the @ lists the "
+   "operator typed",
+   FakeRobot.got["msgtype"] == "markdown" and N.KEYWORD in FakeRobot.got["markdown"]["title"]
+   and N.KEYWORD in FakeRobot.got["markdown"]["text"] and FakeRobot.got["at"]["atUserIds"] == ["u1"]
+   and FakeRobot.got["at"]["atMobiles"] == ["180x"] and FakeRobot.got["at"]["isAtAll"] is False,
+   json.dumps(FakeRobot.got)[:220])
+FakeRobot.errcode, FakeRobot.errmsg = 310000, "keywords not in content"
+_res2 = N.post({"webhook": ROBOT_URL, "keyword": "wrong"}, {"card": "c3:00.0", "count": 6, "what": "x", "do": "y"})
+ck("HTTP 200 with a non-zero errcode is NOT a delivery -- the keyword filter answers this way, and a ledger line "
+   "saying 'sent' would record a ping nobody got",
+   _res2["sent"] is False and _res2["errcode"] == 310000 and "keyword" in _res2["error"].lower(),
+   json.dumps(_res2)[:200])
+FakeRobot.errcode, FakeRobot.errmsg = 0, "ok"
+_res3 = N.post({"webhook": "http://127.0.0.1:1/robot/send?access_token=x"}, {"card": "c3", "count": 1})
+ck("a robot that is not there is an error naming its type, not a silent None",
+   _res3["sent"] is False and bool(_res3["error"]), json.dumps(_res3)[:160])
+ck("and no send result ever carries the webhook: these rows go into alerts.jsonl and onto a page",
+   "SECRETV" not in json.dumps(_res) and "SECRETV" not in json.dumps(_res2), json.dumps(_res)[:120])
+_res_at = N.remember(_tmp / "notify" / "notify-last.json", _res, N.mask(_cfg))
+ck("the last attempt is recorded where a page can read it, masked -- 'is this channel working?' is answered by an "
+   "attempt, not by the channel file being present",
+   _res_at["result"]["sent"] is True and _res_at["channel"]["token"] == "withheld"
+   and N.last(_tmp / "notify" / "notify-last.json")["result"]["errcode"] == 0
+   and N.last(_tmp / "notify" / "nothing-here.json") is None, json.dumps(_res_at)[:160])
+ck("a channel with no webhook is refused before the POST rather than reporting a send that never happened",
+   (lambda r: r["sent"] is False and "webhook" in r["error"])(N.post({}, {"card": "c3", "count": 1})))
+ck("the channel and its last-attempt file are configurable per process (--notify / --notify-last), so the suite "
+   "and any second box can point them somewhere else without editing the sender",
+   "--notify" in src and "R9K_NOTIFY" in src and '"notify": a.notify' in src and '"notify_last": a.notify_last'
+   in src, "the notify paths are cfg, not constants")
 ck("a journalctl that failed is an error, never a zero (the -A mistake read as 'no faults today')",
    (lambda r: r["total"] is None and "exited 1" in r["error"])(
        W.kernel_faults(("sh", "-c", "echo 'journalctl: invalid option -- A' >&2; exit 1"))),
@@ -973,10 +1092,11 @@ threading.Thread(target=up.serve_forever, daemon=True).start()
 _jsid = iter(range(1000))
 
 
-def sidecar(mode="proxy", key="", keep=50, journal=None):
+def sidecar(mode="proxy", key="", keep=50, journal=None, notify=None, notify_last=None):
     # Each instance gets its own journal file: two sidecars sharing one path would replay each other's rows,
     # which is the confusion the launch avoids by naming the file after the port it serves.
-    jp = journal or f"/tmp/r9700-webui-journal-{mode}-{next(_jsid)}.jsonl"
+    _nid = next(_jsid)
+    jp = journal or f"/tmp/r9700-webui-journal-{mode}-{_nid}.jsonl"
     if journal is None:
         Path(jp).unlink(missing_ok=True)                    # a named journal is reused on purpose
     cfg = {"port": 0, "bind": "127.0.0.1", "upstream": f"http://127.0.0.1:{up_port}", "mode": mode, "key": key, "poll": 0.2,
@@ -985,6 +1105,11 @@ def sidecar(mode="proxy", key="", keep=50, journal=None):
            # machine's kernel journal. journal_cmd False is also the state the page has to render honestly --
            # "unknown", not "0 faults".
            "kfd": str(_kfd), "journal_cmd": False,
+           # The alert channel is a file the page WRITES. Left at its default it would be this repo's real
+           # .r9700-state/notify.json -- a test run would overwrite the box's live webhook -- so every instance
+           # gets its own pair under /tmp.
+           "notify": notify or f"/tmp/r9700-webui-notify-{mode}-{_nid}.json",
+           "notify_last": notify_last or f"/tmp/r9700-webui-notify-last-{mode}-{_nid}.json",
            "timeout": 10.0, "verbose": False, "version": "test"}
     hub, srv = W.build(cfg)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -1024,6 +1149,88 @@ ck("and an engine with no /version route at all (older vLLM: a 404 with an error
    W.engine_version("", '{"detail":"Not Found"}') == {} and W.engine_version("", "") == {})
 ck("status reads the engine", s["reachable"] and s["model_name"] == "Qwen3.8", str(s)[:120])
 ck("status carries config labels", s["config"].get("block_size") == "1088")
+# -- the alert-channel endpoint: what the About page's form writes, and what it must never write back ----
+_npath_ep = "/tmp/r9700-webui-notify-endpoint.json"
+_nlast_ep = "/tmp/r9700-webui-notify-endpoint-last.json"
+for _p in (_npath_ep, _nlast_ep):
+    Path(_p).unlink(missing_ok=True)
+_hubn, _srvn, portN = sidecar("observe", notify=_npath_ep, notify_last=_nlast_ep)
+time.sleep(0.4)
+_ntv = call(portN, "/api/notify")[1]
+ck("GET /api/notify answers the masked channel, the last attempt, and the token the form must echo",
+   _ntv["configured"] is False and _ntv["token"] and _ntv["last"] is None and _ntv["error"] is None,
+   str(_ntv)[:180])
+ck("the status payload carries the same masked view, so the Monitor can say whether a standing claim has a "
+   "channel at all (a red card with no channel is a claim nobody was told about)",
+   (call(portN, "/api/status")[1].get("notify") or {}).get("configured") is False
+   and "token" not in json.dumps(call(portN, "/api/status")[1].get("notify") or {}),
+   str(call(portN, "/api/status")[1].get("notify"))[:180])
+try:
+    call(portN, "/api/notify", {"webhook": ROBOT_URL})
+    ck("POST without the page's write token is refused", False, "the request was accepted")
+except urllib.error.HTTPError as e:
+    ck("POST without the page's write token is refused -- the token is not authentication (anyone who can load the "
+       "page can read it); it is what stops a form posted by some OTHER page in the same browser",
+       e.code == 403, f"HTTP {e.code}")
+try:
+    call(portN, "/api/notify", {"token": _ntv["token"], "webhook": "https://example.com/robot/send?access_token=x"})
+    ck("a webhook that fails validation is refused", False, "the request was accepted")
+except urllib.error.HTTPError as e:
+    _eb = json.loads(e.read() or b"{}")
+    ck("and the refusal says WHY in words an operator can act on, because the form is the only feedback they get",
+       e.code == 400 and "dingtalk" in (_eb.get("error") or {}).get("message", "").lower(), str(_eb)[:180])
+# Two live hubs in one process. This used to be a silent trap: `hub` is a CLASS attribute on the handler, so the
+# LAST build() answered on every socket -- the observe instance below would have served the proxy's port with its
+# own (empty) request list, its own key and its own journal.
+call(port, "/v1/chat/completions", {"model": "Qwen3.8", "messages": [{"role": "user", "content": "hub split"}]})
+_pr = call(port, "/api/requests")[1]
+_ob = call(portN, "/api/requests")[1]
+ck("a hub built later does not take over an earlier hub's socket: each port answers with ITS OWN records",
+   _pr["mode"] == "proxy" and _ob["mode"] == "observe" and len(_pr["requests"]) >= 1 and not _ob["requests"],
+   f"proxy {_pr['mode']}/{len(_pr['requests'])} rows, notify port {_ob['mode']}/{len(_ob['requests'])} rows")
+_hits0 = FakeRobot.hits
+_st, _r = call(portN, "/api/notify", {"token": _ntv["token"], "webhook": ROBOT_URL, "keyword": "R9700",
+                                      "at_users": "u1, u2", "at_mobiles": ["180x"], "test": True})
+ck("Save and Send test writes the channel 0600 and reports the robot's OWN answer -- not the file's existence",
+   _st == 200 and _r["mode"] == "0o600" and (_r.get("sent") or {}).get("sent") is True
+   and FakeRobot.hits == _hits0 + 1 and oct(os.stat(_npath_ep).st_mode & 0o777) == "0o600", str(_r)[:220])
+ck("the @ lists come from a comma string as well as a list: a form field is a string and the robot wants a list",
+   FakeRobot.got["at"]["atUserIds"] == ["u1", "u2"] and FakeRobot.got["at"]["atMobiles"] == ["180x"],
+   json.dumps(FakeRobot.got["at"]))
+ck("the response and the page view are masked while the file on disk keeps the credential: a saved secret must "
+   "not be readable back out of an endpoint",
+   "SECRETV" not in json.dumps(_r) and "SECRETV" not in json.dumps(call(portN, "/api/notify")[1])
+   and json.loads(Path(_npath_ep).read_text())["webhook"].endswith("SECRETV"), str(_r)[:180])
+_ntv2 = call(portN, "/api/notify")[1]
+ck("after a send the page can answer 'does the channel work?' from the recorded attempt",
+   _ntv2["configured"] is True and (_ntv2["last"] or {}).get("result", {}).get("sent") is True
+   and str(_ntv2["channel"]["host"]).startswith("127.0.0.1"), str(_ntv2)[:200])
+FakeRobot.errcode, FakeRobot.errmsg = 310000, "keywords not in content"
+_st2, _r2 = call(portN, "/api/notify", {"token": _ntv2["token"], "test": True})
+ck("a test with the webhook field EMPTY re-checks the STORED channel -- an operator should not have to paste the "
+   "secret out of a chat window to find out it is broken",
+   _st2 == 200 and (_r2.get("sent") or {}).get("sent") is False
+   and "keyword" in (_r2["sent"]["error"] or "").lower(), str(_r2)[:220])
+ck("and the refusal is what the page will keep showing, in the recorded attempt",
+   (call(portN, "/api/notify")[1]["last"] or {}).get("result", {}).get("errcode") == 310000,
+   str(call(portN, "/api/notify")[1]["last"])[:200])
+FakeRobot.errcode, FakeRobot.errmsg = 0, "ok"
+_st3, _r3 = call(portN, "/api/notify", {"token": _ntv2["token"], "clear": True})
+ck("Clear removes the channel, and the alert stays on the page and in the ledger either way",
+   _st3 == 200 and _r3.get("cleared") is True and not Path(_npath_ep).exists()
+   and call(portN, "/api/notify")[1]["configured"] is False, str(_r3)[:160])
+try:
+    call(portN, "/api/notify", {"token": _ntv2["token"], "test": True})
+    ck("testing a channel that was just cleared is refused rather than reported as sent", False, "accepted")
+except urllib.error.HTTPError as e:
+    _eb2 = json.loads(e.read() or b"{}")
+    ck("testing a channel that does not exist is a 400 that says so",
+       e.code == 400 and "webhook" in (_eb2.get("error") or {}).get("message", "").lower(), str(_eb2)[:160])
+ck("the write endpoint is this process's own and is never relayed to the serve (a POST of a webhook to the "
+   "inference port would be a 404 nobody reads)",
+   'if path == "/api/notify":' in src and "return self.notify_write()" in src
+   and src.index("return self.notify_write()") < src.index("def forward(self, method)"),
+   "do_POST routes /api/notify locally")
 # The watchdog row's inputs, in the payload the page reads. The engine is answering here, so the state is alive;
 # the fault read is switched off, and it has to arrive as an error rather than as a zero -- "no faults" is a
 # claim about the hardware and this build made no measurement.

@@ -17,9 +17,11 @@ the outage it is being run for.
 Exit status: 0 with no standing alert, 2 with one -- so it can be dropped into a cron or a shell prompt and the
 answer is still visible without reading it. `--raise-if-due` asserts the alert through the same function the
 watcher calls, for the case where the condition already holds and waiting for the next crash to be told about it
-is not a plan.
+is not a plan. `--alert-test` asks the DingTalk robot itself whether the channel works, which is a different
+question from whether a file holding a webhook exists -- and a raise reports the delivery in the row it writes,
+because a claim that was never sent is a claim nobody acted on.
 
-Run: python3 tools/fault-report.py [--state DIR] [--n N]
+Run: python3 tools/fault-report.py [--state DIR] [--n N] [--alert-test] [--raise-if-due]
 """
 import argparse
 import json
@@ -55,11 +57,48 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--state", default=str(ROOT / ".r9700-state"))
     ap.add_argument("--n", type=int, default=12, help="how many recent deaths to list")
+    ap.add_argument("--alert-test", action="store_true",
+                    help="send through the webhook on the box and print what the ROBOT answered (its errcode), "
+                         "not that the POST returned 200. If a claim is standing the message is that claim; "
+                         "otherwise it says it is a channel check. Raises and clears nothing -- a check at an odd "
+                         "hour must not read as a new incident.")
     ap.add_argument("--raise-if-due", action="store_true",
                     help="assert the alert through setup.py's own raise_alert if the per-card threshold holds "
                          "(the watcher raises it at a death; this raises it now, and says it was hand-run)")
     a = ap.parse_args(argv)
     state = Path(a.state)
+    if a.alert_test:
+        # The question this answers is "would a human find out", which no amount of reading the ledger answers.
+        # It prints the robot's OWN answer, because DingTalk returns 200 for a message it then refuses -- the
+        # errcode inside the body is the delivery, and a keyword mismatch is the commonest way to be refused.
+        try:
+            sys.path.insert(0, str(ROOT / "serve"))
+            import notify as N                                             # noqa: E402  (the same sender)
+        except Exception as e:
+            print(f"channel: cannot import serve/notify.py: {e}")
+            return 1
+        ch, cerr = N.load(state / S.NOTIFY_FILE)
+        if cerr:
+            print(f"channel: {cerr}")
+            return 1
+        if ch is None:
+            print(f"channel: none configured ({state / S.NOTIFY_FILE}). Set it on the About page's Alerts card.")
+            return 1
+        try:
+            _al = json.loads((state / S.ALERT_FILE).read_text())
+            msg = {k: _al.get(k) for k in ("card", "count", "window_s", "what", "do", "cards", "families")}
+            label = "the message carried the standing claim, which is still up"
+            test = False
+        except Exception:
+            msg, label, test = {"card": None, "count": 0}, "this was a channel check, not a fault", True
+        _m = N.mask(ch)
+        res = N.post(ch, msg, test=test)
+        N.remember(state / S.NOTIFY_LAST, res, _m)
+        print(f"channel: {_m['host']}{_m['path']} (token withheld; the file is mode 0600)")
+        print(f"robot answered: {'ACCEPTED' if res['sent'] else 'refused'} -- errcode {res['errcode']} "
+              f"errmsg {res['errmsg']!r} error {res['error']!r}")
+        print(f"   {label}; the attempt is recorded in {state / S.NOTIFY_LAST}")
+        return 0 if res["sent"] else 1
     deaths, bad1 = rows(state / S.FAULT_LEDGER)
     alerts, bad2 = rows(state / S.ALERT_LEDGER)
     live = None
@@ -113,10 +152,12 @@ def main(argv=None):
             # not a second, sloppier implementation of the claim. It says so in the row: no death signature, and
             # `raised_by` names how it happened -- an alert written by hand must stay distinguishable from one a
             # watcher raised on a crash, or the ledger stops being evidence.
-            row = S.raise_alert(v, S.state_read("launch.json"), None)
-            S.state_write(S.ALERT_FILE, dict(row, raised_by=HAND))
+            row = S.raise_alert(v, S.state_read("launch.json"), None, raised_by=HAND)
             print(f"   raised: {state / S.ALERT_FILE} and one line in {S.ALERT_LEDGER} "
                   "(its sig is null: no death behind this one)")
+            _d = row.get("notify")
+            print(f"   phone: {'pinged' if (_d or {}).get('sent') else 'NOT pinged'} -- "
+                  + json.dumps(_d or {"error": "no channel configured"})[:200])
         return 2
     if v:
         print(f"== verdict: not escalated (worst card {max(v['cards'].values()) if v['cards'] else 0} event(s) "

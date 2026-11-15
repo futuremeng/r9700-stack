@@ -812,12 +812,33 @@ console.log(`  caption slots now: ${t("gen-note1")} | ${t("gen-note2")}`);
     // since-boot count is the misreading this whole split exists to prevent; a card with a standing hardware
     // alert must say so, because its number is neither launch nor boot but a function over a window.
     const lbl = w2("wd-fault-label");
-    const wantLbl = al ? /^Hardware: page faults$/ : (w.faults?.now ? /this launch/ : /this boot/);
+    // With an alert the label also carries whether a HUMAN was told: "Hardware: page faults" alone would let a
+    // refused webhook (wrong keyword, dead token) look like a working alarm for as long as the card stayed red.
+    const wantLbl = al ? /^Hardware: page faults( \u00b7 (pinged|NOT pinged|untested|no channel))?$/
+                       : (w.faults?.now ? /this launch/ : /this boot/);
     if (lbl && !wantLbl.test(lbl)) {
       console.log(`BAD  the card is headed "${lbl}" while the payload's numbers are `
                   + `${al ? `a hardware alert on ${al.card} (${al.count} events / ${al.window_s} s)`
                        : (w.faults?.now ? "for this launch" : "since boot, unattributed")}`);
       process.exitCode = 1;
+    }
+    if (al) {
+      const _note = ((byId.get("wd-fault-note") || new El()).title || "");
+      if (al.notify) {
+        const want2 = al.notify.sent ? /accepted by the robot/ : /REFUSED by the robot/;
+        if (!want2.test(_note)) {
+          console.log("BAD  the alert records a send (" + (al.notify.sent ? "accepted" : "refused, errcode "
+                      + al.notify.errcode) + ") and the card's note does not say so: \""
+                      + _note.slice(-160) + "\"");
+          process.exitCode = 1; }
+        if (al.notify.errcode && !_note.includes(String(al.notify.errcode))) {
+          console.log(`BAD  a refused send is described without the robot's errcode ${al.notify.errcode}, which is `
+                      + "the only part of the answer that says WHY");
+          process.exitCode = 1; }
+      } else if (!/No send attempt recorded/.test(_note)) {
+        console.log("BAD  an alert with no recorded send attempt must say that, not leave the delivery to be "
+                    + "guessed");
+        process.exitCode = 1; }
     }
     { const dcls = ((byId.get("wd-fault-dot") || new El()).className || "");
       if (al && !/dot--alert/.test(dcls)) {
