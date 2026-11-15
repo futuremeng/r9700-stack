@@ -35,33 +35,42 @@
 
   <div id="error" class="notice" role="status" hidden></div>
   <div class="about">
-    <section class="card">
+    <section class="card c-model">
       <span class="card-title">Model and engine</span>
       <dl class="facts" id="facts-engine"></dl>
       <p class="small note">Read from the serve itself: <code>GET /v1/models</code> and the labels on its own
         <code>/metrics</code> series. A field is a dash where this vLLM build does not publish it.</p>
     </section>
 
-    <section class="card" id="launch-card" hidden>
+    <section class="card c-launch" id="launch-card" hidden>
       <div class="panel-bar"><span class="card-title">How this box was launched</span>
         <span class="small" id="launch-src"></span></div>
-      <dl class="facts" id="facts-launch"></dl>
+      <!-- 41 keys on this box, which at ~34 px a row is a ~1,300 px wall next to a card that needs 200. The
+           summary names what is behind it and how much, like the three lists in the Configuration card. -->
+      <details id="launch-keys">
+        <summary>The knobs it was started with <output id="launch-n"></output></summary>
+        <dl class="facts" id="facts-launch"></dl>
+      </details>
       <p class="small note">The recipe the serve script recorded when it started (<code>--meta</code>): the knobs,
         not what the engine inferred from them.</p>
     </section>
 
-    <section class="card" id="config-card">
+    <section class="card c-config" id="config-card">
       <span class="card-title">Configuration and environment</span>
       <dl class="facts" id="facts-config"></dl>
-      <details id="cfg-all" open>
+      <!-- Closed by default, and that is a layout decision with numbers behind it: these three lists are 46 +
+           31 + 8 rows, which made this card ~1,700 px tall and left whatever shared its grid row with ~1,200 px
+           of blank column. They are reference, read by someone chasing one label, and the summary says how many
+           are behind it. -->
+      <details id="cfg-all">
         <summary>Engine config — every label this build publishes <output id="cfg-all-n"></output></summary>
         <dl class="facts" id="facts-cfgall"></dl>
       </details>
-      <details id="env-proc" open>
+      <details id="env-proc">
         <summary>Environment of this process <output id="env-proc-n"></output></summary>
         <dl class="facts" id="facts-env"></dl>
       </details>
-      <details id="env-file" open>
+      <details id="env-file">
         <summary>Machine-local env file <output id="env-file-n"></output></summary>
         <dl class="facts" id="facts-envfile"></dl>
         <p class="small note" id="env-file-note"></p>
@@ -71,19 +80,19 @@
     <!-- Image input gets its own card because the engine cannot testify to it: no vllm:* label says whether the
          serve came up --language-model-only. So the card answers from the live process's argv (what the running
          serve accepts) and from the recipe file (what this box's launcher recorded), and says which is which. -->
-    <section class="card" id="mm-card" hidden>
+    <section class="card c-mm" id="mm-card" hidden>
       <span class="card-title">Image input</span>
       <dl class="facts" id="facts-mm"></dl>
       <p class="small note" id="mm-note"></p>
     </section>
 
-    <section class="card">
+    <section class="card c-machine">
       <span class="card-title">This machine</span>
       <dl class="facts" id="facts-host"></dl>
       <div class="grid gpus" id="gpus"></div>
     </section>
 
-    <section class="card">
+    <section class="card c-connect">
       <span class="card-title">Connect your tools</span>
       <p class="muted">Any OpenAI-compatible client works with these. The base URL is the serve itself —
         <span id="api-note">this page is a sidecar, not a proxy, unless it was started with <code>--proxy</code>.</span></p>
@@ -112,6 +121,11 @@
         <pre class="code" id="curl"></pre>
         <button class="st-btn" data-copy-target="curl">Copy</button>
       </div>
+      <!-- Two more shapes of the same endpoint, behind a click. curl answers the copy almost everyone needs;
+           the LiteLLM pair answers the one they are actually running. Open all three at once cost this card
+           ~400 px, in a row whose partner was ~150 px tall. -->
+      <details id="litellm">
+        <summary>LiteLLM — proxy config, and a direct call</summary>
       <div class="label code-cap">LiteLLM — proxy config</div>
       <div class="code-block">
         <pre class="code" id="litellm-yaml"></pre>
@@ -122,6 +136,7 @@
         <pre class="code" id="litellm-py"></pre>
         <button class="st-btn" data-copy-target="litellm-py">Copy</button>
       </div>
+      </details>
       <p class="small note">Three things that bite when pasting: LiteLLM and the OpenAI SDK want the base
         <strong>with</strong> <code>/v1</code> (curl wants it without, as the block above shows), the model
         string is <code>openai/&lt;served name&gt;</code>, and these launches run a reasoning parser —
@@ -136,7 +151,7 @@
         The API key is never printed here: if the serve has one, name it in the environment.</p>
     </section>
 
-    <section class="card">
+    <section class="card c-page">
       <span class="card-title">This page</span>
       <div class="st-field">
         <label class="st-label" for="api-key">API key <output>only if the serve was started with one</output></label>

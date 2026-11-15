@@ -84,6 +84,7 @@ function render() {
   ]);
 
   const keys = Object.keys(meta).sort();
+  text("launch-n", keys.length ? `(${keys.length} keys)` : null);
   $("launch-card").hidden = !keys.length;
   if (keys.length) {
     text("launch-src", (s.meta_src || "--meta")
@@ -244,7 +245,8 @@ function render() {
   const rsn = meta.reasoning || null;      // the launcher records the parser it passed, in the recipe file
   facts($("facts-api"), [
     ["Model name", model, true],
-    ["OpenAI / LiteLLM base_url", apiBase, true],
+    // No base_url row here: the cell above the block IS the base_url, at four times the size, with its own
+    // Copy. A list that repeats the headline teaches the reader that lists are where the truth lives.
     ["Root (curl, /health, /metrics)", origin, true],
     ["Reasoning", rsn ? `separate (${rsn}) — it arrives in message.reasoning_content, and content can come back empty if max_tokens is all spent on it`
       : "not recorded by the launcher"],

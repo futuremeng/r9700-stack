@@ -2146,8 +2146,17 @@ ck("About carries a pasteable LiteLLM proxy config and a direct call",
    and "model: openai/" in abjs and 'api_base: ${apiBase}' in abjs and 'api_base="${apiBase}"' in abjs)
 ck("the base a client gets is the address that answered this page, with /v1; the internal one is labelled",
    "const origin = (location.origin" in abjs and 'const apiBase = `${origin}/v1`' in abjs
-   and '["OpenAI / LiteLLM base_url", apiBase, true]' in abjs
+   and 'text("connect-base", origin || null)' in abjs and "OPENAI_BASE_URL=${apiBase}" in abjs
    and '["Upstream this page dials", s.upstream' in abjs)
+# The About grid is two columns and a grid row is as tall as its tallest card, so WHICH CARD SITS NEXT TO WHICH
+# is the page's layout. Left to DOM order, a ~1,700 px card shared a row with a ~150 px one and the column beside
+# it was blank. The pairing lives in about.css as an `order` per card class; this check is what stops a new card
+# from landing unplaced (it would take whatever hole the DOM leaves, which is how the waste got there).
+_acss = open(os.path.join(ROOT, "serve/web/about.css")).read()
+_cards = {m.group(1) for m in re.finditer(r'<section class="card\s+([a-z-]+)"', abhtml) if m.group(1).startswith("c-")}
+_placed = set(re.findall(r"\.about \.(c-[a-z]+)\{order:", _acss))
+ck("every About card is placed by the layout rule, and the rule places no card the markup dropped",
+   _cards == _placed and len(_cards) >= 6, f"markup: {sorted(_cards)}; placed: {sorted(_placed)}")
 ck("no API key is ever written into a pasteable block",
    all(k in abjs for k in ('api_key: ${s.key_needed ? "os.environ/LITELLM_API_KEY" : "none"}',))
    and not re.search(r"api_key[=:]\s*\$?\{?\s*(s\.key\b|cfg\[.key.\])", abjs),

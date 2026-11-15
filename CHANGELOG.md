@@ -1,5 +1,28 @@
 # Changelog
 
+## About page: the grid was paying for a card that paid for nothing
+
+The 2-column grid makes **DOM order the layout** — a row is as tall as its tallest card — and the order had
+paired the tallest cards with the shortest. Counted against this box's live payload (rows × ~34 px, the same
+arithmetic `docs/monitor-cards.py` uses): Configuration ~2,500 px (46 + 31 + 8 label rows, all three lists open
+by default) next to This machine ~500; the recipe list ~1,300 (41 keys) next to Model and engine ~210; Connect
+~1,380 (three code blocks open, two of them alternates) next to This page ~250. **~4,000 px of blank column**
+and a ~5,000 px tall page to scroll for six cards.
+
+- **Reference lists closed by default**, each summary naming what is behind it: engine labels (46), process
+  environment (31), env file (8), and now the recipe keys (41, `launch-n` counts them). Two of the three paste
+  blocks (the LiteLLM pair) went behind a summary too — curl answers the copy most people need.
+- **The pairing is stated in CSS** (`.about .c-*{order:N}`) with the measured heights in the comment, so the
+  layout is a claim that can be re-checked rather than a side effect of markup order: Connect ~820 with This
+  machine ~500, Model ~210 with Configuration ~300, recipe ~120 with This page ~250 — page ~1,900 px, waste
+  ~600 instead of ~4,000.
+- **`tests/test_webui.py` fails if a card is unplaced**: every `c-*` class in the markup must appear in the
+  order rule, and the rule must not name a card the markup dropped. An unplaced card lands wherever the DOM puts
+  it, which is exactly how the waste got there.
+- A row that repeated the headline cell (`OpenAI / LiteLLM base_url` under a base_url printed four times larger,
+  with its own Copy) is gone: a list that repeats the headline teaches the reader that lists are where the truth
+  lives.
+
 ## "The Monitor keeps dropping": the front door was closing the connection under the browser
 
 Reported from the LAN: `http://192.168.1.120:8080/monitor` intermittently drops, and opening `/api/status`

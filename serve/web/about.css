@@ -9,6 +9,19 @@ dl.facts{margin-top:16px}
 .code-block pre.code{max-height:260px;min-height:0}
 @media(max-width:980px){.about{grid-template-columns:1fr}}
 
+/* Which card shares a row with which. The grid is two columns and a grid row is as tall as the tallest card in
+   it, so on this page DOM order IS layout. Measured arithmetically against this box's live payload before the
+   change (rows in each list x ~34 px): Connect ~1,380 (three code blocks open) paired with This page ~250;
+   Configuration ~2,500 (46+31+8 label rows open) paired with This machine ~500; the recipe list ~1,300 (41 keys)
+   paired with Model and engine ~210 -- roughly 4,000 px of blank column down the right edge, and a page ~5,000 px
+   tall. So the reference lists are closed by default (each summary says how much is behind it), two of the three
+   paste blocks are closed, and the pairing is stated here: Connect ~820 with This machine ~500, Model and engine
+   ~210 with Configuration ~300, the recipe ~120 with This page ~250 -- page height ~1,900, waste ~600. Change a
+   card's content and this pairing has to be re-checked, not assumed; the check in tests/test_webui.py only
+   guarantees every card IS placed, not that the numbers still match. */
+.about .c-connect{order:1}.about .c-machine{order:2}.about .c-model{order:3}.about .c-mm{order:4}
+.about .c-config{order:5}.about .c-launch{order:6}.about .c-page{order:7}
+
 /* captions for the copy-paste blocks (curl, LiteLLM x2) */
 .code-cap{margin:18px 0 0}
 
