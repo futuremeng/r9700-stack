@@ -610,6 +610,24 @@ Flash-Next configuration needs about 120 GB of host RAM; eight-card runs on a 12
 
 ## Watching it: the Monitor and About pages
 
+The page is in four screens, and the order is the order the questions get asked (2026-11-15, restated by the
+operator and pinned by `tests/test_webui.py`): **Now** — the engine's counters and the four rates, with two
+one-line states in the same strip as the freshness stamp: `Answering / Loading / Gone / Wedged` and
+`Door open / Door held`. **Recent** — the activity waveforms, the admission gate's 15-minute history and counters,
+the last request's numbers, and the per-request means vLLM only reports as averages. **Requests** — the list, and
+each row says only what a row has to: time, its own prefill and decode tok/s, `prompt → output` tokens, first
+token and whole-request seconds, and its id; the spans in seconds live in the detail pane, a status is printed only
+when it is not what it should be, and the crowding chip appears only above 1.5 streams. **Hardware** — engine state
+and the driver's page faults, the cards with the chain behind each, and the CPU sidecars sharing the box.
+
+Two things are deliberately *not* moved by that rule. The alarm row went to the fourth screen because it is read to
+decide about a card, not about a request — but the one read that has to stay where the rates are is the engine's
+state, because on 2026-11-15 the four headline rates kept printing plausible numbers for 26 minutes after `/health`
+went silent while three ranks held ~29 GiB each. And the serve-down banner (`the serve behind this page is not
+answering — here is the command to bring it back`) sits above the first screen rather than inside the request list,
+where it used to be three screens down.
+
+
 <p align="center">
   <a href="docs/r9700-stack-monitor.png"><img src="docs/r9700-stack-monitor.png" alt="The Monitor page: engine state and the KV pool, request counts at the engine, generation and speculation, every card's busy% and VRAM, the engine's timings over the poll window, and the request list with each request's own wall clock, token counts and prefill"></a>
   <br><sub>The Monitor page on the launch that runs today: engine state and the KV pool, generation and speculation,

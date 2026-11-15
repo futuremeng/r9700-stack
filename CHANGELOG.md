@@ -1,5 +1,45 @@
 # Changelog
 
+## The Monitor re-planned into four screens — Now, Recent, Requests, Hardware — and the request rows cut to what a row has to carry
+
+The hardware error row moved off the first screen at the operator's request, and with it the per-card sensors, the
+chain behind each card, and the CPU sidecars. The order is now `Now / Recent / Requests / Hardware`, written into the
+markup as four band headers plus a `scr-*` class per section, and pinned by `tests/test_webui.py` (unclassified
+section, interleaved screens, or an alarm row creeping back above the fold is a failure) — because a layout that
+exists only as an order in a file is a layout that drifts the first time someone inserts a row.
+
+One part of the earlier plan did not move, and it is now cheaper than it was. The alarm row (engine state, driver
+page faults, big-prefill exposure, preemptions) is the head of the Hardware screen — it is read to decide about a
+CARD, not about a request. What stays beside the rates is one word, in the same strip as the freshness stamp:
+`Answering / Loading / Gone / Wedged`, plus `Door open / Door held / Door off`. The reason is recorded rather than
+argued: on 2026-11-15 those four headline rates kept printing plausible tok/s for 26 minutes after `/health` went
+silent, while three ranks went on holding ~29 GiB each. A card costs 200 px of first screen; the word costs 18. The
+gate row itself went to Recent — a 15-minute history strip and running counters are a window — while its current
+state stayed upstairs, because after that same afternoon (180 polls of a shut door) "the engine is slow" and "the
+front door has not let mine in yet" have to be distinguishable without scrolling.
+
+Request rows were cut to what a row has to carry: time, its own prefill and decode tok/s, `prompt → output` tokens,
+first token with its queue part, whole-request seconds, cache hits, its id, and marks only for things that change a
+reading (state, `preempted n×`, `hit max_tokens`, crowding above 1.5 streams). Out: `prefill 12.3 s` and
+`decode 4.1 s`, which restated a fact already one line above (the tok/s figures are computed FROM those spans; the
+spans stay in the detail pane and the wall-clock split), and `HTTP 200` on every row of a healthy box. The Recent
+screen gained a recent-set fact the page had never stated: how many of the retained rows did not finish, with
+streaming rows explicitly not counted as errors.
+
+`tests/render-monitor.mjs` now checks every rendered row against the payload that produced it — no span, no `HTTP
+200`, id present, `all in` present, crowding chip present exactly when `shared_decode >= 1.5` — and the two strips
+against the state payload: a wedged launch has to be `Wedged`, danger-coloured, with `STOP=1 bash serve/<recipe>` in
+its title; a port with no gateway hides the door chip instead of inventing a state. Getting that harness to compare
+rows against the right payload needed a list-only capture of `/api/requests`: the same path answers `?id=…` with ONE
+request, and overwriting the list with a detail payload made the row checks match nothing and report a broken page
+instead of a broken harness.
+
+Found in the markup, both invisible in a browser: two elements with `id="down-line"` — `getElementById` answers the
+first, so the second was an unreachable empty `div` — and that serve-down banner ("the serve is not answering, bring
+it back with: …") sitting three screens down, inside the request list, where it had been since the 2026-11-03 outage
+it was written for. It is now the first thing under the header, and no id may repeat in the file (comments stripped
+before the check, so prose that names an id is not an id).
+
 ## A raised alert now reaches a phone: the alert channel lives on the About page, and the robot's answer is kept with the claim
 
 The hardware alert from the previous entry was, on this box, a file plus a line in a log. `ALERT_CMD` was commented

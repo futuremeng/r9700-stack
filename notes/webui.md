@@ -1806,3 +1806,51 @@ a real payload (`tests/render-about.mjs`, `tests/render-monitor.mjs`) rather tha
 Alerts card passed every static string check while its loader never fetched `/api/notify` at all — the card was
 hidden, the facts were empty, and `test_webui.py` was green. It took the render harness, which asks whether the
 page actually wrote anything into the section, to notice.
+
+## Four screens, and the one read that does not move (2026-11-15 evening)
+
+The operator asked for the page to be re-planned: first screen live information, second recent statistics, third the
+request records (essential information only), fourth the hardware — the hardware error row explicitly moved down.
+That is now in the markup as four `band` headers and a `scr-now|scr-recent|scr-requests|scr-hardware` class on every
+section, because a layout that exists only as an order in the file is a layout that drifts the first time someone
+inserts a row. `tests/test_webui.py` reads the bands and the classes and fails if a section is unclassified, if the
+screens interleave, or if the alarm row creeps back above the fold.
+
+One part of the previous plan was worth keeping, and it survived as a line rather than a row. Earlier the same
+operator had asked for the alarms on the first screen, and the reason was recorded: on 2026-11-15 the four headline
+rates kept printing plausible tok/s for 26 minutes after `/health` stopped answering, while three `VLLM::Worker_TP*`
+went on holding ~29 GiB each. So the alarm ROW (engine state, driver page faults, big-prefill exposure,
+preemptions) is now the head of the hardware screen — it is read to decide about a CARD, not about a request — while
+two one-word states moved into the window bar that already says how old the snapshot is: `Answering / Loading / Gone
+/ Wedged` and `Door open / Door held / Door off`. A card is 200 px of first screen; a chip in the freshness line is
+18 px, and the thing that has to be impossible to miss is the *word*, not the panel under it.
+
+The gate moved the other way, and its row is a good example of the rule rather than an exception to it. `Open/Held`
+is a current fact, so it is one of the two chips; the 15-minute history strip, the held/expired/small counters and
+the pool-in-tokens are all windows, so the row went to the Recent screen. After the 2026-11-15 afternoon — 180
+polls of a shut door, every arrival paying the hold ceiling — the pair "engine is slow" vs "the door has not let
+mine in" has to be distinguishable without scrolling.
+
+Request rows were cut to what a row has to carry: time, its own prefill and decode tok/s, `prompt → output` tokens,
+first token (with the queue part of it), whole-request seconds, cache hits when any, its id, and marks for the
+things that change a reading (state, preemption count, hit max_tokens, crowding above 1.5 streams). What went:
+`prefill 12.3 s` and `decode 4.1 s`, which stated the same fact twice — the two tok/s figures one line above are
+computed FROM those spans — and `HTTP 200` on every row of a healthy box, which outvoted the marks that mean
+something. `tests/render-monitor.mjs` now checks each rendered row against the payload that produced it: no span,
+no 200, the id present, `all in` present, the crowding chip present exactly when `shared_decode >= 1.5`. A row that
+fails any of that is a BAD, so the trim cannot silently grow back.
+
+Two findings from touching the file, both the kind the page hides:
+
+* It had carried `id="down-line"` twice. `getElementById` answers the first, so the second was an unreachable empty
+  `div` — and the banner that tells an operator the serve is down and what to type had been written into whichever
+  element happened to come first in the DOM. `tests/test_webui.py` now fails on any duplicate id in the markup
+  (comments stripped first, so prose that *names* an id is not an id).
+* That banner was also three screens down, inside the request list. On 2026-11-03 the serve stopped answering for
+  minutes; the sentence "the serve behind this page is not answering, bring it back with: …" was below the fold.
+  It is now the first thing under the header.
+
+The generalisation, which this file has now written down about four times in four forms: **a Monitor layout is a
+set of claims about what the reader is asking**, and every one of them has to be checkable without a browser. Bands
+and screen classes, chips instead of panels for the reads that must stay near the numbers, and a render harness that
+compares each rendered element to the payload that produced it.
