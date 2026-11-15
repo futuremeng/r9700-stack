@@ -781,3 +781,46 @@ already been identified as the constant across six faults. If a fault does retur
 the surviving stock-core steps are only prefills over 1 024 tokens (`prefills=5 … act=2047`, `prefills=15 …
 act=5913` in the 1024 arms), so a hit under 1024 means the trigger is broader than the stock core and §10-§12's
 localisation was too narrow.
+
+## 18. What the Monitor now measures because this hunt could not answer it at the moment it mattered
+
+Three of this hunt's answers arrived late because the page in front of the operator did not carry the fact: which
+**physical card** each rank sits on (§15 needed a permuted launch, a live `tools/gpu-rank-map.py` and a kernel
+journal read by hand), whether the driver had **page-faulted at all** since boot (six times — and the engine's own
+log never says which card), and whether the step shape that faults is even being **asked for** any more (§17's
+whole interpretability problem: "no faults since 1024" is worth nothing unless someone knows that big prefills are
+still arriving). So `serve/webui.py` now reads all three, and the Monitor has a row for them.
+
+* **Which rank owns which card** — `rank_holds()`, from KFD's per-process records: `topology/nodes/*/location_id`
+  gives the PCI function, `proc/<pid>/vram_<gpu_id>` gives the holding, and the owning rank is the one showing
+  ~28.8 GiB where the others show scratch. Not `/proc/<pid>/fd`: every rank keeps all four `renderD*` open for
+  P2P, so the fd list identifies nothing (measured §15). The count rides on the card, so the question is asked
+  where it is asked: `rank TP1 holds 28.8 GiB · pid 591142`.
+* **Driver page faults, this boot** — `kernel_faults()`, counting `[gfxhub] page fault` lines out of
+  `journalctl -k --boot -g …`, per PCI function, with the following `Process … pid N` line paired to its fault.
+  Total in the row, per-card counts on the cards. Two honesty rules, both earned today: journalctl's `-A` is
+  `--after-boot` and not "lines after the match", so a mistyped flag prints a usage line and **nothing** on
+  stdout — which is how this read first reported "0 faults" on a box that had had six; and an unreadable journal
+  reports `unknown`, never zero, because "no faults" and "cannot see the kernel log" are different claims and only
+  one of them is evidence about a card.
+* **Engine state, including `wedged`** — `engine_state()`: health plus how many ranks KFD still reports as
+  holding memory. §11's aftermath was a state neither the record nor the page could name: /health silent, three
+  ranks still holding ~32 GiB each, 26 minutes of "healthy". The note says what to do about it (`STOP=1 bash
+  serve/<recipe>`), and a launch that has never answered is `loading`, not dead.
+* **Exposure: prompts over the routing bound** — the `/metrics` prompt-size histogram is no longer thrown away;
+  buckets are kept as `family;le=<bound>` keys (never folded into the family, which is what makes means lie, and
+  the `+Inf` bucket dropped because it is the count twice). The row prints the share of finished requests whose
+  prompt clears the nearest published bucket, and the bound itself is printed rather than implied: the build
+  publishes 1 000, the recipe's knob is 1 024, and a page that conflates them is reporting precision it does not
+  have. This is the card that keeps the other three interpretable — a fault-free stretch with zero big prefills
+  is not evidence about §17's dodge.
+
+`tests/render-monitor.mjs` earned two more rules from this and both are worth keeping: the row is **hidden** —
+not left as four em-dash cards — when the sidecar is too old to have made the reads (an em-dash row would read as
+"no faults here"), and the timestamp/pid live in the `title` because the slot's 24-character budget is what keeps
+the row from re-wrapping; a raw ISO timestamp in a slot also trips the harness's bare-negative rule, which is the
+harness telling the truth about how a reader would misread it.
+
+Not yet visible: the Monitor runs **inside** the serve (`serve/plugin`, mode `merged`), so these fields appear on
+the next launch, not on the one running now. Against the pre-change sidecar the row correctly hides itself — which
+is the fixture proving its hiding rule rather than a bug.
