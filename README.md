@@ -646,10 +646,14 @@ proxying when the request bodies themselves are the thing under study. (`tests/t
 hand-started sidecar on `:8099` a requirement of the box; since 2026-11-05 it checks the engine's own port is bound
 the way the machine-local file says, and any sidecar that happens to be running - running none is the shape.)
 
-The About page hands out client config that is right where you paste it: the base URL is the address that answered
-the page (`/v1` for the OpenAI SDK and LiteLLM, the root for curl), `openai/<served name>` rather than the
-checkpoint path, the API key never printed, and the reasoning parser accounted for (`--reasoning-parser qwen3`
-makes reasoning tokens count against `max_tokens`, so a small budget returns `content = None`).
+The About page hands out client config that is right where you paste it: one section per model family the port
+answers — chat, embeddings, rerank — each with the model name that family actually accepts and its own curl, because
+one URL is answered by three processes and pasting the chat name into an embeddings request buys a 404 listing names
+the reader has never seen. The base URL is the address that answered the page (`/v1` for the OpenAI SDK and LiteLLM,
+the root for curl), `openai/<served name>` rather than the checkpoint path, the API key never printed, and the
+reasoning parser accounted for (`--reasoning-parser qwen3` makes reasoning tokens count against `max_tokens`, so a
+small budget returns `content = None`). A Copy button that has nothing to copy says so instead of writing an empty
+string and printing "Copied" — that is how a dead one survived a rename of the id it was wired to.
 
 Both pages' headers name the build that is answering: the plugin's version, and the branch, commit and dirtiness of
 the tree that plugin was loaded from - on the launch running today, `vLLM 0.32.0 · plugin 0.4.3 · df4d9cb`, with a

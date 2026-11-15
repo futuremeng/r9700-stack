@@ -49,7 +49,12 @@ function render() {
   // behind serve/gateway.py, so "Listening on 127.0.0.1:8180" sits on the same page as a base_url on :8080.
   // Unstated, those two lines read as a contradiction; the address the browser used is the one to dial, and the
   // other endpoints answering on it are not this engine's.
-  const sc = s.sidecars || [];
+  // The front door's /api/sidecars answers `{sidecars: [...]}` and the page stores the list. Accept only a list
+  // here: render() throwing mid-way blanks every card below the throw with no error on screen (notes/webui.md
+  // records the same failure from a missing parameter), and a payload that hands back the wrapper object is one
+  // bad `.map` away from that. Object values cover the GATEWAY_STATE shape, which keys the same entries by route.
+  const sco = s.sidecars || [];
+  const sc = Array.isArray(sco) ? sco : Object.values(sco);
   // A sidecar entry carries the route as its name (that is how the gateway is configured) and, when the serve was
   // started with --alias, the model name a client should send. Both are things a config file needs verbatim.
   const routes = sc.map((x) => ({ path: x.name || "", model: ((x.serve || {}).alias || "").trim() }))
@@ -255,28 +260,55 @@ function render() {
     ["Through this page", s.mode === "proxy" ? `${origin} (point clients here to record them)`
       : s.mode === "merged" ? `${origin} (this IS the serve)` : "not routed here — use the base_url above"],
     ["Weights live at", models[0]?.root ? `${models[0].root} — not a name a client can ask for` : null],
-    // The same URL answering /v1/embeddings is not this engine answering it: those are llama.cpp serves on the
-    // CPU with their own model names. An About page that names only the chat model implies the port does not
-    // answer anything else, which stopped being true on 2026-11-15.
-    ...(routes.length ? [["Also on this port", `${routes.map((r) => r.model ? `${r.path} (model ${r.model})`
-        : r.path).join(" · ")} — other serves on this box (CPU llama.cpp), answering their own model names; `
-        + `their cards are on the Monitor.`]] : []),
+    // "Also on this port" used to be a row here, listing the other routes and their model names. The three
+    // sections above carry those facts in the shape a config file is built from; what stays is the part a
+    // section cannot show: that those routes are answered by other processes, not by this engine.
+    ...(routes.length ? [["Serves behind this URL", `${routes.length} route${routes.length > 1 ? "s" : ""} on this `
+        + `port answered by other processes (llama.cpp on the CPU), each answering its own model name; their load `
+        + `cards are on the Monitor.`]] : []),
   ]);
 
-  // The headline of this card, and the point of the whole page for anyone arriving to configure something: the
-  // two strings they are about to type into a config file, plus one block that pastes without editing. Rendered
-  // from the address this page was SERVED on, so behind a gateway it names the front door rather than the
-  // loopback port the process happens to hold.
-  text("connect-base", origin || null);
-  text("connect-model", model || null);
-  document.querySelector("[data-copy-target=connect-base]").dataset.copy = origin;
-  document.querySelector("[data-copy-target=connect-model]").dataset.copy = name;
+  // One section per model family this URL answers, each carrying the two strings a client config is made
+  // of, rendered from the address this page was SERVED on: behind a gateway the base_url names the
+  // front door, not the loopback port this process happens to hold.
+  // The two CPU serves are separate processes with separate model names: the revision before this one named only
+  // the chat model, which read as "this port does chat" on a box where it answers three families.
+  const byRoute = {};
+  sc.forEach((x) => { const k = (x.name || "").trim(); if (k) byRoute[k] = x; });
+  const emb = byRoute["/v1/embeddings"] || null, rrk = byRoute["/v1/rerank"] || null;
+  const scName = (x) => x ? ((((x.serve || {}).alias || "").trim()) || "no alias set on that serve") : null;
+  // What the serve is, in one line: threads and context come from its own command line, so someone sizing a batch
+  // job sees the ceiling without walking over to the Monitor.
+  const scNote = (x) => x ? `a llama.cpp serve on this box's CPU, not this engine · `
+    + `${(x.serve || {}).threads || "?"} threads · ctx ${(x.serve || {}).ctx || "?"}`
+    + (x.health === 200 || x.health === null || x.health === undefined ? "" : ` · last health ${x.health}`) : null;
+  const cell = (id, on) => { const el = $(id); if (el) el.hidden = !on; };
+  cell("ep-embed", !!emb); cell("col-embed", !!emb);
+  cell("ep-rerank", !!rrk); cell("col-rerank", !!rrk);
+  text("ep-chat-model", model || null);
+  text("ep-chat-base", origin || null);
+  text("ep-chat-note", s.port ? `answered by this serve, which listens on `
+    + `${s.bind || ""}${s.bind ? ":" : ""}${s.port}` : null);
+  document.querySelector("[data-copy-target=ep-chat-model]").dataset.copy = name;
+  document.querySelector("[data-copy-target=ep-chat-base]").dataset.copy = origin;
+  // One line per target, no loop: tests/test_webui.py compares the buttons the markup declares against the
+  // payloads wired here, and a wiring built from a variable hides a dead button from every checker.
+  document.querySelector("[data-copy-target=ep-embed-model]").dataset.copy = scName(emb) || "";
+  document.querySelector("[data-copy-target=ep-embed-base]").dataset.copy = emb ? apiBase : "";
+  document.querySelector("[data-copy-target=ep-rerank-model]").dataset.copy = scName(rrk) || "";
+  document.querySelector("[data-copy-target=ep-rerank-base]").dataset.copy = rrk ? apiBase : "";
+  text("ep-embed-model", scName(emb));
+  text("ep-embed-base", emb ? apiBase : null);
+  text("ep-embed-note", emb ? scNote(emb) : null);
+  text("ep-rerank-model", scName(rrk));
+  text("ep-rerank-base", rrk ? apiBase : null);
+  text("ep-rerank-note", rrk ? scNote(rrk) : null);
   const agentEnv = `# OpenAI-compatible. The SDK and LiteLLM want the /v1; curl does not.\n`
     + `OPENAI_BASE_URL=${apiBase}\n`
     + `OPENAI_API_KEY=${s.key_needed ? "<your key, never printed here>" : "none"}\n`
     + `OPENAI_MODEL=${name}\n`
-    + (routes.length ? `# this port also routes: ${routes.map((r) => r.model ? `${r.path} (model ${r.model})`
-        : r.path).join("  ·  ")}\n` : "")
+    + (routes.length ? `# the same base URL also answers: `
+        + `${routes.map((r) => r.model ? `${r.path} (model ${r.model})` : r.path).join("  ·  ")}\n` : "")
     + `# reasoning is separate on this launch: content can come back empty if max_tokens all goes to reasoning_content`;
   $("agent-env").textContent = agentEnv;
   document.querySelector("[data-copy-target=agent-env]").dataset.copy = agentEnv;
@@ -286,6 +318,20 @@ function render() {
     + `       "max_tokens": 64, "temperature": 0}'`;
   $("curl").textContent = curl;
   document.querySelector("[data-copy-target=curl]").dataset.copy = curl;
+  // The CPU serves get their own blocks for the same reason they get their own sections: the model name in the
+  // chat block is not a name either of them accepts, and pasting it buys a 404 listing names the reader has never
+  // seen. curl wants the path without /v1 here too -- the caption says that once instead of in every block.
+  const curlEmbed = emb ? `curl ${origin}/v1/embeddings \\\n`
+    + `  -H 'Content-Type: application/json' \\\n`
+    + `  -d '{"model": "${scName(emb)}", "input": "text to embed"}'` : "";
+  const curlRerank = rrk ? `curl ${origin}/v1/rerank \\\n`
+    + `  -H 'Content-Type: application/json' \\\n`
+    + `  -d '{"model": "${scName(rrk)}", "query": "what the search was for",\n`
+    + `       "documents": ["first candidate", "second candidate"]}'` : "";
+  $("curl-embed").textContent = curlEmbed;
+  $("curl-rerank").textContent = curlRerank;
+  document.querySelector("[data-copy-target=curl-embed]").dataset.copy = curlEmbed;
+  document.querySelector("[data-copy-target=curl-rerank]").dataset.copy = curlRerank;
   // LiteLLM in both shapes people actually use it: a proxy config, and a direct call. The `openai/` prefix is
   // what makes it treat this as an OpenAI-compatible endpoint; the key is never inlined, only named.
   const yaml = `# litellm --config litellm.yaml --port 4000\nmodel_list:\n`

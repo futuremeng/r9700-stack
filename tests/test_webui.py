@@ -2146,7 +2146,8 @@ ck("About carries a pasteable LiteLLM proxy config and a direct call",
    and "model: openai/" in abjs and 'api_base: ${apiBase}' in abjs and 'api_base="${apiBase}"' in abjs)
 ck("the base a client gets is the address that answered this page, with /v1; the internal one is labelled",
    "const origin = (location.origin" in abjs and 'const apiBase = `${origin}/v1`' in abjs
-   and 'text("connect-base", origin || null)' in abjs and "OPENAI_BASE_URL=${apiBase}" in abjs
+   and 'text("ep-chat-base", origin || null)' in abjs
+   and 'text("ep-embed-model"' in abjs and 'text("ep-rerank-model"' in abjs and "OPENAI_BASE_URL=${apiBase}" in abjs
    and '["Upstream this page dials", s.upstream' in abjs)
 # The About grid is two columns and a grid row is as tall as its tallest card, so WHICH CARD SITS NEXT TO WHICH
 # is the page's layout. Left to DOM order, a ~1,700 px card shared a row with a ~150 px one and the column beside
@@ -2736,6 +2737,19 @@ _ct = set(re.findall(r'data-copy-target="([a-z0-9-]+)"', _ab))
 _cw = set(re.findall(r'\[data-copy-target=([a-z0-9-]+)\].{0,6}?\.dataset\.copy', _ajs, re.S))
 ck("every Copy button in the About markup has its payload wired, and nothing is wired to a button not in the markup",
    _ct == _cw and _ct, f"markup: {sorted(_ct)}; wired: {sorted(_cw)}")
+# Size and colour of a Copy button come from one shared rule (.st-btn--copy in web.css); position comes from the
+# page. A button that forgets the class silently inherits the chunky 38px default, and the inconsistency is only
+# obvious when someone puts two of them side by side -- so it is pinned here instead.
+_btn = re.findall(r'<button class="([^"]*)"[^>]*data-copy-target', abhtml)
+ck("every Copy button on the About page carries the class its styling hangs on",
+   _btn and all("st-btn--copy" in c for c in _btn), sorted(set(_btn))[:4])
+# One URL, three model families. The sections are declared in markup (not built by JS) so that a family vanishing
+# from the page is an edit someone can see in a diff, and so the endpoint paths a reader copies are reviewable text
+# rather than strings assembled at runtime.
+_ep = re.findall(r'<div class="ep[^"]*" id="(ep-[a-z]+)"', abhtml)
+ck("the Connect card declares one section per model family, with its endpoint path in the markup",
+   _ep == ["ep-chat", "ep-embed", "ep-rerank"]
+   and all(p in abhtml for p in ("POST /v1/chat/completions", "POST /v1/embeddings", "POST /v1/rerank")), _ep)
 ck("the rate row is three slots per card and the trend row two, so the two rows are the same shape",
    len(re.findall(r'id="note-[a-z]+"', _wh)) == 4 and len(re.findall(r'id="spans-[a-z]+"', _wh)) == 4
    and len(re.findall(r'id="poll-[a-z]+"', _wh)) == 4

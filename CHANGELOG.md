@@ -1,5 +1,31 @@
 # Changelog
 
+## Connect your tools: one section per model family, and Copy buttons that admit when they are dead
+
+The card named one model (`Qwen3.8`) and showed one curl, on a port that answers three families: `/v1/chat/completions`
+from vLLM, `/v1/embeddings` and `/v1/rerank` from llama.cpp serves on the CPU, each with its own name. A reader
+wiring up embeddings had to guess, and the guess (the name on screen) 404s listing names they had never seen.
+
+- **Three sections** — Chat / Embeddings / Rerank — each with the endpoint path in its header and its own base_url +
+  model name, one Copy per value. Names come from the running serve (`--alias`, carried into the watcher's
+  `state.json` by the gateway's `/api/sidecars`), not from the page. Sections and their curl blocks hide when the
+  route is not answered from the port the page was loaded on (the engine's own loopback port answers only chat).
+- **Per-family paste blocks**: `Agent config`, `Chat — curl`, `Embeddings — curl`, `Rerank — curl`, tiled two-up in
+  the now full-width card. The chat name is checked NOT to appear in a sidecar block, and vice versa.
+- **Copy styling is one shared rule** (`.st-btn--copy` in web.css): 26px, quiet, parked in the corner of the value or
+  block it belongs to; the page supplies only the position. Answering happens inside the button's own box, so the
+  string a reader just copied does not jump. `test_webui.py` fails if a Copy button forgets the class — an
+  inconsistent button is otherwise only visible when someone puts two side by side.
+- **A dead Copy button can no longer pose as a live one.** The handler wrote `dataset.copy` (empty string) to the
+  clipboard and printed "Copied", which is exactly how one survived while its JS wiring pointed at a renamed id. It
+  now prints "Nothing yet" with a dashed border. `render-about.mjs` memoises `querySelector` so the payloads are
+  readable, and asserts every Copy button on screen carries a payload (12/12 here).
+- **`s.sidecars` is normalised to a list.** Feeding the fixture's `{sidecars: [...], at: ...}` wrapper to the page
+  made `sc.map` throw, and a throw inside `render()` blanks every card below it with no error on screen — the
+  failure mode notes/webui.md already records. The object shape (GATEWAY_STATE keys entries by route) is accepted too.
+- The `Also on this port` list row is gone: the sections carry those facts in the shape a config file is built from.
+  What stays in the facts list is the part a section cannot show — that those routes belong to other processes.
+
 ## About page: the grid was paying for a card that paid for nothing
 
 The 2-column grid makes **DOM order the layout** — a row is as tall as its tallest card — and the order had

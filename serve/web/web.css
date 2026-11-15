@@ -97,6 +97,18 @@ dl.facts dd code{background:var(--st-surface-2);border-radius:6px;padding:2px 6p
 .st-btn:hover{border-color:var(--st-accent)}
 .st-btn:disabled{opacity:.45;cursor:default}
 .st-btn--primary{background:var(--st-accent);color:var(--st-accent-ink);border-color:transparent;font-weight:700}
+
+/* Copy buttons. They are controls ON a value or a block, not part of its content, so they are small, quiet, and
+   parked in a corner by the page that owns the layout. Two things they must not do: move the text being copied
+   when they answer (the answer is a colour and a word inside the button's own box), and pretend. A Copy wired to
+   an empty payload used to write an empty string to the clipboard and say "Copied" -- which is how a dead button
+   survived three revisions of this page. It now says so. */
+.st-btn--copy{height:26px;padding:0 10px;gap:0;font-size:var(--st-fs-xs);font-weight:var(--st-fw-medium);
+  background:var(--st-surface-2);border:1px solid var(--st-line);color:var(--st-ink-muted);opacity:.72;
+  transition:opacity var(--st-dur) var(--st-ease),border-color var(--st-dur) var(--st-ease)}
+.st-btn--copy:hover{opacity:1;border-color:var(--st-accent);color:var(--st-ink)}
+.st-btn--copy.is-copied{opacity:1;border-color:var(--st-accent);color:var(--st-accent-text)}
+.st-btn--copy.is-empty{opacity:1;border-style:dashed;color:var(--st-ink-muted)}
 .st-btn--primary:hover{background:var(--st-accent-hover)}
 .st-toggle{position:relative;width:40px;height:24px;border-radius:var(--st-r-pill);border:0;background:var(--st-line);transition:background var(--st-dur)}
 .st-toggle::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;

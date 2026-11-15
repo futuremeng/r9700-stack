@@ -96,31 +96,80 @@
       <span class="card-title">Connect your tools</span>
       <p class="muted">Any OpenAI-compatible client works with these. The base URL is the serve itself —
         <span id="api-note">this page is a sidecar, not a proxy, unless it was started with <code>--proxy</code>.</span></p>
-      <!-- The two strings an agent config is built out of, at a size that outranks everything under them, each
-           with its own Copy. They used to be two rows in a definition list of eight: coming here to copy one
-           string meant reading a reference. Below them, one block that pastes into a client without editing. -->
-      <div class="connect-grid">
-        <div class="connect-cell">
-          <div class="label">Base URL — the address this page was served on</div>
-          <div class="value" id="connect-base">—</div>
-          <button class="st-btn" data-copy-target="connect-base">Copy</button>
+      <!-- Three sections, one per model family this port answers. Chat is the engine; embeddings and rerank are
+           separate llama.cpp serves on the CPU, behind the SAME URL, answering their OWN model names. Naming only
+           the chat model -- which this card did until now -- tells someone wiring up embeddings that there is
+           nothing to wire. Each section carries the two strings a client config is made of, endpoint path in its
+           header, and one Copy per value: copying a section means copying both of its strings, and a Copy that
+           covered the section would have to guess which one the reader wanted. -->
+      <div class="ep-grid">
+        <div class="ep" id="ep-chat">
+          <div class="ep-head"><span class="ep-name">Chat / completions</span>
+            <code class="ep-path">POST /v1/chat/completions</code></div>
+          <div class="ep-field"><span class="label">Model name — goes in <code>model</code></span>
+            <div class="value" id="ep-chat-model">—</div>
+            <button class="st-btn st-btn--copy" data-copy-target="ep-chat-model">Copy</button></div>
+          <div class="ep-field"><span class="label">Base URL — the address this page was served on</span>
+            <div class="value" id="ep-chat-base">—</div>
+            <button class="st-btn st-btn--copy" data-copy-target="ep-chat-base">Copy</button></div>
+          <p class="small" id="ep-chat-note"></p>
         </div>
-        <div class="connect-cell">
-          <div class="label">Model name — goes in <code>model</code></div>
-          <div class="value" id="connect-model">—</div>
-          <button class="st-btn" data-copy-target="connect-model">Copy</button>
+        <div class="ep" id="ep-embed" hidden>
+          <div class="ep-head"><span class="ep-name">Embeddings</span>
+            <code class="ep-path">POST /v1/embeddings</code></div>
+          <div class="ep-field"><span class="label">Model name — goes in <code>model</code></span>
+            <div class="value" id="ep-embed-model">—</div>
+            <button class="st-btn st-btn--copy" data-copy-target="ep-embed-model">Copy</button></div>
+          <div class="ep-field"><span class="label">Base URL — same front door, different serve behind it</span>
+            <div class="value" id="ep-embed-base">—</div>
+            <button class="st-btn st-btn--copy" data-copy-target="ep-embed-base">Copy</button></div>
+          <p class="small" id="ep-embed-note"></p>
+        </div>
+        <div class="ep" id="ep-rerank" hidden>
+          <div class="ep-head"><span class="ep-name">Rerank</span>
+            <code class="ep-path">POST /v1/rerank</code></div>
+          <div class="ep-field"><span class="label">Model name — goes in <code>model</code></span>
+            <div class="value" id="ep-rerank-model">—</div>
+            <button class="st-btn st-btn--copy" data-copy-target="ep-rerank-model">Copy</button></div>
+          <div class="ep-field"><span class="label">Base URL — same front door, different serve behind it</span>
+            <div class="value" id="ep-rerank-base">—</div>
+            <button class="st-btn st-btn--copy" data-copy-target="ep-rerank-base">Copy</button></div>
+          <p class="small" id="ep-rerank-note"></p>
         </div>
       </div>
-      <div class="label code-cap">Agent config — paste this, edit nothing</div>
-      <div class="code-block">
-        <pre class="code" id="agent-env"></pre>
-        <button class="st-btn" data-copy-target="agent-env">Copy</button>
+      <!-- Blocks tile two-up in a full-width card: the chat pair first, because that is what most readers came
+           for, then one per CPU serve. Each keeps its own Copy for the same reason the cells do. -->
+      <div class="code-grid">
+        <div class="code-col">
+          <div class="label code-cap">Agent config — paste this, edit nothing</div>
+          <div class="code-block">
+            <pre class="code" id="agent-env"></pre>
+            <button class="st-btn st-btn--copy" data-copy-target="agent-env">Copy</button>
+          </div>
+        </div>
+        <div class="code-col">
+          <div class="label code-cap">Chat — curl (curl wants the path without <code>/v1</code>)</div>
+          <div class="code-block">
+            <pre class="code" id="curl"></pre>
+            <button class="st-btn st-btn--copy" data-copy-target="curl">Copy</button>
+          </div>
+        </div>
+        <div class="code-col" id="col-embed" hidden>
+          <div class="label code-cap">Embeddings — curl</div>
+          <div class="code-block">
+            <pre class="code" id="curl-embed"></pre>
+            <button class="st-btn st-btn--copy" data-copy-target="curl-embed">Copy</button>
+          </div>
+        </div>
+        <div class="code-col" id="col-rerank" hidden>
+          <div class="label code-cap">Rerank — curl</div>
+          <div class="code-block">
+            <pre class="code" id="curl-rerank"></pre>
+            <button class="st-btn st-btn--copy" data-copy-target="curl-rerank">Copy</button>
+          </div>
+        </div>
       </div>
       <dl class="facts" id="facts-api"></dl>
-      <div class="code-block">
-        <pre class="code" id="curl"></pre>
-        <button class="st-btn" data-copy-target="curl">Copy</button>
-      </div>
       <!-- Two more shapes of the same endpoint, behind a click. curl answers the copy almost everyone needs;
            the LiteLLM pair answers the one they are actually running. Open all three at once cost this card
            ~400 px, in a row whose partner was ~150 px tall. -->
@@ -129,12 +178,12 @@
       <div class="label code-cap">LiteLLM — proxy config</div>
       <div class="code-block">
         <pre class="code" id="litellm-yaml"></pre>
-        <button class="st-btn" data-copy-target="litellm-yaml">Copy</button>
+        <button class="st-btn st-btn--copy" data-copy-target="litellm-yaml">Copy</button>
       </div>
       <div class="label code-cap">LiteLLM — direct call</div>
       <div class="code-block">
         <pre class="code" id="litellm-py"></pre>
-        <button class="st-btn" data-copy-target="litellm-py">Copy</button>
+        <button class="st-btn st-btn--copy" data-copy-target="litellm-py">Copy</button>
       </div>
       </details>
       <p class="small note">Three things that bite when pasting: LiteLLM and the OpenAI SDK want the base
@@ -142,7 +191,7 @@
         string is <code>openai/&lt;served name&gt;</code>, and these launches run a reasoning parser —
         <code>message.content</code> can come back <code>None</code> with everything spent on
         <code>message.reasoning_content</code>, because reasoning counts against <code>max_tokens</code>. The
-        path under “Weights live at” is where the checkpoint is, not a name a client can ask for — asking by it
+        path under "Weights live at" is where the checkpoint is, not a name a client can ask for — asking by it
         gets a 404 that lists the aliases this serve does accept. The base URL above is the address <em>this
         browser reached the serve on</em>, not what a sidecar dials internally, so it pastes correctly on the
         machine you are sitting at. On a box that runs a gateway in front, the address printed above belongs to

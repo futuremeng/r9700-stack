@@ -22,6 +22,15 @@ const FIX = ARG.endsWith(".json") ? JSON.parse(readFileSync(ARG, "utf8")) : null
 // dump writes). Normalize once, so the PAGE and the CHECKS below are looking at the same object -- reading
 // `FIX.status` in one place and `FIX` in another is how a fixture silently renders as an empty status.
 const PAY = FIX ? (FIX.status || FIX) : null;
+// Not every fixture is an About fixture. tools/monitor-fixture.py dumps the Monitor's payload, which has no
+// argv / bind / env / gateway blocks -- handing it to this harness produced 37 BADs that were all the same fact
+// rediscovered 37 times. Refuse once, and say what a usable payload looks like.
+if (PAY && !(PAY.argv || PAY.env || PAY.meta)) {
+  console.log("BAD  this fixture has no argv/env/meta block, so it is not an About payload."
+    + " Make one from a running serve: {" + '"status": <GET /api/status>, "host": <GET /api/host>, '
+    + '"sidecars": <GET /api/sidecars from the front door>}');
+  process.exit(1);
+}
 const BASE = FIX ? "" : ARG.replace(/\/$/, "");
 
 class El {
@@ -48,17 +57,26 @@ class El {
   setAttribute(k, v) { this.attrs[k] = String(v); }
   getAttribute(k) { return this.attrs[k] ?? null; }
   querySelectorAll() { return []; }
-  querySelector() { return new El("div"); }                   // copy targets: About sets dataset on these
+  // querySelector is memoised per selector string: About sets dataset.copy on the element it finds, and a stub
+  // that hands back a fresh element every call makes those payloads unreadable to the checks below -- which is
+  // exactly how a Copy button wired to nothing stayed invisible.
+  querySelector(sel) {
+    if (!this._qs) this._qs = new Map();
+    if (!this._qs.has(sel)) this._qs.set(sel, new El("div"));
+    return this._qs.get(sel);
+  }
   focus() {} remove() {} click() {}
 }
 
 const byId = new Map();
+const qsel = new Map();                                     // document.querySelector, memoised per selector
 const document = {
   activeElement: null, hidden: false, documentElement: new El("html"), body: new El("body"),
   head: { appendChild: () => {} },
   createElement: (t) => new El(t),
   getElementById: (id) => { if (!byId.has(id)) byId.set(id, new El("div", id)); return byId.get(id); },
-  querySelectorAll: () => [], querySelector: () => new El("div"), addEventListener: () => {},
+  querySelectorAll: () => [], addEventListener: () => {},
+  querySelector: (sel) => { if (!qsel.has(sel)) qsel.set(sel, new El("div")); return qsel.get(sel); },
 };
 const store = () => { const m = new Map(); return { getItem: (k) => (m.has(k) ? m.get(k) : null),
   setItem: (k, v) => m.set(k, v), removeItem: (k) => m.delete(k) }; };
@@ -77,7 +95,15 @@ const ctx = {
     // so hand back an empty object. URL mode still passes the real 404 through, which is what caught the page's
     // habit of treating one as fatal.
     const body = p === "/api/status" ? PAY
-      : p === "/api/host" ? ((FIX && (FIX.host ?? (PAY ? {} : null))) ?? null) : null;
+      : p === "/api/host" ? ((FIX && (FIX.host ?? (PAY ? {} : null))) ?? null)
+      // A fixture that carries the gateway's /api/sidecars answer has to hand it to the page as well as to the
+      // checks below; withholding it from the page and reading it in the checks calls honest rendering a bug, which
+      // is the same mistake render-monitor.mjs made before it started comparing against the payload the page drew.
+      : p === "/api/sidecars" ? (FIX && FIX.sidecars
+          // a fixture may carry the bare list or the whole {sidecars: [...], at: ...} response; feed the page the
+          // response shape, which is what the endpoint answers
+          ? (Array.isArray(FIX.sidecars) ? {sidecars: FIX.sidecars} : FIX.sidecars) : null)
+      : null;
     if (body === null) return { ok: false, status: 404, json: async () => ({ error: "not in fixture" }) };
     return { ok: true, status: 200, json: async () => body };
   },
@@ -194,21 +220,61 @@ console.log(`\nfront door: browser on ${ORIGIN}, this process on ${S.bind}:${S.p
             + (SC && SC.sidecars ? ` · other routes: ${SC.sidecars.map((x) => x.name).join(" ")}` : " · no gateway"));
 if (fronted && !/Reached through/.test(cfg)) B("the config card does not say which port the browser reached");
 if (!fronted && /Reached through/.test(cfg)) B("the config card names a front door the payload does not show");
-if (SC && SC.sidecars && !/Also on this port/.test(api)) B("the API card does not name the other routes on this port");
-if ((!SC || !SC.sidecars) && /Also on this port/.test(api)) B("the API card names sidecar routes with no gateway answering");
+if (SC && SC.sidecars && !/Serves behind this URL/.test(api)) B("the API card does not say the other routes are other processes");
+if ((!SC || !SC.sidecars) && /Serves behind this URL/.test(api)) B("the API card names other serves with no gateway answering");
 
-// What this page is FOR, for anyone arriving to configure a client: the two strings at a size that outranks the
-// prose, and one block that pastes without editing. Each goes blank silently if the payload or the wiring breaks,
-// and the page still says "render: ok" -- which is the class of rot only a check like this catches.
-const cbase = t("connect-base"), cmodel = t("connect-model"), cenv = t("agent-env");
-console.log(`\nconnect: ${cbase}  ·  model ${cmodel}\n${cenv}`);
-if (cbase !== ORIGIN.replace(/\/$/, "")) B(`the base_url cell says "${cbase}", not the address this page was served on`);
-if (S.model_name && cmodel !== S.model_name) B(`the model cell says "${cmodel}", not ${S.model_name}`);
+// What this page is FOR, for anyone arriving to configure a client: one section per model family this URL answers,
+// each carrying its two strings at a size that outranks the prose, plus blocks that paste without editing. Each
+// goes blank silently if the payload or the wiring breaks, and the page still says "render: ok" -- the class of
+// rot only a check like this catches.
+const cbase = t("ep-chat-base"), cmodel = t("ep-chat-model"), cenv = t("agent-env");
+console.log(`\nconnect: ${cbase}  ·  chat model ${cmodel}`);
+if (cbase !== ORIGIN.replace(/\/$/, "")) B(`the chat base_url says "${cbase}", not the address this page was served on`);
+if (S.model_name && cmodel !== S.model_name) B(`the chat section says "${cmodel}", not ${S.model_name}`);
 if (!/OPENAI_BASE_URL=\S+\/v1/.test(cenv)) B("the agent config block has no OPENAI_BASE_URL ending in /v1");
 if (S.model_name && !cenv.includes(`OPENAI_MODEL=${S.model_name}`)) B("the agent config block does not carry the model name");
-if (SC && (SC.sidecars || []).length && !/this port also routes/.test(cenv)) B("the agent config block hides the other routes on this port");
+if (SC && (SC.sidecars || []).length && !/the same base URL also answers/.test(cenv)) B("the agent config block hides the other routes on this port");
 if (SC && (SC.sidecars || []).some((x) => x.serve && x.serve.alias) && !/model qwen3-|model [a-z0-9.-]+\)/.test(cenv))
   B("the agent config block names the sidecar routes without their model names");
+
+// Three families behind one URL, so three sections with three names -- and each family's curl block has to paste
+// ITS name: the card used to show one model name and one curl, and a reader wiring up embeddings pasted a name the
+// embeddings serve never heard of (a 404 listing names they had not seen either). Checked per section, per block,
+// and against the payload rather than against the page's own strings.
+const cp = (id) => { const b = document.querySelector(`[data-copy-target=${id}]`); return (b && b.dataset && b.dataset.copy) || ""; };
+const FAM = [["/v1/embeddings", "ep-embed", "curl-embed"], ["/v1/rerank", "ep-rerank", "curl-rerank"]];
+const seen = [];
+for (const [route, cell, block] of FAM) {
+  const e = ((SC && SC.sidecars) || []).find((x) => (x.name || "").trim() === route);
+  const alias = e ? (((e.serve || {}).alias || "").trim()) : "";
+  if (!e) {
+    if (!$(cell).hidden) B(`${route} is not routed here, but its ${cell} section is visible`);
+    if (cp(`${cell}-model`)) B(`${cell} offers a Copy with a payload for a route this port does not answer`);
+    continue;
+  }
+  if ($(cell).hidden) B(`${route} is routed by the front door but its ${cell} section is hidden`);
+  if (alias && t(`${cell}-model`) !== alias) B(`${cell} shows "${t(`${cell}-model`)}" where the serve advertises "${alias}"`);
+  if (t(`${cell}-base`) !== `${cbase}/v1`) B(`${cell} base_url is "${t(`${cell}-base`)}" where the chat section says "${cbase}/v1"`);
+  if (alias) {
+    seen.push(alias);
+    if (!t(block).includes(`"${alias}"`)) B(`${block} does not paste ${alias}; it reads "${t(block).slice(0, 60)}"`);
+    if (cmodel && t(block).includes(`"${cmodel}"`)) B(`${block} pastes the chat model name into a ${route} request`);
+    if (!cp(`${cell}-model`).includes(alias)) B(`the Copy beside ${cell}-model does not carry the name on screen`);
+    if (cp(`${cell}-base`) !== `${cbase}/v1`) B(`the Copy beside ${cell}-base is not the base_url on screen`);
+  }
+}
+if (cmodel) seen.push(cmodel);
+if (new Set(seen).size !== seen.length) B(`two sections offer the same model name to a client: ${seen.join(" / ")}`);
+// A Copy button is invisible when it is dead: the click does nothing and no error appears. The static check in
+// tests/test_webui.py pins the wiring; this pins that the wiring produced a string, for the buttons that are on
+// screen right now.
+for (const id of ["ep-chat-model", "ep-chat-base", "agent-env", "curl", "litellm-yaml", "litellm-py"])
+  if (!cp(id)) B(`the Copy for ${id} has no payload in this render`);
+const wired = [...qsel.keys()].filter((k) => k.startsWith("[data-copy-target="));
+const empty = wired.filter((k) => !(qsel.get(k).dataset || {}).copy);
+console.log(`  connect sections: ${FAM.map(([, c]) => `${c}=${$(c).hidden ? "hidden" : t(`${c}-model`)}`).join(" ")}`
+            + ` · Copy buttons carrying a payload: ${wired.length - empty.length}/${wired.length}`
+            + (empty.length ? ` (empty: ${empty.join(" ")})` : ""));
 
 const bar = t("error");
 if (bar) { console.log("\nPAGE NOTICE:", bar); bad++; }

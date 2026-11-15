@@ -379,6 +379,18 @@ function gpuCard(g, ghist = [], i = 0) {
 document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-copy]");
   if (!b) return;
-  const done = () => { const t = b.textContent; b.textContent = "Copied"; setTimeout(() => { b.textContent = t; }, 1200); };
-  navigator.clipboard.writeText(b.dataset.copy).then(done).catch(() => {});
+  // The answer happens inside the button's own box. A field that re-renders when its Copy is pressed makes the
+  // string a reader just copied jump under their cursor, which is the moment they most want to check it.
+  const answer = (word, cls) => {
+    const t = b.textContent;
+    b.textContent = word;
+    b.classList.add(cls);
+    setTimeout(() => { b.textContent = t; b.classList.remove(cls); }, 1200);
+  };
+  // A button whose payload was never filled in used to write an empty string to the clipboard and print
+  // "Copied": a dead Copy button looked exactly like a live one, which is how one survived on this page while
+  // its JS wiring was looking at a different id. Say what is true instead.
+  const payload = b.dataset.copy;
+  if (!payload) { answer("Nothing yet", "is-empty"); return; }
+  navigator.clipboard.writeText(payload).then(() => answer("Copied", "is-copied")).catch(() => {});
 });
