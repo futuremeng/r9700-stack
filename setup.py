@@ -1307,7 +1307,7 @@ def embedding(cfg, have, build=False):
     if gguf.exists():
         ok(f"{gguf}: {gguf.stat().st_size / 1e9:.2f} GB -- mmap page cache, not anon: the WEIGHTS never enter "
            "the swap or the Committed_AS that wedged the box on 2026-11-01 (notes/load-oom-svm-wedge.md). The "
-           "KV pool does: measured +2.77 GB of Committed_AS at -c 8192 (977 MB of it anon KV, the 618 MB of "
+           "KV pool does: measured +2.64 GiB of Committed_AS at -c 8192 (977 MB of it anon KV, the 618 MB of "
            "weights clean file-backed) -- notes/embed-sidecar-box-test.md")
     else:
         note(f"{gguf} missing -- serve/embed.sh fetches it (~0.65 GB) on its first run, or:")
@@ -1327,6 +1327,9 @@ def embedding(cfg, have, build=False):
         note("not running: bash serve/embed.sh starts it (STOP=1 stops it, DRY=1 previews, LLAMA_SERVER=... "
              "names the binary)"
              + ("" if so else " -- build it first: ./setup.sh --embedding"))
+    say("      and the reranker beside it: TASK=rerank CTX=4096 bash serve/embed.sh (:8092, cores 32-47 of its "
+        "own) -- measured next to the standing launch: 1,014 tok/s, and the engine's ITL did not move "
+        "(notes/embed-sidecar-box-test.md)")
 
 
 def embedding_launch(cfg):

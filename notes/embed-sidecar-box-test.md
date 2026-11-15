@@ -50,18 +50,20 @@ expectation did not. From `/proc/<pid>/smaps` with the serve up at `-c 8192`:
 /home/jiulu/models/qwen3-embedding-0.6b-q8_0.gguf   Rss 618,368 kB
     Shared_Clean 0  Private_Clean 618,368  Private_Dirty 0  Anonymous 0   VmFlags: rd mr me ms sd
 process rollup:   Rss 1,613,800 kB   Anonymous 977,404 kB   Locked 0
-/proc/meminfo:    Committed_AS 85,149,980 -> 87,915,288 kB  (MemTotal 98,389,904)
+/proc/meminfo:    Committed_AS 85,149,980 -> 87,915,288 kB  (MemTotal 98,389,904 kB = 93.8 GiB)
 ```
+
+(Units, since 11-01 is remembered in GiB: 81.2 -> 83.8 GiB of Committed_AS against 93.8 GiB of RAM.)
 
 * The weights are **exactly** what the note promised: 618 MB resident, all of it clean file-backed, zero dirty,
   zero anon, nothing locked — reclaimable page cache, invisible to swap and to `Committed_AS`.
 * What is anonymous is the **KV pool and the scratch**: 977 MB at `-c 8192` (llama.cpp runs 4 slots by default,
-  so 4 × 8192 tokens), and the process takes **+2.77 GB of `Committed_AS`** (85.15 → 87.92 of 93.8 GiB). `STOP=1`
-  gives all of it back (85.15 GB again).
+  so 4 × 8192 tokens), and the process takes **+2.64 GiB of `Committed_AS`** (81.2 → 83.8 of 93.8 GiB). `STOP=1`
+  gives all of it back (81.2 GiB again).
 * So "the sidecar's own RSS should read ~0 while the GGUF stays in the page cache" is wrong as written: RSS reads
   ~1.6 GiB (weights touched + KV). The number the 11-01 red line is actually about is `Committed_AS`, and the
-  monitor now shows it. **This box's commit headroom went from ~8.7 GB to ~5.9 GB** — still far from 11-01's
-  122.6 GB, but it is a real change to the box's margin and it should be read on the page, not remembered.
+  monitor now shows it. **This box's commit headroom went from ~12.6 GiB to ~10.0 GiB** — still far from 11-01's
+  122.6 GiB, but it is a real change to the box's margin and it should be read on the page, not remembered.
 
 ## Does it cost the running launch anything? No — measured, not argued
 
@@ -114,11 +116,54 @@ query side and plain text on the document side, `cosine(query, on-topic doc) = 0
 note says it is; that needs retrieval runs with a fixed evaluation set, and per that note BM25 + a 0.6B reranker
 (`--rerank`, same launcher, `LLAMA_EXTRA`) is the cheaper answer to it than a 4B embedder.
 
+## A third serve: Qwen3-Reranker-0.6B on :8092, same launcher, `TASK=rerank`
+
+Asked on 2026-11-15: can a reranker run beside the embedder **and** the launch? Yes, and it is the same launcher.
+`TASK=rerank` swaps `--embedding --pooling last` for `--rerank`; that flag is not cosmetic — llama.cpp's `--rerank`
+sets `embedding=true` **and** `pooling=rank`, so passing both flags is not how a reranker is started (the
+footer of the first version told people to do exactly that through `LLAMA_EXTRA`). Model: `ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF`,
+public and ungated, `qwen3-reranker-0.6b-q8_0.gguf` 639,153,184 B. Qwen3-Reranker is a causal model scored on the
+last token, which is what llama.cpp's rerank path does (`server-context.cpp`: "causal rerankers read the last
+token and have a KV cache"), and the GGUF carries the rerank chat template, so the client sends plain
+`{"query", "documents"}` to `/v1/rerank`.
+
+It gets **its own core range** (`rerank` defaults to cores 32-47, `embed` to 16-31): two serves sharing one range
+share threads, and neither gets the throughput its card reports.
+
+All three busy at once (engine `:8080`, embedder `:8090` at `-t 15 -c 8192`, reranker `:8092` at `-t 16 -c 4096`):
+
+| what | alone | all three at once |
+|---|---|---|
+| engine ITL (c1 / c2 / c4 / c8) | 13.0 / 15.0 / 18.4 / 21.2 ms | 12.9 / 15.0 / 18.5 / 20.7 ms |
+| embedder | 1,112 tok/s | 1,104 tok/s |
+| reranker | — | 1,014 tok/s = 3.4 pairs/s (300 tok/pair) |
+| CPU taken by the sidecars | 15 + 16 cores | 12.6 + 13.5 cores (`top`) |
+
+PSI memory 0, swap unchanged, MemAvailable 31.3 GB (29.9 GiB). Two sidecars are 26 of 190 cpus; the engine never
+notices.
+
+Memory, the number that actually constrains a third serve: `Committed_AS` 81.2 GiB (no sidecar) → 83.8 (embedder,
+`-c 8192`) → **86.1 GiB** (+ reranker, `-c 4096`), against 93.8 GiB of RAM — **headroom 12.6 → 10.0 → 7.8 GiB**.
+The reranker's 2.2 GiB is smaller than the embedder's 2.6 because its `CTX` is smaller, and that is the knob: a
+rerank pair is query + one document, so `CTX=4096` is already generous; do **not** copy the embedder's 8192.
+
+Query-path cost, which is what a RAG round trip pays: **10 documents × ~100 tokens = 1.03 s**; 10 × ~250 tokens =
+**2.9 s**. Through that, on a hand-checked set of ten real one-line documents about this box, the scores separate
+cleanly: `0.9994 / 0.9852` for the two on-topic documents, `0.0022` and below for the other eight. On the synthetic
+word-salad the throughput test uses, everything scores ~0 — correct, and a reminder that the toy set cannot say
+whether the reranker is *good*, only that the pipeline is not broken.
+
+One watcher per serve: `EMBED_PORT=8092 WATCH_PORT=8093 bash serve/embed-watch.sh` (now `:8093`).
+`embed-watch.py`'s RSS read used to match any `llama-server`, so with two serves up each page reported the **sum**
+(2.74 GiB); it now matches the port it observes (`1.60` and `1.14 GiB`).
+
+
+
 ## Not tested here
 
 Deliberately: no memory-pressure test (the point of the mmap rule is that clean pages get reclaimed instead of
 swapped; forcing that on a box running a five-day-old launch to prove a point is not a trade worth making — the
-smaps evidence above is direct instead). Also not tested: the 4B q8_0, the `--rerank` variant, what happens to
+smaps evidence above is direct instead). Also not tested: the 4B q8_0 for either task, what happens to
 the metric names when llama.cpp updates (they are matched defensively, and this note pins the commit they were
 read from), and the RAG quality question.
 
@@ -126,8 +171,11 @@ read from), and the RAG quality question.
 
 ```
 PATH=$PWD/.venv/bin:$PATH .venv/bin/python setup.py --no-docker --yes --embedding --launch none   # builds llama.cpp
-LLAMA_SERVER=$HOME/llama.cpp/build/bin/llama-server bash serve/embed.sh                          # :8090
-bash serve/embed-watch.sh                                                                        # :8091
+LLAMA_SERVER=$HOME/llama.cpp/build/bin/llama-server bash serve/embed.sh                          # :8090 embed
+TASK=rerank CTX=4096 LLAMA_SERVER=$HOME/llama.cpp/build/bin/llama-server bash serve/embed.sh     # :8092 rerank
+bash serve/embed-watch.sh                                                                        # :8091 (embed)
+EMBED_PORT=8092 WATCH_PORT=8093 bash serve/embed-watch.sh                                        # :8093 (rerank)
 .venv/bin/python bench/itl.py 1 2 4 8 16                                                          # engine latency
-# and for the sidecar: N concurrent /v1/embeddings over ~420-token documents, /metrics read before and after.
+# and for the sidecars: N concurrent /v1/embeddings over ~420-token documents and /v1/rerank over 8-doc
+# groups, with the serve's own /metrics read before and after.
 ```

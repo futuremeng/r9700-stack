@@ -1,41 +1,72 @@
 #!/bin/bash
-# serve/embed.sh - the CPU embedding sidecar: llama-server + Qwen3-Embedding-0.6B q8_0, mmap only.
+# serve/embed.sh - the CPU embedding / reranking sidecar: llama-server + a 0.6B q8_0 GGUF, mmap only.
 #
 # Why this shape (the reasoning lives in the box's own notes):
 # * The 4 R9700 cards carry ~1.35 GiB of spare VRAM at util 0.96 (README "VRAM per card"), so the
 #   embedding model runs on the EPYC. ~11 of 192 cores are busy with the engine
 #   (notes/native-4xr9700.md); the rest are free, and CORES/THREADS keep this off their paths.
-# * mmap and NOTHING else: the GGUF pages are page cache -- reclaimable, never swap, never anon.
-#   An extra 4 GiB of anon commit is the exact recipe of the 2026-11-01 SVM wedge
-#   (notes/load-oom-svm-wedge.md: Committed_AS 122.6 against 93.8 GiB, kswapd blocked on the amdgpu
-#   notifier, box unrecoverable). So: never --mlock, never --no-mmap, and stay at 0.6B here --
+#   Measured on this box 2026-11-15: a saturated sidecar changed the running launch's ITL by 0.0-0.2 ms and
+#   its throughput by 0.3 % (notes/embed-sidecar-box-test.md) -- so this is not a favour it asks.
+# * mmap and NOTHING else: the GGUF pages are page cache -- reclaimable, never swap, never anon (for the
+#   WEIGHTS; the KV pool is anon, +2.64 GiB of Committed_AS at -c 8192, measured, and the 11-01 red line is
+#   Committed_AS, so size CTX on purpose). An extra 4 GiB of anon commit is the exact recipe of the
+#   2026-11-01 SVM wedge (notes/load-oom-svm-wedge.md: Committed_AS 122.6 against 93.8 GiB, kswapd blocked on
+#   the amdgpu notifier, box unrecoverable). So: never --mlock, never --no-mmap, and stay at 0.6B here --
 #   the 4B q8_0 is still mmap-safe but 6x slower; do that only if a golden set says 0.6B falls short.
 # * Qwen3-Embedding is instruction-tuned: the DOCUMENT side is plain text, the QUERY side carries
 #   the Instruct/Query prompt -- in the request (see the curl below) or baked in with CHAT_TEMPLATE.
 #
-#   bash serve/embed.sh                    # start on 8090, download the GGUF if missing
-#   STOP=1 bash serve/embed.sh             # stop it
+#   bash serve/embed.sh                    # start the embedder on 8090, download the GGUF if missing
+#   PORT=8092 CORES=32-47 TASK=rerank bash serve/embed.sh   # the reranker beside it (its own port + cores)
+#   STOP=1 bash serve/embed.sh             # stop it (TASK/PORT pick which one)
 #   DRY=1  bash serve/embed.sh             # print what would start, start and write nothing
 #   FORE=1 bash serve/embed.sh             # foreground (no nohup), for watching a first bring-up
 # Monitor: serve/embed-watch.sh (its own page on :8091 -- webui.py is vLLM-shaped and cannot read
-# llama.cpp's /metrics; --metrics is on in the ARGS below for exactly that page).
-# Knobs: MODEL, HF_REPO, HF_FILE, LLAMA_SERVER, PORT, EMBED_BIND, CORES (taskset range), THREADS,
-#        CTX, BATCH, SERVED_NAME, CHAT_TEMPLATE, LOG, LOCAL_ENV (default the same
-#        ~/.config/r9700-stack/native.env the other launchers read; only EMBED_BIND is honoured here).
+# llama.cpp's /metrics; --metrics is on in the ARGS below for exactly that page). One watcher per serve:
+# EMBED_PORT=8092 WATCH_PORT=8093 bash serve/embed-watch.sh.
+# Knobs: TASK (embed | rerank), MODEL, HF_REPO, HF_FILE, LLAMA_SERVER, PORT, EMBED_BIND,
+#        CORES (taskset range), THREADS, CTX, BATCH, SERVED_NAME, CHAT_TEMPLATE, LLAMA_EXTRA, LOG,
+#        LOCAL_ENV (default the same ~/.config/r9700-stack/native.env the other launchers read; only
+#        EMBED_BIND is honoured here).
 
-MODEL=${MODEL:-$HOME/models/qwen3-embedding-0.6b-q8_0.gguf}
-# The official Qwen GGUF, not a third-party repack: unsloth/Qwen3-Embedding-0.6B-GGUF, the name the first
-# version of this launcher carried, answers 401 from an unauthenticated hub API -- on HF it is gated, so the
-# default would have died at the download step on any box without a token. Qwen/Qwen3-Embedding-0.6B-GGUF is
-# public (q8_0 639,150,592 B, fetched on this box 2026-11-15).
-HF_REPO=${HF_REPO:-Qwen/Qwen3-Embedding-0.6B-GGUF}
-HF_FILE=${HF_FILE:-Qwen3-Embedding-0.6B-Q8_0.gguf}
+TASK=${TASK:-embed}                        # embed -> --embedding --pooling last; rerank -> --rerank
+                                           # (llama.cpp's --rerank sets embedding=true AND pooling=rank, so
+                                           # passing both flags is not how you get a reranker: TASK swaps them)
+case "$TASK" in
+  embed)
+    DEF_MODEL=$HOME/models/qwen3-embedding-0.6b-q8_0.gguf
+    # The official Qwen GGUF, not a third-party repack: unsloth/Qwen3-Embedding-0.6B-GGUF, the name the first
+    # version of this launcher carried, answers 401 from an unauthenticated hub API -- on HF it is gated, so
+    # the default would have died at the download step on any box without a token. Qwen/Qwen3-Embedding-0.6B-GGUF
+    # is public (q8_0 639,150,592 B, fetched on this box 2026-11-15).
+    DEF_REPO=Qwen/Qwen3-Embedding-0.6B-GGUF
+    DEF_FILE=Qwen3-Embedding-0.6B-Q8_0.gguf
+    TASK_ARGS=(--embedding --pooling last)
+    DEF_PORT=8090
+    DEF_CORES=16-31
+    ;;
+  rerank)
+    # ggml-org's own conversion, public and ungated (q8_0 639,153,184 B, fetched here 2026-11-15). Qwen3-Reranker
+    # is a causal model scored on the last token, which is what llama.cpp's --rerank path does (see
+    # server-context.cpp "causal rerankers read the last token and have a KV cache").
+    DEF_MODEL=$HOME/models/qwen3-reranker-0.6b-q8_0.gguf
+    DEF_REPO=ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF
+    DEF_FILE=qwen3-reranker-0.6b-q8_0.gguf
+    TASK_ARGS=(--rerank)
+    DEF_PORT=8092
+    DEF_CORES=32-47                        # a second serve gets its own range: two sidecars on one range
+    ;;                                     # share threads and neither gets the throughput its card says
+  *) echo "TASK must be embed or rerank (got $TASK)" >&2; exit 1 ;;
+esac
+MODEL=${MODEL:-$DEF_MODEL}
+HF_REPO=${HF_REPO:-$DEF_REPO}
+HF_FILE=${HF_FILE:-$DEF_FILE}
 LLAMA_SERVER=${LLAMA_SERVER:-$(command -v llama-server)}
-PORT=${PORT:-8090}
+PORT=${PORT:-$DEF_PORT}
 LOCAL_ENV=${LOCAL_ENV:-$HOME/.config/r9700-stack/native.env}
 [ -f "$LOCAL_ENV" ] && { set -a; . "$LOCAL_ENV"; set +a; echo "local env: $LOCAL_ENV"; }
 BIND=${EMBED_BIND:-${R9K_WEB_BIND:-127.0.0.1}}
-CORES=${CORES:-16-31}                      # taskset range: stay off the engine's ~11 cores. On THIS box cpu 17
+CORES=${CORES:-$DEF_CORES}                # taskset range: stay off the engine's ~11 cores. On THIS box cpu 17
                                           # and 113 are offline (host/offline-core.cpus, notes/incident-2026-11-03)
                                           # -- sched_setaffinity drops them silently, so the range runs 15 cores.
 cpus_in() {                                # "16-31" or "16-17,20" -> one cpu number per line
@@ -64,7 +95,7 @@ if [ "${STOP:-0}" = 1 ]; then
   # the port. Wait for it to be gone, then say so.
   if pkill -f "$PAT"; then
     for i in $(seq 1 15); do pgrep -f "$PAT" >/dev/null 2>&1 || break; sleep 1; done
-    echo "stopped the embedding server on $PORT"
+    echo "stopped the serve on $PORT"
   else
     echo "nothing running on $PORT"
   fi
@@ -78,7 +109,9 @@ fi
 # Measured on this box 2026-11-15, so the claim is stated at its real size: the GGUF mapping reads 618,368 kB
 # resident, ALL of it clean (Private_Clean, 0 dirty, 0 anon, Locked 0) -> reclaimable page cache, never swap.
 # What is anon is the KV pool and the scratch: 977,404 kB at -c 8192 (4 slots), and the process takes
-# +2.77 GB of Committed_AS (85.15 -> 87.92 GB of 93.8 GiB). STOP gives all of it back.
+# +2.64 GiB of Committed_AS (81.2 -> 83.8 against 93.8 GiB of RAM). STOP gives all of it back. A second serve
+# of the same size therefore costs another ~2.2-2.6 GiB of that margin: keep CTX sized to the task (4096 is
+# plenty for rerank pairs) and read the number on the monitor page rather than trusting this comment.
 if [ ! -f "$MODEL" ]; then
   if [ "${DRY:-0}" = 1 ]; then echo "  (DRY: the file is missing and would be downloaded to $MODEL)"
   else
@@ -95,7 +128,7 @@ if [ ! -f "$MODEL" ]; then
   fi
 fi
 
-ARGS=(-m "$MODEL" --embedding --pooling last --metrics --host "$BIND" --port "$PORT"
+ARGS=(-m "$MODEL" "${TASK_ARGS[@]}" --metrics --host "$BIND" --port "$PORT"
       -t "$THREADS" -c "$CTX" -b "$BATCH" -ngl 0)
 # the name /v1/models shows and what clients put in "model"; llama.cpp answers any value either way.
 [ -n "$SERVED_NAME" ] && ARGS+=(--alias "$SERVED_NAME")
@@ -138,8 +171,14 @@ for i in $(seq 1 60); do
 done
 [ "$code" = 200 ] || { echo "not healthy after 60 s, see $LOG" >&2; exit 1; }
 
-echo "embedding up: pid $PID on http://$BIND:$PORT (threads $THREADS on cores $CORES, ctx $CTX, model $(du -h "$MODEL" | cut -f1) mmap)"
-echo "  docs : curl http://$BIND:$PORT/v1/embeddings -H 'Content-Type: application/json' -d '{\"model\":\"qwen3-embed\",\"input\":[\"文档文本\"]}'"
-echo "  query: the instruct goes in the input, e.g. input=[[{\"role\":\"user\",\"content\":\"Instruct: Retrieve passages that answer the question\\nQuery: ...\"}]]"
-echo "  rerank variant: a Qwen3-Reranker-0.6B q8_0 GGUF with --rerank instead of --embedding (LLAMA_EXTRA, same launcher)"
+echo "$TASK up: pid $PID on http://$BIND:$PORT (threads $THREADS on cores $CORES, ctx $CTX, model $(du -h "$MODEL" | cut -f1) mmap)"
+if [ "$TASK" = rerank ]; then
+  echo "  curl http://$BIND:$PORT/v1/rerank -H 'Content-Type: application/json' -d '{\"model\":\"qwen3-rerank\",\"query\":\"问题\",\"documents\":[\"候选段落 A\",\"候选段落 B\"]}'"
+  echo "  llama.cpp scores a causal reranker on the last token; the GGUF carries the rerank chat template, so no"
+  echo "  prompt has to be built by the client. Scores are sigmoid(yes)-style, use them only as an ORDERING."
+else
+  echo "  docs : curl http://$BIND:$PORT/v1/embeddings -H 'Content-Type: application/json' -d '{\"model\":\"qwen3-embed\",\"input\":[\"文档文本\"]}'"
+  echo "  query: the instruct goes in the input, e.g. input=[[{\"role\":\"user\",\"content\":\"Instruct: Retrieve passages that answer the question\\nQuery: ...\"}]]"
+  echo "  the reranker is the same launcher with TASK=rerank (its own PORT and CORES)"
+fi
 

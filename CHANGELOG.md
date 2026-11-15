@@ -1,5 +1,34 @@
 # Changelog
 
+## a Qwen3-Reranker-0.6B beside the embedder and the launch: three serves, and the engine still does not notice
+
+Asked whether a reranker could run at the same time — it can, on the same launcher. `TASK=rerank` swaps
+`--embedding --pooling last` for `--rerank`; that flag is not cosmetic (llama.cpp's `--rerank` sets
+`embedding=true` **and** `pooling=rank`), and the footer of the first version told people to reach it through
+`LLAMA_EXTRA`, which would have started an embedder with rank pooling. Model: `ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF`
+(public, ungated, 639,153,184 B, pulled here 2026-11-15); Qwen3-Reranker is causal and llama.cpp scores it on the
+last token, and the GGUF carries the rerank chat template, so `/v1/rerank` takes plain `{query, documents}`.
+The reranker gets **its own core range** (defaults: embed 16-31 / :8090, rerank 32-47 / :8092) — two serves on one
+range share threads and neither gets the throughput its card reports.
+
+- **All three busy at once** (engine `:8080`, embedder, reranker): engine median ITL 13.0/15.0/18.4/21.2 ms alone
+  against **12.9/15.0/18.5/20.7** with both sidecars saturated (c1/c2/c4/c8); embedder 1,112 → 1,104 tok/s;
+  reranker **1,014 tok/s = 3.4 query-document pairs/s** at 300 tok/pair. `top` charges them 12.6 + 13.5 of 190
+  cpus; PSI memory 0, swap unchanged.
+- **The third serve's price is `Committed_AS`, and CTX is the knob:** 81.2 GiB (neither sidecar) → 83.8 (embedder,
+  `-c 8192`) → **86.1 GiB** (+ reranker, `-c 4096`) against 93.8 GiB of RAM — headroom **12.6 → 10.0 → 7.8 GiB**.
+  A rerank pair is query + one document, so 4096 is already generous; copying the embedder's 8192 buys nothing.
+- **Query-path cost:** 10 documents of ~100 tokens = **1.03 s**, of ~250 tokens = **2.9 s**. Ordering on ten real
+  one-line documents about this box: `0.9994 / 0.9852` for the two on-topic ones, `0.0022` and below for the other
+  eight. (On the throughput test's word-salad everything scores ~0 — correct, and a reminder that a toy set shows
+  the pipeline works, not that the reranker is good.)
+- `embed-watch.py`'s RSS read matched any `llama-server`, so with two serves each page reported the **sum**
+  (2.74 GiB); it now matches the port it observes (1.60 / 1.14). One watcher per serve:
+  `EMBED_PORT=8092 WATCH_PORT=8093 bash serve/embed-watch.sh`.
+- Numbers in the entry below were re-checked in **GiB** (the 11-01 note's own unit) rather than the GB I had
+  written: the embedder takes **+2.64 GiB** of `Committed_AS`, not "2.77 GB of 85.15 → 87.92 of 93.8 GiB", which
+  mixed a kB-readout with a GiB total. Headroom after it is 10.0 GiB, not 5.9.
+
 ## the embedding sidecar run next to the standing launch: it costs the engine nothing, and four things in it had to be fixed first
 
 The 11-12 change shipped untested on purpose; it has now run on the box — same `serve/native-flashnext.sh`
@@ -25,10 +54,11 @@ torn down again. Everything below is `notes/embed-sidecar-box-test.md`; the fixe
   (which said `THREADS 8` while the serve ran `-t 15`).
 - **The mmap rule holds; the RSS expectation did not.** `smaps`: the GGUF mapping reads 618,368 kB resident,
   **all `Private_Clean`, 0 dirty, 0 anon, `Locked 0`** — reclaimable page cache, exactly the 11-01 lesson. But
-  the KV pool and scratch are anon: 977,404 kB at `-c 8192` (4 slots), and the serve takes **+2.77 GB of
-  `Committed_AS`** (85.15 → 87.92 of 93.8 GiB, returned in full by `STOP=1`). RSS reads ~1.6 GiB, not ~0. The
+  the KV pool and scratch are anon: 977,404 kB at `-c 8192` (4 slots), and the serve takes **+2.64 GiB of
+  `Committed_AS`** (81.2 → 83.8 against the box's 93.8 GiB of RAM, returned in full by `STOP=1`). RSS reads
+  ~1.6 GiB, not ~0. The
   monitor card now carries `Committed_AS` — the number 11-01 is actually about — and this box's commit headroom
-  is **~5.9 GB where it was ~8.7**.
+  is **10.0 GiB where it was 12.6** (7.8 with a second serve on it — see the section above).
 - **Interference with the running launch: none measurable.** `bench/itl.py` median ITL, same engine process, sidecar
   idle vs saturated: 13.0/12.9 (c1), 15.0/15.0 (c2), 18.4/18.3 (c4), 21.2/21.1 (c8), 27.3/27.3 (c16). A fixed
   16×150-token chat load: **705.5 → 703.7 tok/s** (−0.3 %). The sidecar kept 2,046 tok/s through the same chat

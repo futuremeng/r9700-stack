@@ -22,12 +22,16 @@ import subprocess
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 STATE = {"t": 0.0, "health": None, "metrics": None, "err": None, "snaps": [], "meta": {}, "gauge": {}}
 LOCK = threading.Lock()
+# Which llama-server this watcher belongs to. Built from --embed in main(): a reranker joined the embedder on
+# this box (2026-11-15) and the original pattern "llama-server" made one watcher report BOTH serves.
+PGREP = "llama-server"
 
 
 def get(url, timeout=4.0):
@@ -111,9 +115,8 @@ def read_host():
                 h[g] = int(m.group(1))
     except OSError:
         pass
-    try:  # the sidecar's own footprint: RSS of the llama-server process, in kB
-        pid = subprocess.run(["pgrep", "-f", "llama-server"], capture_output=True, text=True,
-                             timeout=3).stdout.split()
+    try:  # the RSS of THIS serve (see PGREP)
+        pid = subprocess.run(["pgrep", "-f", PGREP], capture_output=True, text=True, timeout=3).stdout.split()
         if pid:
             rss = 0
             for p in pid:
@@ -131,8 +134,7 @@ def serve_args():
     are the recipe, not the live answer: THREADS defaults to the number of online cpus inside CORES, which only
     embed.sh knows (read off the box 2026-11-15: the recipe card said THREADS 8 while the serve ran -t 15)."""
     try:
-        for p in subprocess.run(["pgrep", "-f", "llama-server"], capture_output=True, text=True,
-                                timeout=3).stdout.split():
+        for p in subprocess.run(["pgrep", "-f", PGREP], capture_output=True, text=True, timeout=3).stdout.split():
             cmd = Path(f"/proc/{p}/cmdline").read_bytes().decode("utf-8", "replace").split("\0")
             if "-m" in cmd and "--port" in cmd:
                 out = {}
@@ -274,6 +276,10 @@ def main():
     a = ap.parse_args()
     Handler.KEY = a.key
     STATE["poll_s"] = a.poll
+    global PGREP
+    port = urllib.parse.urlparse(a.embed).port
+    if port:
+        PGREP = f"llama-server.*--port {port}"
     src = Path(a.launcher) if a.launcher else Path(__file__).resolve().parent / "embed.sh"
     try:  # the ${VAR:=default} lines ARE the launcher's recipe -- the read setup.py's launcher_env does
         meta = {}
