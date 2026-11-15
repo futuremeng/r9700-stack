@@ -105,7 +105,7 @@ thresholds, not local bindings (§10's rule). The names the shell forwards:
 
 ```
 GATE_DISABLE GATE_KV_HIGH GATE_KV_LOW GATE_PREEMPT_S GATE_WAIT GATE_MAX_INFLIGHT GATE_SMALL_BYTES
-GATE_MAX_HELD GATE_HOLD_S GATE_METRICS_S GATE_STALE_S GATE_POOL_TOKENS
+GATE_MAX_HELD GATE_HOLD_S GATE_METRICS_S GATE_STALE_S GATE_HIST GATE_POOL_TOKENS
 ```
 
 `tests/test_setup.py` holds that list against the `os.environ.get("GATE_...")` names `gateway.py` actually reads,
@@ -115,14 +115,18 @@ shell as well as the program is two policies with only one of them visible in th
 Shipped values after §6: shut at `GATE_KV_HIGH=0.92`, re-open the pool axis at `GATE_KV_LOW=0.85`, stay shut
 `GATE_PREEMPT_S=20` s after the last observed preemption, `GATE_WAIT=0` (an engine queue alone never closes the
 door), `GATE_SMALL_BYTES=8192` (a declared body that small passes a shut door), `GATE_MAX_HELD=8` (never hold
-more than this many at once), `GATE_HOLD_S=5` (the ceiling on any single hold).
+more than this many at once), `GATE_HOLD_S=5` (the ceiling on any single hold), `GATE_HIST=900` polls of shut/open
+history -- ~15 min at the shipped 1 s poll, which is §6's question made answerable after the fact: the afternoon
+left behind "was the door shut at 15:05?", and a 180-poll ring could only speak about the last three minutes.
 
 `GATE_MAX_INFLIGHT` (0 = off) is the sequence axis, kept because the two budgets are independent: a fan-out of
 short requests is a different problem from one 200k request, and only the second one moves the pool gauge.
 
 Live state: `GET /api/gate` -- closed/why, the gauges it read, `err`, counters (`held released expired refused
 admitted`), the config, and `hist`: one entry per poll (1 shut / 0 open, and a poll with unusable gauges draws 0
-rather than a gap) over `hist_n` = 180 polls ~= 3 min at the default poll rate. The strip is the poller's own
+rather than a gap) over `GATE_HIST` = 900 polls ~= 15 min at the shipped poll rate, with the span itself stated in
+the payload (`hist_span_s`) rather than left for the reader to multiply -- the Monitor prints it in the strip's
+title ("30 polls over 15 min"). The strip is the poller's own
 record rather than something `/api/gate` reconstructs on read, so a page that asks during a shut window and a
 page that asks after it cannot disagree.
 

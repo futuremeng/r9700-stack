@@ -38,6 +38,14 @@ the serve's command line and reported 17 invented deviations ("no `--compilation
 exactly as configured. It now names the payload its flag claim rests on, follows the engine's own page for the argv
 when the front door is a monitor, and calls the flags **unprovable** rather than mismatched when nothing can answer.
 
+Two more things the same afternoon. The gate's shut/open ring went from 180 polls (3 min) to **`GATE_HIST=900`**
+(~15 min at the shipped 1 s poll), with the span stated in the payload (`hist_span_s`) and printed on the strip —
+the question a busy afternoon leaves behind is "was the door shut at 15:05?", and a 3-minute ring could not answer
+it. And all five launchers now source the machine-local env file through one file, `serve/lib/localenv.sh`, **before**
+their own defaults, which is the order `setup.py` already read launchers in (`launcher_var`: environment → file →
+default). A `${GATEWAY_PORT:-8080}` or `${LLAMA_SERVER:-…}` frozen above the sourcing used to outrank both the box
+file and an operator typing `NAME=…`; the file is a default again, and the launcher prints the names it left alone.
+
 ## The admission gate stopped closing on a full pool; it closes on preemptions, and cheap requests pass a shut door
 
 A batch of data-processing prompts (median 542 prompt tokens, **p95 105,058**, max 108,992) parked the KV pool at
