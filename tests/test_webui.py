@@ -2870,6 +2870,27 @@ ck("and the row's card count is the number of sidecars the page builds cards for
    _side_html is not None and _side_html.group(1).count('<div class="card"') == 2
    and len(re.findall(r'"(embed|rerank)-card"', _wh)) >= 2,
    str(_side_html.group(1).count('<div class="card"') if _side_html else None))
+# The hole rule, stated once for the whole page: a fixed 4-up section holding two cards leaves half a row empty,
+# and on this page an empty cell reads as a serve missing rather than as a row that does not divide by four. So a
+# short row must be sized by its contents in CSS. Pinned as a rule because every future row is a chance to put a
+# hole back -- the gate row and the sidecar row both did.
+_holes = []
+for _m in re.finditer(r'<section class="grid grid--4([^"]*)"[^>]*>(.*?)</section>', _wh, re.S):
+    _cls, _body = _m.group(1).split(), _m.group(2)
+    _n = len(re.findall(r'<div class="card"', _body))
+    if _n and _n % 4:
+        _own = [c for c in _cls if f"section.{c}{{" in _mcss or f".{c}{{" in _mcss]
+        _sized = any("auto-fit" in _mcss.split(f"section.{c}{{", 1)[1].split("}")[0]
+                     for c in _own if f"section.{c}{{" in _mcss)
+        if not _sized:
+            _holes.append((" ".join(_cls) or "(no class)", _n))
+ck("no fixed 4-up row is left with empty cells: a short row is sized by its contents in CSS",
+   not _holes, str(_holes))
+# And the first screen: the top of the page answers "alive? hurt? held?" before "how fast", because that is the
+# order the questions arrived in on 2026-11-15 -- throughput was readable while the machine was dead.
+_first = re.findall(r'<section class="grid grid--4 ([a-z-]+)', _wh)[:4]
+ck("the first four rows are the vitals, the rates, the alarms and the gate -- in that order",
+   _first == ["engine", "grid--rates", "watchdog", "gate"], str(_first))
 _slot_html = {m.group(2) for m in re.finditer(r'class="([^"]*)"[^>]*?\bid="([^"]+)"', _wh)
               if "slot" in m.group(1).split()}
 _slot_js = set(re.findall(r'slot\("([^"]+)"', _mjs2)) | {

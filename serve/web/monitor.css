@@ -105,6 +105,10 @@ section{margin:18px 0}
    the breakpoint the tracks collapse the way .grid--4's media query does. The section is addressed as
    `section.sidecars` so it outranks .grid--4 regardless of which file the cascade sees last. */
 section.sidecars{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+/* Same for the admission gate: the row is the gate's state and its hold counter, two cards, and at 4-up it left
+   half the row empty -- which on this page reads as a serve missing, not as a row that holds two things. The
+   floor is wider than the sidecars' because both gate cards carry a sparkline and a 24-character slot line each. */
+section.gate{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
 
 /* The full account, opened from a short link's badge. It is a pinned block of real text (selectable, copyable)
    rather than a table, because the person who opens it is about to paste it somewhere. */
