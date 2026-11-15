@@ -51,6 +51,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -849,6 +850,223 @@ def restart_launch(rec):
     return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, start_new_session=True)
 
 
+# ---- the ledger: what the box keeps after the record it was written into is overwritten ------------------
+# `launch.json` describes the CURRENT launch and the next launch rewrites it; `restarts.json` keeps the last
+# death, and only the one that led to a decision. Neither is a history, and the questions that get asked weeks
+# later are history questions: how many times has THIS card taken a page fault, did a restart follow each one,
+# how long was the box online in between, and how much traffic was in flight when it happened. So every death
+# the watcher sees appends one JSONL line here -- including the deaths a record-only watcher deliberately left
+# alone, which is exactly the case where this file is the only trace. fsynced like the request journal, because
+# a record that only survives when the box stays up is useless for the case it exists for.
+FAULT_LEDGER = "faults.jsonl"
+ALERT_FILE = "ALERT.json"          # what is asserted right now (the Monitor reads this one)
+ALERT_LEDGER = "alerts.jsonl"     # every time it was asserted, for the long view
+
+# Hardware escalation, counted per CARD rather than per launch: §15's card-order run showed the fault follows
+# the physical function, and what turns "a software fault I can restart away" into "a card I have to go and
+# look at" is repetition. Three page-fault events on one PCI function inside a week is where the honest action
+# stops being `./setup.sh` and starts being opening the case and swapping slots -- so the watcher says so out
+# loud, in the log and on the page, at the same moment it is bringing the engine back. Both numbers are knobs
+# because what counts as repetition depends on how hard the box is driven.
+HW_ALERT_N = int(os.environ.get("HW_ALERT_N", "3"))
+HW_ALERT_WINDOW_S = int(os.environ.get("HW_ALERT_WINDOW_S", str(7 * 24 * 3600)))
+ALERT_CMD = (os.environ.get("ALERT_CMD") or "").strip()      # your channel: ntfy, mail, desktop, whatever
+
+JOURNAL_CMD = ("journalctl", "-k", "--boot", "--no-pager", "-o", "short-iso", "-g",
+               "gfxhub] page fault|Faulty UTCL2|RW: 0x|Process .* pid")
+J_FAULT = re.compile(r"amdgpu (?:[0-9a-f]{4}:)?([0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]):\s*\[gfxhub\] page fault")
+J_RING = re.compile(r"\(src_id:\d+ ring:(\d+)")
+J_PID = re.compile(r"Process \S+ pid (\d+)")
+J_CLIENT = re.compile(r"Faulty UTCL2 client ID: (.+?) \(0x[0-9a-f]+\)")
+J_RW = re.compile(r"RW: (0x[0-9a-f]+)")
+
+
+def _epoch(stamp):
+    """`journalctl -o short-iso` -> epoch seconds, or None. An unreadable stamp is carried as None rather than
+    guessed at: an event that cannot be placed in time cannot be put inside a window."""
+    try:
+        return datetime.fromisoformat(stamp).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def kernel_fault_events(command=None, timeout=10.0):
+    """The driver's page-fault blocks for this boot, one dict per fault LINE, with the fields under each one.
+
+    Richer than the Monitor row needs, on purpose: the fields the driver prints beneath a fault -- ring, UTCL2
+    client, read/write -- are what separate the two fault families this box has (notes §20: six READ faults by
+    `SQC (data)` on ring 24 from the vLLM launches, two WRITE faults by `TCP` on ring 40 from two experiments
+    that are long over). A per-card count alone would call both "c3:00.0 is unhappy", which is true and not
+    actionable.
+
+    Always a dict. `error` non-None with `total` None when the journal cannot be read -- never an empty list,
+    because "no faults" and "cannot see the kernel log" are different claims and only one of them is evidence
+    about a card. This is the trap that already happened once here: `journalctl -A` is `--after-boot`, not
+    "lines after the match", so a mistyped flag prints a usage line to stderr and NOTHING to stdout, which read
+    as zero faults on a box that had had eight that boot.
+    """
+    command = command or JOURNAL_CMD
+    try:
+        r = subprocess.run(list(command), capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"events": [], "by_card": {}, "total": None, "error": f"{type(exc).__name__}: {exc}"}
+    if r.returncode != 0:
+        first = ((r.stderr or r.stdout or "").strip().splitlines() or [""])[0]
+        return {"events": [], "by_card": {}, "total": None, "error": f"journalctl exited {r.returncode}: {first}"}
+    out, cur = [], None
+    for line in r.stdout.splitlines():
+        m = J_FAULT.search(line)
+        if m:
+            stamp = (line.split(" kernel:")[0].strip().split() or [""])[0]
+            rg = J_RING.search(line)
+            cur = {"at": stamp, "epoch": _epoch(stamp), "card": m.group(1).lower(), "ring": rg.group(1),
+                   "pid": None, "client": None, "rw": None}
+            out.append(cur)
+            continue
+        if cur is None:
+            continue
+        pm = J_PID.search(line)
+        if pm and cur["pid"] is None:
+            cur["pid"] = int(pm.group(1))
+            continue
+        cm = J_CLIENT.search(line)
+        if cm:
+            cur["client"] = cm.group(1).strip()
+        rm = J_RW.search(line)
+        if rm:
+            cur["rw"] = "write" if int(rm.group(1), 16) & 1 else "read"
+            cur = None                                       # the status block ends at RW
+    per = {}
+    for e in out:
+        per[e["card"]] = per.get(e["card"], 0) + 1
+    return {"events": out, "by_card": per, "total": sum(per.values()), "error": None}
+
+
+def hw_verdict(faults, now=None, n=HW_ALERT_N, window=HW_ALERT_WINDOW_S):
+    """The card with the most page-fault EVENTS inside the window, or None.
+
+    Pure, so a test can hand it a journal it made. Counted per distinct (stamp, card) rather than per line,
+    because one crash can write several fault lines (measured: 11 lines across 8 events). An event whose stamp
+    cannot be parsed goes to `unattributed` instead of being guessed into the window; a failed journal read
+    returns None, and the ledger then carries the error, so "no alert" is explainable as "could not look"
+    rather than reading as "nothing wrong".
+    """
+    if not faults or faults.get("total") is None:
+        return None
+    now = time.time() if now is None else now
+    evs, unattr = [], 0
+    for e in faults.get("events") or []:
+        if e.get("epoch") is None:
+            unattr += 1
+        elif e["epoch"] >= now - window:
+            evs.append(e)
+    seen, uniq = set(), []
+    for e in evs:
+        k = (e["at"], e["card"])
+        if k not in seen:
+            seen.add(k)
+            uniq.append(e)
+    by, fam = {}, {}
+    for e in uniq:
+        by[e["card"]] = by.get(e["card"], 0) + 1
+        key = f'{e.get("rw") or "?"} / {e.get("client") or "?"} / ring {e.get("ring") or "?"}'
+        fam.setdefault(e["card"], {}).setdefault(key, 0)
+        fam[e["card"]][key] += 1
+    if not by:
+        return {"card": None, "count": 0, "cards": {}, "families": fam, "unattributed": unattr,
+                "window_s": window, "since": None, "until": None}
+    card = max(by, key=lambda c: by[c])
+    if by[card] < n:
+        return {"card": None, "count": by[card], "cards": by, "families": fam, "unattributed": unattr,
+                "window_s": window, "since": None, "until": None}
+    hits = [e for e in uniq if e["card"] == card]
+    return {"card": card, "count": by[card], "cards": by, "families": fam.get(card, {}),
+            "unattributed": unattr, "window_s": window,
+            "since": min(e["at"] for e in hits), "until": max(e["at"] for e in hits)}
+
+
+def alert_words(v):
+    """The alert as two sentences a person can act on: what was counted, and what to do about it."""
+    fam = ", ".join(f"{c} {k}" for k, c in sorted(v["families"].items())) or "shape not printed by the driver"
+    return (f"{v['count']} driver page faults on 0000:{v['card']} within "
+            f"{v['window_s'] // 86400} d ({v['since']} .. {v['until']}) -- {fam}",
+            "the fault follows the CARD, not the rank (launch-methodology §15 / bug-causal-conv1d-oob §15,§20): "
+            "swap this card with a neighbour (or move it to another slot) and see whether the faults move with "
+            "it; while it is unresolved, do not restart INTO it repeatedly -- keep the ledger, "
+            ".r9700-state/faults.jsonl, as the evidence.")
+
+
+def fault_row(rec, fields, sig, left, cleared, do_restart, why, faults, gate, verdict, uptime_s, now=None):
+    """The ledger line, built without touching anything so a test can hold it to its shape.
+
+    It carries the death (reason, signature, ranks left holding GPUs), the decision (restart yes/no and WHY --
+    the breaker's reason is as much history as the crash), the card evidence (per-card fault counts, or the
+    error that meant there were none), and the traffic context from the one witness that survives an engine
+    death: the front door."""
+    return {"at": int(time.time() if now is None else now),
+            "session": (rec or {}).get("session"), "recipe": (rec or {}).get("recipe"),
+            "config": (rec or {}).get("config"), "log": (rec or {}).get("log"),
+            "died_at": (fields or {}).get("died_at"), "reason": (fields or {}).get("reason"),
+            "sig": sig, "ranks_left": left, "cleared_ranks": cleared,
+            "restart": bool(do_restart), "restart_why": why,
+            "uptime_s": uptime_s,
+            "faults_total": (faults or {}).get("total"), "faults_by_card": (faults or {}).get("by_card"),
+            "faults_error": (faults or {}).get("error"),
+            "alert": ({"card": verdict.get("card"), "count": verdict.get("count"),
+                       "families": verdict.get("families")} if verdict and verdict.get("card") else None),
+            "gate": gate}
+
+
+def ledger_append(name, row):
+    STATE.mkdir(exist_ok=True)
+    with (STATE / name).open("a") as fh:
+        fh.write(json.dumps(row, sort_keys=True) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def raise_alert(v, rec, sig=None, command=None, at=None):
+    """Assert the hardware alert where the operator will see it and where the history keeps it.
+
+    ALERT.json is the live claim (the Monitor reads it and the About page can), alerts.jsonl is every time it
+    was claimed, and ALERT_CMD -- if the box wires one -- is the message out to a human. The command gets the
+    path of ALERT.json as argv[1] and in $ALERT_PATH, so a hook never has to re-derive where the evidence is."""
+    what, do = alert_words(v)
+    row = {"at": int(time.time() if at is None else at), "card": v["card"], "count": v["count"],
+           "window_s": v["window_s"], "since": v["since"], "until": v["until"], "cards": v["cards"],
+           "families": v["families"], "what": what, "do": do, "sig": sig,
+           "session": (rec or {}).get("session"), "recipe": (rec or {}).get("recipe"),
+           "config": (rec or {}).get("config"), "log": (rec or {}).get("log")}
+    state_write(ALERT_FILE, row)
+    ledger_append(ALERT_LEDGER, row)
+    cmd = ALERT_CMD if command is None else command
+    if cmd:
+        try:
+            subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30,
+                           env=dict(os.environ, ALERT_PATH=str(STATE / ALERT_FILE)), input=json.dumps(row))
+        except (OSError, subprocess.SubprocessError) as exc:
+            warn(f"ALERT_CMD failed ({type(exc).__name__}: {exc}) -- the alert is still in {ALERT_FILE}")
+    return row
+
+
+def gateway_counters(port=None):
+    """The front door's counters, asked at the moment of death.
+
+    The gateway is a separate process: it survives the engine, so it is the only witness that can still say how
+    much traffic was in flight, how many requests it had admitted and how many it had held at the door when the
+    rank died. None if nothing is listening on 8080: a box without a gateway is normal, and an answer-less
+    question is not a zero."""
+    port = port or os.environ.get("GATEWAY_PORT", "8080")
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/gate", timeout=3) as r:
+            d = json.loads(r.read())
+        c = d.get("counters") or {}
+        return {"admitted": c.get("admitted"), "held": c.get("held"), "expired": c.get("expired"),
+                "closed": d.get("closed")}
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
 def watch_loop(port, sess, log):
     """Poll a launch that is already up until it stops, then put the moment on the record and exit.
 
@@ -895,6 +1113,7 @@ def watch_loop(port, sess, log):
             sig = crash_sig(tail)
             left = left_vllm()
             cleared = None
+            faults = kernel_fault_events()      # the driver's own record; None-ish on an unreadable journal
             if stop_wedge_would(rec, restart, left, sig, RESTART_STOP):
                 say(line + f" -- {left} rank(s) are still holding the GPUs behind the fault; running this "
                            f"launch's own stop (STOP=1 bash serve/{rec['recipe']}) so a relaunch has cards to "
@@ -913,6 +1132,22 @@ def watch_loop(port, sess, log):
             rows = gpu_links() if os.environ.get("RESTART_LINK", "1") != "0" else []
             do, why = restart_ok(rec, tail, left, time.time(), hist, restart,
                                  links=link_short(rows) if rows else None)
+            # The ledger and the alert come BEFORE the act. If the restart itself wedges, the death and the
+            # decision are already on disk, and the hardware claim is in the log while there is still a machine
+            # to read it from -- an alert printed after a successful relaunch is an alert that can be lost to the
+            # very failure it is warning about.
+            verdict = hw_verdict(faults)
+            if verdict and verdict.get("card"):
+                what, do2 = alert_words(verdict)
+                say(line + f" -- HARDWARE ALERT: {what}. {do2}")
+                raise_alert(verdict, rec, sig)
+            ledger_append(FAULT_LEDGER, fault_row(rec, fields, sig, left, cleared, do, why, faults,
+                                                 gateway_counters(), verdict,
+                                                 int(time.time() - rec["up_at"]) if rec.get("up_at") else None))
+            nfault = faults.get("total")
+            say(line + f" -- this death appended to {STATE / FAULT_LEDGER} "
+                       f"({'no journal reading' if nfault is None else nfault} fault line(s) this boot"
+                       f"{'; ' + faults['error'] if faults.get('error') else ''}).")
             if do:
                 state_write("restarts.json", {
                     "session": rec.get("session"), "at": hist + [int(time.time())],

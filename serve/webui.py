@@ -1016,6 +1016,39 @@ def _epoch(stamp):
         return None
 
 
+ALERT_DEFAULT = str(Path(__file__).resolve().parent.parent / ".r9700-state" / "ALERT.json")
+
+
+def live_alert(path=None, now=None):
+    """The hardware alert setup.py raised, if one is standing -- with its age, because a week-old claim and a
+    claim made a minute ago are different sentences.
+
+    setup.py writes `.r9700-state/ALERT.json` when one PCI function takes `HW_ALERT_N` driver page-fault events
+    inside `HW_ALERT_WINDOW_S` -- the point at which the honest action stops being `./setup.sh` and starts being
+    opening the case and swapping slots (notes §20: six read faults by `SQC (data)` on ring 24 on `c3:00.0` in
+    one day, on a card the fault was already shown to follow). The page has to carry it, because a box that
+    restarts itself is exactly a box that can make a hardware problem invisible: the restart keeps the engine
+    online, the alert is what says the card still needs looking at.
+
+    None when there is no such file -- the normal state, and reported as no alert rather than as an error. A
+    file that exists but cannot be read or parsed arrives as None PLUS an error string, never as "no alert":
+    on this box a failed read has already once been mistaken for a zero.
+    """
+    path = path or ALERT_DEFAULT
+    try:
+        row = json.loads(Path(path).read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return {"error": f"cannot read {path}"}
+    if not isinstance(row, dict):
+        return {"error": f"{path} is not an object"}
+    out = dict(row)
+    if isinstance(row.get("at"), (int, float)):
+        out["age_s"] = max(0.0, (time.time() if now is None else now) - row["at"])
+    return out
+
+
 def fault_window(faults, launch_at):
     """Split one journal read into 'this launch' and 'earlier this boot', against the launch's start epoch.
 
@@ -2298,6 +2331,9 @@ class Hub:
         # records the journal still holds. Read once: neither can change while this process is alive.
         self.slotmap = []
         self.death, self.deaths = read_death(), None
+        # The standing hardware alert (setup.py raises it; nothing here raises it). Read by mtime like the recipe:
+        # the file an operator is waiting on is a file that changes while the page is up.
+        self.alert, self.alert_error, self.alert_mtime = None, None, None
         self.launch = None                                  # set below, once the meta file has been read
         self.meta_mtime, self.meta_error = None, None
         self.key_needed, self.smi_error = False, None
@@ -2355,6 +2391,25 @@ class Hub:
         hist = death_history()
         with self.lock:
             self.deaths = hist
+
+    def _read_alert(self):
+        """The standing hardware alert, by mtime -- cheap, and it has to be fresh: an alert raised while the page
+        is open is the whole point of having one."""
+        path = self.cfg.get("alert") or ALERT_DEFAULT
+        try:
+            m = os.stat(path).st_mtime
+        except OSError:
+            with self.lock:
+                self.alert, self.alert_error = None, None      # no file: no alert, the normal state
+            return
+        if m == self.alert_mtime:
+            return
+        row = live_alert(path)
+        with self.lock:
+            if isinstance(row, dict) and row.get("error"):
+                self.alert, self.alert_error = None, row["error"]
+            else:
+                self.alert, self.alert_error, self.alert_mtime = row, None, m
 
     # ---- upstream reads (observe mode's whole footprint) -----------------------------------------
     def get(self, path, timeout=4.0):
@@ -2449,6 +2504,7 @@ class Hub:
             try:
                 # Before the metrics work, and outside the lock: the recipe file is one stat in the common case, and
                 # a page describing yesterday's recipe is the failure this prevents.
+                self._read_alert()
                 self.refresh_meta()
                 cur, cap, info = parse_metrics(self.metrics_text())
                 dt = (t0 - self.prev_t) if self.prev_t else None
@@ -2526,6 +2582,11 @@ class Hub:
                     # The last thing the firmware recorded about the death that precedes this launch.
                     payload["last_death"] = self.death
                     payload["deaths"] = self.deaths
+                    # The card-level hardware claim, and why there is none if the file could not be read. Kept out
+                    # of the fault COUNT on purpose: the count says how often, the alert says when "restart it
+                    # again" stopped being the answer.
+                    payload["alert"] = self.alert
+                    payload["alert_error"] = self.alert_error
                     payload["port"] = self.cfg.get("port")
                     payload["slot_map"] = self.slotmap
                     payload["launch"] = self.launch

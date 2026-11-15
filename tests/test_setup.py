@@ -674,5 +674,140 @@ ck("gateway.sh forwards gate overrides but states no default for any of them -- 
    not re.search(r'^\s*(?:export )?GATE_[A-Z_]+:?=', _gsh, re.M),
    [l.strip()[:60] for l in _gsh.splitlines() if re.match(r"^\s*(?:export )?GATE_[A-Z_]+:?=", l)][:3])
 
+# -------------------------------------------------- the fault ledger and the hardware alert (notes §20) ----
+# Two asks, both about the case where nobody is watching: every death has to leave a line that outlives
+# launch.json (the next launch overwrites that file, and restarts.json keeps only the last death), and a card
+# that keeps faulting has to say "go and look at the card" instead of being restarted forever.
+_journal = """\
+2026-11-14T20:59:09+00:00 h kernel: amdgpu 0000:c3:00.0: [gfxhub] page fault (src_id:0 ring:24 vmid:8 pasid:10925)
+2026-11-14T20:59:09+00:00 h kernel: amdgpu 0000:c3:00.0:  Process python3 pid 251454 thread python3 pid 251454
+2026-11-14T20:59:09+00:00 h kernel: amdgpu 0000:c3:00.0:          Faulty UTCL2 client ID: SQC (data) (0xa)
+2026-11-14T20:59:09+00:00 h kernel: amdgpu 0000:c3:00.0:          PERMISSION_FAULTS: 0x3
+2026-11-14T20:59:09+00:00 h kernel: amdgpu 0000:c3:00.0:          RW: 0x0
+2026-11-15T05:11:18+00:00 h kernel: amdgpu 0000:c3:00.0: [gfxhub] page fault (src_id:0 ring:24 vmid:8 pasid:13043)
+2026-11-15T05:11:18+00:00 h kernel: amdgpu 0000:c3:00.0:  Process python3 pid 466055 thread python3 pid 466055
+2026-11-15T05:11:18+00:00 h kernel: amdgpu 0000:c3:00.0:          Faulty UTCL2 client ID: SQC (data) (0xa)
+2026-11-15T05:11:18+00:00 h kernel: amdgpu 0000:c3:00.0:          RW: 0x0
+2026-11-15T06:28:33+00:00 h kernel: amdgpu 0000:c3:00.0: [gfxhub] page fault (src_id:0 ring:24 vmid:8 pasid:14055)
+2026-11-15T06:28:33+00:00 h kernel: amdgpu 0000:c3:00.0:  Process python3 pid 499003 thread python3 pid 499003
+2026-11-15T06:28:33+00:00 h kernel: amdgpu 0000:c3:00.0:          Faulty UTCL2 client ID: SQC (data) (0xa)
+2026-11-15T06:28:33+00:00 h kernel: amdgpu 0000:c3:00.0:          RW: 0x0
+2026-11-06T07:45:03+00:00 h kernel: amdgpu 0000:c6:00.0: [gfxhub] page fault (src_id:0 ring:40 vmid:8 pasid:267)
+2026-11-06T07:45:03+00:00 h kernel: amdgpu 0000:c6:00.0:  Process python3 pid 10904 thread python3 pid 10904
+2026-11-06T07:45:03+00:00 h kernel: amdgpu 0000:c6:00.0:          Faulty UTCL2 client ID: TCP (0x8)
+2026-11-06T07:45:03+00:00 h kernel: amdgpu 0000:c6:00.0:          RW: 0x1
+"""
+_jf = Path(tempfile.mkdtemp()) / "journal.txt"
+_jf.write_text(_journal)
+_fev = S.kernel_fault_events(command=("cat", str(_jf)))
+ck("the driver's fault blocks are read with the fields that separate the two fault families (read/SQC on ring "
+   "24 against write/TCP on ring 40), because a per-card count alone is true but not actionable",
+   _fev["total"] == 4 and _fev["by_card"] == {"c3:00.0": 3, "c6:00.0": 1}
+   and {(e["rw"], e["client"], e["ring"]) for e in _fev["events"]} == {("read", "SQC (data)", "24"),
+                                                                       ("write", "TCP", "40")},
+   f'{_fev["total"]} lines {_fev["by_card"]}')
+ck("the pid in the block is paired with its fault, which is what makes the card-vs-rank question answerable",
+   sorted(e["pid"] for e in _fev["events"]) == [10904, 251454, 466055, 499003],
+   str(sorted(e["pid"] for e in _fev["events"])))
+ck("a journalctl that fails reports an error, never zero -- a mistyped flag prints usage to stderr and nothing "
+   "to stdout, which is how this read once said 0 faults on a box that had had eight",
+   S.kernel_fault_events(command=("sh", "-c", "echo 'journalctl: invalid option' >&2; exit 2"))["total"] is None
+   and "exited 2" in (S.kernel_fault_events(command=("sh", "-c", "exit 2"))["error"] or ""),
+   str(S.kernel_fault_events(command=("sh", "-c", "exit 2"))["error"])[:60])
+_now = time.time()
+def _ev(at, card, epoch, rw="read", client="SQC (data)", ring="24"):
+    return {"at": at, "epoch": epoch, "card": card, "pid": None, "rw": rw, "client": client, "ring": ring}
+_three = {"total": 3, "by_card": {"c3:00.0": 3}, "error": None,
+          "events": [_ev("t1", "c3:00.0", _now - 3600), _ev("t2", "c3:00.0", _now - 7200),
+                     _ev("t3", "c3:00.0", _now - 900)]}
+_v = S.hw_verdict(_three, now=_now)
+ck("three page-fault events on one function inside the window is a hardware alert, and the alert names the "
+   "card, the span and the fault shape", _v["card"] == "c3:00.0" and _v["count"] == 3 and _v["since"] == "t1"
+   and _v["families"] == {"read / SQC (data) / ring 24": 3}, str(_v)[:120])
+ck("two events do not make it (the line is measured, not emotional)",
+   S.hw_verdict({"total": 2, "by_card": {"c3:00.0": 2}, "error": None,
+                 "events": _three["events"][:2]}, now=_now)["card"] is None)
+ck("events outside the window are not counted, and the count that remains is still stated (no alert is not "
+   "the same as no information)",
+   S.hw_verdict({"total": 3, "by_card": {"c3:00.0": 3}, "error": None,
+                 "events": [_ev("t1", "c3:00.0", _now - 10 * 86400), _ev("t2", "c3:00.0", _now - 9 * 86400),
+                            _ev("t3", "c3:00.0", _now - 60)]}, now=_now,
+                window=7 * 86400)["cards"] == {"c3:00.0": 1})
+ck("faults spread over two cards do not add up into one alert -- the question is which card, so the threshold "
+   "is per function",
+   S.hw_verdict({"total": 3, "by_card": {"c3:00.0": 2, "c6:00.0": 1}, "error": None,
+                 "events": [_ev("t1", "c3:00.0", _now - 100), _ev("t2", "c3:00.0", _now - 200),
+                            _ev("t3", "c6:00.0", _now - 300)]}, now=_now)["card"] is None)
+ck("one crash writing several fault lines counts as ONE event (11 lines / 8 events measured on this box)",
+   S.hw_verdict({"total": 3, "by_card": {"c3:00.0": 3}, "error": None,
+                 "events": [_ev("same", "c3:00.0", _now - 5) for _ in range(3)]}, now=_now)["count"] == 1)
+ck("a stamp that cannot be parsed goes to unattributed rather than into the window",
+   S.hw_verdict({"total": 3, "by_card": {"c3:00.0": 3}, "error": None,
+                 "events": [_ev("nope", "c3:00.0", None), _ev("t2", "c3:00.0", _now - 60),
+                            _ev("t3", "c3:00.0", _now - 70)]}, now=_now)["unattributed"] == 1)
+ck("an unreadable journal cannot produce an alert -- 'cannot look' must not be rendered as 'nothing wrong'",
+   S.hw_verdict({"total": None, "by_card": {}, "error": "journalctl exited 2"}, now=_now) is None)
+_row = S.fault_row({"session": "s", "recipe": "r.sh", "config": "262k", "log": "/l.log"},
+                   {"died_at": 111, "reason": "crashed and wedged"}, "illegal memory access", 3,
+                   {"ranks_before": 3, "ranks_after": 0}, False, "off (WATCH_RESTART unset)",
+                   _fev, {"admitted": 90, "held": 4, "expired": 1, "closed": True}, _v, 512, now=_now)
+ck("the ledger line carries the death, the decision AND the reason for the decision -- 'why did it not come "
+   "back' is asked at 05:00 with the same urgency as 'why did it'",
+   _row["reason"] == "crashed and wedged" and _row["sig"] == "illegal memory access"
+   and _row["restart"] is False and "WATCH_RESTART" in _row["restart_why"]
+   and _row["ranks_left"] == 3 and _row["uptime_s"] == 512 and _row["gate"]["admitted"] == 90
+   and _row["faults_by_card"] == {"c3:00.0": 3, "c6:00.0": 1} and _row["alert"]["card"] == "c3:00.0",
+   json.dumps(_row)[:160])
+_old_state, _tmp = S.STATE, Path(tempfile.mkdtemp())
+S.STATE = _tmp
+try:
+    _hooked = _tmp / "hook.txt"
+    _al = S.raise_alert(_v, {"session": "s", "recipe": "r.sh"}, "illegal memory access",
+                        command=f"cat > {_hooked}", at=_now)
+    _aj = json.loads((_tmp / S.ALERT_FILE).read_text())
+    _lines = (_tmp / S.ALERT_LEDGER).read_text().strip().splitlines()
+    ck("the alert lands where it is seen (ALERT.json, which the page reads) and where the history keeps it "
+       "(alerts.jsonl, one line per assertion)", _aj["card"] == "c3:00.0" and _aj["count"] == 3
+       and len(_lines) == 1 and "swap this card" in _aj["do"], str(_aj)[:130])
+    ck("ALERT_CMD gets the alert as stdin and the evidence path in $ALERT_PATH, so a hook never re-derives "
+       "where the ledger lives", _hooked.exists() and json.loads(_hooked.read_text())["card"] == "c3:00.0",
+       _hooked.read_text()[:80] if _hooked.exists() else "hook never ran")
+    S.ledger_append(S.FAULT_LEDGER, _row)
+    S.ledger_append(S.FAULT_LEDGER, _row)
+    ck("the ledger is append-only and fsynced: two deaths, two lines, and launch.json is never touched by it",
+       len((_tmp / S.FAULT_LEDGER).read_text().strip().splitlines()) == 2 and not (_tmp / "launch.json").exists())
+finally:
+    S.STATE = _old_state
+_ws = (ROOTP / "setup.py").read_text()
+_led = _ws.index("ledger_append(FAULT_LEDGER")
+_res = _ws.index("p = restart_launch(rec)")
+ck("the ledger line is written BEFORE the relaunch is attempted -- if the restart itself wedges, the death and "
+   "the decision are already on disk", 0 < _led < _res)
+_ledline = [l for l in _ws.splitlines() if l.strip().startswith("ledger_append(FAULT_LEDGER")][0]
+ck("and it is written whatever the decision is (12 spaces: beside the restart, not inside it) -- a record-only "
+   "watcher is exactly the case where the ledger is the only trace", len(_ledline) - len(_ledline.lstrip()) == 12,
+   f"{len(_ledline) - len(_ledline.lstrip())} spaces of indentation")
+ck("the escalation is stated where a restart decision is made, not only afterwards",
+   "HARDWARE ALERT" in _ws and _ws.index("HARDWARE ALERT") < _res)
+
+# The long view: a person (or a cron) has to be able to ask "how is it going" without a live engine.
+_st = Path(tempfile.mkdtemp())
+(_st / S.FAULT_LEDGER).write_text(json.dumps({"died_at": 1, "uptime_s": 60, "restart": True,
+                                              "sig": "illegal memory access", "ranks_left": 3}) + "\n"
+                                  + json.dumps({"died_at": 2, "uptime_s": 900000, "restart": False,
+                                                "sig": "illegal memory access", "ranks_left": 0}) + "\n")
+_rp = subprocess.run([sys.executable, str(ROOTP / "tools" / "fault-report.py"), "--state", str(_st)],
+                     capture_output=True, text=True, timeout=60)
+ck("the report answers the three long questions from the files alone: how many deaths, how many came back by "
+   "themselves, and how long they lasted in between (a fault 60 s into a launch and one 10 days in are not the "
+   "same problem)",
+   "2 death(s) recorded" in _rp.stdout and "restarted: 1" in _rp.stdout and "min 60 s" in _rp.stdout
+   and "2 x illegal memory access" in _rp.stdout, _rp.stdout[:180].replace("\n", " | "))
+ck("and it never invents an alert the ledger does not carry", not (_st / S.ALERT_FILE).exists())
+ck("the kernel-journal section reads the real journal and splits the two families by the shape the driver "
+   "printed, so 'the card is unhappy' is never the whole answer",
+   "read / SQC (data) / ring 24" in _rp.stdout or "CANNOT READ" in _rp.stdout,
+   _rp.stdout[-260:].replace("\n", " | "))
+
 print("PASS" if fail == 0 else "FAIL", f"({fail} failing)")
 sys.exit(1 if fail else 0)

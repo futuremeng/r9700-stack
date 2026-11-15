@@ -57,6 +57,9 @@ main{max-width:1560px;padding:28px var(--st-s-8) 56px;margin:auto}
 .dot--live{background:var(--st-accent);box-shadow:0 0 0 4px var(--st-accent-tint)}
 .dot--busy{background:var(--st-warn);box-shadow:0 0 0 4px var(--st-warn-tint)}
 .dot--off{background:var(--st-danger)}
+/* A standing hardware alert: the danger colour like --off, plus a ring. The gap between the two is the gap
+   between 'this thing is down' and 'this card keeps hurting whatever runs on it'. */
+.dot--alert{background:var(--st-danger);box-shadow:0 0 0 4px var(--st-danger-tint)}
 .spark{display:block;width:100%;height:36px;margin-top:10px;color:var(--st-accent)}
 /* The axis's zero, under the data: faint, dashed, so a series that is merely at zero reads as a line lying on
    the axis and a series with no samples at all still shows where nothing-happening would be. */

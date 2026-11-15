@@ -805,6 +805,44 @@ ck("faults counted per PCI function, and the pid line that follows is paired wit
 ck("lines and events are both reported: one crash can log several faults, and neither number alone is honest "
    "(measured on the box: 11 lines across 8 events since boot)",
    _fl["events"] == 2, str(_fl))
+# The ledger in setup.py and the page in webui.py read the SAME journal. Two parsers over one text is exactly how
+# a "the page says 0 and the ledger says 8" argument starts, so they are held against each other on one fixture
+# rather than trusted to drift together quietly.
+import importlib.util as _ilu                                        # noqa: E402
+_sspec = _ilu.spec_from_file_location("r9700_setup_ledger", str(Path(ROOT) / "setup.py"))
+_SL = _ilu.module_from_spec(_sspec)
+_sspec.loader.exec_module(_SL)                                       # defs and constants only
+_fl2 = _SL.kernel_fault_events(command=(sys.executable, str(_jr)))
+ck("the ledger's fault parser and the Monitor's fault parser agree on one journal: same line count, same "
+   "per-card counts, same distinct events",
+   _fl2["total"] == _fl["total"] and _fl2["by_card"] == _fl["by_card"]
+   and len({(e["at"], e["card"]) for e in _fl2["events"]}) == _fl["events"],
+   f'page {_fl["total"]}/{_fl["by_card"]} vs ledger {_fl2["total"]}/{_fl2["by_card"]}')
+ck("and a failed journal read is an error in both, so neither side can render 'cannot look' as 'nothing wrong'",
+   _SL.kernel_fault_events(command=("sh", "-c", "exit 1"))["total"] is None
+   and _SL.hw_verdict(_SL.kernel_fault_events(command=("sh", "-c", "exit 1"))) is None,
+   str(_SL.kernel_fault_events(command=("sh", "-c", "exit 1")))[:80])
+
+# The standing hardware alert, read from where setup.py writes it. Three states, and the middle one is the one
+# that has burned this box before: no file is genuinely "no alert", while an unreadable file is NOT "no alert".
+_acase = _tmp / "alert"
+_acase.mkdir()
+(_acase / "ALERT.json").write_text(json.dumps({
+    "at": time.time() - 3600, "card": "c3:00.0", "count": 6, "window_s": 7 * 86400,
+    "what": "6 driver page faults on 0000:c3:00.0 within 7 d", "do": "swap the card and watch the faults"}))
+_a = W.live_alert(str(_acase / "ALERT.json"))
+ck("a standing alert arrives with its card, its count and its AGE -- 'raised 6 times' and 'raised 6 times in the "
+   "last hour' are different sentences",
+   _a["card"] == "c3:00.0" and _a["count"] == 6 and 3500 < _a["age_s"] < 3700, str(_a)[:120])
+ck("no alert file is 'no alert', not an error -- the normal state must not look like a fault in the reader",
+   W.live_alert(str(_tmp / "nothing-here")) is None)
+(_acase / "broken.json").write_text("{not json")
+ck("an alert file that cannot be parsed is None PLUS an error, never a bare None",
+   (lambda r: r is None or (r.get("error") and "cannot read" in r["error"]))(W.live_alert(str(_acase / "broken.json"))),
+   str(W.live_alert(str(_acase / "broken.json")))[:90])
+ck("and the page gets both fields, so 'no alert' and 'the alert could not be read' are distinguishable there too",
+   '"alert"' in src and "payload[\"alert\"]" in src and "alert_error" in src,
+   "payload fields for the standing alert")
 ck("a journalctl that failed is an error, never a zero (the -A mistake read as 'no faults today')",
    (lambda r: r["total"] is None and "exited 1" in r["error"])(
        W.kernel_faults(("sh", "-c", "echo 'journalctl: invalid option -- A' >&2; exit 1"))),

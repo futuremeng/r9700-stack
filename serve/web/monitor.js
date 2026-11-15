@@ -1082,10 +1082,10 @@ async function paintSidecars() {
 // nothing over the routing bound ever arrives, "no faults" is not evidence about anything.
 function paintWatchdog(s) {
   const sec = $("watchdog");
-  const st = s.engine_state, f = s.faults, live = s.live || {};
+  const st = s.engine_state, f = s.faults, live = s.live || {}, al = s.alert && s.alert.card ? s.alert : null;
   // A page newer than the sidecar it is talking to: none of these reads exist in that build, and an em-dash row
   // would imply the build measured and found nothing. Hide the row.
-  if (!st && !f && live.prompt_big_pct === undefined) { sec.hidden = true; return; }
+  if (!st && !f && !s.alert && live.prompt_big_pct === undefined) { sec.hidden = true; return; }
   sec.hidden = false;
   const WORD = { alive: ["Answering", "dot--live"], loading: ["Loading", "dot--busy"],
                  dead: ["Gone", "dot--off"], wedged: ["Wedged", "dot--off"] };
@@ -1118,12 +1118,15 @@ function paintWatchdog(s) {
   const now = f && f.now, earlier = f && f.earlier, attributed = Boolean(now);
   const dot = $("wd-fault-dot"), lbl = $("wd-fault-label");
   if (dot) {
-    dot.className = `dot${attributed ? (now.events ? " dot--off" : " dot--live") : ""}`;
+    dot.className = al ? "dot dot--alert"
+                       : `dot${attributed ? (now.events ? " dot--off" : " dot--live") : ""}`;
   }
   // The label says WHICH population the number is from, and it moves when the population does: a card headed
   // "this launch" must never carry a since-boot number, because that is exactly the reading a tired operator
-  // will otherwise take.
-  if (lbl) text("wd-fault-label", attributed ? "Page faults, this launch" : "Page faults, this boot");
+  // will otherwise take. With a standing hardware alert the question changes again: not "has this launch
+  // faulted" but "this function keeps faulting, whatever runs on it".
+  if (lbl) text("wd-fault-label", al ? "Hardware: page faults"
+             : (attributed ? "Page faults, this launch" : "Page faults, this boot"));
   if (!f || f.total === null || f.total === undefined) {
     text("wd-faults", "unknown");
     slot("wd-fault-note", "journal unreadable",
@@ -1164,6 +1167,23 @@ function paintWatchdog(s) {
         + "history, not as a statement about the engine running now."
         + (f.last ? ` Last: ${f.last.at}${f.last.card ? ` on ${f.last.card}` : ""}`
                    + `${f.last.pid ? ` pid ${f.last.pid}` : ""}.` : ""));
+  }
+  // A standing hardware alert takes the card over, because it is the claim that outranks a count. The number it
+  // shows is the alert's own (events on that function inside the window) and the note names the function, so the
+  // card cannot read as "this launch is fine" while the box is being told to go and look at a card. Nothing is
+  // lost: the launch/boot split is still what the per-card badges say, and every assertion ever made is in
+  // .r9700-state/alerts.jsonl.
+  if (al) {
+    text("wd-faults", `${dnum(al.count, 0)}`);
+    const win = Math.max(1, Math.round((al.window_s || 0) / 86400));
+    slot("wd-fault-note", `${al.card} \u00d7${dnum(al.count, 0)} / ${win} d`.slice(0, 24),
+         `${al.what || ""} \u2014 ${al.do || ""} \u2014 raised `
+         + `${isnum(al.age_s) ? `${Math.round(al.age_s / 60)} min` : "?"} ago by setup.py's watcher; the shape of `
+         + "each fault (read/write, UTCL2 client, ring) is in the alert, and one crash can log several driver "
+         + "lines, so the count is events, not lines.");
+  } else if (s.alert_error) {
+    text("wd-faults", "?");
+    slot("wd-fault-note", "alert unreadable", String(s.alert_error));
   }
   // Requests, not steps: /metrics has no per-step prefill-token series, and a big prompt is what puts a big
   // prefill into a step. The bound is the nearest bucket vLLM publishes (1 000), printed rather than implied,
@@ -1216,7 +1236,13 @@ async function paintGate() {
   // characters at 12 px -- the budget the render harness measures -- so the long form goes where it is still
   // readable in full.
   const whyClause = (g.why || "").split(";")[0].split(" (")[0].trim();
-  slot("gate-why", !c.GATE_ON ? "off" : g.closed ? (whyClause || "at the cliff")
+  // The preemption reason is the one the gateway words in a sentence rather than an inequality, and the tightest
+  // 4-up card holds 24 characters -- so the page shortens it HERE rather than widening the card, keeping the two
+  // facts that matter (what is closing it, and for how long much longer) and leaving the gateway's exact string
+  // in the title. The pool clause needs no shortening: "kv 0.860 >= 0.92" is already inside the budget.
+  const shutFor = isnum(g.thrash_left) && g.thrash_left > 0
+    ? `preempting, ${Math.round(g.thrash_left)} s more` : whyClause;
+  slot("gate-why", !c.GATE_ON ? "off" : g.closed ? (shutFor || "at the cliff")
        : (g.err ? "open: no gauge" : "no harm signal"),
        (g.why || "") + (g.err ? ` ${g.err}` : "")
        + " -- the door closes on the engine's own harm signals: num_preemptions_total MOVING (blocks taken back "

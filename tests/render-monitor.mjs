@@ -613,7 +613,16 @@ console.log(`  caption slots now: ${t("gen-note1")} | ${t("gen-note2")}`);
     // protecting -- is the element's title. Copying that arithmetic into the page's own words is what goes stale.
     if (GPAY.closed && GPAY.why) {
       const clause = GPAY.why.split(";")[0].split(" (")[0].trim();
-      if (g2("gate-why") !== clause) {
+      if (Number.isFinite(GPAY.thrash_left) && GPAY.thrash_left > 0) {
+        // The gateway's preemption clause is a sentence ("7 preemption(s) observed, door shut 12 s more") and the
+        // tightest 4-up card holds 24 characters, so the page shortens it to the two facts that matter -- what is
+        // closing the door, and how much longer -- and keeps the gateway's exact wording in the title.
+        if (!/^preempting, \d+ s more$/.test(g2("gate-why"))) {
+          console.log(`BAD  the page's shut-reason for a preemption window is "${g2("gate-why")}"; it must name `
+                      + "the preemption axis and the remaining seconds inside 24 characters");
+          process.exitCode = 1;
+        }
+      } else if (g2("gate-why") !== clause) {
         console.log(`BAD  the page rewrote the gate's reason: "${g2("gate-why")}" wants the clause "${clause}"`);
         process.exitCode = 1;
       }
@@ -724,16 +733,28 @@ console.log(`  caption slots now: ${t("gen-note1")} | ${t("gen-note2")}`);
       console.log("BAD  the wedged note does not carry the command that clears it"); process.exitCode = 1;
     }
     // The headline is about the LAUNCH being described, not the boot: attributed -> now.events, unattributed ->
-    // the since-boot number with the note saying it could not be attributed.
+    // the since-boot number with the note saying it could not be attributed. A standing hardware alert takes the
+    // card over with its OWN number: the alert's claim is about a PCI function over a week, which is a different
+    // question from "did the launch on screen fault", and the label says which one is being answered.
     const fa = w.faults || {};
-    const fwant = fa.now ? fa.now.events : (isnum(fa.events) ? fa.events : fa.total);
-    if (w.faults && fwant !== null && w2("wd-faults") !== String(fwant).replace(/\B(?=(\d{3})+(?!\d))/g, ",")) {
+    const al = w.alert && w.alert.card ? w.alert : null;
+    const fwant = al ? al.count : (fa.now ? fa.now.events : (isnum(fa.events) ? fa.events : fa.total));
+    if ((w.faults || al) && fwant !== null && w2("wd-faults") !== String(fwant).replace(/\B(?=(\d{3})+(?!\d))/g, ",")) {
       console.log(`BAD  #wd-faults says "${w2("wd-faults")}" for a payload with ${fwant} fault event(s)`
                   + ` (boot: ${fa.total} lines${fa.now ? `, this launch: ${fa.now.total} lines` : ", unattributed"})`
-                  + " -- the headline is this launch, the history belongs in the note");
+                  + (al ? " -- a standing hardware alert owns this card" : " -- the headline is this launch, "
+                                                                          + "the history belongs in the note"));
       process.exitCode = 1;
     }
-    for (const [bus, n] of Object.entries((w.faults || {}).by_card || {})) {
+    if (al && !w2("wd-fault-note").includes(al.card)) {
+      console.log(`BAD  the hardware alert stands and the note does not name the function it names (${al.card}): `
+                  + `"${w2("wd-fault-note")}"`); process.exitCode = 1;
+    }
+    if (al && !(((byId.get("wd-fault-note") || new El()).title || "").includes("swap"))) {
+      console.log("BAD  the hardware alert does not carry the action (swap the card and see whether the faults "
+                  + "follow): an alert without a next step is a warning light"); process.exitCode = 1;
+    }
+    for (const [bus, n] of Object.entries(al ? {} : (w.faults || {}).by_card || {})) {
       const noteAll = w2("wd-fault-note") + " " + (((byId.get("wd-fault-note") || new El()).title) || "");
       if (!noteAll.includes(bus) || !noteAll.includes(`\u00d7${n}`)) {
         console.log(`BAD  the fault note does not name ${bus} ${n}: "${w2("wd-fault-note")}" -- per-card, because`
@@ -769,20 +790,31 @@ console.log(`  caption slots now: ${t("gen-note1")} | ${t("gen-note2")}`);
       // (the equality above is what catches the page reading `faults` -- the since-boot number -- where it
       // should read `faults_launch`: more cards would light up than the launch justifies)
     }
-    if ((w.faults || {}).last && w.faults.last.card
+    if (!al && (w.faults || {}).last && w.faults.last.card
         && !((w2("wd-fault-note") + " " + (((byId.get("wd-fault-note") || new El()).title) || ""))
              .includes(w.faults.last.card))) {
       console.log(`BAD  the last fault's card is missing from the note: "${w2("wd-fault-note")}"`);
       process.exitCode = 1;
     }
     // The label must name the SAME population the number comes from. A card headed "this launch" carrying a
-    // since-boot count is the misreading this whole split exists to prevent.
+    // since-boot count is the misreading this whole split exists to prevent; a card with a standing hardware
+    // alert must say so, because its number is neither launch nor boot but a function over a window.
     const lbl = w2("wd-fault-label");
-    const wantLbl = w.faults?.now ? /this launch/ : /this boot/;
+    const wantLbl = al ? /^Hardware: page faults$/ : (w.faults?.now ? /this launch/ : /this boot/);
     if (lbl && !wantLbl.test(lbl)) {
       console.log(`BAD  the card is headed "${lbl}" while the payload's numbers are `
-                  + `${w.faults?.now ? "for this launch" : "since boot, unattributed"}`);
+                  + `${al ? `a hardware alert on ${al.card} (${al.count} events / ${al.window_s} s)`
+                       : (w.faults?.now ? "for this launch" : "since boot, unattributed")}`);
       process.exitCode = 1;
+    }
+    { const dcls = ((byId.get("wd-fault-dot") || new El()).className || "");
+      if (al && !/dot--alert/.test(dcls)) {
+        console.log(`BAD  a hardware alert stands and the fault dot is "${dcls}" -- the row has to change `
+                    + "colour, not just wording");
+        process.exitCode = 1; }
+      if (!al && /dot--alert/.test(dcls)) {
+        console.log("BAD  the fault dot is alert-coloured with no standing alert in the payload");
+        process.exitCode = 1; }
     }
     if (!w.faults && !/unknown/.test(w2("wd-faults"))) {
       console.log(`BAD  no journal read in the payload and #wd-faults says "${w2("wd-faults")}", not "unknown"`);

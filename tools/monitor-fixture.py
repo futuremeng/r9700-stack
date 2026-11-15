@@ -2,9 +2,13 @@
 """Build a Monitor fixture: today's live status plus yesterday's finished rows, for the render harness.
 
     ~/venv-r9700/bin/python tools/monitor-fixture.py [JOURNAL] [BASE] [OUT] [--rows N] [--wedged] [--gate-v2]
+                                                                                          [--alert]
 
 `--gate-v2` replaces whatever the live gateway reported with the SHIPPED gate's payload shape (preemption window,
 small_passed, held_over), so the row can be rendered against a gateway that has not been restarted yet.
+
+`--alert` adds the standing hardware alert (the claim setup.py raises into .r9700-state/ALERT.json), so the
+fault card's alert branch can be rendered offline.
 
 `--wedged` replaces the watchdog fields with the branch a healthy box never shows: a wedged launch (ranks still
 holding the GPUs while /health is silent) and several fault lines across fewer events on one card. Keep it in the
@@ -130,6 +134,22 @@ def main(argv):
         fl["earlier"] = {"total": 0, "events": 0, "by_card": {}}
         fl["unattributed"] = 0
         status["faults"] = fl
+    if "--alert" in argv:
+        # The standing hardware claim setup.py writes to .r9700-state/ALERT.json when one PCI function takes
+        # HW_ALERT_N page-fault events inside the window. Paired here with faults attributed to the launch on
+        # screen being FEW and the alert count being SIX over a week: that is the case the copy has to handle,
+        # where "this launch has barely faulted" and "this card keeps faulting under whatever runs on it" are
+        # both true and the card can only show one number.
+        status["alert"] = {"at": time.time() - 1800, "card": "c3:00.0", "count": 6, "window_s": 7 * 86400,
+                           "since": "2026-11-14T20:59:09+00:00", "until": "2026-11-15T09:52:00+00:00",
+                           "cards": {"c3:00.0": 6}, "families": {"read / SQC (data) / ring 24": 6},
+                           "what": "6 driver page faults on 0000:c3:00.0 within 7 d "
+                                   "(2026-11-14T20:59:09 .. 2026-11-15T09:52:00) -- 6 read / SQC (data) / ring 24",
+                           "do": "the fault follows the CARD, not the rank: swap this card with a neighbour and "
+                                 "see whether the faults move with it",
+                           "session": "r9700-native-flashnext", "recipe": "native-flashnext.sh",
+                           "config": "262k", "log": "/home/jiulu/logs/setup-132052.log",
+                           "sig": "illegal memory access", "age_s": 1800.0}
     if forced or "prompt_bound" not in live:
         live.update({"prompt_bound": 1000.0, "prompt_big": 2, "prompt_n": 65, "prompt_big_pct": 3.1,
                      "prompt_big_all": 41, "prompt_n_all": 1180, "prompt_big_all_pct": 3.5})
