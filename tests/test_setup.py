@@ -490,5 +490,28 @@ ck("/bin/bash and /venv/bin/python are also listed (every absolute token counts:
    ("/bin/bash" in [x for _, x in _paths]) and S.unit_exec_paths(Path(_d).parent / "nope") == [])
 
 
+# ---------------------------------------------------------------------------- tools/gpu-rank-map.py (notes/... §15)
+# The card-order discriminator is only readable if "which rank holds which card" can be MEASURED without trusting
+# the enumeration order that was just deliberately shuffled. Pinned so the measurement stays a measurement.
+import importlib.util as _ilu                               # noqa: E402
+_rspec = _ilu.spec_from_file_location("r9700_gpu_rank_map", str(ROOTP / "tools" / "gpu-rank-map.py"))
+GRM = _ilu.module_from_spec(_rspec)
+_rspec.loader.exec_module(GRM)                              # defs only: main() is guarded
+_topo = GRM.topology()
+ck("the rank->card tool names cards in the same form the kernel's fault lines do, so a journal line and this "
+   "table can be compared by eye",
+   bool(_topo) and all(re.fullmatch(r"[0-9a-f]{2}:[0-9a-f]{2}\.0", c) for _, c in _topo.values()), str(_topo)[:90])
+_ws = GRM.workers()
+_cards = [GRM.card_of(pid, {g: v[1] for g, v in _topo.items()})[0] for pid in _ws]
+ck("a live rank maps to exactly one card from the topology, or to None -- a wedge leaves the KFD record behind "
+   "empty and that is reported, not guessed",
+   all(c is None or c in {v[1] for v in _topo.values()} for c in _cards),
+   f"{len(_ws)} worker(s): {sorted(str(c) for c in _cards)}")
+import inspect as _ins                                     # noqa: E402
+_csrc = _ins.getsource(GRM.card_of)                        # the CODE, not the prose around it
+ck("the answer never comes from /proc/<pid>/fd: every rank keeps all four render nodes open for P2P, so the fd "
+   "list identifies nothing (measured while hunting, 2026-11-15)",
+   "kfd/proc" in _csrc and "/fd" not in _csrc, _csrc.strip().splitlines()[1].strip()[:80])
+
 print("PASS" if fail == 0 else "FAIL", f"({fail} failing)")
 sys.exit(1 if fail else 0)
