@@ -40,6 +40,14 @@ the **request line and nothing else**, opens the upstream, and pipes bytes both 
   hides when `/api/sidecars` is not there (the page is also served on the engine's own port). Slots are declared
   in the markup, so `tests/render-monitor.mjs` measures them: all six land inside the 24-character tight case,
   and `tools/monitor-fixture.py` now carries a `sidecars` payload so a card that stopped rendering fails a test.
+- **The cutover left two watchers on one launch, and the record named the wrong one.** The launch flow armed one
+  carrying `PORT=8080` (read before the launcher-port fix, when 8080 still was the engine) and I armed one by hand
+  with the right 8180; both polled the same `launch.json`, and `arm_watch` had no opinion about duplicates. So a
+  watcher whose death-stamp was armed against a port nothing was listening on was the one the record trusted.
+  A watcher now **claims the record** at start (`watcher=<own pid>`, `watcher_at=now`) and the record is the
+  arbiter: whoever claimed last writes, a superseded one exits saying so, and the claim *time* decides so a stale
+  holder cannot silence a live one. Proved on the box, not just in `tests/test_setup.py`: the superseded watcher
+  logged `this watcher is superseded: the record names pid 406251 ... Nothing written.` within one 10 s tick.
 - **About now says which port is which.** Through the front door the page reported `Listening on
   127.0.0.1:8180` while the base_url it prints (from `location.origin`, already correct) said `:8080` -- two
   true lines that read as a contradiction. It adds `Reached through <origin>` when the browser's port is not the

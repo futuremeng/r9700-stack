@@ -607,16 +607,36 @@ def wait_up(port, proc=None, sess=None, secs=420):
 WATCH_TICK = int(os.environ.get("WATCH_TICK", "10"))        # s between liveness probes
 
 
-def watch_tick(prev, sess, dead, now):
+def superseded(prev, me, claimed_at):
+    """Has another watcher taken this record over from us?
+
+    A launch can end up with two watchers: the launch flow arms one and someone arms another by hand. That is
+    what happened on 2026-11-15 -- the armed one carried PORT=8080 (read before the launcher-port fix, when 8080
+    still was the engine) and the hand-armed one carried the right 8180, both polling one launch.json, and the
+    record named the wrong one. Two watchers means two opinions about which port is the engine's, and the record
+    can only carry one death.
+
+    So watch_loop CLAIMS the record (watcher=own pid, watcher_at=now) when it starts, and the record is the
+    arbiter: whoever claimed last speaks. The claim TIME decides, so a record still naming a watcher that
+    stopped long ago does not chase a live one away."""
+    return bool(prev) and prev.get("watcher") not in (None, me) \
+        and prev.get("watcher_at") is not None and claimed_at is not None \
+        and prev["watcher_at"] >= claimed_at
+
+
+def watch_tick(prev, sess, dead, now, me=None, claimed_at=None):
     """One tick of the watcher as a decision: ("", {}) keep waiting, ("record", fields) write the death,
     ("stop", {}) leave the record alone and get out.
 
-    Pure, so tests/test_setup.py can hold it to its three rules without a box to kill: the record must name the
+    Pure, so tests/test_setup.py can hold it to its rules without a box to kill: the record must name the
     session this watcher was armed for (someone else's launch -- a relaunch under another session, a hand-started
-    serve -- is stamped by its own launcher, not by a watcher left awake for the previous one); a death already
+    serve -- is stamped by its own launcher, not by a watcher left awake for the previous one); a watcher the
+    record has since been re-claimed by is not the one that writes (see superseded()); a death already
     on the record is not re-stamped, because the first timestamp is the one worth having; and while the launch
     answers, nothing is written at all."""
     if prev is None or (prev.get("session") or None) != (sess or None):
+        return "stop", {}
+    if superseded(prev, me, claimed_at):
         return "stop", {}
     if dead is None:
         return "", {}
@@ -645,28 +665,44 @@ def watch_dead(port, sess):
 
 
 def watch_loop(port, sess, log):
-    """Poll a launch that is already up until it stops, then put the moment on the record and exit."""
+    """Poll a launch that is already up until it stops, then put the moment on the record and exit.
+
+    It claims the record first. That is what makes arming a watcher by hand safe rather than a duplicate: the
+    claim settles who speaks, and a superseded watcher exits saying so instead of quietly stamping the record
+    from a port it picked up in an older run."""
+    me, claimed = os.getpid(), int(time.time())
+    rec = state_read("launch.json")
+    if rec is not None and (rec.get("session") or None) == (sess or None):
+        state_update("launch.json", watcher=me, watcher_at=claimed)
+    else:
+        warn("no launch.json for this session: the watcher reports on stdout only")
     while True:
         d = watch_dead(port, sess)
-        if d:
-            break
-        time.sleep(WATCH_TICK)
-    act, fields = watch_tick(state_read("launch.json"), sess, d, time.time())
-    line = (f"[watcher] {time.strftime('%Y-%m-%d %H:%M:%S')} this launch is gone: {d}")
-    if act == "record":
-        state_update("launch.json", **fields)
-        line += " -- recorded (launch.json: died_at, reason). Nothing restarted it: see " \
-                "notes/launch-methodology.md \u00a74."
-    else:
-        line += " -- nothing written: that record is not this launch's, or its death is already on it"
-    say(line)
-    if log:
-        try:
-            with open(log, "a") as fh:
-                fh.write(line + "\n")
-        except OSError:
-            pass
-    return 0
+        rec = state_read("launch.json")
+        act, fields = watch_tick(rec, sess, d, time.time(), me, claimed)
+        if act == "":
+            time.sleep(WATCH_TICK)
+            continue
+        line = f"[watcher] {time.strftime('%Y-%m-%d %H:%M:%S')} "
+        if act == "stop" and superseded(rec, me, claimed):
+            say(line + f"this watcher is superseded: the record names pid {rec.get('watcher')}, claimed "
+                       f"{rec.get('watcher_at')} -- that one speaks for this launch. Nothing written.")
+            return 0
+        line += f"this launch is gone: {d}"
+        if act == "record":
+            state_update("launch.json", **fields)
+            line += " -- recorded (launch.json: died_at, reason). Nothing restarted it: see " \
+                    "notes/launch-methodology.md \u00a74."
+        else:
+            line += " -- nothing written: that record is not this launch's, or its death is already on it"
+        say(line)
+        if log:
+            try:
+                with open(log, "a") as fh:
+                    fh.write(line + "\n")
+            except OSError:
+                pass
+        return 0
 
 
 def arm_watch(port, sess, log):

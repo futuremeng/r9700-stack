@@ -256,6 +256,21 @@ ck("a death already on the record is not re-stamped (the first timestamp is the 
 ck("two watchers, one death: the second sees it already recorded and stops",
    S.watch_tick(dict(S.watch_tick({"session": "r9700-x"}, "r9700-x", "gone", 100)[1], session="r9700-x"),
                 "r9700-x", "gone", 130) == ("stop", {}))
+# Two watchers on ONE launch happened for real on 2026-11-15: the launch flow armed one carrying PORT=8080 (the
+# port before the gateway moved the engine to 8180) and a hand-armed one carried the right port, and the record
+# named the wrong one. The record settles it: a watcher claims it at start, and whoever claimed LAST speaks.
+ck("a watcher the record has been re-claimed by since its own claim does not write",
+   S.watch_tick({"session": "r9700-x", "watcher": 42, "watcher_at": 120}, "r9700-x", "gone", 130, 7, 100)
+   == ("stop", {}))
+ck("the watcher named on the record keeps writing", S.watch_tick(
+   {"session": "r9700-x", "watcher": 7, "watcher_at": 100}, "r9700-x", "gone", 130, 7, 100)
+   == ("record", {"died_at": 130, "reason": "gone"}))
+ck("a record naming a watcher that claimed BEFORE us is stale, not a new owner (it must not silence the live one)",
+   S.watch_tick({"session": "r9700-x", "watcher": 42, "watcher_at": 50}, "r9700-x", "gone", 130, 7, 100)
+   == ("record", {"died_at": 130, "reason": "gone"}))
+ck("a watcher holding no claim of its own (no watcher_at to compare) is not chased off by someone's older claim",
+   S.watch_tick({"session": "r9700-x", "watcher": 42, "watcher_at": 120}, "r9700-x", "gone", 130)
+   == ("record", {"died_at": 130, "reason": "gone"}))
 real_left, real_tmux = S.left_vllm, S.out
 ck("a tmux session that is gone is a reason, not a guess",
    (S.watch_dead(59999, "r9700-definitely-not-here") or "").startswith("the tmux session"))
