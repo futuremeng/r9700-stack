@@ -46,7 +46,25 @@ def main(argv):
                   "gpus_history": [], "pcie": [], "pcie_history": [], "pcie_events": [], "journal": None,
                   "note": "fixture: no live serve was answering, so the status side of this render is empty"}
         src = f"no live serve ({type(e).__name__})"
-    out.write_text(json.dumps({"status": status, "requests": {"requests": keep}}, indent=1))
+    # The CPU sidecars the gateway aggregates (GET /api/sidecars). The fixture has to carry them: the render
+    # harness reads the slot list out of monitor.html and fails any slot the page never writes, so a card that
+    # only exists when a gateway is answering would fail the fixture render -- and a card that quietly never
+    # renders is exactly the silent rot these checks exist to catch. Numbers from the live box, 2026-11-15:
+    # the embedder at -t 15 (one more thread than that range has online cpus costs ~33% of its throughput),
+    # Committed_AS 85.3 of 93.8 GiB with all three serves up.
+    try:
+        with urllib.request.urlopen(f"{base}/api/sidecars", timeout=5) as f:
+            sidecars = json.load(f)
+    except OSError:
+        sidecars = {"sidecars": [
+            {"name": "embed", "health": 200, "rates": {"rate": 1112.4, "busy": 0.0, "deferred": 0.0},
+             "serve": {"threads": "15", "ctx": "8192", "batch": "512"},
+             "host": {"committed_as_kb": 89397784, "embed_rss_kb": 1618092}},
+            {"name": "rerank", "health": 200, "rates": {"rate": 1014.0, "busy": 1.0, "deferred": 0.0},
+             "serve": {"threads": "16", "ctx": "4096", "batch": "512"},
+             "host": {"committed_as_kb": 89397784, "embed_rss_kb": 1171012}}], "at": time.time()}
+    out.write_text(json.dumps({"status": status, "requests": {"requests": keep},
+                               "sidecars": sidecars}, indent=1))
     print(f"{out}: status from {src}, {len(keep)} rows from {journal}")
     for r in keep[-3:]:
         t = r.get("timings") or {}

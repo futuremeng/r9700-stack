@@ -179,3 +179,48 @@ EMBED_PORT=8092 WATCH_PORT=8093 bash serve/embed-watch.sh                       
 # and for the sidecars: N concurrent /v1/embeddings over ~420-token documents and /v1/rerank over 8-doc
 # groups, with the serve's own /metrics read before and after.
 ```
+
+## One port on the box (2026-11-15, later the same day)
+
+The four sidecar ports and the engine's were consolidated: `serve/gateway.py` took **8080** and everything else
+moved to loopback. It reads the request line and nothing else, then pipes bytes both ways — chosen over
+`serve/webui.py`'s proxy (which parses the body and rebuilds it, measured at 2-3 ms a request) and over
+FastAPI/uvicorn, which would buy the same class of problem at a similar price.
+
+| path | direct | through the gateway |
+|---|---|---|
+| 50 sequential `/v1/models` | 0.62 s | 0.66 s (**+0.8 ms** a request) |
+| engine median ITL c1 / c4 / c16 | 13.0 / 18.6 / 27.4 ms | **12.8 / 18.3 / 27.4 ms** |
+| 60 KB chat request with `Expect:` | 0.32 s | 0.29 s |
+| 54 KB `/v1/embeddings` | 19.22 s | 19.20 s |
+
+The ITL pair is the number that matters: a hop that costs anything at all shows up as a floor under every
+stream, and there is no floor. `tests/test_gateway.py` pins the framing (60 KB body by digest, `Expect:` sent in
+two writes, SSE not buffered, keep-alive, HEAD) and asserts the hop stays under 2 ms, so a future swap to a
+body-parsing proxy fails a test instead of showing up as a vague "the box feels slower".
+
+Final layout — one LAN door, everything else loopback (which is also what makes the sidecars' missing API key
+acceptable):
+
+```
+0.0.0.0:8080   serve/gateway.py       /v1/chat|/metrics -> engine, /v1/embeddings -> :8090,
+                                      /v1/rerank -> :8092, /monitor /about /web/ /api/ -> engine plugin
+127.0.0.1:8180 vllm serve (Qwen3.8, 262k)
+127.0.0.1:8090 llama-server --embedding --pooling last  (cores 16-31, -t 15 -c 8192)
+127.0.0.1:8092 llama-server --rerank                    (cores 32-47, -t 16 -c 4096)
+127.0.0.1:8091 / :8093  embed-watch pages, aggregated by the gateway at GET /api/sidecars
+```
+
+**Order of operations for any restart here** (this is the 2026-11-01 trap, `notes/load-oom-svm-wedge.md`):
+
+```
+STOP=1 bash serve/native-flashnext.sh
+grep Committed_AS /proc/meminfo            # 86.1 -> 7.4 GiB before relaunching. Not a suggestion.
+nvidia-smi --query-gpu=memory.used --format=csv,noheader   # all four back to 0
+bash serve/native-flashnext.sh             # tmux'd; PORT/HOST come from native.env -> 127.0.0.1:8180
+bash serve/gateway.sh                      # or: setup.py does this after /health if native.env sets GATEWAY_PORT
+```
+
+`Committed_AS` with all three serves up: **85.3 of 93.8 GiB** (was 81.2 with the engine alone). The Monitor's
+sidecar cards carry that number on purpose — the GGUFs are clean-mapped page cache, every serve's KV pool is
+anon, and CTX is the knob.

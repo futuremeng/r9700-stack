@@ -62,9 +62,15 @@ MODEL=${MODEL:-$DEF_MODEL}
 HF_REPO=${HF_REPO:-$DEF_REPO}
 HF_FILE=${HF_FILE:-$DEF_FILE}
 LLAMA_SERVER=${LLAMA_SERVER:-$(command -v llama-server)}
-PORT=${PORT:-$DEF_PORT}
+# PORT means the ENGINE's port in the machine-local file this box shares between launchers (native.env now says
+# PORT=8180 because a gateway owns 8080). Sourcing that file must not move this serve onto the engine's port --
+# `STOP=1 bash serve/embed.sh` printed "nothing running on 8180" the first time it was run after that change.
+# So: an inline PORT for THIS command wins; the shared file's PORT is ignored; otherwise EMBED_PORT /
+# RERANK_PORT (per task, settable in native.env) and then the task's own default.
+PORT_INLINE=${PORT:-}
 LOCAL_ENV=${LOCAL_ENV:-$HOME/.config/r9700-stack/native.env}
 [ -f "$LOCAL_ENV" ] && { set -a; . "$LOCAL_ENV"; set +a; echo "local env: $LOCAL_ENV"; }
+PORT=${PORT_INLINE:-$([ "$TASK" = rerank ] && echo "${RERANK_PORT:-$DEF_PORT}" || echo "${EMBED_PORT:-$DEF_PORT}")}
 BIND=${EMBED_BIND:-${R9K_WEB_BIND:-127.0.0.1}}
 CORES=${CORES:-$DEF_CORES}                # taskset range: stay off the engine's ~11 cores. On THIS box cpu 17
                                           # and 113 are offline (host/offline-core.cpus, notes/incident-2026-11-03)

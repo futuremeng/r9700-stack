@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-"""Inter-token latency via streaming at concurrency 1/2/4 (median gap between streamed chunks, ms)."""
-import json, statistics, sys, threading, time, urllib.request
-BASE = "http://localhost:8080/v1/chat/completions"
+"""Inter-token latency via streaming at concurrency 1/2/4 (median gap between streamed chunks, ms).
+
+ITL_BASE overrides the endpoint: on 2026-11-15 the box grew a gateway in front of the engine (port 8080 ->
+127.0.0.1:8180), and the only way to show the hop costs nothing is to run the same bench down both paths."""
+import json, os, statistics, sys, threading, time, urllib.request
+BASE = os.environ.get("ITL_BASE", "http://localhost:8080/v1/chat/completions")
 def stream(i, out):
     body = {"model": "Qwen3.8", "messages": [{"role": "user", "content": f"Topic {i}: write a long essay about rivers."}],
             "max_tokens": 150, "temperature": 0, "stream": True, "chat_template_kwargs": {"enable_thinking": False}}

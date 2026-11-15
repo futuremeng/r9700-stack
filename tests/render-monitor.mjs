@@ -107,7 +107,8 @@ const ctx = {
       return r;
     }
     const p = String(u).split("?")[0];
-    const body = p === "/api/status" ? FIX.status : p === "/api/requests" ? FIX.requests : null;
+    const body = p === "/api/status" ? FIX.status : p === "/api/requests" ? FIX.requests
+               : p === "/api/sidecars" ? (FIX.sidecars ?? null) : null;
     if (p === "/api/status") LAST_STATUS = body;                  // the harness reads the same payload
     if (body === null) return { ok: false, status: 404, json: async () => ({ error: "not in fixture" }) };
     return { ok: true, status: 200, json: async () => body };

@@ -1677,8 +1677,9 @@ ck("a fact meant for a child process is sourced with set -a, in BOTH launchers",
    # command that sourced the file came up on 127.0.0.1:8099 while the file said 0.0.0.0, because webui.py reads
    # R9K_WEB_BIND out of the ENVIRONMENT as its --bind default.
    'set -a; . "$LOCAL_ENV"; set +a' in _wsh and 'set -a; . "$LOCAL_ENV"; set +a' in lfsrc)
-ck("this box's file states both bind addresses -- the engine's and the Monitor's",
-   all(k in _localenv().read_text() for k in ("HOST=0.0.0.0", "R9K_WEB_BIND=0.0.0.0")), str(_localenv()))
+ck("this box's file states the bind addresses -- the gateway that faces the LAN, and the engine behind it",
+   all(k in _localenv().read_text() for k in ("HOST=127.0.0.1", "PORT=8180", "GATEWAY_BIND=0.0.0.0",
+                                              "GATEWAY_PORT=8080", "EMBED_BIND=127.0.0.1")), str(_localenv()))
 _dr = subprocess.run(["bash", os.path.join(ROOT, "serve/webui.sh")], capture_output=True, text=True, timeout=120,
                      env={**os.environ, "DRY": "1", "WEBUI_PORT": "8099"})
 ck("DRY=1 previews the sidecar command line, and neither starts nor kills anything",
@@ -1694,9 +1695,17 @@ ck("with no machine-local file the preview falls back to the repo default, loopb
 # process was stopped. This box's standing Monitor is the one INSIDE the serve (WEBUI=same, on the engine's own
 # port); a standalone sidecar is opt-in. So: the engine's port must be bound the way the file says, and any
 # sidecar that happens to be running is checked too -- running none is the configuration, not a failure.
+# Which bind a live process proves. Changed on 2026-11-15, when a gateway took the port this box answers on
+# (serve/gateway.py, port: routes one port to vLLM + the two llama.cpp CPU serves) and the engine moved to
+# loopback 127.0.0.1:8180. The old form demanded that the ENGINE reach the LAN ("0.0.0.0:8080" in ss). It still
+# passes -- but now it passes because of the gateway, so saying "the engine reaches the LAN" would be a lie the
+# test would keep telling after the truth changed. State both halves of what is true now.
 _ss = subprocess.run(["ss", "-ltn"], capture_output=True, text=True, timeout=30).stdout
-ck("the port this box stands on is bound the way the machine-local file says (HOST=0.0.0.0 reaches the live socket)",
+ck("the port this box stands on is the gateway, bound for the LAN as the machine-local file says",
    "0.0.0.0:8080" in _ss, "ss -ltn | grep 8080")
+ck("and the engine behind it is loopback-only: reachable on 127.0.0.1:8180, absent from 0.0.0.0:8180",
+   "127.0.0.1:8180" in _ss and "0.0.0.0:8180" not in _ss,
+   [l.split()[-1] for l in _ss.splitlines() if ":818" in l or ":808" in l])
 _ps = subprocess.run(["ps", "-eo", "args"], capture_output=True, text=True, timeout=30).stdout
 _side = sorted({m.group(1) for m in re.finditer(r"serve/webui\.py --port (\d+)", _ps)})
 ck("and every standalone sidecar that IS running is bound the way the file says (running none is fine: the "
@@ -2692,6 +2701,13 @@ _slot_html = {m.group(2) for m in re.finditer(r'class="([^"]*)"[^>]*?\bid="([^"]
               if "slot" in m.group(1).split()}
 _slot_js = set(re.findall(r'slot\("([^"]+)"', _mjs2)) | {
     x for pair in re.findall(r'trend\("[^"]+", "([^"]+)", "([^"]+)"', _mjs2) for x in pair}
+# The sidecar cards are filled from a literal table of ids rather than from top-level slot("id") calls, because
+# one row of the table is one card and the payload entries arrive in order. The table is still literal text in
+# the JS, so this check keeps its teeth: a slot in the markup that no table row names is still "never written".
+_tab = re.search(r"const SIDECAR_CARDS = \[(.*?)\];", _mjs2, re.S)
+if _tab:
+    # only the slot ids from the table: the row also names its card, dot and value, which are not slots
+    _slot_js |= {x for x in re.findall(r'"([a-z0-9-]+)"', _tab.group(1)) if x in _slot_html}
 ck("every slot the page writes is declared in the markup (an undeclared one silently stops rendering)",
    _slot_js <= _slot_html, f"missing from HTML: {sorted(_slot_js - _slot_html)}")
 ck("and every slot in the markup is written (a stale one shows a dash forever)",

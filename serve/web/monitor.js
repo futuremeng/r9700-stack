@@ -1009,6 +1009,61 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && detailBus) { detailBus = null; paintPcieDetail(status); }
 });
 
+// -- the CPU sidecars behind the gateway ---------------------------------------------------------
+// serve/gateway.py answers /api/sidecars with each sidecar's own watcher state (serve/embed-watch.py), which
+// is the only place llama.cpp's metrics dialect is understood. Two reasons this section is careful:
+// * the page is also served on the engine's own port, where /api/sidecars does not exist -- a 404 hides the
+//   section instead of leaving dead cards full of em-dashes in the grid;
+// * what these cards exist to show is the memory line. The GGUFs map clean (reclaimable page cache), but each
+//   serve's KV pool is anon and lands in Committed_AS, which is the number the 2026-11-01 wedge is about.
+// Which cards exist, written out rather than derived from the payload: a card the page builds from a JSON
+// field is a card whose slots no static check can see, and "every slot in the markup is written"
+// (tests/test_webui.py) is exactly the check that would go blind. A third serve on the box shows up in
+// /api/sidecars but not here -- adding it means adding a row here and a card in monitor.html.
+const SIDECAR_CARDS = [
+  ["embed-card", "embed-dot", "embed-name", "embed-rate",
+   "embed-args", "embed-slots", "embed-mem"],
+  ["rerank-card", "rerank-dot", "rerank-name", "rerank-rate",
+   "rerank-args", "rerank-slots", "rerank-mem"],
+];
+
+async function paintSidecars() {
+  let list = [];
+  try {
+    const d = await api("/api/sidecars");
+    list = (d && d.sidecars) || [];
+  } catch (e) {
+    list = [];                                    // no gateway on this port (or it is not answering)
+  }
+  const sec = $("sidecars");
+  if (!list.length) { sec.hidden = true; return; }
+  sec.hidden = false;
+  SIDECAR_CARDS.forEach(([card, dot, name, rate, args, slots, mem], i) => {
+    const s = list[i];
+    if (!s) { $(card).hidden = true; return; }
+    $(card).hidden = false;
+    const r = s.rates || {}, v = s.serve || {}, h = s.host || {};
+    text(name, s.name || "sidecar");
+    $(dot).className = `dot${s.health === 200 ? " dot--live" : " dot--off"}`;
+    // llama.cpp publishes no request counter, so the rate is prompt TOKENS per second: the serve's own gauge
+    // when it has one, else the watcher's own delta over its window.
+    const tok = isnum(r.rate) ? r.rate : r.ptok;
+    $(rate).innerHTML = `${isnum(tok) ? dnum(tok, 0) : "\u2014"}<span class="unit"> tok/s</span>`;
+    slot(args, `-t ${v.threads || "?"} \u00b7 -c ${v.ctx || "?"}`,
+         `started with -t ${v.threads || "?"} -c ${v.ctx || "?"} -b ${v.batch || "?"}; the thread count is the online`
+         + ` cpu count inside its taskset range, and one thread more than that costs real throughput`);
+    slot(slots, `busy ${isnum(r.busy) ? dnum(r.busy, 0) : "\u2014"} \u00b7 def `
+                + `${isnum(r.deferred) ? dnum(r.deferred, 1) : "\u2014"}`,
+         "busy slots and requests deferred per second (llama.cpp runs 4 slots by default; past that, concurrency "
+         + "buys nothing -- raise --parallel instead of the client count)");
+    slot(mem, `rss ${isnum(h.embed_rss_kb) ? dnum(h.embed_rss_kb / 1048576, 2) : "\u2014"} \u00b7 host `
+              + `${isnum(h.committed_as_kb) ? dnum(h.committed_as_kb / 1048576, 1) : "\u2014"}`,
+         "this serve's RSS (weights touched + its KV pool) and the host's Committed_AS: the GGUF maps clean and "
+         + "is reclaimable page cache, the KV pool is anon and lands in Committed_AS -- the 2026-11-01 red line "
+         + "(notes/load-oom-svm-wedge.md)");
+  });
+}
+
 // -- one tick -------------------------------------------------------------------------------------
 async function refresh() {
   if (paused) return;
@@ -1036,6 +1091,7 @@ async function refresh() {
         + "counts, never bodies, and a request appears when it finishes. Captured bodies: serve/webui.sh "
         + "with WEBUI_MODE=proxy." : "";
     renderStatus(s);
+    paintSidecars();                       // its own fetch, its own failure: never gates the engine's numbers
     list();
     if (selected) {
       const row = records.find((r) => rid(r) === selected);

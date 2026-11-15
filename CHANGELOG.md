@@ -1,5 +1,51 @@
 # Changelog
 
+## One port on the box: a gateway on :8080, the engine and both CPU serves behind it on loopback
+
+Asked to put everything on 8080 and share one Monitor page. `serve/gateway.py` (stdlib asyncio, no framework) reads
+the **request line and nothing else**, opens the upstream, and pipes bytes both ways:
+`/v1/embeddings` -> embedder, `/v1/rerank|/rerank|/reranking` -> reranker, `/monitor|/about|/web/|/api/|/favicon.svg`
+-> the engine's page plugin, everything else -> the engine. `GET /api/sidecars` it answers itself, from each
+`embed-watch` page's `state.json`, which is what puts the CPU serves on the Monitor.
+
+- **The hop is invisible, and that is the whole argument for the byte pipe.** 50 sequential `/v1/models`:
+  0.62 s direct, 0.66 s through the gateway (**+0.8 ms a request**). Engine median ITL, same bench down each path
+  (c1/c4/c16): **13.0/18.6/27.4 ms** direct against **12.8/18.3/27.4 ms** through the gateway. FastAPI was asked
+  about and refused on this number: `serve/webui.py`'s proxy parses and rebuilds bodies and costs **2-3 ms** a
+  request, which on a 76-token reply is 5%. A framework buys routing errors at 3x the price.
+- **`read_headers()` ate `HTTP/1.1 100 Continue`** -- it looped until the bytes it had collected ended in
+  `\r\n\r\n`, so the interim response's blank line looked like the end of the upstream's headers and the real
+  status line was swallowed: a 96 KB chat body hung with no error anywhere. It now stops at the first blank
+  line and forwards 1xx. Pinned by `tests/test_gateway.py`, which is 14 checks of framing rather than features:
+  body integrity (60 KB by digest), `Expect:` (40 KB, sent in two writes with a pause), SSE forwarded as it is
+  written, keep-alive, HEAD, and the **+2 ms ceiling** above -- if someone replaces this file with a framework,
+  that last check fails instead of quietly shipping the latency.
+- **Prefix routing has a mirror-image bug.** The first version claimed any path *starting with* `/v1/embeddings`,
+  so `/v1/embeddings-x` got llama.cpp's 404: a wrong-server 404 on a path the gateway should never have taken.
+  API paths now match exactly; only `/web/` and `/api/` are prefixes.
+- **`native.env` is shared, and `PORT` means the engine.** After the engine moved to 8180 there, `STOP=1 bash
+  serve/embed.sh` printed "nothing running on 8180" -- `embed.sh` sourced the file and took the engine's port as
+  its own. The shared file's `PORT` is now ignored by that launcher (inline `PORT`, else `EMBED_PORT`/
+  `RERANK_PORT`, else the task default).
+- **`setup.py` waited on the wrong port** for the same reason: it asked `os.environ` for `PORT` (8080) while the
+  tmux'd launcher obeyed the file (8180), so it watched a port nothing listened on. `launcher_var()` now reads a
+  variable the way the launcher reads it (env, then the file it sources, then its own default), and
+  `env_file_var()` asks the narrower "does this box run a front door at all" -- deliberately **not** the same
+  question, because `gateway.sh` defaults `GATEWAY_PORT=8080` and would otherwise fight an engine that owns it.
+  A launch whose local file sets `GATEWAY_PORT` now brings the gateway up after `/health`; the launcher cannot,
+  it ends in `exec vllm serve`.
+- **One page, two new cards** (`Embed · CPU`, `Rerank · CPU`): rate, `-t`/`-c`, busy slots and deferred, and
+  `rss 1.55 · host 85.3` -- this serve's RSS and the host's **Committed_AS**, because the reason the sidecars are
+  on the engine's page is the 11-01 red line: the GGUFs map clean, every serve's KV pool is anon. The section
+  hides when `/api/sidecars` is not there (the page is also served on the engine's own port). Slots are declared
+  in the markup, so `tests/render-monitor.mjs` measures them: all six land inside the 24-character tight case,
+  and `tools/monitor-fixture.py` now carries a `sidecars` payload so a card that stopped rendering fails a test.
+- **The cutover was done in the order the 2026-11-01 wedge requires**: stop, watch `Committed_AS` fall 86.1 ->
+  7.4 GiB and all four cards' VRAM to 0, then relaunch -- never relaunch while the previous server's pages are
+  still mapped. Final layout: `0.0.0.0:8080` gateway, `127.0.0.1:8180` engine, `:8090/:8092` the two llama.cpp
+  serves, `:8091/:8093` their watchers. Loopback is also the answer to the sidecars having no API key: nothing
+  but 8080 is reachable from the LAN any more.
+
 ## a Qwen3-Reranker-0.6B beside the embedder and the launch: three serves, and the engine still does not notice
 
 Asked whether a reranker could run at the same time — it can, on the same launcher. `TASK=rerank` swaps

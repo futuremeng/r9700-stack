@@ -22,6 +22,10 @@ in the launch list rather than offered, and a checkpoint only they want is a not
   ./setup.sh --launch 27b       start that recipe instead of asking (none = stop after the checks)
   ./setup.sh --embedding        the CPU embedding sidecar: serve/embed.sh on :8090, llama.cpp built in
                                 $HOME when missing (mmap GGUF only -- see the step and serve/embed.sh)
+  (no flag)                     if this box's machine-local file sets GATEWAY_PORT, the launch also brings up
+                                serve/gateway.sh on that port once /health answers: one LAN port routing to the
+                                engine plus the CPU sidecars, with the engine itself on loopback. The launcher
+                                cannot do this itself -- it ends in `exec vllm serve` -- so setup.py does.
   ./setup.sh --no-webui         launch without the Monitor/About sidecar
   ./setup.sh --docker           deploy with the pinned image. This is the ONE question asked with a default of
                                 no: the native path is the default, and every later step follows that answer.
@@ -459,6 +463,51 @@ def launcher_env(text, webui=None, log=None):
     return env
 
 
+def launcher_local_env(text):
+    """The machine-local file a launcher sources, from its own LOCAL_ENV line (None if there is none)."""
+    m = re.search(r"LOCAL_ENV=\$\{LOCAL_ENV:-([^}]+)\}", text)
+    if not m:
+        return None
+    p = Path(os.path.expanduser(os.path.expandvars(m.group(1).strip().strip('"'))))
+    return p if p.is_file() else None
+
+
+def env_file_var(text, name):
+    """A NAME set in the launcher's machine-local file only -- no environment, no ${NAME:-default} fallback.
+
+    launcher_var is the right question for "what port will the engine bind"; this is the right question for
+    "does this box run a front door at all". Asking the wrong one starts a gateway on a box that never asked
+    for one, because serve/gateway.sh defaults GATEWAY_PORT to 8080 and would then fight the engine for it."""
+    p = launcher_local_env(text)
+    if not p:
+        return None
+    for ln in p.read_text(errors="replace").splitlines():
+        ln = ln.strip()
+        if ln.startswith(f"{name}="):
+            return ln.split("=", 1)[1].split("#")[0].strip().strip('"')
+    return None
+
+
+def launcher_var(text, name, default=None):
+    """What serve/<script> will really use for NAME, in the order the script reads it: an exported environment
+    value, then the machine-local file it sources, then its own ${NAME:-default}.
+
+    setup.py used to ask only os.environ (and 8080) for PORT. On a box that sets PORT in native.env -- this one
+    moved the engine to 8180 on 2026-11-15 so a gateway could own 8080 -- the tmux'd launcher obeyed the file
+    while setup.py waited for /health on, and armed its death-watcher against, a port nothing was listening on.
+    The launcher is the authority; read it the way the launcher does."""
+    if os.environ.get(name):
+        return os.environ[name]
+    p = launcher_local_env(text)
+    if p:
+        for ln in p.read_text(errors="replace").splitlines():
+            ln = ln.strip()
+            if ln.startswith(f"{name}="):
+                return ln.split("=", 1)[1].split("#")[0].strip().strip('"')
+    m = re.search(r"\$\{" + name + r":-([^}]*)\}", text)
+    return m.group(1) if m else default
+
+
 def container_recipe(name):
     """Container-only is a property of the script. Grepping for the word "docker" got this backwards: the
     NATIVE launcher explains in a comment that it exists because "sudo docker run is not available", so it
@@ -709,7 +758,8 @@ def recipes():
     user a script that starts nothing."""
     out_ = []
     for p in sorted((ROOT / "serve").glob("*.sh")):
-        if p.name in ("serve.sh", "webui.sh", "webmeta.sh", "deploy.sh", "embed.sh", "embed-watch.sh"):
+        if p.name in ("serve.sh", "webui.sh", "webmeta.sh", "deploy.sh", "embed.sh", "embed-watch.sh",
+                      "gateway.sh"):      # gateway.sh starts no vLLM and owns no GPU: it is a front door, not a launch
             # embed.sh is not an engine recipe: it starts no vLLM and owns no GPU, so it is offered by its own
             # flag (--embedding) and its own step, not in the launch list a GPU launch is picked from.
             continue
@@ -1457,7 +1507,8 @@ def launch(cfg, have="docker"):
             "./setup.sh --docker --launch " + pick + "   (or run a native recipe: serve/native-flashnext.sh)")
         return
     env = dict(os.environ, WEBUI=WEBUI_ENV[cfg.webui])
-    port = int(os.environ.get("PORT", 8080))
+    # the port THIS launcher will bind, not the one setup.py's environment happens to carry -- see launcher_var
+    port = int(launcher_var((ROOT / "serve" / pick).read_text(errors="replace"), "PORT", "8080"))
     log = os.environ.get("LOG") or str(Path.home() / "logs" / f"setup-{time.strftime('%H%M%S')}.log")
     Path(log).parent.mkdir(parents=True, exist_ok=True)
     # pre-flight in the launcher's own shape: refuse here rather than start a launch that refuses two minutes
@@ -1552,6 +1603,17 @@ def launch(cfg, have="docker"):
                      "with it: the record, not a page, is what outlives the death. A sidecar "
                      "(./setup.sh --webui side, or bash serve/webui.sh against a dead launch) is what reports "
                      "it live (notes/webui.md)")
+        # The front door, if this box asked for one. serve/native-flashnext.sh ends in `exec vllm serve`, so the
+        # launcher cannot start anything after itself; setup.py is the thing that waits for /health, so it is the
+        # thing that brings the gateway up. Without this the box comes back from a reboot with a working engine
+        # on loopback and a dead LAN port -- the one place clients actually knock.
+        gwport = env_file_var((ROOT / "serve" / pick).read_text(errors="replace"), "GATEWAY_PORT")
+        if gwport and str(gwport) != str(port):
+            g = subprocess.run(["bash", str(ROOT / "serve" / "gateway.sh")], capture_output=True, text=True)
+            line = [l for l in (g.stdout + g.stderr).splitlines() if l.strip()][-1:] or ["no output"]
+            (ok if g.returncode == 0 else say)(f"front door on :{gwport} -- {line[0]}")
+            note("the gateway is not stopped by STOP=1 here: it answers /monitor and the sidecar routes, so it "
+                 "stays up to report an engine that went down. STOP=1 bash serve/gateway.sh takes it down.")
         mon, about = webui_urls(cfg.webui, port)
         if mon:
             say(f"    monitor: {mon}    about: {about}"

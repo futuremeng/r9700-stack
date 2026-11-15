@@ -575,6 +575,13 @@ bash serve/ds41-exl3.sh                                            # DeepSeek-V4
 An OpenAI-compatible API answers on port 8080 (`PORT=`), model name `Qwen3.8` (`DeepSeek-V4.1` for the DeepSeek
 launcher). `MAXLEN=131072 KVMEM=0.8` is DeepSeek's 128k recipe.
 
+On a box that sets `GATEWAY_PORT` in its machine-local file, 8080 belongs to `serve/gateway.py` instead: it routes
+by path to the engine (`/v1/chat/completions`, `/metrics`), the CPU embedding and reranking serves
+(`/v1/embeddings`, `/v1/rerank`) and the Monitor (`/monitor`), and everything it fronts binds loopback. Measured
+through it: +0.8 ms on a small request, engine ITL unchanged (13.0 -> 12.8 ms at concurrency 1) — it reads the
+request line and pipes bytes, because a proxy that parses bodies costs 2-3 ms. `tests/test_gateway.py` keeps that
+promise; [notes/embed-sidecar-box-test.md](notes/embed-sidecar-box-test.md) has the numbers and the restart order.
+
 **3. Check it.**
 
 ```sh
