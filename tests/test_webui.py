@@ -1770,9 +1770,23 @@ ck("the request list follows the newest row until you click one",
 ck("the Last decode speed card shows that request's own speed, or says it has none",
    "lt.predicted_per_second" in monjs and "1e3 / rate.itl_ms : null" not in monjs
    and "no speed for that record" in monjs, monjs[monjs.find('text("speed-note"') - 200:monjs.find('text("speed-note"')])
-ck("a row names its token counts and its own prefill, in seconds and in tok/s",
-   "prefill ${seconds(t.prefill_s)}" in monjs and "fmt(u.prompt_tokens ?? 0, 0)} → " in monjs
-   and 'rqSpeed("prefill", t.prefill_tok_s' in monjs)
+# What a row carries (2026-11-15): the token counts -- a 250k prompt must not look like a 22-token one -- its own
+# prefill and decode SPEEDS, what it cost the user (first token, whole request), and its id. The spans in seconds
+# used to be printed there as well, which stated a fact twice: the two tok/s figures one line above are computed
+# FROM those spans. They stay in the detail pane and in the wall-clock split, where there is room to say what they
+# include. The harness (tests/render-monitor.mjs) rejects a rendered row that prints a span, prints "HTTP 200" on
+# a healthy request, wears a crowding chip below 1.5 streams, or omits its id.
+ck("a row names its token counts, its own prefill speed, and what it cost the user -- and not the spans the "
+   "speeds are computed from",
+   'rqSpeed("prefill", t.prefill_tok_s' in monjs and "fmt(u.prompt_tokens ?? 0, 0)} → " in monjs
+   and "`first token ${seconds(r.first_token_s)}`" in monjs and "`all in ${seconds(total)}" in monjs
+   and "${seconds(t.prefill_s)}" not in monjs and "${seconds(t.decode_s)}" not in monjs
+   and "${seconds(t.queue_s)}" in monjs, "queue stays: it is the part of first token the user could not see")
+ck("a status is printed on a row only when it is not what it should be, and crowding only when it can explain "
+   "a rate (a chip on every row outvotes the chips that mean something)",
+   "const bad = r.http_status && (r.http_status < 200 || r.http_status >= 300)" in monjs
+   and "bad ? `HTTP ${r.http_status}`" in monjs and "r.shared_decode >= 1.5" in monjs,
+   monjs[monjs.find("const bad = r.http_status") - 120:monjs.find("const bad = r.http_status") + 60])
 ck("the wall-clock card splits that one request into queue, prefill and decode",
    'id="wall-split"' in (WEB / "monitor.html").read_text() and "queue ${seconds(lt.queue_s)}" in monjs)
 # vLLM credits prompt_tokens_total at request END: a 180,066-token prefill read 0 tok/s for its whole duration
@@ -1882,7 +1896,7 @@ ck("every activity waveform is in the one trends row",
    all(f'id="{i}"' in _trend for i in ("perstep-spark", "gen-spark", "prefill-spark", "running-spark")))
 ck("no waveform is left behind in the value cards",
    'class="sparkline' not in _rates
-   and monhtml.split('class="grid grid--4 engine"')[1].split("</section>")[0]
+   and monhtml.split('grid grid--4 engine')[1].split("</section>")[0]
        .count('id="gen-spark"') == 0)
 ck("the KV pool draws a waveform on a 0-100 axis, and the progress bar is gone",
    'id="kv-spark"' in monhtml and 'id="kv-bar"' not in monhtml
@@ -1960,8 +1974,9 @@ ck("a card's caption carries the thermal trio and busy, each as peak and average
 ck("no PCIe panel is left on the page: no section, no per-chain row, no AER waveform",
    'id="pcie"' not in monhtml and 'id="pcie-spark"' not in monhtml and 'class="pcie-rows"' not in monhtml
    and 'class="card pcie-card"' not in monhtml and "pcieRow(" not in monjs and "perPoll" not in monjs)
-ck("the account moved under the cards rather than vanishing with the panel",
-   monhtml.index('id="gpus"') < monhtml.index('id="pcie-detail"') < monhtml.index("Engine timings")
+ck("the account moved under the cards rather than vanishing with the panel, and stays inside the hardware screen",
+   monhtml.index('id="gpus"') < monhtml.index('id="pcie-detail"') < monhtml.index('id="sidecars"')
+   and monhtml.index('id="pcie-detail"') > monhtml.index('id="band-hardware"')
    and "paintPcieDetail(s);" in monjs)
 ck("a card states its link as a generation, not a GT/s string -- the string nobody reads as one generation short",
    "Gen${v}" in _js["common.js"] and "${gt(lk.gen)}" in _js["common.js"]
@@ -3194,7 +3209,7 @@ _mcss = open(os.path.join(ROOT, "serve/web/monitor.css")).read()
 ck("the sidecar row sizes by its contents, not by a fixed 4-up track",
    "section.sidecars{grid-template-columns:repeat(auto-fit" in _mcss, str(
        [l for l in _mcss.splitlines() if "sidecars" in l][:2]))
-_side_html = re.search(r'<section class="grid[^"]*sidecars"[^>]*>(.*?)</section>', _wh, re.S)
+_side_html = re.search(r'<section class="grid[^"]*sidecars[^"]*"[^>]*>(.*?)</section>', _wh, re.S)
 ck("and the row's card count is the number of sidecars the page builds cards for",
    _side_html is not None and _side_html.group(1).count('<div class="card"') == 2
    and len(re.findall(r'"(embed|rerank)-card"', _wh)) >= 2,
@@ -3215,11 +3230,60 @@ for _m in re.finditer(r'<section class="grid grid--4([^"]*)"[^>]*>(.*?)</section
             _holes.append((" ".join(_cls) or "(no class)", _n))
 ck("no fixed 4-up row is left with empty cells: a short row is sized by its contents in CSS",
    not _holes, str(_holes))
-# And the first screen: the top of the page answers "alive? hurt? held?" before "how fast", because that is the
-# order the questions arrived in on 2026-11-15 -- throughput was readable while the machine was dead.
-_first = re.findall(r'<section class="grid grid--4 ([a-z-]+)', _wh)[:4]
-ck("the first four rows are the vitals, the rates, the alarms and the gate -- in that order",
-   _first == ["engine", "grid--rates", "watchdog", "gate"], str(_first))
+# The four screens (2026-11-15, at the operator's request): Now / Recent / Requests / Hardware. Each section
+# carries its screen as a class, and a band names the screen in the markup, so the plan is readable in the file
+# and checkable here rather than being an order that only exists until someone inserts a row.
+_bands = re.findall(r'<div class="band" id="band-([a-z]+)">', _wh)
+ck("the page is divided into four named screens, in order: now, recent, requests, hardware",
+   _bands == ["now", "recent", "requests", "hardware"], str(_bands))
+_scr = re.findall(r'<section class="[^"]*\bscr-([a-z]+)\b', _wh)
+ck("and every section belongs to one of them -- an unclassified row is a row that will drift",
+   all(x in ("now", "recent", "requests", "hardware") for x in _scr)
+   and _scr == [x for x in _scr if x == "now"] + [x for x in _scr if x == "recent"]
+   + [x for x in _scr if x == "requests"] + [x for x in _scr if x == "hardware"] and len(_scr) >= 8, str(_scr))
+# The operator's ask, verbatim: "the hardware error information, below, after the cards". So the hardware screen
+# reads cards -> what the driver faulted on -> the other services on the box.
+ck("the hardware screen carries the fault information BELOW the cards it describes, and nothing else is on it",
+   _scr[-3:] == ["hardware", "hardware", "hardware"]
+   and _wh.index('id="gpus"') < _wh.index('id="watchdog"') < _wh.index('id="sidecars"')
+   and _wh.index('id="death-line"') > _wh.index('id="gpus"'), str(_scr))
+# What did NOT move down: one state read stays beside the rates, on the first screen. Measured, not preferred --
+# on 2026-11-15 the four headline rates kept printing plausible numbers for 26 minutes while /health was silent
+# and three ranks held ~29 GiB each.
+# Exactly two state reads stay on the first screen, both in the rates' own window bar: is the engine answering,
+# and is the door holding. Both are asked in the same second as "is it fast"; both have a whole row of history
+# further down the page, and neither needs one up here.
+ck("the first screen carries two one-line states -- the engine's and the door's -- in the rates' own window bar",
+   _wh.index('id="live-state"') < _wh.index('id="band-recent"')
+   and _wh.index('id="door-state"') < _wh.index('id="band-recent"')
+   and "paintLiveState(s)" in _mjs2 and 'text("live-word"' in _mjs2 and 'box.title =' in _mjs2
+   and 'text("door-word"' in _mjs2,
+   str([l.strip() for l in _wh.splitlines() if 'class="live"' in l]))
+ck("the gate's ROW (15-minute history, counters, pool in tokens) is on the Recent screen: a window is not a "
+   "first-screen fact, and the two rows the rates need are",
+   _wh.index('id="gate"') > _wh.index('id="band-recent"')
+   and 'grid--4 gate scr-recent' in _wh and 'grid grid--4 grid--rates scr-now' in _wh,
+   str(_wh.index('id="gate"')))
+ck("and a port with no gateway (--proxy-less engine page) hides the door strip instead of inventing a state",
+   'const box = $("door-state");' in _mjs2 and "if (box) box.hidden = true;" in _mjs2, "no /api/gate, no strip")
+ck("and the row it comes from is on the hardware screen, so the two cannot disagree about who is describing what",
+   _wh.index('id="live-state"') < _wh.index('id="watchdog"'), "strip first, alarm row later")
+ck("the serve-down banner is above the first screen, not inside the request list at the bottom (on 2026-11-03 the "
+   "sentence 'the serve is not answering, here is the command to bring it back' was three screens down)",
+   _wh.index('id="down-line"') < _wh.index('id="band-now"'), str(_wh.index('id="down-line"')))
+# An id that appears twice is a bug getElementById never reports: the second element is unreachable. The page
+# carried two id="down-line" for exactly that long -- the banner was written into the first and the second stayed
+# an empty div forever.
+_ids = re.findall(r'\bid="([^"]+)"', re.sub(r"<!--.*?-->", "", _wh, flags=re.S))   # ids named in prose are not ids
+_dups = sorted({i for i in _ids if _ids.count(i) > 1})
+ck("no id appears twice in the markup (getElementById answers the first, so a duplicate is an unreachable element, "
+   "not a second one)", not _dups, str(_dups))
+ck("the serve's identity sits beside the request list it describes, not on the first screen",
+   _wh.index('id="model-state"') > _wh.index('id="band-requests"')
+   and _wh.count('id="model-state"') == 1 and "panel-model" in _wh, str(_wh.index('id="model-state"')))
+ck("the recent screen carries a recent-set fact about the list (how many retained rows did not finish), and the "
+   "active streams are not folded into it",
+   'id="err-count"' in _wh and 'qualText("err-count"' in _mjs2 and '!active(r)' in _mjs2, "err-count")
 _slot_html = {m.group(2) for m in re.finditer(r'class="([^"]*)"[^>]*?\bid="([^"]+)"', _wh)
               if "slot" in m.group(1).split()}
 _slot_js = set(re.findall(r'slot\("([^"]+)"', _mjs2)) | {

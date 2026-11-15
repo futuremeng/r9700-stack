@@ -146,3 +146,37 @@ section.gate{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
 .slot-map code { font-size: 11px; }
 .slot-map b { font-weight: 600; }
 .slot-map[data-tone="warn"] { border-left: 3px solid #d9a441; padding-left: 8px; }
+
+/* The four screen bands (Now / Recent / Requests / Hardware). A band is a rule and two words, not a card: the
+   page's rows are the content and the band only names which question the rows below answer. It is deliberately
+   quieter than a card label — an h2 the size of a value would compete with the numbers it introduces, and the
+   whole reason for the four-screen split is that the operator kept having to scroll past facts of equal visual
+   weight to reach the one they were asking about. */
+.band{display:flex;align-items:baseline;gap:10px;margin:26px 0 10px;padding-top:10px;
+      border-top:1px solid var(--st-line)}
+.band h2{font-size:13px;letter-spacing:.08em;text-transform:uppercase;opacity:.9;margin:0}
+.band .small{opacity:.62}
+/* The first band does not need the rule above it: the header's own border is already there. */
+#band-now{margin-top:14px;border-top:0;padding-top:0}
+/* The down-banner used to live at the bottom of the page, inside the request list: on 2026-11-03 the serve
+   stopped answering for minutes and the sentence "the serve behind this page is not answering, here is the
+   command to bring it back" was three screens down. It now sits above the first band. */
+main>.down-line{margin:10px 0 4px}
+
+/* The state strip in the rates' window bar: engine state, in the same line as "how old is this snapshot",
+   because that pair is the honest reading of the four big numbers next to it — a launch that is wedged still
+   prints a plausible tok/s from the last good poll. Colour carries the state; the words stay two at most so the
+   strip never wraps and moves the row of cards under it. */
+.live{display:inline-flex;align-items:baseline;gap:6px;margin-left:auto;padding:3px 8px;
+      border:1px solid var(--st-line);border-radius:4px;font-size:12px}
+.live b{font-weight:600}
+.live .small{opacity:.65}
+.live[data-tone="danger"]{border-color:#ff5c5c;background:rgba(255,92,92,.07)}
+.live[data-tone="busy"]{border-color:#e0a13c;background:rgba(224,161,60,.07)}
+.live[hidden]{display:none}
+
+/* The serve's identity, beside the list of requests it made. It used to be a first-screen card, where it
+   answered nothing about the last second. */
+.panel-model{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin:12px 0 0}
+.panel-model .value--sm{font-size:15px}
+.panel-model .model{font-size:13px}

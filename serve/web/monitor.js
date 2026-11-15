@@ -121,7 +121,10 @@ function list() {
     if (t.finish_reason === 1) {
       marks.append(mark("hit max_tokens", "", "ended on the client's max_tokens, not on the model stopping"));
     }
-    if (isnum(r.shared_decode)) {
+    // Crowding is shown only when it is enough to explain something. Below 1.5 the box is not busy enough for
+    // the number to change a reading of the rate, and a chip on every row outvotes the chips that mean
+    // something (a preempted request, an error state).
+    if (isnum(r.shared_decode) && r.shared_decode >= 1.5) {
       marks.append(mark(`shared ×${fmt(r.shared_decode, 1)}`, "",
         `mean requests in flight across this request's own decode window, itself counted, over the ${records.length}`
         + ` rows this page holds. Decode rate is read against it: on this box a stream runs 158 tok/s alone,`
@@ -151,16 +154,22 @@ function list() {
     const meta = document.createElement("div"); meta.className = "small";
     const engineRow = r.response_format === "engine";
     const total = engineRow ? (isnum(r.wallclock_s) ? r.wallclock_s + (t.queue_s || 0) : null) : r.wallclock_s;
+    // What a row carries, and nothing else: when it ran, what it cost the user (first token, whole request), how
+    // big it was, and the id to pin it with. `prefill Xs` and `decode Ys` used to sit on this line too, which
+    // printed the same fact twice -- the two tok/s figures one line above are computed FROM those spans -- and
+    // pushed the request id off the end of the row. Both spans stay in the detail pane, where there is room to
+    // say what they include.
+    // A status is printed only when it is not what it should be: a list of requests that all worked is the common
+    // case, and `HTTP 200` on every row is noise that competes with the marks that carry meaning.
+    const bad = r.http_status && (r.http_status < 200 || r.http_status >= 300);
     meta.textContent = [
       isnum(r.first_token_s) ? `first token ${seconds(r.first_token_s)}`
         + (isnum(t.queue_s) && t.queue_s >= 0.001 ? ` (${seconds(t.queue_s)} of it queue)` : "") : "",
-      isnum(t.prefill_s) ? `prefill ${seconds(t.prefill_s)}` : "",
-      isnum(t.decode_s) ? `decode ${seconds(t.decode_s)}` : "",
       isnum(total) ? `all in ${seconds(total)}${engineRow && isnum(t.queue_s) && t.queue_s >= 0.001
         ? " (queue included)" : ""}` : "",
       isnum(u.prompt_tokens_details?.cached_tokens) && u.prompt_tokens_details.cached_tokens > 0
         ? `${fmt(u.prompt_tokens_details.cached_tokens, 0)} cached` : "",
-      r.http_status ? `HTTP ${r.http_status}` : "",
+      bad ? `HTTP ${r.http_status}` : "",
       rid(r)].filter(Boolean).join(" \u00b7 ");
     b.append(row, sp, size, meta);
     b.onclick = () => { follow = false; $("follow").setAttribute("aria-pressed", "false");
@@ -620,6 +629,15 @@ function renderStatus(s) {
   }
   const j = s.journal || null;
   qualText("count", records.length, j ? (j.restored ? `${j.restored} carried over` : "this launch only") : "");
+  // A recent-set fact rather than a live one: how many of the rows this page is holding did not finish cleanly.
+  // Streaming rows are not errors, so the two states are kept apart explicitly -- folding them together would put
+  // the six requests currently decoding in the same number as the ones that failed.
+  const bad = records.filter((r) => r.state && r.state !== "completed" && !active(r));
+  qualText("err-count", bad.length, `${records.length} retained`);
+  text("err-note", bad.length
+    ? `${bad.length} of the ${records.length} rows here did not complete \u2014 the list below has them, `
+      + "filtered by Errors"
+    : `none of the ${records.length} rows here failed (active streams are not counted here)`);
   const jl = $("journal-line");
   if (jl) {
     jl.hidden = !j;
@@ -911,7 +929,56 @@ function renderStatus(s) {
   // below. The payload it drew on is still collected every poll (pcie, pcie_history, pcie_events) and still
   // journaled, so tools/journal-pcie.py and the death review keep working with the panel gone.
   paintPcieDetail(s);
+  paintLiveState(s);
   paintWatchdog(s);
+}
+
+// One alarm read stays on the first screen even though the alarm row moved to the fourth: engine state, in the
+// same strip as "how old is this snapshot". The reason is a measured failure rather than a preference. On
+// 2026-11-15 the four big rate numbers kept printing plausible figures for 26 minutes after /health stopped
+// answering, because they are differences of counters that the last good poll had filled and the KV gauge that
+// the wedged ranks keep holding; meanwhile three VLLM::Worker_TP* sat on ~29 GiB each. A page whose first screen
+// is rates must therefore say, in the same line as the freshness of those rates, whether the engine is
+// answering at all. Two words, one dot: `Answering`, `Loading`, `Gone`, `Wedged`.
+function paintLiveState(s) {
+  const box = $("live-state");
+  if (!box) return;
+  const st = s.engine_state;
+  // An older sidecar answers none of this. Hiding the strip is the honest rendering; an em-dash would imply a
+  // measurement that found nothing, which is a different claim (the same rule the alarm row follows).
+  if (!st && !s.alert) { box.hidden = true; return; }
+  box.hidden = false;
+  const W = { alive: ["Answering", "dot--live", ""],
+              loading: ["Loading", "dot--busy", "busy"],
+              dead: ["Gone", "dot--off", "danger"],
+              wedged: ["Wedged", "dot--off", "danger"] };
+  const w = W[st] || ["No state read", "", ""];
+  $("live-dot").className = `dot ${w[1]}`;
+  text("live-word", w[0]);
+  box.dataset.tone = w[2];
+  const n = isnum(s.ranks_holding) ? s.ranks_holding : null;
+  const f = s.faults || null, now = f && f.now, al = s.alert && s.alert.card ? s.alert : null;
+  // Short on the page, whole in the title. `slot()` cannot be used here: this is not a fixed-height card slot, it
+  // is a flex line, and the note has to be able to shrink.
+  text("live-note", [
+    n ? `${n} rank(s) on the GPUs` : "",
+    now && now.events ? `${now.events} driver fault(s) this launch` : "",
+    al ? `alert on ${al.card}` : "",
+  ].filter(Boolean).slice(0, 2).join(" \u00b7 "));
+  box.title = `${w[0]}: ${
+    { alive: "the engine answered /health on this poll and the ranks holding the GPUs are its own",
+      loading: "no /health answer yet, nothing has died: this launch is still coming up, which is not the same "
+               + "as dead and is not called dead here",
+      dead: "no /health answer and no rank holding the GPUs: the launch is over",
+      wedged: "the engine died and its workers did not \u2014 ranks go on holding ~29 GiB each while /health is "
+              + "silent. It does not clear itself: STOP=1 bash serve/<recipe>, then start it again" }[st]
+    || "this sidecar build does not report engine state"}`
+    + (n ? `. ${n} rank(s) own a card (kernel driver records, not launch order)` : "")
+    + (f && f.error ? `. Driver journal unreadable: ${f.error}` : "")
+    + (now && now.events ? `. ${now.events} page-fault event(s) inside the launch this page describes`
+                         : (f && f.total === 0 ? ". No page fault logged by the driver this boot" : ""))
+    + (al ? `. Standing hardware claim: ${al.what || ""} \u2014 the Hardware screen has the action` : "")
+    + ". The alarm row (engine state, faults, preemptions, big-prefill exposure) is on the Hardware screen.";
 }
 
 // The full account for one chain, as text. Labels are padded because the panel is `white-space:pre-wrap`, so
@@ -1236,13 +1303,44 @@ async function paintGate() {
   let g = null;
   try { g = await api("/api/gate"); } catch (e) { g = null; }        // no gateway on this port
   const sec = $("gate");
-  if (!g || !g.config) { sec.hidden = true; return; }
+  if (!g || !g.config) {
+    sec.hidden = true;
+    // No /api/gate on this port (the engine's own :8180 answers none): the strip hides rather than showing a door
+    // that was never measured.
+    const box = $("door-state");
+    if (box) box.hidden = true;
+    return;
+  }
   sec.hidden = false;
   const c = g.config, n = g.counters || {}, gg = g.gauges || {};
   // open = the door is up (live); holding = traffic is waiting (busy, not danger: a hold is the gate working);
   // off = the operator switched it off (dot--off is the file's "not running" dot).
   $("gate-dot").className = `dot${!c.GATE_ON ? " dot--off" : g.closed ? " dot--busy" : " dot--live"}`;
   text("gate-state", !c.GATE_ON ? "Off" : g.closed ? "Held" : "Open");
+  // The first-screen strip: one word about the door, in the same line as the engine's state. The row below this
+  // one has the 15-minute history and the counters; what has to be visible while the rates are being read is
+  // whether a request arriving now would be held, because that is the difference between "the engine is slow" and
+  // "the front door has not let mine in yet" -- and after the 2026-11-15 afternoon, when the door stayed shut for
+  // 180 polls straight, the second explanation has to be one glance away, not two screens.
+  {
+    const box = $("door-state");
+    if (box) {
+      box.hidden = false;
+      const word = !c.GATE_ON ? "Door off" : g.closed ? "Door held" : "Door open";
+      text("door-word", word);
+      $("door-dot").className = `dot${!c.GATE_ON ? " dot--off" : g.closed ? " dot--busy" : " dot--live"}`;
+      box.dataset.tone = !c.GATE_ON ? "" : g.closed ? "busy" : "";
+      const n2 = g.counters || {}, held = n2.held_now ?? n2.held ?? 0;
+      text("door-note", !c.GATE_ON ? "the gate is switched off at the front door"
+        : g.closed ? `${held} request(s) waiting at it` : `small ${dnum(n2.small_passed ?? 0)} passed, ${dnum(held)} held`);
+      box.title = `${word}: ${(g.why || "").trim() || (c.GATE_ON ? "no harm signal, so arrivals go straight to the engine"
+        : "GATE_ON=0 -- every request goes through regardless of engine state")}`
+        + `. Hold ceiling ${c.GATE_HOLD_S}s, harm window ${c.GATE_PREEMPT_S}s, no more than ${c.GATE_MAX_HELD} held `
+        + `at once, and a declared body of <= ${c.GATE_SMALL_BYTES} B passes a shut door. The gate's history, "was `
+        + `it shut at 15:05", and every counter are on the gate row (Recent screen). Held means the gateway opened `
+        + `no upstream connection at all: the hop stays a byte pipe and no request body was read.`;
+    }
+  }
   // the headline is the running total since the gateway started, not "right now": a hold is a thing that
   // happened to a request, and the number a reader wants after the fact is how many it happened to.
   text("gate-held", dnum(n.held ?? 0));

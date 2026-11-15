@@ -87,6 +87,8 @@ const store = () => { const m = new Map(); return { getItem: (k) => (m.has(k) ? 
 
 let LAST_STATUS = null;
 let LAST_GATE = null;                         // the gate payload the PAGE was fed, same reason as LAST_STATUS
+let LAST_REQUESTS = null;                     // the list the PAGE was fed: rendered rows are compared against the
+                                              // payload that produced them, never against a second fetch
 const ctx = {
   // The host's AbortController/AbortSignal, deliberately: api() passes ctl.signal to fetch, and in live mode that
   // fetch is the real Node one -- a signal built from a class defined inside the vm would be rejected as the
@@ -109,6 +111,12 @@ const ctx = {
       if (String(u).split("?")[0] === "/api/gate") {
         try { LAST_GATE = await r.clone().json(); } catch (e) { /* ditto */ }
       }
+      if (String(u).split("?")[0] === "/api/requests") {
+        // The LIST only. The same path answers `/api/requests?id=...` with ONE request, and overwriting the list
+        // with a detail payload is what made the row checks below match nothing and look like a broken page.
+        try { const j = await r.clone().json(); if (Array.isArray(j?.requests)) LAST_REQUESTS = j; }
+        catch (e) { /* ditto */ }
+      }
       return r;
     }
     const p = String(u).split("?")[0];
@@ -117,6 +125,7 @@ const ctx = {
                : p === "/api/gate" ? (FIX.gate ?? null) : null;
     if (p === "/api/status") LAST_STATUS = body;                  // the harness reads the same payload
     if (p === "/api/gate") LAST_GATE = body;
+    if (p === "/api/requests" && Array.isArray(body?.requests)) LAST_REQUESTS = body;
     if (body === null) return { ok: false, status: 404, json: async () => ({ error: "not in fixture" }) };
     return { ok: true, status: 200, json: async () => body };
   },
@@ -259,6 +268,132 @@ if (!FIX && (t("brand-line") || "").length !== len0) {
 // card has to carry this poll in its second line -- that demotion of the 1 s sample is the whole point of the
 // change, so it is worth a check that the headline really is the span and not the poll.
 const isnum = (v) => typeof v === "number" && isFinite(v);
+// What a request ROW is allowed to say. The row used to print the same span twice (prefill in seconds next to
+// prefill tok/s, which is computed from it), `HTTP 200` on every row of a healthy box, a crowding chip on every
+// row whether or not the box was busy, and the request id pushed off the end. The check below is written against
+// the payload the page drew, not against a fixed expectation, so it holds for a live serve too.
+{
+  const pay = ((FIX && FIX.requests) || LAST_REQUESTS || {}).requests || [];
+  const rowsNow = (byId.get("requests") || new El()).children;   // re-read: the page may have repainted the list since the earlier snapshot
+  const byId2 = new Map(pay.map((r) => [String(r.id), r]));
+  let shown = 0;
+  for (const el of rowsNow) {
+    const label = el.getAttribute?.("aria-label") || "";
+    const id = label.replace(/^Request /, "");
+    const r = byId2.get(id);
+    if (!r) continue;
+    shown++;
+    const txt = el.textContent.replace(/\s+/g, " ");
+    if (!txt.includes(id)) {
+      console.log(`BAD  the row for ${id} does not carry the id: "${txt}" -- without it a row cannot be searched `
+                  + "for or pinned in the detail pane");
+      process.exitCode = 1; }
+    if (/HTTP 200/.test(txt)) {
+      console.log(`BAD  the row for ${id} prints "HTTP 200" -- a status that IS what it should be is not a fact `
+                  + "about that request, and on a healthy list it outvotes the marks that are");
+      process.exitCode = 1; }
+    if (r.http_status && (r.http_status < 200 || r.http_status >= 300) && !txt.includes(`HTTP ${r.http_status}`)) {
+      console.log(`BAD  the row for ${id} hides its HTTP ${r.http_status}`); process.exitCode = 1; }
+    if (/prefill [\d.]+m?s\b/.test(txt) || /decode [\d.]+m?s\b/.test(txt)) {
+      console.log(`BAD  the row for ${id} prints a prefill/decode SPAN next to the tok/s figures that are `
+                  + `computed from it: "${txt}"`);
+      process.exitCode = 1; }
+    if (!/all in /.test(txt) && (isnum(r.wallclock_s))) {
+      console.log(`BAD  the row for ${id} has a wall-clock in the payload and no "all in" on the row: "${txt}"`);
+      process.exitCode = 1; }
+    const crowded = isnum(r.shared_decode) && r.shared_decode >= 1.5;
+    if (/shared ×/.test(txt) && !crowded) {
+      console.log(`BAD  the row for ${id} wears a crowding chip at shared_decode=${r.shared_decode}, below the `
+                  + "point where it explains a rate");
+      process.exitCode = 1; }
+    if (crowded && !/shared ×/.test(txt)) {
+      console.log(`BAD  the row for ${id} ran alongside ${(r.shared_decode).toFixed(1)} streams and says nothing `
+                  + "about it -- a low decode rate on a busy box reads as a slow engine otherwise");
+      process.exitCode = 1; }
+  }
+  console.log(`request rows checked against the payload: ${shown} of ${rowsNow.length}`);
+  if (shown < Math.min(rowsNow.length, 3)) {
+    console.log("BAD  too few rows could be matched to the payload by id, so the row checks above are not "
+                + "checking what they claim to");
+    process.exitCode = 1; }
+}
+
+// The one alarm read that stays on the first screen. The engine can be wedged while the four headline rates keep
+// printing numbers the last good poll supports (measured 2026-11-15: 26 minutes of that, three ranks holding
+// ~29 GiB each), so the strip next to "how old is this snapshot" has to say what the engine is doing.
+{
+  const box = byId.get("live-state") || new El();
+  const word = t("live-word"), note = t("live-note");
+  const tone = (box.dataset || {}).tone || "";
+  console.log(`live strip: hidden=${box.hidden} | ${word} | ${note} | tone=${tone}`);
+  const WORD = { alive: "Answering", loading: "Loading", dead: "Gone", wedged: "Wedged" };
+  if (STAT.engine_state || STAT.alert) {
+    if (box.hidden) {
+      console.log("BAD  the payload answers engine_state and the first-screen strip is hidden -- the rates above "
+                  + "would be the only thing the page says about a launch that may not be answering");
+      process.exitCode = 1; }
+    const wantWord = WORD[STAT.engine_state];
+    if (wantWord && word !== wantWord) {
+      console.log(`BAD  engine_state is ${STAT.engine_state} and the strip reads "${word}"`); process.exitCode = 1; }
+    if (STAT.engine_state === "wedged" && tone !== "danger") {
+      console.log(`BAD  a wedged launch is described as "${word}" in a strip coloured "${tone}" -- this is the `
+                  + "state the page missed for 26 minutes; it has to be loud, not tidy");
+      process.exitCode = 1; }
+    if (STAT.engine_state === "alive" && tone) {
+      console.log(`BAD  an answering engine wears tone "${tone}" on the strip`); process.exitCode = 1; }
+    const ti = box.title || "";
+    if (STAT.engine_state === "wedged" && !/STOP=1/.test(ti)) {
+      console.log("BAD  the strip calls the launch wedged without naming the command that clears it");
+      process.exitCode = 1; }
+    if (STAT.alert?.card && !ti.includes(STAT.alert.card)) {
+      console.log(`BAD  a standing hardware claim on ${STAT.alert.card} is not named in the strip's title`);
+      process.exitCode = 1; }
+    if (isnum(STAT.ranks_holding) && !(note + ti).includes(String(STAT.ranks_holding))) {
+      console.log(`BAD  the payload counts ${STAT.ranks_holding} rank(s) holding the GPUs and the strip omits it`);
+      process.exitCode = 1; }
+  } else if (!box.hidden) {
+    console.log("BAD  no engine_state in the payload and the strip is showing a state anyway -- an older sidecar "
+                + "answers none of these reads, and a dash would imply it measured and found nothing");
+    process.exitCode = 1; }
+}
+
+// The door's current state, in the same strip as the engine's. Its row (history strip, counters) is on the Recent
+// screen; what belongs upstairs is one word, because after 2026-11-15 afternoon -- 180 polls of a shut door, every
+// arrival paying the hold ceiling -- "the engine is slow" and "the front door has not let mine in" have to be
+// distinguishable without scrolling.
+{
+  const box = byId.get("door-state") || new El();
+  const word = t("door-word"), note = t("door-note");
+  const G = (FIX && FIX.gate) || LAST_GATE;
+  console.log(`door strip: hidden=${box.hidden} | ${word} | ${note}`);
+  if (G && G.config) {
+    if (box.hidden) {
+      console.log("BAD  the gateway answers /api/gate and the first-screen door strip is hidden -- a request "
+                  + "waiting at the door would read as a slow engine");
+      process.exitCode = 1; }
+    const want = !G.config.GATE_ON ? "Door off" : G.closed ? "Door held" : "Door open";
+    if (word !== want) {
+      console.log(`BAD  the gateway reports closed=${G.closed} GATE_ON=${G.config.GATE_ON} and the strip reads `
+                  + `"${word}" (want "${want}")`);
+      process.exitCode = 1; }
+    const ti = box.title || "";
+    if (G.closed && !/held/.test(ti)) {
+      console.log("BAD  a shut door is described on the first screen without saying arrivals are being held");
+      process.exitCode = 1; }
+    if (!ti.includes(String(G.config.GATE_HOLD_S))) {
+      console.log(`BAD  the strip omits the ${G.config.GATE_HOLD_S} s hold ceiling -- past it the request goes `
+                  + "through anyway, and that bound is the reason holding is acceptable at all");
+      process.exitCode = 1; }
+    if (isnum(G.config.GATE_SMALL_BYTES) && !ti.includes(String(G.config.GATE_SMALL_BYTES))) {
+      console.log("BAD  the strip omits the small-body allowance: cheap requests pass a shut door, and a held "
+                  + "count without that reads as everyone waiting");
+      process.exitCode = 1; }
+  } else if (!box.hidden) {
+    console.log("BAD  no /api/gate answering (the engine's own port) and the strip shows a door state anyway -- "
+                + "there is no door here to report on");
+    process.exitCode = 1; }
+}
+
 const AVG_W = { "1m": 60, "15m": 900, "1h": 3600 };
 const fullSpan = (b, w) => !!b && !b.reset && isnum(b.span_s) && b.span_s >= w * 0.8;
 const fulls = Object.entries(AVG_W).filter(([l, w]) => fullSpan(STAT?.avg?.[l], w)).map(([l]) => l);
@@ -579,7 +714,10 @@ console.log(`  caption slots now: ${t("gen-note1")} | ${t("gen-note2")}`);
   // later has a dozen, and that disagreement says when we asked, not what the page rendered. Same lesson the
   // brand-line check above learned. It also answers "does this route exist on this port?" with what the page
   // actually saw, which is the question the row's hiding rule is about.
-  const GPAY = LAST_GATE;
+  // A 404 body still parses, and on the engine's own port that is exactly what happens: :8180 has no /api/gate.
+  // Treating that error body as "the gate answered" turns a correct hide into a BAD -- the payload counts as a
+  // gate answer only if it has the config block the page itself requires.
+  const GPAY = LAST_GATE && LAST_GATE.config ? LAST_GATE : null;
   const sec = byId.get("gate") || new El();
   const g2 = (id) => t(id).replace(/\s+/g, " ").trim();
   // the sparkline element holds ONE svg child; the paths are inside it. (Counting the sparkline's own children
