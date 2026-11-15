@@ -21,10 +21,10 @@
 #        POLL_S, KEEP, GPUS (sysfs root), SMI=1 (fill the sysfs gaps from rocm-smi: it opens /dev/kfd, so
 #        leave it off while measuring; SMI="<command>" overrides the default invocation),
 #        VERSION (string to show as the engine version), FORE=1 (no nohup).
-PORT=${PORT:-8080}
-WPORT=${WEBUI_PORT:-$((PORT + 1))}
-UP=${UPSTREAM:-http://127.0.0.1:$PORT}
-DIR=$(dirname "$(realpath "$0")")
+# The machine-local file is sourced BEFORE the ports are defaulted, because it is where this box says where
+# things live: sourcing it after `PORT=${PORT:-8080}` means a box that moved its engine to 8180 gets a sidecar
+# watching 8080 -- a monitor pointed at nothing, printing URLs for a port nothing listens on. Measured here on
+# 2026-11-15: the DRY run said --port 8081 --upstream http://127.0.0.1:8080 while native.env said PORT=8180.
 # A box fact is not a repo fact (notes/launch-methodology.md section 10). The repo default binds the Monitor to
 # loopback, because /api/* carries the engine's config and its request records; a box that serves the Monitor to
 # other machines says so in this file rather than in the repo, and the choice is then written down instead of
@@ -36,6 +36,10 @@ if [ -f "$LOCAL_ENV" ]; then set -a; . "$LOCAL_ENV"; set +a
   # export a sourced line does nothing at all -- measured the same day, a sidecar restarted from a hand-typed
   # command that sourced the file came up on 127.0.0.1:8099 with the file saying 0.0.0.0.
   echo "local env: $LOCAL_ENV"; fi
+PORT=${PORT:-8080}
+WPORT=${WEBUI_PORT:-$((PORT + 1))}
+UP=${UPSTREAM:-http://127.0.0.1:$PORT}
+DIR=$(dirname "$(realpath "$0")")
 LOG=${WEBUI_LOG:-$HOME/r9700-webui-$WPORT.log}
 PAT="webui.py --port $WPORT"
 

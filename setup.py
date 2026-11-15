@@ -1067,6 +1067,22 @@ def gateway_counters(port=None):
         return None
 
 
+def watch_restarts(rec, env=None):
+    """Should THIS watcher restart a death?
+
+    Two sources, in this order, because they mean different things. `WATCH_RESTART` in the environment is the
+    operator saying it out loud right now -- for the watcher armed by hand at 05:00, that is exactly the moment
+    the policy is supposed to change, and the claim below writes the change onto the record so the answer is
+    still knowable afterwards. Without that env, the record rules: a watcher that carries no opinion must not
+    silently flip the launch's supervision mode, and `watch_loop` printing `restart_on_crash` afterwards is what
+    makes the decision auditable rather than a memory question.
+    """
+    said = (os.environ if env is None else env).get("WATCH_RESTART")
+    if said is not None:
+        return said == "1"
+    return bool((rec or {}).get("restart_on_crash"))
+
+
 def watch_loop(port, sess, log):
     """Poll a launch that is already up until it stops, then put the moment on the record and exit.
 
@@ -1079,8 +1095,7 @@ def watch_loop(port, sess, log):
     # Would this watcher restart, and is that answer knowable afterwards? arm_watch puts it on the record; a
     # watcher armed BY HAND carries no such field, so its own environment decides and the claim writes the
     # decision down -- "would it have come back?" must not depend on remembering which shell started the watcher.
-    restart = (bool(rec.get("restart_on_crash")) if rec and "restart_on_crash" in rec
-               else os.environ.get("WATCH_RESTART", "0") == "1")
+    restart = watch_restarts(rec)
     if rec is not None and (rec.get("session") or None) == (sess or None):
         # `restart_max` travels with the decision, not with the default: a record that says `restart_on_crash:
         # false, restart_max: 3` reads as "it would come back, three times an hour" to whoever finds it at 05:00.

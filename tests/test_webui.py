@@ -896,6 +896,7 @@ class FakeVLLM(BaseHTTPRequestHandler):
     """A stand-in serve: /health, /v1/models, /metrics with moving counters, and a streaming and a
     non-streaming completion."""
     n_metrics = 0
+    n_version = 0
 
     def log_message(self, *a):
         pass
@@ -917,6 +918,9 @@ class FakeVLLM(BaseHTTPRequestHandler):
         elif self.path == "/metrics":
             FakeVLLM.n_metrics += 1
             self._send(200, METRICS if FakeVLLM.n_metrics == 1 else METRICS2, "text/plain")
+        elif self.path == "/version":
+            FakeVLLM.n_version += 1
+            self._send(200, json.dumps({"version": "0.99.99"}), "application/json")
         else:
             self._send(404, json.dumps({"error": {"message": "no " + self.path}}))
 
@@ -1008,6 +1012,16 @@ status, body = call(port, "/healthz")
 ck("healthz", status == 200 and body["ok"] and body["upstream_reachable"], str(body))
 
 status, s = call(port, "/api/status")
+ck("the header's version: a typed --version wins and says so; with nothing typed the number comes from the "
+   "ENGINE's /version -- a sidecar can outlive the venv it was started against, and a version it remembered is "
+   "how 'is this the new build' gets answered wrong",
+   W.engine_version("test", '') == {"vllm_version": "test", "version_src": "cmdline"}
+   and W.engine_version("", '{"version": "0.99.99"}') == {"vllm_version": "0.99.99",
+                                                          "version_src": "engine /version"}
+   and (s.get("engine") or {}).get("version_src") == "cmdline", str(s.get("engine")))
+ck("and an engine with no /version route at all (older vLLM: a 404 with an error body) gives no version rather "
+   "than a version made out of the error message",
+   W.engine_version("", '{"detail":"Not Found"}') == {} and W.engine_version("", "") == {})
 ck("status reads the engine", s["reachable"] and s["model_name"] == "Qwen3.8", str(s)[:120])
 ck("status carries config labels", s["config"].get("block_size") == "1088")
 # The watchdog row's inputs, in the payload the page reads. The engine is answering here, so the state is alive;
@@ -2164,6 +2178,34 @@ try:
     _live_st = json.loads(_ur.urlopen("http://127.0.0.1:8080/api/status", timeout=10).read())
 except Exception:
     _live_st = None
+
+
+def _envv(name, dflt):
+    """A value from this box's machine-local env file, because the ports are box facts, not repo facts."""
+    try:
+        for ln in _localenv().read_text().splitlines():
+            if ln.strip().startswith(name + "="):
+                return ln.split("=", 1)[1].split("#")[0].strip().strip('"')
+    except OSError:
+        pass
+    return dflt
+
+
+# The payload the mm fixture is built from is the MERGED page's, not whatever the front door happens to serve.
+# Since 2026-11-15 the front door's pages come from a standalone sidecar (the page has to survive the engine), and
+# a sidecar cannot read the engine's RESOLVED config over HTTP -- vLLM serves no /api/config -- so its image card
+# legitimately prints "0 label(s) in the config block mention multimodal: the engine is silent about this" where
+# the merged page prints "2 image(s), 0 video(s) per prompt". Both are honest; the fixture is testing the merged
+# shape, so it is built from the merged payload, and the sidecar shape gets its own check below.
+_mm_st = _live_st
+if _live_st is not None:
+    try:
+        _mm_st = json.loads(_ur.urlopen(f"http://127.0.0.1:{_envv('PORT', '8180')}/api/status", timeout=10).read())
+        ck("the merged page (the engine's own port) is still up alongside the sidecar, and it is the only one "
+           "that can show the engine's resolved config -- which is why the About page keeps pointing at it",
+           bool(_mm_st.get("merged")), str(_mm_st.get("merged")))
+    except Exception:
+        _mm_st = _live_st
 if _live_st is None:
     ck("gate end-to-end on the live payload (no live serve right now - skipped)", True)
 else:
@@ -2191,9 +2233,9 @@ else:
     # the payload that state produces and run the real page against it -- the harness is the only thing that catches
     # a ReferenceError leaving the card blank.
     _mfp = "/tmp/r9700-mm-page-payload.json"
-    _mmfix = dict(_live_st)
-    _mmfix["argv"] = _mm_set(_live_st.get("argv") or "", True, n_img=2)
-    _mmfix["meta"] = {**(_live_st.get("meta") or {}), "mm": "1", "mm_effective": "on", "mm_default": _mmdef_src,
+    _mmfix = dict(_mm_st)
+    _mmfix["argv"] = _mm_set(_mm_st.get("argv") or "", True, n_img=2)
+    _mmfix["meta"] = {**(_mm_st.get("meta") or {}), "mm": "1", "mm_effective": "on", "mm_default": _mmdef_src,
                       "mm_image": "2",
                       "mm_video": "0", "mm_max_pix": "4194304", "mm_min_pix": "65536", "mm_max_tok": "4096",
                       "mm_if_on": "MM_IMAGE=2 MM_VIDEO=0 MM_MAX_PIX=4194304 MM_MIN_PIX=65536"}
@@ -2211,8 +2253,8 @@ else:
         # A recipe written before the default was recorded must not make the page guess. That is the state the live
         # box is in right now: the card is honest about not knowing.
         _mf3 = "/tmp/r9700-mm-page-nodefault.json"
-        _mmfix3 = dict(_live_st)
-        _mmfix3["meta"] = {k: v for k, v in (_live_st.get("meta") or {}).items() if k != "mm_default"}
+        _mmfix3 = dict(_mm_st)
+        _mmfix3["meta"] = {k: v for k, v in (_mm_st.get("meta") or {}).items() if k != "mm_default"}
         Path(_mf3).write_text(json.dumps(_mmfix3))
         _nr3 = subprocess.run(["node", f"{ROOT}/tests/render-about.mjs", _mf3],
                               capture_output=True, text=True, timeout=300)
@@ -2221,6 +2263,26 @@ else:
            "does not record" in _nr3.stdout and "is this tree's default" not in _nr3.stdout
            and _nr3.returncode == 0, _nr3.stdout[-240:])
         Path(_mf3).unlink(missing_ok=True)
+        # ...and the OTHER shape, which is what this box's front door serves now: a SIDECAR's payload, where the
+        # engine's resolved config cannot be read over HTTP at all (vLLM serves no /api/config). The card must say
+        # the engine is silent rather than print caps it did not get from anywhere.
+        if _live_st is not None and not _live_st.get("merged"):
+            _mfs = "/tmp/r9700-mm-page-sidecar.json"
+            _mmfs = dict(_live_st)
+            _mmfs["argv"] = _mm_set(_live_st.get("argv") or "", True, n_img=2)
+            _mmfs["meta"] = {**(_live_st.get("meta") or {}), "mm": "1", "mm_effective": "on",
+                             "mm_default": _mmdef_src, "mm_image": "2", "mm_video": "0",
+                             "mm_max_pix": "4194304", "mm_min_pix": "65536", "mm_max_tok": "4096"}
+            Path(_mfs).write_text(json.dumps(_mmfs))
+            _nrs = subprocess.run(["node", f"{ROOT}/tests/render-about.mjs", _mfs],
+                                  capture_output=True, text=True, timeout=300)
+            ck("a sidecar-served About page states what a sidecar can see: the recipe row carries the caps, the "
+               "engine's own config block is declared silent, and no cap is printed that nobody answered",
+               _nrs.returncode == 0 and "the engine is silent about this" in _nrs.stdout
+               and "2 image(s), 0 video(s) per prompt" not in _nrs.stdout, (_nrs.stdout or _nrs.stderr)[-300:])
+            Path(_mfs).unlink(missing_ok=True)
+        else:
+            ck("sidecar-shape About page (the front door is serving a merged payload right now - skipped)", True)
         # The state nobody can produce on command without a second launch: a recipe that says images and a process
         # that was started without them. The page must say the sentence rather than show two rows and hope.
         _mf2 = "/tmp/r9700-mm-page-disagree.json"

@@ -652,8 +652,14 @@ which one it is:
 
 Neither is the default: a launch with no `WEBUI=` starts no page at all. The standing launch on this box is the
 **merged** one, because the per-request queue / prefill / decode seconds are the numbers the request rows are built
-from; the sidecar gets started by hand for the two jobs it is better at - answering after the engine has died, and
-proxying when the request bodies themselves are the thing under study. (`tests/test_webui.py` had made a
+from — **but since 2026-11-15 the front door serves the pages from a standalone sidecar**
+(`PAGES=http://127.0.0.1:8181` in the machine-local env file, `JOURNAL_ATTACH` pointed at the engine's own request
+journal read-only): the page that has to report a wedged launch cannot be the process that wedges, and a wedged
+serve takes `:8180/monitor` down with it — which is exactly how the 2026-11-15 wedge went unnoticed for 26 minutes.
+`:8180/monitor` still answers while the engine is up and remains the only page that can show the engine's
+**resolved** config: a sidecar has no HTTP way to read it (vLLM serves no `/api/config`), so its About card names
+the recipe row and `tools/recipe-check.py` instead of inventing numbers. The sidecar also asks the engine for its
+own version (`GET /version`) rather than printing one it remembered. (`tests/test_webui.py` had made a
 hand-started sidecar on `:8099` a requirement of the box; since 2026-11-05 it checks the engine's own port is bound
 the way the machine-local file says, and any sidecar that happens to be running - running none is the shape.)
 
@@ -828,6 +834,19 @@ these numbers runs.
    running them: the ROCm wheels are ~20 GB and are never fetched by a script, and nothing here touches `~/models`,
    the launch caches, or a launch that is already up.
    The host-side BAR0/ACS/PCIe-switch setup is in neither script: that is [host/README.md](host/README.md).
+   What a death leaves behind is a file, not a memory: `.r9700-state/faults.jsonl` gets one fsynced line per
+   death — verdict, signature, uptime, the front door's in-flight and gate counters, the driver's page-fault
+   events with their PCI functions and fault shapes, the restart decision — written **before** any relaunch, so a
+   serve that comes back by itself cannot later claim nothing happened. `tools/fault-report.py` reads it with
+   years of hindsight: deaths per day, median uptime between them, which cards and which fault shapes dominate.
+   A per-card rate turns into a claim on its own: `HW_ALERT_N` page-fault events on ONE PCI function inside
+   `HW_ALERT_WINDOW_S` (3 / 7 days by default) raises a standing `.r9700-state/ALERT.json`, appends
+   `alerts.jsonl`, runs `ALERT_CMD` if this box has a channel, and turns the Monitor's fault card from a count
+   into an instruction — *this card, this many times, swap it with a neighbour and see whether the faults move*
+   ([notes/supervision.md](notes/supervision.md)). `WATCH_RESTART=1` then lets a low-probability crash reset
+   itself instead of waiting for a human — bounded by `RESTART_MAX` per `RESTART_WINDOW_S`, and refused into a
+   PCIe link that is running below rating, because restarting into a degrading GPU turns a repairable machine
+   into an outage nobody can explain.
 
 1a. **Native (no docker)**. One-time on the host; `./setup.sh --check` reports each missing piece with the command
    to run (the exact versions and URLs live in [notes/native-4xr9700.md](notes/native-4xr9700.md)):

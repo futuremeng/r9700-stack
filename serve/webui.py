@@ -2278,6 +2278,23 @@ def stack_info():
     return out
 
 
+def engine_version(cfg_ver, body):
+    """The version the HEADER prints, and where the number came from.
+
+    A --version typed by whoever started the monitor wins (an engine that does not serve /version is not an
+    error), but otherwise the engine is asked: a sidecar can outlive the venv it was started against, and a
+    version the monitor remembered is how "is this the new build?" gets answered from a stale number. The source
+    travels in the payload so the page can be asked which it is.
+    """
+    if cfg_ver:
+        return {"vllm_version": cfg_ver, "version_src": "cmdline"}
+    try:
+        ver = str(json.loads(body).get("version") or "")
+    except (ValueError, AttributeError, TypeError):
+        ver = ""
+    return {"vllm_version": ver, "version_src": "engine /version"} if ver else {}
+
+
 class Hub:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -2622,7 +2639,13 @@ class Hub:
                 self.health = code
                 _, body = self.get("/v1/models")
                 self.models = json.loads(body).get("data", [])
-                self.engine = {"vllm_version": self.cfg["version"]} if self.cfg["version"] else {}
+                # The version the HEADER prints has to come from the engine, not from whoever started the
+                # monitor -- see engine_version().
+                try:
+                    vbody = self.get("/version")[1]
+                except (urllib.error.URLError, OSError):
+                    vbody = ""
+                self.engine = engine_version(self.cfg.get("version"), vbody)
             except Exception:
                 self.health = None
             time.sleep(min(15.0, max(2.0, self.cfg["poll"] * 5)))

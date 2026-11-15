@@ -1,5 +1,39 @@
 # Changelog
 
+## A death leaves a ledger line, a per-card rate becomes a hardware alert, and the page no longer dies with the engine
+
+The 2026-11-15 wedge had three separate failures in it, and only the first one was the crash. (1) The launch log
+stopped answering while three `VLLM::Worker_TP*` sat on ~28 GiB each, and `watch_dead()` asked only "is the tmux
+session gone, or are there no ranks left?" — both no — so the record carried `died_at: null` for 26 minutes.
+(2) Nothing connected the driver's `[gfxhub] page fault` lines to a claim about a card: `journalctl` held 11 fault
+lines across **8 events on one PCI function** (`c3:00.0`), and the count sat in a log nobody re-read. (3) The
+Monitor was merged into the serve, so the page that was supposed to report the wedge went down with it and was
+visible only to a browser that was already open.
+
+`setup.py` now keeps `.r9700-state/faults.jsonl`: one fsynced line per death — verdict and signature, uptime, the
+front door's in-flight/gate counters, the ranks still holding, the driver's fault events with PCI function, ring,
+read/write and UTCL2 client, and the restart decision — appended **before** any relaunch, so a serve that resets
+itself cannot later claim nothing happened. `tools/fault-report.py` reads it (plus `alerts.jsonl` and the live
+journal) and answers the long-term questions: deaths, rate, median uptime between them, and which fault shapes
+dominate — currently `6 x c3:00.0 read / SQC (data) / ring 24` versus `5 x write / TCP / ring 40` from two bench
+runs that are not this launch's problem.
+
+A count becomes a claim when it names a card and an action: `HW_ALERT_N` events on ONE PCI function inside
+`HW_ALERT_WINDOW_S` (3 / 7 days) writes a standing `ALERT.json`, appends `alerts.jsonl`, runs `ALERT_CMD` if the box
+has a channel, and the Monitor's fault card stops counting and starts instructing — `Hardware: page faults`,
+`6 events on c3:00.0 in 7 d`, *the fault follows the card, not the rank: swap it with a neighbour and see whether
+the faults move; while unresolved, do not restart into it repeatedly*.
+
+Auto-reset is armed (`WATCH_RESTART=1`, `RESTART_MAX=3` per hour, repeated in the stored launch config so a
+hand-armed watcher and a configured launch cannot disagree — `watch_restarts()` lets the environment override the
+record when it says so out loud), bounded twice: by the count, and by refusing to relaunch into a PCIe link below
+its rated width. And the front door now serves the Monitor from a standalone sidecar (`PAGES=:8181`,
+`JOURNAL_ATTACH` read-only on the engine's own journal), so the report survives the engine; `:8180/monitor` remains
+the only page that can show the engine's resolved config, and the sidecar's About card says it is silent rather
+than printing caps nobody answered. Fixed on the way: `serve/webui.sh` defaulted its ports **before** sourcing the
+machine-local env file, so a box whose engine lives on 8180 got a sidecar pointed at 8080 — a monitor watching
+nothing, printing URLs for a port nothing listens on.
+
 ## The admission gate stopped closing on a full pool; it closes on preemptions, and cheap requests pass a shut door
 
 A batch of data-processing prompts (median 542 prompt tokens, **p95 105,058**, max 108,992) parked the KV pool at

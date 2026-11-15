@@ -674,6 +674,18 @@ ck("gateway.sh forwards gate overrides but states no default for any of them -- 
    not re.search(r'^\s*(?:export )?GATE_[A-Z_]+:?=', _gsh, re.M),
    [l.strip()[:60] for l in _gsh.splitlines() if re.match(r"^\s*(?:export )?GATE_[A-Z_]+:?=", l)][:3])
 
+# Who decides whether a death gets restarted: the record, unless someone says WATCH_RESTART out loud.
+ck("a watcher armed with no opinion follows the record -- a hand-armed watcher must not silently flip a "
+   "launch's supervision mode",
+   S.watch_restarts({"restart_on_crash": False}, env={}) is False
+   and S.watch_restarts({"restart_on_crash": True}, env={}) is True)
+ck("WATCH_RESTART said out loud wins over the record, in BOTH directions: re-arming at 05:00 is exactly the "
+   "moment the policy is meant to change, and the claim writes it down afterwards",
+   S.watch_restarts({"restart_on_crash": False}, env={"WATCH_RESTART": "1"}) is True
+   and S.watch_restarts({"restart_on_crash": True}, env={"WATCH_RESTART": "0"}) is False)
+ck("and a watcher with no record at all still answers from its own environment rather than crashing",
+   S.watch_restarts(None, env={"WATCH_RESTART": "1"}) is True and S.watch_restarts(None, env={}) is False)
+
 # -------------------------------------------------- the fault ledger and the hardware alert (notes §20) ----
 # Two asks, both about the case where nobody is watching: every death has to leave a line that outlives
 # launch.json (the next launch overwrites that file, and restarts.json keeps only the last death), and a card

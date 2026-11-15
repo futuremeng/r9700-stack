@@ -919,3 +919,10 @@ What that changes, and what it does not:
   (a fault is never hidden), but it is now a known, stated imprecision rather than an assumption -- the field to
   parse if the number ever needs to mean "our fault" specifically is `Faulty UTCL2 client ID` plus `RW`, both of
   which are already in the journal block the reader is told to open.
+
+The split is what makes the claim statable. `HW_ALERT_N` counts driver fault **events** per PCI function inside
+`HW_ALERT_WINDOW_S` (3 / 7 days), which on this box is true today: 6 events on `c3:00.0` between 2026-11-14 20:59
+and 2026-11-15 09:52. That raises a standing `.r9700-state/ALERT.json` and turns the Monitor's fault card from a
+count into an instruction naming the card and the swap that would separate silicon from slot. The ledger that makes
+the claim survive an auto-reset -- and the reason the restart is armed with a link-width veto rather than a count
+alone -- is [supervision.md](supervision.md).
