@@ -93,6 +93,12 @@ section{margin:18px 0}
 .gpu-link[data-tone="warn"]{color:var(--st-warn-text)}
 .gpu-link[data-tone="danger"]{color:var(--st-danger-text)}
 .gpu-link[data-tone="danger"] .q,.gpu-link[data-tone="warn"] .q{color:currentColor}
+/* Which rank owns this card (KFD) and how many page faults the driver logged against it this boot. The fault
+   line is coloured because it is the only number on the card that describes an event that already happened to
+   this piece of hardware, not a gauge of what it is doing now. */
+.gpu .gpu-holder{margin-top:5px;font:12px var(--st-font-mono);color:var(--st-ink-soft)}
+.gpu .gpu-holder b{color:var(--st-ink)}
+.gpu .gpu-fault{margin-top:5px;font:12px var(--st-font-mono);color:var(--st-danger-text)}
 
 /* The full account, opened from a short link's badge. It is a pinned block of real text (selectable, copyable)
    rather than a table, because the person who opens it is about to paste it somewhere. */

@@ -267,6 +267,37 @@ connection improves nothing. GATE_HOLD_S=0 is the other policy: a 503 that carri
     </div>
   </section>
 
+  <!-- Two facts this page could not answer during the 2026-11-15 fault hunt, and both changed what was
+       concluded: which physical card each rank sits on (the driver names a card, the engine names a rank, and
+       with GPUS permuted those are different things — §15), and whether the driver has page-faulted at all this
+       boot (the only place a `[gfxhub] page fault` is written is the kernel journal). "Engine state" is the
+      fourth state this box taught us: a launch whose /health stopped answering while its ranks go on holding
+      30 GiB each is wedged, and on 2026-11-15 the record and this page both described a healthy machine for 26
+       minutes of that. The fourth card is exposure: how much of the traffic still builds the step shape that
+       faults, because "no faults since the change" means nothing unless you know the shape was ever asked for. -->
+  <section class="grid grid--4 watchdog" id="watchdog" hidden>
+    <div class="card">
+      <div class="label"><span class="dot" id="wd-dot"></span>Engine state</div>
+      <div class="value value--sm" id="wd-state">—</div>
+      <div class="small slot" id="wd-state-note">—</div>
+    </div>
+    <div class="card">
+      <div class="label">Driver page faults, this boot</div>
+      <div class="value value--sm" id="wd-faults">—</div>
+      <div class="small slot" id="wd-fault-note">—</div>
+    </div>
+    <div class="card">
+      <div class="label">Prompts over the GDN bound</div>
+      <div class="value value--sm" id="wd-big">—</div>
+      <div class="small slot" id="wd-big-note">—</div>
+    </div>
+    <div class="card">
+      <div class="label">Preemptions</div>
+      <div class="value value--sm" id="wd-preempt">—</div>
+      <div class="small slot" id="wd-preempt-note">—</div>
+    </div>
+  </section>
+
   <!-- per-card state from the amdgpu sysfs: no ROCm runtime, nothing started on the card. The link each card
        hangs off is part of the card now (Gen5, or the generation it negotiated): the Monitor used to keep a
        separate PCIe panel for it, and that panel printed AER counters every poll -- on this box they move by

@@ -291,9 +291,28 @@ function gpuCard(g, ghist = [], i = 0) {
          : `<span title="${esc(tip)}">${txt}</span>`)
       + (lk.short && rated && isnum(lk.gen) ? ` <span class="q">of Gen${rated}</span>` : "") + `</div>`;
   }
+  // Which rank of the running serve OWNS this card, and how much of it it holds -- KFD's per-process records
+  // (serve/webui.py rank_holds). The line exists because of 2026-11-15: the driver named card c3:00.0 and the
+  // engine named rank Worker_TP0, and telling those two apart is what decided whether to chase the card or the
+  // code path (and the answer was: the card, every time). It cannot be got from /proc/<pid>/fd -- every rank
+  // keeps all four render nodes open for P2P -- and it is not derivable from launch order once someone runs
+  // GPUS=3,0,1,2 on purpose. An older sidecar sends no `rank` field at all, and then nothing is printed.
+  const holder = g.rank === undefined ? ""
+    : `<div class="gpu-holder">`
+      + (g.rank ? `rank <b>${esc(String(g.rank).replace(/^Worker_/, ""))}</b>`
+                 + `${isnum(g.rank_gib) ? ` holds ${g.rank_gib.toFixed(1)} GiB` : ", holding an unmeasurable amount"}`
+                 + `${g.rank_pid ? ` \u00b7 pid ${g.rank_pid}` : ""}`
+                 : "no rank claims this card") + `</div>`;
+  // The driver's own count of page faults on THIS card, since boot. The engine's log reports the symptom at
+  // whatever kernel op was next; only the journal names the card (webui kernel_faults, notes §15).
+  const faultNote = isnum(g.faults) && g.faults
+    ? `<div class="small gpu-fault">${g.faults} gfxhub page fault${g.faults > 1 ? "s" : ""} on this card, this boot</div>`
+    : "";
   d.innerHTML = `<b>${g.slot ? `slot ${esc(g.slot)}` : esc(g.name || g.card)}</b>`
     + `<span class="small">${[g.card && esc(g.card), where].filter(Boolean).join(" \u00b7 ")}</span>`
     + link
+    + holder
+    + faultNote
     + `<div class="pct">${busy}</div>`
     + rows.map(([lab, title]) => `<div class="sparkrow"><span title="${title}">${lab}</span>`
         + `<div class="sparkline spark--gpu"></div></div>`).join("")

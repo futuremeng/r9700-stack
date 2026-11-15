@@ -82,6 +82,31 @@ def main(argv):
                 "config": {"GATE_ON": True, "GATE_KV_HIGH": 0.85, "GATE_KV_LOW": 0.78, "GATE_WAIT": 1,
                            "GATE_MAX_INFLIGHT": 0, "GATE_HOLD_S": 25.0, "GATE_METRICS_S": 1.0,
                            "GATE_STALE_S": 5.0, "pool_tokens": 902153}, "at": time.time()}
+    # The watchdog row's inputs (webui's KFD rank->card join and its kernel-journal fault count). Same reason the
+    # gate and sidecar blocks are here: the render harness fails any slot the page never writes, so a row that
+    # only exists against a newer sidecar has to be renderable offline or it is invisible to that check. The
+    # fallback is deliberately the branch a healthy box will not show you -- a WEDGED launch (three ranks still
+    # holding the GPUs while /health is silent) and two faults on the card that took them, both of the shape the
+    # driver wrote on 2026-11-15 -- because those are the states the row exists to catch.
+    live = status.setdefault("live", {})
+    if "engine_state" not in status:
+        status["engine_state"], status["ranks_holding"] = "wedged", 3
+    if not status.get("faults"):
+        status["faults"] = {"total": 2, "by_card": {"c3:00.0": 2},
+                            "last": {"at": "2026-11-15T09:52:00+00:00", "card": "c3:00.0", "pid": 591142},
+                            "error": None, "at": time.time()}
+    if "prompt_bound" not in live:
+        live.update({"prompt_bound": 1000.0, "prompt_big": 2, "prompt_n": 65, "prompt_big_pct": 3.1,
+                     "prompt_big_all": 41, "prompt_n_all": 1180, "prompt_big_all_pct": 3.5})
+    live.setdefault("preemptions", 3)
+    live.setdefault("preemptions_total", 27)
+    for i, g in enumerate(status.get("gpus", [])):
+        if "rank" not in g:
+            g["rank"] = f"Worker_TP{i}"
+            g["rank_pid"] = 659221 + i
+            g["rank_gib"] = round((g.get("vram_used") or 30.9e9) / 2**30, 1)
+        if "faults" not in g:
+            g["faults"] = 2 if (g.get("bus") or "").lower().endswith("c3:00.0") else 0
     out.write_text(json.dumps({"status": status, "requests": {"requests": keep},
                                "sidecars": sidecars, "gate": gate}, indent=1))
     print(f"{out}: status from {src}, {len(keep)} rows from {journal}")

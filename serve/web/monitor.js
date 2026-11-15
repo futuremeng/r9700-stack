@@ -911,6 +911,7 @@ function renderStatus(s) {
   // below. The payload it drew on is still collected every poll (pcie, pcie_history, pcie_events) and still
   // journaled, so tools/journal-pcie.py and the death review keep working with the panel gone.
   paintPcieDetail(s);
+  paintWatchdog(s);
 }
 
 // The full account for one chain, as text. Labels are padded because the panel is `white-space:pre-wrap`, so
@@ -1073,6 +1074,92 @@ async function paintSidecars() {
 // The numbers behind the thresholds are in notes/admission-gate.md: step_ms ~= 13.6 + 1.79 x N + 14.9 ns x
 // resident tokens, so the pool (902,153 tokens on this box) is the budget a long request spends, not the
 // sequence count.
+// Engine state, the driver's fault count, big-prefill exposure and preemptions. The first two come from the
+// sidecar's own reads (KFD and the kernel journal), NOT from the engine -- which is the point: the state this row
+// exists to catch is a state in which the engine is not answering. Wedged is the state the record missed for 26
+// minutes on 2026-11-15 (setup.py's watch_dead now names it); the fault count is the only place six of this box's
+// faults were ever written down; and the exposure card is the one that keeps the other three interpretable: if
+// nothing over the routing bound ever arrives, "no faults" is not evidence about anything.
+function paintWatchdog(s) {
+  const sec = $("watchdog");
+  const st = s.engine_state, f = s.faults, live = s.live || {};
+  // A page newer than the sidecar it is talking to: none of these reads exist in that build, and an em-dash row
+  // would imply the build measured and found nothing. Hide the row.
+  if (!st && !f && live.prompt_big_pct === undefined) { sec.hidden = true; return; }
+  sec.hidden = false;
+  const WORD = { alive: ["Answering", "dot--live"], loading: ["Loading", "dot--busy"],
+                 dead: ["Gone", "dot--off"], wedged: ["Wedged", "dot--off"] };
+  const w = WORD[st] || ["\u2014", ""];
+  $("wd-dot").className = `dot ${w[1]}`;
+  text("wd-state", w[0]);
+  const n = isnum(s.ranks_holding) ? s.ranks_holding : null;
+  // The line is short and the whole sentence goes in the title, because these are 4-up cards and the harness
+  // fails a slot that wraps (the card's height moves and the row stops being a row). What is NOT abbreviated is
+  // the actionable half: for a wedged launch the note names the ranks and the title names the command.
+  const note = {
+    alive: [`${n} rank(s) own the GPUs`,
+      `${n} vLLM rank(s) hold a context on a card, read out of the kernel driver's per-process records (KFD), `
+      + "not out of the launch order \u2014 which is not the same thing once someone runs GPUS=3,0,1,2 on purpose"],
+    wedged: [`${n} rank(s) still hold`,
+      `No /health answer while ${n} rank(s) go on holding ~30 GiB each: the engine died and its workers did not. `
+      + "On 2026-11-15 that state ran 26 minutes with the record and this page both saying healthy. It is not "
+      + "something to wait out \u2014 the recipe's own stop clears it: STOP=1 bash serve/<recipe>."],
+    dead: ["no ranks remain",
+      "No /health answer and no rank holding the GPUs: the launch is over rather than stuck."],
+    loading: ["never answered yet",
+      "No /health answer, nothing has died, and no crash signature: this launch is still coming up (weights, "
+      + "graph capture), which is not the same as dead and must not be called dead."],
+  }[st] || ["\u2014", "this build does not report engine state"];
+  slot("wd-state-note", note[0], note[1]);
+  if (!f || f.total === null || f.total === undefined) {
+    text("wd-faults", "unknown");
+    slot("wd-fault-note", "journal unreadable",
+        (f && f.error) || "this build does not read the kernel journal, so it cannot say either way \u2014 and "
+        + "'no faults' and 'cannot see the kernel log' are different claims");
+  } else {
+    text("wd-faults", `${dnum(f.total, 0)}`);
+    // Card ids and counts, nothing else: the tight 4-up card holds ~24 characters, and the WHEN belongs in the
+    // title (a timestamp in the slot also reads as a negative number at a glance, which the render harness
+    // rightly fails). Every card the driver named is listed, because naming them individually is the point.
+    const byc = Object.entries(f.by_card || {}).sort((a, b) => b[1] - a[1])
+      .map(([b2, k]) => `${b2} \u00d7${k}`).join(" \u00b7 ");
+    slot("wd-fault-note", (byc || "none since boot").slice(0, 24),
+        `[gfxhub] page fault lines in the kernel journal since this boot, counted per PCI `
+        + "function. The engine's own log reports the symptom (illegal memory access) at whatever kernel op was "
+        + "next; only the journal names the card, and the card is what the last six faults had in common "
+        + "while the rank did not (notes/bug-causal-conv1d-oob.md \u00a715)."
+        + (f.last ? ` Last: ${f.last.at}${f.last.card ? ` on ${f.last.card}` : ""}`
+                   + `${f.last.pid ? ` pid ${f.last.pid}` : ""}.` : "")
+        + " The per-card count also rides on the card.");
+  }
+  // Requests, not steps: /metrics has no per-step prefill-token series, and a big prompt is what puts a big
+  // prefill into a step. The bound is the nearest bucket vLLM publishes (1 000), printed rather than implied,
+  // because the recipe's knob is 1 024 and 1 000 is not that number.
+  const pct = live.prompt_big_pct;
+  text("wd-big", isnum(pct) ? `${fmt(pct, 1)}%` : "\u2014");
+  slot("wd-big-note", isnum(live.prompt_bound)
+    ? `${dnum(live.prompt_big ?? 0, 0)}/${dnum(live.prompt_n ?? 0, 0)} over ${dnum(live.prompt_bound, 0)}`.slice(0, 24)
+    : "no histogram",
+    isnum(live.prompt_bound)
+      ? `${dnum(live.prompt_big ?? 0, 0)} of ${dnum(live.prompt_n ?? 0, 0)} finished requests in this window had a `
+        + `prompt over ${dnum(live.prompt_bound, 0)} tokens \u2014 the nearest bucket vLLM publishes, which is NOT `
+        + `the recipe's bound. Since launch: ${dnum(live.prompt_big_all ?? 0, 0)} of ${dnum(live.prompt_n_all ?? 0, 0)}`
+        + `${isnum(live.prompt_big_all_pct) ? ` (${fmt(live.prompt_big_all_pct, 1)}%)` : ""}. A step whose prefill `
+        + "tokens clear the recipe's R9K_GDN_PREFILL_MAX still reaches stock's chunked GDN core, i.e. still builds "
+        + "the step shape that carried six device faults. Without this number \u201cno faults since the change\u201d "
+        + "is uninterpretable: it can mean the trigger is gone, or that the traffic never got near it."
+      : "this build publishes no prompt-size histogram");
+  text("wd-preempt", isnum(live.preemptions) ? `${dnum(live.preemptions, 0)}` : "\u2014");
+  slot("wd-preempt-note", isnum(live.preemptions_total)
+    ? `${dnum(live.preemptions_total, 0)} since launch`.slice(0, 24) : "no preemption series",
+    isnum(live.preemptions_total)
+      ? `The number on the card is this window; ${dnum(live.preemptions_total, 0)} since launch. A preemption is the `
+        + "pool taking blocks back from a running request, and the victim pays a whole re-prefill \u2014 which is "
+        + "how a slow window starts long before anything fails"
+        + `${isnum(live.waiting_capacity) ? `. Waiting on capacity right now: ${live.waiting_capacity}` : ""}.`
+      : "this build reports no preemption series");
+}
+
 async function paintGate() {
   let g = null;
   try { g = await api("/api/gate"); } catch (e) { g = null; }        // no gateway on this port

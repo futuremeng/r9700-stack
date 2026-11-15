@@ -4,7 +4,9 @@
 Four things are worth testing here, and only one of them is "the HTTP works":
 
   (1) /metrics reading. vLLM's gauges are per rank: summed, "one rank's KV pool is full" disappears.
-      Buckets must be skipped or every mean is a lie. The KV pool size exists only inside labels.
+      Histogram buckets are kept, but ONLY as their own `family;le=<bound>` keys — folded into the family they
+      turn every mean into a lie, and the "+Inf" bucket is the count twice over. The KV pool size exists only
+      inside labels.
   (2) the request ring: eviction, the fields the page reads, the 256 KiB honesty flag.
   (3) the amdgpu sysfs read against a fake tree (this test must not touch a card).
   (4) end to end against a fake vLLM: the SSE bytes reach the client exactly as they left the
@@ -58,6 +60,11 @@ vllm:prompt_tokens_total{model_name="Qwen3.8"} 1000.0
 vllm:generation_tokens_total{model_name="Qwen3.8"} 200.0
 vllm:num_preemptions_total{model_name="Qwen3.8"} 0.0
 vllm:prefix_cache_queries_total{model_name="Qwen3.8"} 900.0
+vllm:request_prompt_tokens_sum{model_name="Qwen3.8"} 120000.0
+vllm:request_prompt_tokens_count{model_name="Qwen3.8"} 40.0
+vllm:request_prompt_tokens_bucket{model_name="Qwen3.8",le="500.0"} 25.0
+vllm:request_prompt_tokens_bucket{model_name="Qwen3.8",le="1000.0"} 34.0
+vllm:request_prompt_tokens_bucket{model_name="Qwen3.8",le="+Inf"} 40.0
 vllm:prefix_cache_hits_total{model_name="Qwen3.8"} 300.0
 vllm:spec_decode_num_drafts_total{model_name="Qwen3.8"} 40.0
 vllm:spec_decode_num_accepted_tokens_total{model_name="Qwen3.8"} 90.0
@@ -81,6 +88,12 @@ vllm:e2e_request_latency_seconds_count{model_name="Qwen3.8"} 8.0
 # The same serve a window later: four more requests, 600 more generated tokens, and every histogram
 # moved by an amount that makes the derived means below checkable by hand.
 METRICS2 = METRICS \
+    .replace('vllm:request_prompt_tokens_count{model_name="Qwen3.8"} 40.0',
+             'vllm:request_prompt_tokens_count{model_name="Qwen3.8"} 50.0') \
+    .replace('vllm:request_prompt_tokens_bucket{model_name="Qwen3.8",le="500.0"} 25.0',
+             'vllm:request_prompt_tokens_bucket{model_name="Qwen3.8",le="500.0"} 30.0') \
+    .replace('vllm:request_prompt_tokens_bucket{model_name="Qwen3.8",le="1000.0"} 34.0',
+             'vllm:request_prompt_tokens_bucket{model_name="Qwen3.8",le="1000.0"} 40.0') \
     .replace('vllm:generation_tokens_total{model_name="Qwen3.8"} 200.0',
              'vllm:generation_tokens_total{model_name="Qwen3.8"} 800.0') \
     .replace('vllm:prompt_tokens_total{model_name="Qwen3.8"} 1000.0',
@@ -115,6 +128,10 @@ METRICS2 = METRICS \
 cur, cap, info = W.parse_metrics(METRICS)
 ck("series parsed", len(cur) >= 20, f"{len(cur)} series")
 ck("buckets skipped", "time_to_first_token_seconds_bucket" not in cur)
+ck("buckets are kept under their own key rather than folded into the family",
+   cur.get("time_to_first_token_seconds;le=0.25", [None])[0] == 2.0, str(sorted(k for k in cur if ";le=" in k)))
+ck('and the "+Inf" bucket is dropped, since it is the count again and differencing it against _count would '
+   "report 0", not any(";le=+" in k for k in cur))
 ck("counter summed over ranks", cur["prompt_tokens_total"][0] == 1000.0)
 ck("gauge max is the worst rank", cur["gpu_cache_usage_perc"][1] == 0.72, str(cur["gpu_cache_usage_perc"]))
 ck("KV capacity from labels", cap == 456 * 1088, f"{cap}")
@@ -132,6 +149,24 @@ ck("stream tok/s is 1/per-output-token", abs(st["rate"]["stream_tok_s"] - 50.0) 
 ck("spec acceptance 90/120", abs(st["rate"]["accept_pct"] - 75.0) < 1e-9, str(st["rate"]["accept_pct"]))
 ck("tokens per engine step", abs(st["rate"]["tokens_per_iter"] - 5.0) < 1e-9)
 ck("KV uses the worst rank", abs(st["live"]["kv_used_pct"] - 72.0) < 1e-9, str(st["live"]["kv_used_pct"]))
+# How much of the traffic is BIG -- the exposure gauge for the GDN routing knob (R9K_GDN_PREFILL_MAX). A step
+# whose prefill tokens clear the knob still reaches stock's chunked core, i.e. still builds the step shape that
+# carried six device faults, so "no faults since the change" is only interpretable next to this number. It is
+# taken at the nearest PUBLISHED bucket, and the payload has to say which bucket that was: the recipe's bound is
+# 1 024 and the build publishes 1 000, and a page that implies otherwise is reporting precision it does not have.
+ck("big-prefill exposure over the window: 4 of 10 finished requests",
+   st["live"]["prompt_big"] == 4.0 and abs(st["live"]["prompt_big_pct"] - 40.0) < 1e-9,
+   f"{st['live']['prompt_big']} of {st['live']['prompt_n']} = {st['live']['prompt_big_pct']}%")
+ck("and since launch: 10 of 50", st["live"]["prompt_big_all"] == 10.0
+   and st["live"]["prompt_n_all"] == 50.0 and abs(st["live"]["prompt_big_all_pct"] - 20.0) < 1e-9,
+   f"{st['live']['prompt_big_all']}/{st['live']['prompt_n_all']}")
+ck("the bound the numbers were taken at is in the payload", st["live"]["prompt_bound"] == 1000.0,
+   str(st["live"]["prompt_bound"]))
+ck("a build with no prompt-size histogram reports None, not 0 big requests",
+   W.derive(W.parse_metrics(METRICS.replace('vllm:request_prompt_tokens_bucket{model_name="Qwen3.8",le="500.0"} 25.0', '')
+                            .replace('vllm:request_prompt_tokens_bucket{model_name="Qwen3.8",le="1000.0"} 34.0', '')
+                            .replace('vllm:request_prompt_tokens_bucket{model_name="Qwen3.8",le="+Inf"} 40.0', ''))[0],
+            prev, 10.0, cap2, info2, "observe", 0, [])["live"]["prompt_big"] is None)
 # A request COUNT summed across series, a pool FULLNESS taken at its worst. Two engines running 1 and 3 requests
 # is 4 requests on the box: max would report 3 and the page's "N running" would be a per-engine number wearing a
 # box-level label. The percentage is the other way -- summing 0.40 and 0.72 into 112% is the classic way a gauge
@@ -719,6 +754,72 @@ ck("a card only rocm-smi knows about turns up as its own row",
    str([g["card"] for g in sys_cards]))
 
 
+# ------------------------------------ (3d) which rank owns which card, and what the driver has faulted on -----
+# The 2026-11-15 hunt came down to two questions this page could not answer, and both changed the conclusion:
+# is the fault following the RANK or the CARD (answer: the card -- under GPUS=3,0,1,2 the driver still named
+# c3:00.0, and the pid it named belonged to Worker_TP1), and has the driver faulted at all this boot (answer: six
+# times, and the only place that is written is the kernel journal). Both reads here run against fakes: the test
+# must not touch a card, and it must not depend on this machine's journal.
+_tmp = Path(tempfile.mkdtemp())
+_kfd = _tmp / "kfd"
+for _n, _gid, _loc in (("1", 0, 768), ("2", 1, 49920), ("3", 2, 50688)):            # 03:00.0, c3:00.0, c6:00.0
+    (_kfd / "topology" / "nodes" / _n).mkdir(parents=True)
+    (_kfd / "topology" / "nodes" / _n / "gpu_id").write_text(f"{_gid}\n")
+    (_kfd / "topology" / "nodes" / _n / "properties").write_text(
+        f"cpu_cores_count 0\npci_class 0x030000\nlocation_id {_loc}\nmax_wavefront_size 32\n")
+(_kfd / "topology" / "nodes" / "0").mkdir(parents=True)                       # the CPU node: must be skipped
+(_kfd / "topology" / "nodes" / "0" / "properties").write_text("cpu_cores_count 96\nlocation_id 0\n")
+for _pid, _gid, _gib in (("591141", 1, 30.9e9), ("591142", 0, 30.9e9), ("591143", 2, 30.9e9)):
+    (_kfd / "proc" / _pid).mkdir(parents=True)
+    (_kfd / "proc" / _pid / f"vram_{_gid}").write_text(f"{_gib:.0f}\n")
+    (_kfd / "proc" / _pid / f"vram_{(_gid + 1) % 3}").write_text("8388608\n")   # P2P scratch on the others
+    (_tmp / "proc" / _pid).mkdir(parents=True)
+    (_tmp / "proc" / _pid / "cmdline").write_bytes(f"VLLM::Worker_TP{_gid}\x00--arg\x00".encode())
+(_tmp / "proc" / "4242").mkdir(parents=True)
+(_tmp / "proc" / "4242" / "cmdline").write_bytes(b"/usr/bin/python3\x00tools/soak-mixed-step.py\x00")
+ck("a GPU node is its PCI function, and the CPU node is not a card",
+   {v["bus"] for v in W.kfd_cards(_kfd).values()} == {"03:00.0", "c3:00.0", "c6:00.0"},
+   str([v["bus"] for v in sorted(W.kfd_cards(_kfd).values(), key=lambda x: x["bus"])]))
+_h = W.rank_holds(_kfd, proc_root=_tmp / "proc")
+ck("rank -> card comes from the record that shows the big VRAM holding, not from the fd list",
+   _h and _h[591142]["rank"] == "VLLM::Worker_TP0" and _h[591142]["bus"] == "03:00.0"
+   and abs(_h[591142]["gib"] - 28.8) < 0.2, str(sorted((k, v["bus"]) for k, v in (_h or {}).items())))
+ck("a process that is not a rank is not reported as one", 4242 not in (_h or {}), str(sorted(_h or {})))
+ck("an unreadable KFD tree is None, not an empty 'no ranks'", W.rank_holds(_tmp / "nothing") is None)
+
+# The journal read. Three cases, and the second one is the bug this function shipped with: journalctl's `-A` is
+# `--after-boot`, not "lines after the match", so passing it makes journalctl print a usage line and NOTHING on
+# stdout. A caller that does not check the exit status then reports a clean zero on a box that faulted six times.
+_jr = _tmp / "fakejournal.py"
+_jr.write_text(
+    "print('''2026-11-15T09:25:56+00:00 h kernel: amdgpu 0000:c3:00.0: [gfxhub] page fault (src_id:0 ring:24)\n"
+    "2026-11-15T09:25:56+00:00 h kernel: amdgpu 0000:c3:00.0:  Process python3 pid 565881 thread python3 pid 565881"
+    "\n2026-11-15T09:52:00+00:00 h kernel: amdgpu 0000:c6:00.0: [gfxhub] page fault (src_id:0 ring:24)\n"
+    "2026-11-15T09:52:00+00:00 h kernel: amdgpu 0000:c6:00.0:  Process python3 pid 591142 thread python3 pid 591142"
+    "''')")
+_fl = W.kernel_faults((sys.executable, str(_jr)))
+ck("faults counted per PCI function, and the pid line that follows is paired with its fault",
+   _fl["total"] == 2 and _fl["by_card"] == {"c3:00.0": 1, "c6:00.0": 1}
+   and _fl["last"]["pid"] == 591142 and _fl["last"]["card"] == "c6:00.0", str(_fl))
+ck("a journalctl that failed is an error, never a zero (the -A mistake read as 'no faults today')",
+   (lambda r: r["total"] is None and "exited 1" in r["error"])(
+       W.kernel_faults(("sh", "-c", "echo 'journalctl: invalid option -- A' >&2; exit 1"))),
+   str(W.kernel_faults(("sh", "-c", "echo 'journalctl: invalid option -- A' >&2; exit 1"))))
+ck("a journal that cannot be run at all is an error too", (lambda r: r["total"] is None and r["error"])(
+    W.kernel_faults((str(_tmp / "no-such-journalctl"),))))
+ck("an empty journal is a real zero", W.kernel_faults((sys.executable, "-c", "pass"))["total"] == 0)
+
+# The four-way state, from the two facts the sidecar can see without the engine answering. "Wedged" is the one
+# that was missing: on 2026-11-15 the launch died, three ranks went on holding ~32 GiB each, and the record and
+# the page both described a healthy machine for 26 minutes.
+_holds = {1: {"gib": 28.8}, 2: {"gib": 28.8}, 3: {"gib": None}}
+ck("alive", W.engine_state(200, _holds) == ("alive", 2))
+ck("a launch that has never answered is loading, not dead",
+   W.engine_state(None, {}) == ("loading", 0))
+ck("silent with ranks still holding is wedged", W.engine_state(503, _holds) == ("wedged", 2))
+ck("silent with nothing left holding is over", W.engine_state(503, {}) == ("dead", 0))
+
+
 # ------------------------------------------------------------------ (4) end to end ---------------
 class FakeVLLM(BaseHTTPRequestHandler):
     """A stand-in serve: /health, /v1/models, /metrics with moving counters, and a streaming and a
@@ -805,6 +906,10 @@ def sidecar(mode="proxy", key="", keep=50, journal=None):
         Path(jp).unlink(missing_ok=True)                    # a named journal is reused on purpose
     cfg = {"port": 0, "bind": "127.0.0.1", "upstream": f"http://127.0.0.1:{up_port}", "mode": mode, "key": key, "poll": 0.2,
            "keep": keep, "meta": "", "gpus": str(fake), "pci": str(pnodevs), "journal": jp, "smi": None,
+           # The two watchdog reads point at fakes here: the test holds no card and must not depend on this
+           # machine's kernel journal. journal_cmd False is also the state the page has to render honestly --
+           # "unknown", not "0 faults".
+           "kfd": str(_kfd), "journal_cmd": False,
            "timeout": 10.0, "verbose": False, "version": "test"}
     hub, srv = W.build(cfg)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -834,6 +939,14 @@ ck("healthz", status == 200 and body["ok"] and body["upstream_reachable"], str(b
 status, s = call(port, "/api/status")
 ck("status reads the engine", s["reachable"] and s["model_name"] == "Qwen3.8", str(s)[:120])
 ck("status carries config labels", s["config"].get("block_size") == "1088")
+# The watchdog row's inputs, in the payload the page reads. The engine is answering here, so the state is alive;
+# the fault read is switched off, and it has to arrive as an error rather than as a zero -- "no faults" is a
+# claim about the hardware and this build made no measurement.
+ck("the payload answers the engine-state question", s.get("engine_state") == "alive", str(s.get("engine_state")))
+ck("and a switched-off journal read arrives as unknown, not as zero faults",
+   s.get("faults") and s["faults"]["total"] is None and bool(s["faults"]["error"]), str(s.get("faults")))
+ck("ranks the driver reports as holding the GPUs are counted, not assumed",
+   s.get("ranks_holding") == 0, str(s.get("ranks_holding")))
 ck("status carries cards, delivered in chassis order and numbered",
    len(s["gpus"]) == 3 and any(g["card"] == "card0" and g["busy_pct"] == 87 for g in s["gpus"])
    and [g["pos"] for g in s["gpus"]] == [1, 2, 3]          # 1-based, and the delivered order IS slot order

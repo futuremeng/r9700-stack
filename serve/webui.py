@@ -55,6 +55,9 @@ HIST = 90                                   # sparkline points kept (poll_s * HI
 # would draw a heartbeat, not a trend, and it would miss the work that happened between the beats.
 SLOW_STEP = 15.0
 SLOW_KEEP = 240                              # 240 x 15 s = an hour of trend, ~40 KB of dicts
+# The kernel journal is read this often (seconds). Slower than the cards on purpose: a page fault is a minutes-
+# wide event, and the read is a journalctl per call. Set to False via cfg journal_cmd to skip it (tests).
+KERNEL_FAULT_S = 30.0
 HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer",
        "transfer-encoding", "upgrade", "content-length", "date", "server", "host"}
 NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_:]*")
@@ -231,7 +234,7 @@ def parse_metrics(text):
         if not m:
             continue
         name = m.group(0)[5:]
-        if name.endswith("_bucket") or name.endswith("_created"):
+        if name.endswith("_created"):
             continue
         rest = line[m.end():].strip()
         labels = ""
@@ -241,6 +244,27 @@ def parse_metrics(text):
         try:
             value = float(rest.split()[0])
         except (IndexError, ValueError):
+            continue
+        if name.endswith("_bucket"):
+            # Histogram buckets, kept under `family;le=<bound>` -- the same sub-key convention the labelled
+            # gauges use, so nothing downstream has to change. They were dropped before, and that made one
+            # question unanswerable from /metrics: how much of the traffic is BIG. With the GDN routing knob at
+            # 1 024 prefill tokens, the share of requests whose prompt clears it is the exposure gauge for the
+            # mitigation (notes/…-oob.md §17): "no faults for three days" means nothing without knowing
+            # whether the step that used to trip the card is still being built. The `le="inf"` bucket is
+            # skipped -- it is the count again, and differencing it against `_count` would report 0.
+            stem = name[:-len("_bucket")]
+            lem = re.search(r'le="([0-9.]+)"', labels)
+            if not lem:
+                continue
+            key = f"{stem};le={lem.group(1)}"
+            s = out.get(key)
+            if s is None:
+                out[key] = [value, value, 1]
+            else:
+                s[0] += value
+                s[1] = max(s[1], value)
+                s[2] += 1
             continue
         s = out.get(name)
         if s is None:
@@ -619,6 +643,19 @@ def derive(cur, prev, dt, cap, info, mode, kept, hist):
     nser = lambda n: (cur.get(n) or [0.0, 0.0, 0])[2] or 1
     wr = lambda r: (cur.get(f"num_requests_waiting_by_reason;{r}") or [None, None, 0])[0]
     prem_tot = cur.get("num_preemptions_total")
+    # How much of the traffic is BIG, which is the exposure gauge for the GDN routing knob. Production runs
+    # R9K_GDN_PREFILL_MAX=1024: a step whose prefill tokens clear that still goes to stock's chunked core, i.e.
+    # still builds the step shape that carried six device faults. Without this number, "no faults since the
+    # change" is uninterpretable -- it can mean the trigger is gone or that the traffic never got near it
+    # (notes/bug-causal-conv1d-oob.md §17). The bound is the nearest PUBLISHED bucket (1 000, not 1 024), and
+    # the payload carries it so the page can name it instead of implying a precision the build does not have.
+    # Requests, not steps: /metrics has no per-step prefill-token series, and a big prompt is what puts a big
+    # prefill into a step. Say which of the two the number is, on the page as well as here.
+    pbnd = next((b for b in ("1000.0", "500.0", "2000.0") if cur.get(f"request_prompt_tokens;le={b}")), None)
+    pn, ple = d("request_prompt_tokens_count"), (d(f"request_prompt_tokens;le={pbnd}") if pbnd else None)
+    an, ale = g("request_prompt_tokens_count"), (g(f"request_prompt_tokens;le={pbnd}") if pbnd else None)
+    big = (pn - ple) if (pbnd and have and pn - ple >= 0) else None
+    big_all = (an - ale) if (pbnd and ale is not None and an - ale >= 0) else None
     live = {"running": g("num_requests_running"), "waiting": g("num_requests_waiting"),
             "waiting_capacity": wr("capacity"), "waiting_deferred": wr("deferred"),
             "swapped": (swapped[0] if swapped else None), "preempting": g("num_preemptions_total") > 0,
@@ -632,7 +669,14 @@ def derive(cur, prev, dt, cap, info, mode, kept, hist):
             "kv_used_pct_mean": (100.0 * g(kv_used) / nser(kv_used)) if kv_used else None,
             "kv_series": nser(kv_used) if kv_used else None,
             "kv_tokens": cap,
-            "prefix_hit_pct": (100.0 * hits / hitq) if hitq > 0 else None}
+            "prefix_hit_pct": (100.0 * hits / hitq) if hitq > 0 else None,
+            # Big-prefill exposure (see above): counts over this window and since launch, with the bucket bound
+            # the numbers were taken at. None, not 0, when the build publishes no such histogram.
+            "prompt_bound": float(pbnd) if pbnd else None,
+            "prompt_big": big, "prompt_n": (pn if have else None),
+            "prompt_big_pct": (100.0 * big / pn) if (big is not None and pn > 0) else None,
+            "prompt_big_all": big_all, "prompt_n_all": (an or None),
+            "prompt_big_all_pct": (100.0 * big_all / an) if (big_all is not None and an > 0) else None}
     # What is live WHILE a request runs, measured on this box against 0.32.0+rocm723 (2026-11-02, the
     # traces are in notes/webui.md): generation_tokens_total advances every engine step (one 900-token
     # stream moved it ~120 tokens per 0.5 s sample), and so does the KV gauge (0.036 -> 0.1007 across a
@@ -813,6 +857,152 @@ def read_host():
     u = os.uname()
     return {"cpu": cpu, "threads": os.cpu_count(), "ram": mem, "kernel": f"{u.sysname} {u.release}",
             "hostname": u.nodename, "uptime_s": up}
+
+
+def _num_file(p):
+    try:
+        return float(p.read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def kfd_cards(root="/sys/class/kfd/kfd"):
+    """gpu_id -> {'node': <kfd node number>, 'bus': 'c3:00.0'} for every GPU node the driver knows.
+
+    The node NUMBER is the order `HIP_VISIBLE_DEVICES` indexes into, and `location_id` in the node's properties is
+    the PCI devfn in hex (49920 = 0xc300 -> c3:00.0). Read from here rather than asked of HIP because the page has
+    to be able to say which card a rank holds WITHOUT trusting the enumeration order the operator may have just
+    shuffled on purpose (`GPUS=3,0,1,2`, notes/bug-causal-conv1d-oob.md §15: the fault followed the CARD, and that
+    sentence is only available if rank->card is measured). Same ground truth as tools/gpu-rank-map.py."""
+    out = {}
+    for n in sorted(Path(root).glob("topology/nodes/*")):
+        try:
+            props = (n / "properties").read_text()
+        except OSError:
+            continue
+        if not props.startswith("cpu_cores_count 0"):        # a GPU node carries no CPU cores
+            continue
+        try:
+            gid = int((n / "gpu_id").read_text().strip())
+        except (OSError, ValueError):
+            continue
+        loc = [l.split()[1] for l in props.splitlines() if l.startswith("location_id")]
+        if not loc:
+            continue
+        d = int(loc[0])
+        out[gid] = {"node": int(n.name.split("/")[-1]) if "/" in str(n) else int(str(n).rsplit("/", 1)[-1]),
+                    "bus": "%02x:%02x.0" % (d >> 8, d & 0xFF)}
+    return out
+
+
+def rank_holds(root="/sys/class/kfd/kfd", want=("VLLM::Worker",), proc_root="/proc"):
+    """{pid: {'rank': 'VLLM::Worker_TP1', 'bus': 'c3:00.0', 'gib': 28.8}} -- which card each rank OWNS.
+
+    Not `/proc/<pid>/fd`, which is the obvious guess and identifies nothing: every rank keeps all four
+    `/dev/dri/renderD*` open for P2P, so the fd list printed all four for all four (measured 2026-11-15 while
+    trying to tell rank from card). KFD keeps a per-process, per-GPU record instead, and the owning rank is the
+    one showing ~28.8 GiB where the others show scratch -- which is also, on its own, the answer to "are any
+    ranks still holding the GPUs after the engine died" (see engine_state).
+
+    Empty dict means no such process, which is a fact worth reporting; None means the records could not be read.
+    `proc_root` exists so a test can hand in a fake /proc: the test must be able to ask "which rank owns which
+    card" without holding a card, and a fake KFD tree alone would find no cmdline to match.
+    """
+    try:
+        procs = list(Path(root, "proc").iterdir())
+    except OSError:
+        return None
+    byid = {gid: v["bus"] for gid, v in kfd_cards(root).items()}
+    out = {}
+    for p in procs:
+        pid = p.name
+        if not pid.isdigit():
+            continue
+        try:
+            title = Path(proc_root, pid, "cmdline").read_bytes().split(b"\0")[0].decode("utf-8", "replace")
+        except OSError:
+            continue
+        if not any(title.startswith(w) for w in want):
+            continue
+        best = None
+        for f in p.glob("vram_*"):
+            gid = int(f.name.rsplit("_", 1)[1]) if f.name.rsplit("_", 1)[-1].isdigit() else None
+            if gid is None:
+                continue
+            vals = [x for x in (_num_file(f),) if x is not None]
+            if not vals:
+                continue
+            if best is None or vals[0] > best[0]:
+                best = (vals[0], gid)
+        out[int(pid)] = {"rank": title, "pid": int(pid),
+                         "bus": byid.get(best[1]) if best else None,
+                         "gib": round(best[0] / 2**30, 1) if best and best[0] > 2**30 else None}
+    return out
+
+
+FAULT_RE = re.compile(r"amdgpu (?:[0-9a-f]{4}:)?([0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]):\s*\[gfxhub\] page fault")
+FAULT_PID_RE = re.compile(r"pid (\d+)")
+JOURNAL_CMD = ("journalctl", "-k", "--boot", "--no-pager", "-o", "short-iso", "-g",
+               "gfxhub|Process .* pid")
+
+
+def kernel_faults(command=None, timeout=8.0):
+    """The driver's own page-fault lines, counted per card and timed -- the only record of this box's faults.
+
+    Six `[gfxhub] page fault` events this hunt turned on were visible nowhere else: the engine's log shows the
+    symptom (`illegal memory access`) at whatever kernel op was next, and the driver names the PCI function and
+    the pid, which is what made §15's card-vs-rank answer possible. `-g` filters inside the journal, so the read
+    stays small whatever the journal's size; `-A` is NOT a journalctl option (it is `--after-boot`), and a
+    mistyped flag makes journalctl print a usage line to stderr and NOTHING to stdout -- which is how this read
+    first reported "0 faults" on a box that had had six today. So the exit status is checked, and a failed read
+    is reported as an error, never as a zero.
+
+    Returns a dict, always: {'total', 'by_card', 'last', 'error'} -- `error` non-None (and total None) when the
+    journal cannot be read, because "no faults" and "cannot see the kernel log" are different claims and only
+    one of them is evidence about the card."""
+    # `or`, not a default argument: cfg.get("journal_cmd") hands in None for "not set", and a None that reaches
+    # list() is a TypeError in a daemon thread -- a dead thread and a row that silently never fills. That is how
+    # this first shipped: the thread died at startup and the row stayed empty.
+    command = command or JOURNAL_CMD
+    try:
+        r = subprocess.run(list(command), capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"total": None, "by_card": {}, "last": None, "error": f"{type(exc).__name__}: {exc}"}
+    if r.returncode != 0:
+        first = ((r.stderr or r.stdout or "").strip().splitlines() or [""])[0]
+        return {"total": None, "by_card": {}, "last": None, "error": f"journalctl exited {r.returncode}: {first}"}
+    per, last, pend = {}, None, None
+    for line in r.stdout.splitlines():
+        m = FAULT_RE.search(line)
+        if m:
+            bus = m.group(1).lower()
+            per[bus] = per.get(bus, 0) + 1
+            last = {"at": line.split(" kernel:")[0].strip(), "card": bus, "pid": None}
+            pend = bus
+            continue
+        if pend is not None and last is not None and last.get("pid") is None:
+            pm = FAULT_PID_RE.search(line)
+            if pm:
+                last["pid"] = int(pm.group(1))
+                pend = None
+    return {"total": sum(per.values()), "by_card": per, "last": last, "error": None, "at": time.time()}
+
+
+def engine_state(health, holds):
+    """'alive' | 'loading' | 'dead' | 'wedged', from the sidecar's own two facts.
+
+    The distinction that was missing on 2026-11-15: the engine died, its three surviving ranks went on holding
+    ~32 GiB each, the tmux session stayed up, and both the record and the page described a healthy box for 26
+    minutes. `health` is the last /health code the sidecar saw (None: never answered, so LOADING, not dead: a
+    launch that has never answered is a launch that is still coming up); `holds` is the count of ranks KFD still
+    reports as holding the GPUs. Ranks alive with no health answer is the wedged state -- and it is actionable,
+    because clearing it is the recipe's own STOP."""
+    n = len([h for h in (holds or {}).values() if h.get("gib")])
+    if health == 200:
+        return "alive", n
+    if health is None:
+        return "loading", n
+    return ("wedged" if n else "dead"), n
 
 
 def read_gpus(root):
@@ -2010,6 +2200,11 @@ class Hub:
         self.aer_recent = {}           # chain bus -> (time, n) events in the trailing window (drives rate_per_min)
         self.aer_watch = {}            # chain bus -> the first poll that saw it (rate_per_min's denominator)
         self.health, self.engine, self.host = None, {}, read_host()
+        # Which rank owns which card (KFD) and what the driver has faulted on (kernel journal). The first is
+        # read with the cards, the second on its own beat inside gpu_poll; both exist because the 2026-11-15
+        # fault hunt could not answer "which card, which rank" from anything the page already carried
+        # (notes/bug-causal-conv1d-oob.md §15).
+        self.ranks, self.faults, self.faults_error, self.faults_t = {}, None, None, 0.0
         # What ended the PREVIOUS boot (ACPI BERT, replayed by the kernel at startup) and how many such
         # records the journal still holds. Read once: neither can change while this process is alive.
         self.slotmap = []
@@ -2022,6 +2217,12 @@ class Hub:
             # The count costs one kernel-log read per boot the journal holds, so it runs in a thread: the page
             # comes up at once and gains "18 deaths, all naming the same block" a second or two later.
             threading.Thread(target=self._read_deaths, name="r9700-webui-deaths", daemon=True).start()
+        # Same reason for the driver's fault lines, on a beat of its own (see _fault_poll).
+        if self.cfg.get("journal_cmd", None) is not False:
+            threading.Thread(target=self._fault_poll, name="r9700-webui-faults", daemon=True).start()
+        else:
+            self.faults = {"total": None, "by_card": {}, "last": None,
+                           "error": "journal read disabled (cfg journal_cmd=False)"}
         if cfg["meta"]:
             try:
                 self.meta = json.loads(Path(cfg["meta"]).read_text())
@@ -2131,6 +2332,21 @@ class Hub:
                 "running": runm,
                 "c": {"gen": gnow, "prompt": pnow, "kv": kvnow, "iter": inow}}
 
+    def _fault_poll(self):
+        """Read the kernel journal every KERNEL_FAULT_S seconds, off the card path.
+
+        Its own thread because journalctl's cost is unpredictable (it walks the boot's journal) and the Cards
+        panel must not wait for it. A failed read stores the error and keeps trying; the page shows "unknown",
+        never a zero (see kernel_faults)."""
+        while True:
+            try:
+                self.faults = kernel_faults(self.cfg.get("journal_cmd"))
+            except Exception as exc:                    # a read that raises must not take the thread with it
+                self.faults = {"total": None, "by_card": {}, "last": None,
+                               "error": f"{type(exc).__name__}: {exc}"}
+            self.faults_t = time.time()
+            time.sleep(KERNEL_FAULT_S)
+
     def poll(self):
         while True:
             t0 = time.time()
@@ -2159,13 +2375,26 @@ class Hub:
                     payload["health"] = self.health
                     payload["models"] = self.models
                     payload["engine"] = self.engine
-                    payload["gpus"] = self.gpus
+                    # The per-card fault count rides on the card row, because the card is what a reader looks at.
+                    # (self.faults is written by _fault_poll; by_card is keyed by short bus id, as KFD reports it.)
+                    fby = (self.faults or {}).get("by_card") or {}
+                    payload["gpus"] = [dict(g, faults=fby.get((g.get("bus") or "").replace("0000:", "").lower()))
+                                      for g in self.gpus]
                     payload["gpus_history"] = list(self.gpuhist)
                     payload["pcie"] = self.pcie
                     payload["pcie_history"] = list(self.pciehist)
                     payload["pcie_events"] = list(self.pcie_events)
                     payload["smi"] = bool(self.cfg["smi"])
                     payload["smi_error"] = self.smi_error
+                    # Which rank owns which card, and what the driver has page-faulted on. Both are read with the
+                    # cards (rank_holds / kernel_faults), and both exist because of the 2026-11-15 fault hunt:
+                    # the card under every fault and the rank that held it turned out to be two different facts
+                    # (notes/bug-causal-conv1d-oob.md §15), and neither was answerable from the page.
+                    # engine_state is the four-way judgement setup.py's watcher makes -- including "wedged", the
+                    # state that left a dead launch looking healthy for 26 minutes.
+                    payload["ranks"] = list(self.ranks.values())
+                    payload["faults"] = self.faults
+                    payload["engine_state"], payload["ranks_holding"] = engine_state(self.health, self.ranks)
                     payload["meta"] = self.meta
                     payload["meta_src"] = self.cfg["meta"] or None
                     # When the recipe was written, and what went wrong reading it. A sidecar can outlive the launch
@@ -2256,6 +2485,23 @@ class Hub:
                  "temp_mem_c": g.get("temp_mem_c")}
                 for g in self.gpus]})
             self.host = read_host()
+            # Which rank owns which card, from KFD, joined onto the card rows by bus id. This is the only
+            # honest way to print "the card under rank 0": HIP's index order is exactly what an operator
+            # permutes when they are testing whether a fault follows the rank or the card.
+            holds = rank_holds(self.cfg.get("kfd", "/sys/class/kfd/kfd"))
+            if holds is not None:
+                self.ranks = holds
+                for g in self.gpus:
+                    b = (g.get("bus") or "").replace("0000:", "").lower()
+                    for h in holds.values():
+                        if h.get("bus") and h["bus"].lower() == b:
+                            g["rank"] = h["rank"].replace("VLLM::", "")     # "Worker_TP1": what the engine calls it
+                            g["rank_pid"] = h["pid"]
+                            g["rank_gib"] = h["gib"]
+            # The kernel journal is NOT read here. It used to be, and a 1-2 s journalctl at the head of the first
+            # gpu_poll iteration delayed the slot join and the card ring badly enough to fail both page tests --
+            # and on a box whose journal is slow, it would freeze the Cards panel. It gets its own thread
+            # (_fault_poll), on its own beat.
             # .get, not []: a cfg built by the other entry point (serve/plugin) is not guaranteed to carry the
             # newest keys, and a KeyError here kills the poll thread silently -- the Cards panel keeps its last
             # frame and looks alive. That is exactly what happened when the PCIe key shipped without the plugin

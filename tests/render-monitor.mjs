@@ -632,6 +632,111 @@ console.log(`  caption slots now: ${t("gen-note1")} | ${t("gen-note2")}`);
   }
 }
 
+// -- the watchdog row: engine state, driver faults, big-prefill exposure, preemptions ----------------
+// Same two rules the gate row was taught, for the same reason: the row is FILLED when the payload carries the
+// reads, HIDDEN when the sidecar is too old to have them (an em-dash row would read as "no faults here", which
+// is a claim about the hardware), and the words are the sidecar's -- the fault count comes out of the kernel
+// journal and the rank join comes out of KFD, so a page that re-derives either is a page that can disagree with
+// the tool an operator runs by hand at the moment of a crash.
+{
+  const w = LAST_STATUS || {};
+  const sec = byId.get("watchdog") || new El();
+  const w2 = (id) => t(id).replace(/\s+/g, " ").trim();
+  const cards = t("gpus").replace(/\s+/g, " ");
+  console.log(`\nwatchdog row: hidden=${sec.hidden} | ${w2("wd-state")} | ${w2("wd-state-note")}`
+              + ` | faults ${w2("wd-faults")} (${w2("wd-fault-note")})`
+              + ` | over bound ${w2("wd-big")} (${w2("wd-big-note")})`
+              + ` | preempted ${w2("wd-preempt")} (${w2("wd-preempt-note")})`);
+  const hasReads = Boolean(w.engine_state || w.faults || w.live?.prompt_bound !== undefined);
+  if (hasReads && sec.hidden) {
+    console.log("BAD  the payload carries the watchdog reads and the row is hidden"); process.exitCode = 1;
+  }
+  if (!hasReads && !sec.hidden) {
+    console.log("BAD  an old sidecar sent no watchdog reads and the row is showing em-dashes anyway");
+    process.exitCode = 1;
+  }
+  if (hasReads) {
+    for (const id of ["wd-state", "wd-state-note", "wd-faults", "wd-fault-note", "wd-big",
+                      "wd-big-note", "wd-preempt", "wd-preempt-note"]) {
+      if (!w2(id) || w2(id) === "\u2014") {
+        console.log(`BAD  #${id} still holds the markup placeholder while the row is visible`); process.exitCode = 1;
+      }
+    }
+    const WORD = { alive: "Answering", loading: "Loading", dead: "Gone", wedged: "Wedged" };
+    if (w.engine_state && w2("wd-state") !== WORD[w.engine_state]) {
+      console.log(`BAD  #wd-state says "${w2("wd-state")}" for engine_state "${w.engine_state}"`
+                  + " -- the word has to carry the wedged case, that is the whole reason the row exists");
+      process.exitCode = 1;
+    }
+    if (w.engine_state === "wedged" && !/rank\(s\) still hold/.test(w2("wd-state-note"))) {
+      console.log(`BAD  a wedged payload whose note does not say the ranks still hold the GPUs: "${w2("wd-state-note")}"`);
+      process.exitCode = 1;
+    }
+    // The wedged state is the one this row exists for, and a reader who has never seen it needs the command in
+    // reach -- it lives in the title, since the slot itself is 24 characters wide.
+    if (w.engine_state === "wedged" && !/STOP=1/.test(((byId.get("wd-state-note") || new El()).title || ""))) {
+      console.log("BAD  the wedged note does not carry the command that clears it"); process.exitCode = 1;
+    }
+    if (w.faults && w.faults.total !== null && w2("wd-faults") !== String(w.faults.total).replace(/\B(?=(\d{3})+(?!\d))/g, ",")) {
+      console.log(`BAD  #wd-faults says "${w2("wd-faults")}" for a payload total of ${w.faults.total}`);
+      process.exitCode = 1;
+    }
+    for (const [bus, n] of Object.entries((w.faults || {}).by_card || {})) {
+      if (!w2("wd-fault-note").includes(bus) || !w2("wd-fault-note").includes(`\u00d7${n}`)) {
+        console.log(`BAD  the fault note does not name ${bus} ${n}: "${w2("wd-fault-note")}" -- per-card, because`
+                    + " the card is what the driver named and the rank is what the engine named (§15)");
+        process.exitCode = 1;
+      }
+      const ti = ((byId.get("wd-fault-note") || new El()).title || "");
+      if (w.faults.last && w.faults.last.at && !ti.includes(w.faults.last.at)) {
+        console.log("BAD  the fault WHEN is nowhere: the slot is 24 characters by design, so the timestamp and "
+                    + "pid have to be in the title");
+        process.exitCode = 1;
+      }
+    }
+    // The card itself carries its own count (common.js gpuCard): the row's total is for the eye, the card is for
+    // the question "which one of these four".
+    for (const [bus, n] of Object.entries((w.faults || {}).by_card || {})) {
+      const g = (w.gpus || []).find((x) => String(x.bus || "").endsWith(bus));
+      if (!g) {
+        console.log(`BAD  the fault note names ${bus} and no card row carries that bus id -- the count has`
+                    + " nowhere to land on the card, which is where the §15 question gets asked");
+        process.exitCode = 1;
+      }
+    }
+    // A fault line on the card for exactly the cards the payload says faulted. #gpus is one rebuilt blob, so the
+    // count of lines is what is checkable from outside; the join itself is checked in tests/test_webui.py.
+    { const want = (w.gpus || []).filter((g) => (g.faults || 0) > 0).length;
+      const got = (cards.match(/gfxhub page fault/g) || []).length;
+      if (want !== got) {
+        console.log(`BAD  ${want} card(s) carry faults in the payload and ${got} card line(s) were drawn`);
+        process.exitCode = 1; }
+    }
+    if ((w.faults || {}).last && w.faults.last.card && !w2("wd-fault-note").includes(w.faults.last.card)) {
+      console.log(`BAD  the last fault's card is missing from the note: "${w2("wd-fault-note")}"`);
+      process.exitCode = 1;
+    }
+    if (!w.faults && !/unknown/.test(w2("wd-faults"))) {
+      console.log(`BAD  no journal read in the payload and #wd-faults says "${w2("wd-faults")}", not "unknown"`);
+      process.exitCode = 1;
+    }
+    // The rank join is drawn on the card, not in a table elsewhere: the question is asked card by card.
+    for (const g of w.gpus || []) {
+      if (!g.rank) continue;
+      const who = `rank ${String(g.rank).replace(/^Worker_/, "")}`;
+      if (!cards.includes(who)) {
+        console.log(`BAD  card ${g.bus} reports ${g.rank} in the payload and the card does not say "${who}"`);
+        process.exitCode = 1;
+      }
+    }
+    if (isnum(w.live?.prompt_bound)
+        && !w2("wd-big-note").replace(/,/g, "").includes(String(Math.round(w.live.prompt_bound)))) {
+      console.log(`BAD  the exposure card hides the bound its percentage was taken at: "${w2("wd-big-note")}"`);
+      process.exitCode = 1;
+    }
+  }
+}
+
 // The page swallows render errors into its notice bar, so a broken section can look like an empty one.
 const bar = t("error");
 if (bar) { console.log("\nPAGE NOTICE:", bar); process.exitCode = 1; }
