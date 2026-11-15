@@ -303,10 +303,12 @@ function gpuCard(g, ghist = [], i = 0) {
                  + `${isnum(g.rank_gib) ? ` holds ${g.rank_gib.toFixed(1)} GiB` : ", holding an unmeasurable amount"}`
                  + `${g.rank_pid ? ` \u00b7 pid ${g.rank_pid}` : ""}`
                  : "no rank claims this card") + `</div>`;
-  // The driver's own count of page faults on THIS card, since boot. The engine's log reports the symptom at
-  // whatever kernel op was next; only the journal names the card (webui kernel_faults, notes §15).
-  const faultNote = isnum(g.faults) && g.faults
-    ? `<div class="small gpu-fault">${g.faults} gfxhub page fault${g.faults > 1 ? "s" : ""} on this card, this boot</div>`
+  // The driver's page-fault count for THIS card, for the launch being described. Faults from earlier launches
+  // this boot are deliberately not drawn here: a [gfxhub] page fault is a rank dying, and the launch that took it
+  // is over -- a badge that never went away would be describing a machine that no longer exists, and the reader
+  // would learn to ignore it. The history stays in the Monitor's watchdog row, where it is labelled as history.
+  const faultNote = isnum(g.faults_launch) && g.faults_launch
+    ? `<div class="gpu-fault">${g.faults_launch} page fault${g.faults_launch > 1 ? "s" : ""} here, this launch</div>`
     : "";
   d.innerHTML = `<b>${g.slot ? `slot ${esc(g.slot)}` : esc(g.name || g.card)}</b>`
     + `<span class="small">${[g.card && esc(g.card), where].filter(Boolean).join(" \u00b7 ")}</span>`

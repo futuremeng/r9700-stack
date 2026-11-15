@@ -99,6 +99,12 @@ section{margin:18px 0}
 .gpu .gpu-holder{margin-top:5px;font:12px var(--st-font-mono);color:var(--st-ink-soft)}
 .gpu .gpu-holder b{color:var(--st-ink)}
 .gpu .gpu-fault{margin-top:5px;font:12px var(--st-font-mono);color:var(--st-danger-text)}
+/* The CPU sidecar row (embeddings, rerank) has one card per sidecar this box runs, and it inherited the page's
+   4-up grid: two cards, then two empty cells taking a quarter of the row each. auto-fit hands the row back to its
+   contents -- two cards fill it at half width, a third would narrow all three rather than leave a hole, and below
+   the breakpoint the tracks collapse the way .grid--4's media query does. The section is addressed as
+   `section.sidecars` so it outranks .grid--4 regardless of which file the cascade sees last. */
+section.sidecars{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
 
 /* The full account, opened from a short link's badge. It is a pinned block of real text (selectable, copyable)
    rather than a table, because the person who opens it is about to paste it somewhere. */

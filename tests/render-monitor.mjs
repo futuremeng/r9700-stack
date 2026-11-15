@@ -644,7 +644,9 @@ console.log(`  caption slots now: ${t("gen-note1")} | ${t("gen-note2")}`);
   const w2 = (id) => t(id).replace(/\s+/g, " ").trim();
   const cards = t("gpus").replace(/\s+/g, " ");
   console.log(`\nwatchdog row: hidden=${sec.hidden} | ${w2("wd-state")} | ${w2("wd-state-note")}`
-              + ` | faults ${w2("wd-faults")} (${w2("wd-fault-note")})`
+              + ` | faults ${w2("wd-faults")} (${w2("wd-fault-note")}) [label: ${w2("wd-fault-label")}]`
+              + ` | cards badging faults: ${(cards.match(/page fault(s)? here, this launch/g) || []).length}`
+              + ` of ${(w.gpus || []).filter((g) => (g.faults_launch || 0) > 0).length}`
               + ` | over bound ${w2("wd-big")} (${w2("wd-big-note")})`
               + ` | preempted ${w2("wd-preempt")} (${w2("wd-preempt-note")})`);
   const hasReads = Boolean(w.engine_state || w.faults || w.live?.prompt_bound !== undefined);
@@ -691,14 +693,19 @@ console.log(`  caption slots now: ${t("gen-note1")} | ${t("gen-note2")}`);
     if (w.engine_state === "wedged" && !/STOP=1/.test(((byId.get("wd-state-note") || new El()).title || ""))) {
       console.log("BAD  the wedged note does not carry the command that clears it"); process.exitCode = 1;
     }
-    const fwant = isnum(w.faults?.events) ? w.faults.events : w.faults?.total;
+    // The headline is about the LAUNCH being described, not the boot: attributed -> now.events, unattributed ->
+    // the since-boot number with the note saying it could not be attributed.
+    const fa = w.faults || {};
+    const fwant = fa.now ? fa.now.events : (isnum(fa.events) ? fa.events : fa.total);
     if (w.faults && fwant !== null && w2("wd-faults") !== String(fwant).replace(/\B(?=(\d{3})+(?!\d))/g, ",")) {
       console.log(`BAD  #wd-faults says "${w2("wd-faults")}" for a payload with ${fwant} fault event(s)`
-                  + ` (${w.faults.total} driver lines) -- the headline is the number of times, the slot the lines`);
+                  + ` (boot: ${fa.total} lines${fa.now ? `, this launch: ${fa.now.total} lines` : ", unattributed"})`
+                  + " -- the headline is this launch, the history belongs in the note");
       process.exitCode = 1;
     }
     for (const [bus, n] of Object.entries((w.faults || {}).by_card || {})) {
-      if (!w2("wd-fault-note").includes(bus) || !w2("wd-fault-note").includes(`\u00d7${n}`)) {
+      const noteAll = w2("wd-fault-note") + " " + (((byId.get("wd-fault-note") || new El()).title) || "");
+      if (!noteAll.includes(bus) || !noteAll.includes(`\u00d7${n}`)) {
         console.log(`BAD  the fault note does not name ${bus} ${n}: "${w2("wd-fault-note")}" -- per-card, because`
                     + " the card is what the driver named and the rank is what the engine named (§15)");
         process.exitCode = 1;
@@ -720,16 +727,31 @@ console.log(`  caption slots now: ${t("gen-note1")} | ${t("gen-note2")}`);
         process.exitCode = 1;
       }
     }
-    // A fault line on the card for exactly the cards the payload says faulted. #gpus is one rebuilt blob, so the
-    // count of lines is what is checkable from outside; the join itself is checked in tests/test_webui.py.
-    { const want = (w.gpus || []).filter((g) => (g.faults || 0) > 0).length;
-      const got = (cards.match(/gfxhub page fault/g) || []).length;
+    // A fault line on the card ONLY for the cards that faulted in the launch being described. A [gfxhub] page
+    // fault is a rank dying: the faults of a launch that is over describe a machine that no longer exists, so a
+    // badge that never clears is a badge the reader learns to ignore. #gpus is one rebuilt blob, so the count of
+    // lines is what is checkable from outside; the join itself is checked in tests/test_webui.py.
+    { const want = (w.gpus || []).filter((g) => (g.faults_launch || 0) > 0).length;
+      const got = (cards.match(/page fault(s)? here, this launch/g) || []).length;
       if (want !== got) {
-        console.log(`BAD  ${want} card(s) carry faults in the payload and ${got} card line(s) were drawn`);
+        console.log(`BAD  ${want} card(s) faulted in this launch per the payload and ${got} card line(s) were drawn`);
         process.exitCode = 1; }
+      // (the equality above is what catches the page reading `faults` -- the since-boot number -- where it
+      // should read `faults_launch`: more cards would light up than the launch justifies)
     }
-    if ((w.faults || {}).last && w.faults.last.card && !w2("wd-fault-note").includes(w.faults.last.card)) {
+    if ((w.faults || {}).last && w.faults.last.card
+        && !((w2("wd-fault-note") + " " + (((byId.get("wd-fault-note") || new El()).title) || ""))
+             .includes(w.faults.last.card))) {
       console.log(`BAD  the last fault's card is missing from the note: "${w2("wd-fault-note")}"`);
+      process.exitCode = 1;
+    }
+    // The label must name the SAME population the number comes from. A card headed "this launch" carrying a
+    // since-boot count is the misreading this whole split exists to prevent.
+    const lbl = w2("wd-fault-label");
+    const wantLbl = w.faults?.now ? /this launch/ : /this boot/;
+    if (lbl && !wantLbl.test(lbl)) {
+      console.log(`BAD  the card is headed "${lbl}" while the payload's numbers are `
+                  + `${w.faults?.now ? "for this launch" : "since boot, unattributed"}`);
       process.exitCode = 1;
     }
     if (!w.faults && !/unknown/.test(w2("wd-faults"))) {

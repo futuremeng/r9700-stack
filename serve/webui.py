@@ -39,6 +39,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import deque
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -58,6 +59,9 @@ SLOW_KEEP = 240                              # 240 x 15 s = an hour of trend, ~4
 # The kernel journal is read this often (seconds). Slower than the cards on purpose: a page fault is a minutes-
 # wide event, and the read is a journalctl per call. Set to False via cfg journal_cmd to skip it (tests).
 KERNEL_FAULT_S = 30.0
+# How many fault events the sidecar keeps from the journal read. Eight took this box down over six days; a
+# hundred is more history than a page can attribute and still be honest about (fault_window).
+FAULT_KEEP = 120
 HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer",
        "transfer-encoding", "upgrade", "content-length", "date", "server", "host"}
 NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_:]*")
@@ -967,22 +971,22 @@ def kernel_faults(command=None, timeout=8.0):
     try:
         r = subprocess.run(list(command), capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError) as exc:
-        return {"total": None, "events": None, "by_card": {}, "last": None,
+        return {"total": None, "events": None, "by_card": {}, "last": None, "list": [],
                 "error": f"{type(exc).__name__}: {exc}"}
     if r.returncode != 0:
         first = ((r.stderr or r.stdout or "").strip().splitlines() or [""])[0]
-        return {"total": None, "events": None, "by_card": {}, "last": None,
+        return {"total": None, "events": None, "by_card": {}, "last": None, "list": [],
                 "error": f"journalctl exited {r.returncode}: {first}"}
-    per, last, pend = {}, None, None
-    events = set()
+    per, last, pend, log = {}, None, None, []
     for line in r.stdout.splitlines():
         m = FAULT_RE.search(line)
         if m:
             bus = m.group(1).lower()
             per[bus] = per.get(bus, 0) + 1
-            stamp = line.split(" kernel:")[0].strip()
-            events.add((stamp, bus))
-            last = {"at": stamp, "card": bus, "pid": None}
+            stamp = (line.split(" kernel:")[0].strip().split() or [""])[0]
+            ev = {"at": stamp, "epoch": _epoch(stamp), "card": bus, "pid": None}
+            log.append(ev)
+            last = ev
             pend = bus
             continue
         if pend is not None and last is not None and last.get("pid") is None:
@@ -993,9 +997,59 @@ def kernel_faults(command=None, timeout=8.0):
     # `total` counts the lines the driver wrote; `events` counts distinct (stamp, card) pairs, because ONE crash
     # can write several -- measured on this box: 11 lines across 8 events since boot, three of them at the same
     # second on 11-06 07:45:03. Only the line count overstates how many times the machine died; only the event
-    # count hides that the driver reported more than one fault for one of them. So both are carried.
-    return {"total": sum(per.values()), "events": len(events), "by_card": per, "last": last,
-            "error": None, "at": time.time()}
+    # count hides that the driver reported more than one fault for one of them. So both are carried, and `list`
+    # carries each event with its epoch so the page can ask WHICH of them belong to the launch it is looking at
+    # (fault_window) instead of reporting since-boot forever.
+    return {"total": sum(per.values()), "events": len({(e["at"], e["card"]) for e in log}), "by_card": per,
+            "last": last, "list": log[-FAULT_KEEP:], "error": None, "at": time.time()}
+
+
+def _epoch(stamp):
+    """An ISO stamp from `journalctl -o short-iso` -> epoch seconds, or None if this kernel prints another form.
+
+    None is carried rather than guessed at: an event whose stamp cannot be read cannot be attributed to a launch,
+    and the page has to be able to say that instead of picking a side.
+    """
+    try:
+        return datetime.fromisoformat(stamp).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def fault_window(faults, launch_at):
+    """Split one journal read into 'this launch' and 'earlier this boot', against the launch's start epoch.
+
+    A `[gfxhub] page fault` is not a transient blip -- it is a rank dying, and the launch that took it is over. So
+    a badge counting since boot shouts forever about a launch that no longer exists. This splits the same read so
+    the card can be loud about the engine it is describing and quiet about the history, while the row keeps both.
+
+    `launch_at` None, or a journal read that failed, returns now/earlier None: the page then prints the since-boot
+    numbers with the anchor named, because "cannot attribute" must never be rendered as "this launch is clean".
+    """
+    if not faults or faults.get("total") is None or launch_at is None:
+        return {"now": None, "earlier": None, "anchor": launch_at}
+    evs = faults.get("list") or []
+    now = [e for e in evs if e.get("epoch") is not None and e["epoch"] >= launch_at]
+    unknown = [e for e in evs if e.get("epoch") is None]
+    now_by_card, boot_by_card = _per_card(now), (faults.get("by_card") or {})
+    earlier_by_card = {b: n - now_by_card.get(b, 0) for b, n in boot_by_card.items()
+                       if n - now_by_card.get(b, 0) > 0}
+    return {"anchor": launch_at,
+            "now": {"total": len(now), "events": len({(e["at"], e["card"]) for e in now}), "by_card": now_by_card},
+            # An unparseable stamp is counted neither here nor there; `unattributed` says how many, so the two
+            # numbers adding up short is explainable rather than a quiet arithmetic hole.
+            "unattributed": len(unknown),
+            "earlier": {"total": max(0, faults["total"] - len(now) - len(unknown)),
+                        "events": max(0, (faults.get("events") or 0)
+                                      - len({(e["at"], e["card"]) for e in now})),
+                        "by_card": earlier_by_card}}
+
+
+def _per_card(events):
+    out = {}
+    for e in events:
+        out[e["card"]] = out.get(e["card"], 0) + 1
+    return out
 
 
 def engine_state(health, holds):
@@ -1013,6 +1067,28 @@ def engine_state(health, holds):
     if health is None:
         return "loading", n
     return ("wedged" if n else "dead"), n
+
+
+def launch_anchor(meta=None, hub_started=None):
+    """The earliest evidence this box has of WHEN the launch being described started, or None.
+
+    Needed because a fault count has to say whose faults they are: the launch on screen or one of the earlier ones
+    this boot. Candidates, and the reason for each -- the launch's own log file, created by the recipe at the
+    moment of launch (`.r9700-state/launch.json`'s `log`, e.g. `setup-132052.log`), which works even for a sidecar
+    that started in the middle of a launch; and this Hub's own start, which in the merged page IS the serve's
+    start. The MINIMUM, deliberately: an anchor that is too late would file a fault of the current launch under
+    "earlier", and that is the one mistake this split must not make. Too early only ever over-attributes, which
+    the page shows as history it says it is unsure about.
+    """
+    cands = []
+    if hub_started:
+        cands.append(float(hub_started))
+    for p in ((meta or {}).get("log"),):
+        try:
+            cands.append(os.stat(p).st_ctime)
+        except (OSError, TypeError, ValueError):
+            continue
+    return min(cands) if cands else None
 
 
 def read_gpus(root):
@@ -2214,6 +2290,9 @@ class Hub:
         # read with the cards, the second on its own beat inside gpu_poll; both exist because the 2026-11-15
         # fault hunt could not answer "which card, which rank" from anything the page already carried
         # (notes/bug-causal-conv1d-oob.md §15).
+        # `started` is one half of the anchor that decides whose faults those counts are (launch_anchor); in the
+        # merged page it is the serve's own start, because this object is built when the plugin loads.
+        self.started = time.time()
         self.ranks, self.faults, self.faults_error, self.faults_t = {}, None, None, 0.0
         # What ended the PREVIOUS boot (ACPI BERT, replayed by the kernel at startup) and how many such
         # records the journal still holds. Read once: neither can change while this process is alive.
@@ -2231,7 +2310,7 @@ class Hub:
         if self.cfg.get("journal_cmd", None) is not False:
             threading.Thread(target=self._fault_poll, name="r9700-webui-faults", daemon=True).start()
         else:
-            self.faults = {"total": None, "events": None, "by_card": {}, "last": None,
+            self.faults = {"total": None, "events": None, "by_card": {}, "last": None, "list": [],
                            "error": "journal read disabled (cfg journal_cmd=False)"}
         if cfg["meta"]:
             try:
@@ -2350,10 +2429,17 @@ class Hub:
         never a zero (see kernel_faults)."""
         while True:
             try:
-                self.faults = kernel_faults(self.cfg.get("journal_cmd"))
+                got = kernel_faults(self.cfg.get("journal_cmd"))
             except Exception as exc:                    # a read that raises must not take the thread with it
-                self.faults = {"total": None, "events": None, "by_card": {}, "last": None,
-                               "error": f"{type(exc).__name__}: {exc}"}
+                got = {"total": None, "events": None, "by_card": {}, "last": None, "list": [],
+                       "error": f"{type(exc).__name__}: {exc}"}
+            # Whose faults are these? The launch on screen, or one of the earlier ones this boot? A [gfxhub] page
+            # fault is a rank dying, so the faults of a launch that is over describe a machine that no longer
+            # exists -- the card must not shout about them forever (fault_window).
+            with self.lock:
+                meta = dict(self.meta or {})
+            got.update(fault_window(got, launch_anchor(meta, self.started)))
+            self.faults = got
             self.faults_t = time.time()
             time.sleep(KERNEL_FAULT_S)
 
@@ -2386,9 +2472,16 @@ class Hub:
                     payload["models"] = self.models
                     payload["engine"] = self.engine
                     # The per-card fault count rides on the card row, because the card is what a reader looks at.
+                    # Two numbers on purpose: `faults` is every line the driver wrote against that card this boot
+                    # (history, muted on the page), `faults_launch` is the ones belonging to the launch being
+                    # described (the only ones a card should raise its voice about).
                     # (self.faults is written by _fault_poll; by_card is keyed by short bus id, as KFD reports it.)
                     fby = (self.faults or {}).get("by_card") or {}
-                    payload["gpus"] = [dict(g, faults=fby.get((g.get("bus") or "").replace("0000:", "").lower()))
+                    fnw = ((self.faults or {}).get("now") or {}).get("by_card") or {}
+                    payload["gpus"] = [dict(g,
+                                            faults=fby.get((g.get("bus") or "").replace("0000:", "").lower()),
+                                            faults_launch=fnw.get((g.get("bus") or "").replace("0000:", "")
+                                                                   .lower()))
                                       for g in self.gpus]
                     payload["gpus_history"] = list(self.gpuhist)
                     payload["pcie"] = self.pcie

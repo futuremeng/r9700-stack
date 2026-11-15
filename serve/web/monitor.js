@@ -1111,32 +1111,59 @@ function paintWatchdog(s) {
       + "graph capture), which is not the same as dead and must not be called dead."],
   }[st] || ["\u2014", "this build does not report engine state"];
   slot("wd-state-note", note[0], note[1]);
+  // A [gfxhub] page fault is not weather: it is a rank dying, and the launch that took it is over. So the headline
+  // answers "has the launch this page is describing faulted", and the rest of the boot goes to the note and the
+  // title as history. A badge that kept counting since boot would cry wolf at the machine in front of the reader
+  // -- and the card badges follow the same rule (common.js gpuCard reads `faults_launch`).
+  const now = f && f.now, earlier = f && f.earlier, attributed = Boolean(now);
+  const dot = $("wd-fault-dot"), lbl = $("wd-fault-label");
+  if (dot) {
+    dot.className = `dot${attributed ? (now.events ? " dot--off" : " dot--live") : ""}`;
+  }
+  // The label says WHICH population the number is from, and it moves when the population does: a card headed
+  // "this launch" must never carry a since-boot number, because that is exactly the reading a tired operator
+  // will otherwise take.
+  if (lbl) text("wd-fault-label", attributed ? "Page faults, this launch" : "Page faults, this boot");
   if (!f || f.total === null || f.total === undefined) {
     text("wd-faults", "unknown");
     slot("wd-fault-note", "journal unreadable",
         (f && f.error) || "this build does not read the kernel journal, so it cannot say either way \u2014 and "
         + "'no faults' and 'cannot see the kernel log' are different claims");
-  } else {
-    // The headline is how many TIMES the machine faulted (distinct stamp+card), not how many lines the driver
-    // wrote: one crash can write several (11 lines across 8 events on this box since boot, three at the same
-    // second on 11-06). The per-card line count stays in the slot, where it doubles as the answer to "which one".
-    text("wd-faults", `${dnum(isnum(f.events) ? f.events : f.total, 0)}`);
-    // Card ids and counts, nothing else: the tight 4-up card holds ~24 characters, and the WHEN belongs in the
-    // title (a timestamp in the slot also reads as a negative number at a glance, which the render harness
-    // rightly fails). Every card the driver named is listed, because naming them individually is the point.
-    const byc = Object.entries(f.by_card || {}).sort((a, b) => b[1] - a[1])
-      .map(([b2, k]) => `${b2} \u00d7${k}`).join(" \u00b7 ");
-    slot("wd-fault-note", (byc || "none since boot").slice(0, 24),
-        `[gfxhub] page fault lines in the kernel journal since this boot, counted per PCI `
-        + "function. The engine's own log reports the symptom (illegal memory access) at whatever kernel op was "
-        + "next; only the journal names the card, and the card is what the last six faults had in common "
-        + "while the rank did not (notes/bug-causal-conv1d-oob.md \u00a715)."
+  } else if (attributed && now.events) {
+    // This launch has faulted. Loud, per card, and the count is events not driver lines: one crash can write
+    // several lines (11 lines across 8 events on this box since boot, three in the same second on 11-06).
+    text("wd-faults", `${dnum(now.events, 0)}`);
+    slot("wd-fault-note", Object.entries(now.by_card || {}).sort((a, b) => b[1] - a[1])
+        .map(([b2, k]) => `${b2} \u00d7${k}`).join(" \u00b7 ").slice(0, 24),
+        `${now.events} page-fault event(s), ${now.total} driver line(s), inside the launch this page describes. `
+        + "A page fault is a rank dying: the engine usually does not survive it, and the card under each one is "
+        + "named on that card (notes/bug-causal-conv1d-oob.md \u00a715: the card was the constant, the rank was not)."
         + (f.last ? ` Last: ${f.last.at}${f.last.card ? ` on ${f.last.card}` : ""}`
-                   + `${f.last.pid ? ` pid ${f.last.pid}` : ""}.` : "")
-        + (isnum(f.events) && isnum(f.total) && f.events !== f.total
-           ? ` ${f.total} fault lines across ${f.events} events \u2014 one crash can log several, and either number `
-             + "alone misleads." : "")
-        + " The per-card count also rides on the card.");
+                   + `${f.last.pid ? ` pid ${f.last.pid}` : ""}.` : ""));
+  } else if (attributed) {
+    text("wd-faults", "0");
+    slot("wd-fault-note", `none \u00b7 ${isnum(earlier.events) ? earlier.events : "?"} before`,
+        `Nothing has faulted in the launch this page is describing. Earlier this boot: ${earlier.events} event(s), `
+        + `${earlier.total} line(s)`
+        + (Object.keys(earlier.by_card || {}).length
+           ? `, on ${Object.entries(earlier.by_card).map(([b2, k]) => `${b2} \u00d7${k}`).join(", ")}` : "")
+        + " -- those belong to launches that are over, and the rank that faulted with them is gone, which is why "
+        + "the cards do not carry them. Anchor for \u201cthis launch\u201d: "
+        + `${f.anchor ? new Date(f.anchor * 1000).toLocaleString() : "unknown"} \u2014 the earliest of the launch's `
+        + "own log file and this page's start (webui launch_anchor)."
+        + (f.last ? ` Last fault this boot: ${f.last.at}${f.last.card ? ` on ${f.last.card}` : ""}`
+                   + `${f.last.pid ? ` pid ${f.last.pid}` : ""}.` : ""));
+  } else {
+    // No anchor (or an unparseable journal stamp): the split cannot be made, and the fallback is the since-boot
+    // number WITH that said -- "cannot attribute" must not be allowed to look like "this launch is clean".
+    text("wd-faults", `${dnum(isnum(f.events) ? f.events : f.total, 0)}`);
+    slot("wd-fault-note", Object.entries(f.by_card || {}).sort((a, b) => b[1] - a[1])
+        .map(([b2, k]) => `${b2} \u00d7${k}`).join(" \u00b7 ").slice(0, 24),
+        "These faults could not be split between this launch and earlier ones (no anchor, or the journal stamps "
+        + "could not be parsed), so the card is headed \u201cthis boot\u201d and the per-card counts must be read as "
+        + "history, not as a statement about the engine running now."
+        + (f.last ? ` Last: ${f.last.at}${f.last.card ? ` on ${f.last.card}` : ""}`
+                   + `${f.last.pid ? ` pid ${f.last.pid}` : ""}.` : ""));
   }
   // Requests, not steps: /metrics has no per-step prefill-token series, and a big prompt is what puts a big
   // prefill into a step. The bound is the nearest bucket vLLM publishes (1 000), printed rather than implied,

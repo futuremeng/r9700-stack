@@ -833,3 +833,29 @@ What the first look showed: `Answering · 4 rank(s) own the GPUs`, the four rank
 default enumeration gives (TP0 on c3:00.0 — the card under every fault), and `faults 11 (c3:00.0 ×11)`. The 11 is
 lines, not events: the events split shipped minutes after this launch started, so it arrives with the next one —
 which is the same rule as everything else here, stated because it would otherwise read as a discrepancy.
+
+## 19. The fault badge stopped being a permanent tattoo, and the sidecar row stopped showing holes
+
+Asked on 2026-11-15, looking at the new row: *is a `[gfxhub] page fault` transient? if it is, stop showing it all
+the time.* The answer is no, and the badge was still wrong.
+
+A page fault is not weather and not a corrected error — it is a rank dying, and the launch that took it is over
+within seconds (§11: the API server goes, the surviving ranks sit on ~32 GiB each). So the fault's **effect** does
+not outlive its launch, and a count that never clears is describing a machine that no longer exists. That is how a
+warning gets ignored, which is worse than not having it.
+
+So the same journal read is now split by *whose launch it was* (`fault_window`): the card badge and the row's
+headline answer **"this launch"**, and everything from earlier launches this boot moves to the note and the title,
+labelled as history. `launch_anchor()` takes the **earliest** evidence of the launch's start — the launch's own log
+file (`setup-132052.log`, `.st_ctime`, which works even for a sidecar that started mid-launch) versus this page's
+own start — because the one error this split must not make is filing a fault of the *current* launch under
+"earlier"; over-attributing only ever shows more history, which is labelled. When there is no anchor, or a journal
+stamp this build cannot parse, the card heading switches to **"Page faults, this boot"** and the numbers are shown
+that way: *cannot attribute* is never allowed to render as *this launch is clean*. Live check on the running box
+(whose serve predates the split): `faults 11 (c3:00.0 ×11)`, label `Page faults, this boot`, and **zero** card
+badges — the eleven faults belong to launches that are over.
+
+The other half of the same complaint: the CPU-sidecar row (embeddings, rerank) inherited the page's fixed 4-up
+grid and held two cards, so a quarter of the row was empty — which reads as two serves missing rather than as a box
+that runs two. `section.sidecars` now sizes by its contents (`repeat(auto-fit, minmax(260px, 1fr))`), pinned in
+`tests/test_webui.py` because a rendered page shows the hole and nothing else says why.

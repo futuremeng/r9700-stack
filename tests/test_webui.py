@@ -812,6 +812,35 @@ ck("a journalctl that failed is an error, never a zero (the -A mistake read as '
 ck("a journal that cannot be run at all is an error too", (lambda r: r["total"] is None and r["error"])(
     W.kernel_faults((str(_tmp / "no-such-journalctl"),))))
 ck("an empty journal is a real zero", W.kernel_faults((sys.executable, "-c", "pass"))["total"] == 0)
+ck("each event carries a parseable epoch and a stamp that is only the stamp (journalctl's -o short-iso puts the "
+   "host on the same line, and an unparseable stamp cannot be attributed to a launch)",
+   all(e["epoch"] is not None for e in _fl["list"]) and not any(" " in e["at"] for e in _fl["list"]),
+   str([e["at"] for e in _fl["list"]]))
+# Whose faults are these? A [gfxhub] page fault is a rank dying, so the faults of a launch that is over describe
+# a machine that no longer exists -- counting them forever on the card is how a badge gets ignored. The split is
+# against the launch's start, taken as the EARLIEST evidence there is (launch_anchor).
+from datetime import datetime  # noqa: E402
+_anchor = datetime.fromisoformat("2026-11-15T09:30:00+00:00").timestamp()
+_w = W.fault_window(_fl, _anchor)
+ck("faults split into this launch and earlier this boot, per card",
+   _w["now"]["events"] == 1 and _w["now"]["by_card"] == {"c6:00.0": 1}
+   and _w["earlier"]["total"] == 2 and _w["earlier"]["events"] == 1
+   and _w["earlier"]["by_card"] == {"c3:00.0": 2}, str(_w))
+ck("no anchor means no split, and no split must never be rendered as a clean launch",
+   W.fault_window(_fl, None)["now"] is None and W.fault_window(_fl, None)["earlier"] is None)
+_jr2 = _tmp / "fakewriter.py"
+_jr2.write_text("print('Nov 15 09:52:00 kernel: amdgpu 0000:c3:00.0: [gfxhub] page fault')")  # short form, no ISO
+_w2 = W.fault_window(W.kernel_faults((sys.executable, str(_jr2))), _anchor)
+ck("a stamp this build cannot parse is counted as unattributed rather than filed on one side",
+   _w2["unattributed"] == 1 and _w2["now"]["events"] == 0 and _w2["earlier"]["total"] == 0, str(_w2))
+_log = _tmp / "setup-132052.log"
+_log.write_text("x")
+_log_ctime = os.stat(_log).st_ctime
+ck("the launch anchor is the earliest evidence there is: the launch's own log file wins over a page that started "
+   "in the middle of it (st_ctime of a log the recipe just created IS its start)",
+   W.launch_anchor({"log": str(_log)}, _log_ctime + 3600) == _log_ctime, str(W.launch_anchor({"log": str(_log)}, _log_ctime + 3600)))
+ck("and with no log named, the page's own start is the anchor", W.launch_anchor({}, _anchor) == _anchor)
+ck("a missing log file does not become a zero-length anchor", W.launch_anchor({"log": "/no/such"}, _anchor) == _anchor)
 
 # The four-way state, from the two facts the sidecar can see without the engine answering. "Wedged" is the one
 # that was missing: on 2026-11-15 the launch died, three ranks went on holding ~32 GiB each, and the record and
@@ -951,6 +980,11 @@ ck("and a switched-off journal read arrives as unknown, not as zero faults",
    s.get("faults") and s["faults"]["total"] is None and bool(s["faults"]["error"]), str(s.get("faults")))
 ck("ranks the driver reports as holding the GPUs are counted, not assumed",
    s.get("ranks_holding") == 0, str(s.get("ranks_holding")))
+# The card badges read `faults_launch` (the launch being described), never `faults` (the boot). With the journal
+# read switched off both are None, and None is what lets the page say "unknown" instead of lighting up nothing.
+ck("cards carry both fault numbers, boot-level and launch-level, so the page can choose which to be loud about",
+   all("faults" in g and "faults_launch" in g for g in s["gpus"]),
+   str([(g.get("faults"), g.get("faults_launch")) for g in s["gpus"]]))
 ck("status carries cards, delivered in chassis order and numbered",
    len(s["gpus"]) == 3 and any(g["card"] == "card0" and g["busy_pct"] == 87 for g in s["gpus"])
    and [g["pos"] for g in s["gpus"]] == [1, 2, 3]          # 1-based, and the delivered order IS slot order
@@ -2824,6 +2858,18 @@ ck("the payload carries the slow ring and says how far apart its points are, cap
 # character budget on what the live page actually renders.
 _wh = open(os.path.join(ROOT, "serve/web/monitor.html")).read()
 _wc = open(os.path.join(ROOT, "serve/web/web.css")).read()
+_mcss = open(os.path.join(ROOT, "serve/web/monitor.css")).read()
+# The CPU-sidecar row used to inherit the page's fixed 4-up grid and hold two cards: a quarter of the row was
+# empty, which reads as two serves missing rather than as a box that runs two. The rule below sizes the row by
+# its contents instead. Pinned in source because a rendered page shows the gap and nothing else says WHY.
+ck("the sidecar row sizes by its contents, not by a fixed 4-up track",
+   "section.sidecars{grid-template-columns:repeat(auto-fit" in _mcss, str(
+       [l for l in _mcss.splitlines() if "sidecars" in l][:2]))
+_side_html = re.search(r'<section class="grid[^"]*sidecars"[^>]*>(.*?)</section>', _wh, re.S)
+ck("and the row's card count is the number of sidecars the page builds cards for",
+   _side_html is not None and _side_html.group(1).count('<div class="card"') == 2
+   and len(re.findall(r'"(embed|rerank)-card"', _wh)) >= 2,
+   str(_side_html.group(1).count('<div class="card"') if _side_html else None))
 _slot_html = {m.group(2) for m in re.finditer(r'class="([^"]*)"[^>]*?\bid="([^"]+)"', _wh)
               if "slot" in m.group(1).split()}
 _slot_js = set(re.findall(r'slot\("([^"]+)"', _mjs2)) | {

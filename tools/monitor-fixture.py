@@ -108,6 +108,17 @@ def main(argv):
         status["faults"] = {"total": 3, "events": 2, "by_card": {"c3:00.0": 3},
                             "last": {"at": "2026-11-15T09:52:00+00:00", "card": "c3:00.0", "pid": 591142},
                             "error": None, "at": time.time()}
+    # The split between "this launch" and "earlier this boot" (webui fault_window) is what decides whether a card
+    # raises its voice at all. --wedged states it explicitly, and coherently with the wedged engine: the launch on
+    # screen is the one that faulted. A live sidecar older than the split sends no `now`, and that arm -- the page
+    # showing since-boot and SAYING it cannot attribute -- is left unforced so it stays covered by the plain run.
+    fl = status.get("faults") or {}
+    if forced and "now" not in fl:
+        fl["anchor"] = time.time() - 1800
+        fl["now"] = {"total": fl.get("total", 0), "events": fl.get("events", 0), "by_card": fl.get("by_card", {})}
+        fl["earlier"] = {"total": 0, "events": 0, "by_card": {}}
+        fl["unattributed"] = 0
+        status["faults"] = fl
     if forced or "prompt_bound" not in live:
         live.update({"prompt_bound": 1000.0, "prompt_big": 2, "prompt_n": 65, "prompt_big_pct": 3.1,
                      "prompt_big_all": 41, "prompt_n_all": 1180, "prompt_big_all_pct": 3.5})
@@ -120,6 +131,9 @@ def main(argv):
             g["rank_gib"] = round((g.get("vram_used") or 30.9e9) / 2**30, 1)
         if forced or "faults" not in g:
             g["faults"] = 3 if (g.get("bus") or "").lower().endswith("c3:00.0") else 0
+        if forced or "faults_launch" not in g:
+            g["faults_launch"] = ((status.get("faults") or {}).get("now") or {}).get("by_card", {}) \
+                .get((g.get("bus") or "").lower(), 0)
     out.write_text(json.dumps({"status": status, "requests": {"requests": keep},
                                "sidecars": sidecars, "gate": gate}, indent=1))
     print(f"{out}: status from {src}, {len(keep)} rows from {journal}")
