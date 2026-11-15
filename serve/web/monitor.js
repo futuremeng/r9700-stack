@@ -1117,7 +1117,10 @@ function paintWatchdog(s) {
         (f && f.error) || "this build does not read the kernel journal, so it cannot say either way \u2014 and "
         + "'no faults' and 'cannot see the kernel log' are different claims");
   } else {
-    text("wd-faults", `${dnum(f.total, 0)}`);
+    // The headline is how many TIMES the machine faulted (distinct stamp+card), not how many lines the driver
+    // wrote: one crash can write several (11 lines across 8 events on this box since boot, three at the same
+    // second on 11-06). The per-card line count stays in the slot, where it doubles as the answer to "which one".
+    text("wd-faults", `${dnum(isnum(f.events) ? f.events : f.total, 0)}`);
     // Card ids and counts, nothing else: the tight 4-up card holds ~24 characters, and the WHEN belongs in the
     // title (a timestamp in the slot also reads as a negative number at a glance, which the render harness
     // rightly fails). Every card the driver named is listed, because naming them individually is the point.
@@ -1130,6 +1133,9 @@ function paintWatchdog(s) {
         + "while the rank did not (notes/bug-causal-conv1d-oob.md \u00a715)."
         + (f.last ? ` Last: ${f.last.at}${f.last.card ? ` on ${f.last.card}` : ""}`
                    + `${f.last.pid ? ` pid ${f.last.pid}` : ""}.` : "")
+        + (isnum(f.events) && isnum(f.total) && f.events !== f.total
+           ? ` ${f.total} fault lines across ${f.events} events \u2014 one crash can log several, and either number `
+             + "alone misleads." : "")
         + " The per-card count also rides on the card.");
   }
   // Requests, not steps: /metrics has no per-step prefill-token series, and a big prompt is what puts a big

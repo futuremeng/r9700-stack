@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Build a Monitor fixture: today's live status plus yesterday's finished rows, for the render harness.
 
-    ~/venv-r9700/bin/python tools/monitor-fixture.py [JOURNAL] [BASE] [OUT] [--rows N]
+    ~/venv-r9700/bin/python tools/monitor-fixture.py [JOURNAL] [BASE] [OUT] [--rows N] [--wedged]
+
+`--wedged` replaces the watchdog fields with the branch a healthy box never shows: a wedged launch (ranks still
+holding the GPUs while /health is silent) and several fault lines across fewer events on one card. Keep it in the
+pair of runs -- from 2026-11-15 the live serve DOES carry these reads, so a harness that only ever renders a
+healthy payload stops covering the copy that exists for the unhealthy one.
 
 Why this exists. `tests/render-monitor.mjs` renders the page against a live serve, so the request rows it
 prints are whatever happens to be in the serve's memory at the moment -- and the interesting rows (a 160k
@@ -89,24 +94,32 @@ def main(argv):
     # holding the GPUs while /health is silent) and two faults on the card that took them, both of the shape the
     # driver wrote on 2026-11-15 -- because those are the states the row exists to catch.
     live = status.setdefault("live", {})
-    if "engine_state" not in status:
+    # --wedged forces the branch even when a healthy live serve answered, because the row's whole reason to exist
+    # is a state a healthy box never shows: without this, the wedged copy and the fault-line/event distinction go
+    # uncovered the moment the sidecar carries the reads (which is the normal case from 2026-11-15 on).
+    forced = "--wedged" in argv
+    if forced or "engine_state" not in status:
         status["engine_state"], status["ranks_holding"] = "wedged", 3
-    if not status.get("faults"):
-        status["faults"] = {"total": 2, "by_card": {"c3:00.0": 2},
+    if forced or not status.get("faults"):
+        # 3 driver lines across 2 events on one card -- the shape the real journal has on this box (11 lines
+        # across 8 events since boot, three of them in the same second on 11-06), because the headline number is
+        # how many TIMES it faulted and the per-card number is the line count, and a fixture that shows only one
+        # of those two would let the page drop the other without anyone noticing.
+        status["faults"] = {"total": 3, "events": 2, "by_card": {"c3:00.0": 3},
                             "last": {"at": "2026-11-15T09:52:00+00:00", "card": "c3:00.0", "pid": 591142},
                             "error": None, "at": time.time()}
-    if "prompt_bound" not in live:
+    if forced or "prompt_bound" not in live:
         live.update({"prompt_bound": 1000.0, "prompt_big": 2, "prompt_n": 65, "prompt_big_pct": 3.1,
                      "prompt_big_all": 41, "prompt_n_all": 1180, "prompt_big_all_pct": 3.5})
     live.setdefault("preemptions", 3)
     live.setdefault("preemptions_total", 27)
     for i, g in enumerate(status.get("gpus", [])):
-        if "rank" not in g:
+        if forced or "rank" not in g:
             g["rank"] = f"Worker_TP{i}"
             g["rank_pid"] = 659221 + i
             g["rank_gib"] = round((g.get("vram_used") or 30.9e9) / 2**30, 1)
-        if "faults" not in g:
-            g["faults"] = 2 if (g.get("bus") or "").lower().endswith("c3:00.0") else 0
+        if forced or "faults" not in g:
+            g["faults"] = 3 if (g.get("bus") or "").lower().endswith("c3:00.0") else 0
     out.write_text(json.dumps({"status": status, "requests": {"requests": keep},
                                "sidecars": sidecars, "gate": gate}, indent=1))
     print(f"{out}: status from {src}, {len(keep)} rows from {journal}")

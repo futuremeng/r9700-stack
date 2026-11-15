@@ -967,17 +967,22 @@ def kernel_faults(command=None, timeout=8.0):
     try:
         r = subprocess.run(list(command), capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError) as exc:
-        return {"total": None, "by_card": {}, "last": None, "error": f"{type(exc).__name__}: {exc}"}
+        return {"total": None, "events": None, "by_card": {}, "last": None,
+                "error": f"{type(exc).__name__}: {exc}"}
     if r.returncode != 0:
         first = ((r.stderr or r.stdout or "").strip().splitlines() or [""])[0]
-        return {"total": None, "by_card": {}, "last": None, "error": f"journalctl exited {r.returncode}: {first}"}
+        return {"total": None, "events": None, "by_card": {}, "last": None,
+                "error": f"journalctl exited {r.returncode}: {first}"}
     per, last, pend = {}, None, None
+    events = set()
     for line in r.stdout.splitlines():
         m = FAULT_RE.search(line)
         if m:
             bus = m.group(1).lower()
             per[bus] = per.get(bus, 0) + 1
-            last = {"at": line.split(" kernel:")[0].strip(), "card": bus, "pid": None}
+            stamp = line.split(" kernel:")[0].strip()
+            events.add((stamp, bus))
+            last = {"at": stamp, "card": bus, "pid": None}
             pend = bus
             continue
         if pend is not None and last is not None and last.get("pid") is None:
@@ -985,7 +990,12 @@ def kernel_faults(command=None, timeout=8.0):
             if pm:
                 last["pid"] = int(pm.group(1))
                 pend = None
-    return {"total": sum(per.values()), "by_card": per, "last": last, "error": None, "at": time.time()}
+    # `total` counts the lines the driver wrote; `events` counts distinct (stamp, card) pairs, because ONE crash
+    # can write several -- measured on this box: 11 lines across 8 events since boot, three of them at the same
+    # second on 11-06 07:45:03. Only the line count overstates how many times the machine died; only the event
+    # count hides that the driver reported more than one fault for one of them. So both are carried.
+    return {"total": sum(per.values()), "events": len(events), "by_card": per, "last": last,
+            "error": None, "at": time.time()}
 
 
 def engine_state(health, holds):
@@ -2221,7 +2231,7 @@ class Hub:
         if self.cfg.get("journal_cmd", None) is not False:
             threading.Thread(target=self._fault_poll, name="r9700-webui-faults", daemon=True).start()
         else:
-            self.faults = {"total": None, "by_card": {}, "last": None,
+            self.faults = {"total": None, "events": None, "by_card": {}, "last": None,
                            "error": "journal read disabled (cfg journal_cmd=False)"}
         if cfg["meta"]:
             try:
@@ -2342,7 +2352,7 @@ class Hub:
             try:
                 self.faults = kernel_faults(self.cfg.get("journal_cmd"))
             except Exception as exc:                    # a read that raises must not take the thread with it
-                self.faults = {"total": None, "by_card": {}, "last": None,
+                self.faults = {"total": None, "events": None, "by_card": {}, "last": None,
                                "error": f"{type(exc).__name__}: {exc}"}
             self.faults_t = time.time()
             time.sleep(KERNEL_FAULT_S)

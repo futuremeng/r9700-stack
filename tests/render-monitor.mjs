@@ -656,10 +656,24 @@ console.log(`  caption slots now: ${t("gen-note1")} | ${t("gen-note2")}`);
     process.exitCode = 1;
   }
   if (hasReads) {
-    for (const id of ["wd-state", "wd-state-note", "wd-faults", "wd-fault-note", "wd-big",
-                      "wd-big-note", "wd-preempt", "wd-preempt-note"]) {
-      if (!w2(id) || w2(id) === "\u2014") {
-        console.log(`BAD  #${id} still holds the markup placeholder while the row is visible`); process.exitCode = 1;
+    // A placeholder left in a visible card is a bug; an em-dash the PAYLOAD earns is not. On a serve that has
+    // finished no requests in the window there is no percentage to print, and inventing a 0 there would be the
+    // same lie in the other direction -- so the check asks whether the source has a number before it complains.
+    const SRC = { "wd-state": () => Boolean(w.engine_state),
+                  "wd-state-note": () => Boolean(w.engine_state),
+                  "wd-faults": () => isnum(w.faults?.total) || isnum(w.faults?.events),
+                  "wd-fault-note": () => Boolean(w.faults),
+                  "wd-big": () => isnum(w.live?.prompt_big_pct),
+                  "wd-big-note": () => isnum(w.live?.prompt_bound),
+                  "wd-preempt": () => isnum(w.live?.preemptions),
+                  "wd-preempt-note": () => isnum(w.live?.preemptions_total) };
+    for (const id of Object.keys(SRC)) {
+      const line = w2(id);
+      if (line && line !== "\u2014") continue;
+      if (SRC[id]()) {
+        console.log(`BAD  #${id} is empty while its payload source carries a number -- the row is visible and the`
+                    + " number exists, so this is the page dropping it");
+        process.exitCode = 1;
       }
     }
     const WORD = { alive: "Answering", loading: "Loading", dead: "Gone", wedged: "Wedged" };
@@ -677,8 +691,10 @@ console.log(`  caption slots now: ${t("gen-note1")} | ${t("gen-note2")}`);
     if (w.engine_state === "wedged" && !/STOP=1/.test(((byId.get("wd-state-note") || new El()).title || ""))) {
       console.log("BAD  the wedged note does not carry the command that clears it"); process.exitCode = 1;
     }
-    if (w.faults && w.faults.total !== null && w2("wd-faults") !== String(w.faults.total).replace(/\B(?=(\d{3})+(?!\d))/g, ",")) {
-      console.log(`BAD  #wd-faults says "${w2("wd-faults")}" for a payload total of ${w.faults.total}`);
+    const fwant = isnum(w.faults?.events) ? w.faults.events : w.faults?.total;
+    if (w.faults && fwant !== null && w2("wd-faults") !== String(fwant).replace(/\B(?=(\d{3})+(?!\d))/g, ",")) {
+      console.log(`BAD  #wd-faults says "${w2("wd-faults")}" for a payload with ${fwant} fault event(s)`
+                  + ` (${w.faults.total} driver lines) -- the headline is the number of times, the slot the lines`);
       process.exitCode = 1;
     }
     for (const [bus, n] of Object.entries((w.faults || {}).by_card || {})) {

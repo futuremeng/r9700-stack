@@ -793,14 +793,18 @@ ck("an unreadable KFD tree is None, not an empty 'no ranks'", W.rank_holds(_tmp 
 _jr = _tmp / "fakejournal.py"
 _jr.write_text(
     "print('''2026-11-15T09:25:56+00:00 h kernel: amdgpu 0000:c3:00.0: [gfxhub] page fault (src_id:0 ring:24)\n"
+    "2026-11-15T09:25:56+00:00 h kernel: amdgpu 0000:c3:00.0: [gfxhub] page fault (src_id:0 ring:24)\n"
     "2026-11-15T09:25:56+00:00 h kernel: amdgpu 0000:c3:00.0:  Process python3 pid 565881 thread python3 pid 565881"
     "\n2026-11-15T09:52:00+00:00 h kernel: amdgpu 0000:c6:00.0: [gfxhub] page fault (src_id:0 ring:24)\n"
     "2026-11-15T09:52:00+00:00 h kernel: amdgpu 0000:c6:00.0:  Process python3 pid 591142 thread python3 pid 591142"
     "''')")
 _fl = W.kernel_faults((sys.executable, str(_jr)))
 ck("faults counted per PCI function, and the pid line that follows is paired with its fault",
-   _fl["total"] == 2 and _fl["by_card"] == {"c3:00.0": 1, "c6:00.0": 1}
+   _fl["total"] == 3 and _fl["by_card"] == {"c3:00.0": 2, "c6:00.0": 1}
    and _fl["last"]["pid"] == 591142 and _fl["last"]["card"] == "c6:00.0", str(_fl))
+ck("lines and events are both reported: one crash can log several faults, and neither number alone is honest "
+   "(measured on the box: 11 lines across 8 events since boot)",
+   _fl["events"] == 2, str(_fl))
 ck("a journalctl that failed is an error, never a zero (the -A mistake read as 'no faults today')",
    (lambda r: r["total"] is None and "exited 1" in r["error"])(
        W.kernel_faults(("sh", "-c", "echo 'journalctl: invalid option -- A' >&2; exit 1"))),
