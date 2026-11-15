@@ -10,8 +10,9 @@ nothing in the inference path.
 What the page is FOR: the 2026-11-01 incident (notes/load-oom-svm-wedge.md) was memory overcommit -> kswapd
 -> amdgpu SVM deadlock -> box unrecoverable. The embedding sidecar is the first new resident process this box
 has taken on in months, so the first card is the memory pressure the GGUF's mmap must NOT add: PSI some_avg,
-MemAvailable, swap used. The second card is llama.cpp's own /metrics deltas (needs llama-server --metrics, which
-serve/embed.sh passes): requests/s, tokens/s, average latency. Third: the embed.sh recipe, read from the
+MemAvailable, Committed_AS (the number that read 122.6 of 93.8 GiB on 11-01), swap used, and the serve's own
+RSS. The second card is llama.cpp's own /metrics deltas (needs llama-server --metrics, which serve/embed.sh
+passes): tokens/s, busy slots, deferred. Third: the embed.sh recipe, read from the
 launcher's own ${VAR:=default} lines the way launcher_env() in setup.py reads them.
 """
 import argparse
@@ -25,7 +26,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-STATE = {"t": 0.0, "health": None, "metrics": None, "err": None, "snaps": [], "meta": {}}
+STATE = {"t": 0.0, "health": None, "metrics": None, "err": None, "snaps": [], "meta": {}, "gauge": {}}
 LOCK = threading.Lock()
 
 
@@ -39,9 +40,17 @@ def get(url, timeout=4.0):
         return None, ""
 
 
-COUNTERS = {"req": "llama_cpp_n_requests", "failed": "llama_cpp_n_failed",
-            "ptok": "llama_cpp_prompt_tokens_total", "ptok_s": "llama_cpp_prompt_tokens_seconds_total",
-            "ms": "llama_cpp_seconds_total"}
+# The names as llama.cpp publishes them, read off a live serve on this box 2026-11-15 (build 1, commit
+# 5c008e0): the first version guessed `llama_cpp_*` and every one of those came back '-'. Two of the guesses
+# do not exist at all: this build has NO request counter and no total-seconds counter of that name, so req/s
+# is not derivable and the card shows what the serve really publishes -- a prompt-tokens rate (its own gauge,
+# and the same number as a delta of the total), the busy-slot and deferred counters, and ms per 1k tokens.
+COUNTERS = {"ptok": "llamacpp:prompt_tokens_total", "ptok_s": "llamacpp:prompt_seconds_total",
+            "cached": "llamacpp:prompt_tokens_cached_total", "deferred": "llamacpp:requests_deferred",
+            "decode": "llamacpp:n_decode_total"}
+GAUGES = {"rate": "llamacpp:prompt_tokens_seconds", "busy": "llamacpp:requests_processing",
+          "tokmax": "llamacpp:n_tokens_max"}
+NAMES = dict(COUNTERS, **GAUGES)
 
 
 def parse_prom(text):
@@ -50,13 +59,13 @@ def parse_prom(text):
     out = {}
     for line in text.splitlines():
         name = line.split("{")[0].split(" ")[0].strip()
-        if name in COUNTERS.values():   # COUNTERS maps short name -> full metric name; the line carries the full one
+        if name in NAMES.values():   # NAMES maps short name -> full metric name; the line carries the full one
             try:
                 val = line.rsplit("}", 1)[1] if "{" in line else line.rsplit(" ", 1)[1]
                 out[name] = out.get(name, 0.0) + float(val)   # keyed by the full metric name
             except (IndexError, ValueError):
                 pass
-    return {k: out.get(v) for k, v in COUNTERS.items()}   # short name -> value under the full name
+    return {k: out.get(v) for k, v in NAMES.items()}   # short name -> value under the full name
 
 
 
@@ -72,6 +81,7 @@ def poller(url, poll_s):
             if STATE["metrics"]:
                 STATE["snaps"].append((time.time(), STATE["metrics"]))
                 STATE["snaps"] = STATE["snaps"][-120:]
+            STATE["gauge"] = STATE["metrics"] or {}
         time.sleep(poll_s)
 
 
@@ -94,7 +104,8 @@ def read_host():
     try:
         txt = Path("/proc/meminfo").read_text()
         for k, g in (("MemTotal", "mem_total_kb"), ("MemAvailable", "mem_avail_kb"),
-                     ("SwapTotal", "swap_total_kb"), ("SwapFree", "swap_free_kb")):
+                     ("SwapTotal", "swap_total_kb"), ("SwapFree", "swap_free_kb"),
+                     ("Committed_AS", "committed_as_kb")):
             m = re.search(rf"^{k}:\s+(\d+)", txt, re.M)
             if m:
                 h[g] = int(m.group(1))
@@ -115,11 +126,33 @@ def read_host():
     return h
 
 
+def serve_args():
+    """What the running serve was actually started with -- its own cmdline. The launcher's ${VAR:=default} lines
+    are the recipe, not the live answer: THREADS defaults to the number of online cpus inside CORES, which only
+    embed.sh knows (read off the box 2026-11-15: the recipe card said THREADS 8 while the serve ran -t 15)."""
+    try:
+        for p in subprocess.run(["pgrep", "-f", "llama-server"], capture_output=True, text=True,
+                                timeout=3).stdout.split():
+            cmd = Path(f"/proc/{p}/cmdline").read_bytes().decode("utf-8", "replace").split("\0")
+            if "-m" in cmd and "--port" in cmd:
+                out = {}
+                for flag, key in (("-t", "threads"), ("-c", "ctx"), ("-b", "batch")):
+                    if flag in cmd:
+                        out[key] = cmd[cmd.index(flag) + 1]
+                return out
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+    return {}
+
+
 def rates():
-    """Deltas over the kept snapshots: what the counters mean per second. llama.cpp's prompt-tokens
-    metric is a rate (tokens/second), so the average latency is ptok / ptok_s, not ptok / n_requests."""
+    """Deltas over the kept snapshots: what the counters mean per second. There is no request counter in
+    llama.cpp's /metrics (measured 2026-11-15), so the rate the card leads with is prompt TOKENS/s -- the
+    delta of prompt_tokens_total, cross-checked against the serve's own prompt_tokens_seconds gauge -- and
+    the latency figure is ms per 1k tokens, prompt_seconds over prompt_tokens."""
     with LOCK:
         snaps = list(STATE["snaps"])
+        gauge = dict(STATE.get("gauge") or {})
     if len(snaps) < 2:
         return {}
     (t0, a), (t1, b) = snaps[0], snaps[-1]
@@ -129,7 +162,10 @@ def rates():
         if a.get(k) is not None and b.get(k) is not None:
             r[k] = (b[k] - a[k]) / dt
     if r.get("ptok") is not None and r.get("ptok_s"):
-        r["avg_ms"] = 1000.0 * r["ptok"] / r["ptok_s"]
+        r["ms_per_ktok"] = 1e6 * r["ptok_s"] / r["ptok"]
+    for k in GAUGES:                     # the serve's own instantaneous numbers, at the last poll
+        if gauge.get(k) is not None:
+            r[k] = gauge[k]
     return r
 
 
@@ -137,7 +173,7 @@ def state_json():
     with LOCK:
         health, err, t = STATE["health"], STATE["err"], STATE["t"]
     return {"up_at": t, "health": health, "err": err,
-            "rates": rates(), "host": read_host(), "meta": STATE["meta"]}
+            "rates": rates(), "host": read_host(), "meta": STATE["meta"], "serve": serve_args()}
 
 
 def card(title, body, cls=""):
@@ -154,6 +190,7 @@ def html():
 
     mem = h.get("mem_avail_kb", 0) / 1e6
     mtot = h.get("mem_total_kb", 0) / 1e6
+    cas = h.get("committed_as_kb", 0) / 1e6
     swp = (h.get("swap_total_kb", 0) - h.get("swap_free_kb", 0)) / 1e6
     stot = h.get("swap_total_kb", 0) / 1e6
     psi_m, psi_c, psi_i = h.get("psi_memory"), h.get("psi_cpu"), h.get("psi_io")
@@ -168,15 +205,20 @@ def html():
                   + ("<br><small>llama-server 需带 --metrics（serve/embed.sh 默认带）</small>"
                      if not r else "") + "</p>", "g" if up else "r")
     perf = card("吞吐（差分窗口）",
-                f"<p>req/s <b>{f(r.get('req'), 2)}</b> ｜ 失败 {f(r.get('failed'), 2)}/s<br>"
-                f"tokens/s <b>{f(r.get('ptok'), 0)}</b> ｜ 平均 {f(r.get('avg_ms'), 0)} ms/req<br>"
-                f"<small>窗口 {f(r.get('window_s'), 0)} s；无流量时归零是正常的</small></p>") if r else \
+                f"<p>prompt tokens/s <b>{f(r.get('ptok'), 0)}</b> ｜ serve 自报 {f(r.get('rate'), 0)} tok/s<br>"
+                f"忙槽 {f(r.get('busy'), 0)} ｜ 排队(deferred) {f(r.get('deferred'), 2)}/s ｜ 平均 {f(r.get('ms_per_ktok'), 0)} ms/1k tok<br>"
+                + (f"<small>serve: -t {s['serve'].get('threads', '-')} -c {s['serve'].get('ctx', '-')} "
+                   f"-b {s['serve'].get('batch', '-')}</small>" if s["serve"] else "")
+                + f"<br><small>窗口 {f(r.get('window_s'), 0)} s；llama.cpp 没有请求数计数器，所以这里按 token 计；无流量时归零是正常的</small></p>") if r else \
         card("吞吐", "<p>没有 /metrics 数据 —— 起服务时缺 --metrics，或还没有流量</p>", "y")
     memc = card("主机内存（11-01 红线）",
                 f"<p>MemAvailable <b>{mem:.1f}</b> / {mtot:.1f} GiB<br>"
+                f"Committed_AS <b>{cas:.1f}</b> / {mtot:.1f} GiB<br>"
                 f"swap 已用 <b>{swp:.1f}</b> / {stot:.1f} GiB<br>"
-                f"llama-server RSS <b>{rss:.2f}</b> GiB（GGUF 走 page cache，应远小于模型大小）<br>"
-                f"PSI some_avg 10s: memory <b>{f(psi_m)}</b> ｜ cpu {f(psi_c)} ｜ io {f(psi_i)}</p>",
+                f"llama-server RSS <b>{rss:.2f}</b> GiB<br>"
+                f"PSI some_avg 10s: memory <b>{f(psi_m)}</b> ｜ cpu {f(psi_c)} ｜ io {f(psi_i)}<br>"
+                f"<small>红线是 Committed_AS（11-01 事故 122.6/93.8）：mmap 的 GGUF 页不进它，但 KV 与 scratch 进 —— "
+                f"ctx 8192 实测 +2.8 GB。RSS 含已触碰的 GGUF 页与 KV，实测 1.6 GiB，不会读成 ~0。</small></p>",
                 cls_m + cls_s)
     meta = STATE["meta"]
     recipe = card("embed.sh recipe",
@@ -237,7 +279,9 @@ def main():
         meta = {}
         for k, v in re.findall(r"\$\{([A-Z_]+)(?::-|\?=)([^}]*)\}", src.read_text(errors="replace")):
             if k in ("PORT", "CORES", "THREADS", "CTX", "BATCH", "MODEL", "HF_REPO", "HF_FILE"):
-                meta[k] = v.strip().strip('"')
+                v = v.strip().strip('"')
+                # THREADS is computed by the launcher (the online cpus inside CORES); the recipe cannot say it.
+                meta[k] = "(= CORES 里的在线核数)" if k == "THREADS" and v.startswith("${") else v
         STATE["meta"] = meta
     except OSError:
         pass

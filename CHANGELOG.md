@@ -1,5 +1,51 @@
 # Changelog
 
+## the embedding sidecar run next to the standing launch: it costs the engine nothing, and four things in it had to be fixed first
+
+The 11-12 change shipped untested on purpose; it has now run on the box — same `serve/native-flashnext.sh`
+process (`:8080`, TP4, 262k) that has been up since 11-14, never restarted, with `:8090` brought up beside it and
+torn down again. Everything below is `notes/embed-sidecar-box-test.md`; the fixes are in this commit.
+
+- **Four first-run failures, all real.** `llama_build`'s `cmake -B <build>` had no `-S`, so `run()`'s cwd (the
+  repo) became the source tree and configure died on `CMakeLists.txt`; the default `HF_REPO`
+  `unsloth/Qwen3-Embedding-0.6B-GGUF` answers **401 — gated**, so the download step could never have worked
+  without a token (now `Qwen/Qwen3-Embedding-0.6B-GGUF`, public, q8_0 639,150,592 B, pulled here 2026-11-15);
+  `embed.sh`'s fetch pip-installed `huggingface_hub[cli]` into whatever `pip3` is and then reached for
+  `~/.local/bin/hf`, which is not where this box's `hf` lives (a launcher must not install into someone else's
+  environment — it now uses an `hf` already on PATH); and a **second `bash serve/embed.sh` reported success**:
+  llama-server died in the bind while the health loop saw the first serve answering 200, printing
+  `embedding up: pid <gone>` with rc 0. It refuses now, `STOP` waits for the serve to be gone, and the loop
+  checks our own pid before it believes `/health`.
+- **`embed-watch.py`'s `COUNTERS` were guesses and every card read `-`.** The names this build publishes are
+  `llamacpp:prompt_tokens_total`, `llamacpp:prompt_seconds_total`, `llamacpp:prompt_tokens_seconds`,
+  `llamacpp:requests_processing`, `llamacpp:requests_deferred`, … — and **there is no request counter**, so
+  req/s and ms/request were not derivable even with right names. The card now shows prompt tokens/s (its own
+  delta cross-checked against the serve's gauge — 694 tok/s, 1,436 ms/1k tokens, the two agree), busy slots and
+  the deferred rate, and the live `-t/-c/-b` read off the running process rather than the launcher's recipe line
+  (which said `THREADS 8` while the serve ran `-t 15`).
+- **The mmap rule holds; the RSS expectation did not.** `smaps`: the GGUF mapping reads 618,368 kB resident,
+  **all `Private_Clean`, 0 dirty, 0 anon, `Locked 0`** — reclaimable page cache, exactly the 11-01 lesson. But
+  the KV pool and scratch are anon: 977,404 kB at `-c 8192` (4 slots), and the serve takes **+2.77 GB of
+  `Committed_AS`** (85.15 → 87.92 of 93.8 GiB, returned in full by `STOP=1`). RSS reads ~1.6 GiB, not ~0. The
+  monitor card now carries `Committed_AS` — the number 11-01 is actually about — and this box's commit headroom
+  is **~5.9 GB where it was ~8.7**.
+- **Interference with the running launch: none measurable.** `bench/itl.py` median ITL, same engine process, sidecar
+  idle vs saturated: 13.0/12.9 (c1), 15.0/15.0 (c2), 18.4/18.3 (c4), 21.2/21.1 (c8), 27.3/27.3 (c16). A fixed
+  16×150-token chat load: **705.5 → 703.7 tok/s** (−0.3 %). The sidecar kept 2,046 tok/s through the same chat
+  load. PSI memory 0, swap unchanged. 190 online cpus, the engine wants ~5-7, the sidecar takes a 15-core range.
+- **What it is worth, and the knob that matters.** A saturated 0.6B q8_0 indexing run: 689 tok/s at `-t 8` (the
+  shipped default), **1,112 at `-t 15`**, 2,052 at `-t 31` over cores 16-63 — and **748 at `-t 16`**: cpu 17 is
+  offline, so `CORES=16-31` is 15 cores, and llama.cpp's workers spin, so one thread too many costs a third.
+  `THREADS` therefore now defaults to the **online** cpu count inside `CORES`, and a hand-set value above it is
+  called out. Single query embedding 40-70 ms idle (1.2-4.5 s behind a saturated run); batching documents into one
+  request buys nothing (748 vs 752) — the serve is compute-bound at its thread count, and past 4 slots
+  (`--parallel 4`) so is concurrency.
+- Still open, unchanged by this: whether **0.6B is good enough** (the sanity numbers are cosine 0.766 on-topic vs
+  0.219 off-topic, not a golden set), the 4B and `--rerank` variants, and llama.cpp's metric names across an
+  upstream update (the note pins the commit they were read from, 5c008e0). No root on this box, so `cmake` came
+  from `pip install cmake ninja` into the repo's own `.venv` — `llama_build`'s "sudo apt install cmake" is
+  unreachable here, and its help text now says so.
+
 ## a launch that dies after `/health` is now seen: a detached watcher writes `died_at`/`reason` (it does not restart)
 
 The 262k production launch died on 2026-11-14 at 21:10 and nobody on the box said so for **1 h 48 m**

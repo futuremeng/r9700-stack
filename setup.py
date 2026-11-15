@@ -1278,7 +1278,11 @@ def llama_build(cfg, want=False):
                    cfg, timeout=900) != 0:
                 bad("git clone llama.cpp failed (the reason is above)")
                 return None
-        if run(["cmake", "-B", f"{src}/build", "-DGGML_NATIVE=ON", "-DCMAKE_BUILD_TYPE=Release"], cfg) != 0:
+        # -S names the source tree: run() has no cwd, so a bare `cmake -B <build>` takes THIS folder as the
+        # source and configure dies with "the source directory .../r9700-stack does not appear to contain
+        # CMakeLists.txt" (seen on the box 2026-11-15 -- the first run of this step ever).
+        if run(["cmake", "-S", str(src), "-B", f"{src}/build", "-DGGML_NATIVE=ON",
+                "-DCMAKE_BUILD_TYPE=Release"], cfg) != 0:
             bad("cmake configure failed (the reason is above)")
             return None
         if run(["cmake", "--build", f"{src}/build", "-j16"], cfg, timeout=1800) != 0:
@@ -1301,8 +1305,10 @@ def embedding(cfg, have, build=False):
     so = llama_build(cfg, want=build)
     gguf = Path.home() / "models/qwen3-embedding-0.6b-q8_0.gguf"
     if gguf.exists():
-        ok(f"{gguf}: {gguf.stat().st_size / 1e9:.2f} GB -- mmap page cache, not anon: it never enters the "
-           "swap or the Committed_AS that wedged the box on 2026-11-01 (notes/load-oom-svm-wedge.md)")
+        ok(f"{gguf}: {gguf.stat().st_size / 1e9:.2f} GB -- mmap page cache, not anon: the WEIGHTS never enter "
+           "the swap or the Committed_AS that wedged the box on 2026-11-01 (notes/load-oom-svm-wedge.md). The "
+           "KV pool does: measured +2.77 GB of Committed_AS at -c 8192 (977 MB of it anon KV, the 618 MB of "
+           "weights clean file-backed) -- notes/embed-sidecar-box-test.md")
     else:
         note(f"{gguf} missing -- serve/embed.sh fetches it (~0.65 GB) on its first run, or:")
         say("      hf download unsloth/Qwen3-Embedding-0.6B-GGUF qwen3-embedding-0.6b-q8_0.gguf "
