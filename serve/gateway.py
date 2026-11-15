@@ -20,6 +20,7 @@ not notice this exists):
     /v1/rerank /rerank /reranking          -> RERANK  (llama-server, :8092)
     /monitor /about /web/* /api/* /favicon -> PAGES   (default the engine's own plugin pages)
     /api/sidecars                          -> this file: the embed-watch pages' state, for one Monitor page
+    /api/gate                              -> this file: the admission gate's own state (see "the gate" below)
     everything else (/v1/chat/completions, /health, /metrics, /tokenize, ...) -> ENGINE
 
 /Metrics is the ENGINE's: the Monitor's parser speaks vLLM's Prometheus, and llama.cpp's dialect has its own
@@ -29,7 +30,49 @@ engine, which is what setup.py's watcher and every client already poll.
 Knobs (all env): GATEWAY_PORT (18080), GATEWAY_BIND (127.0.0.1), ENGINE, EMBED, RERANK,
 PAGES (default ENGINE; point it at the webui sidecar http://127.0.0.1:8081 for a page that survives the
 engine dying), SIDECAR_STATE (comma-separated embed-watch state URLs, e.g.
-http://127.0.0.1:8091/state.json,http://127.0.0.1:8093/state.json).
+http://127.0.0.1:8091/state.json,http://127.0.0.1:8093/state.json), and the gate's own GATE_* set below.
+
+## the gate: two budgets, and the live one is NOT the sequence count
+
+The box's own request journal and the engine's 10 s stats say a decode step costs
+
+    step_ms ~= 13.6  +  1.79 x N(sequence)  +  14.9 ns x Sum(resident tokens)
+
+(fitted on 28 clean pure-decode windows of the 6.8-day launch, R^2 0.89; checked against 103 windows of the
+11-15 launch -- e.g. N=6 / 251,701 tokens: 77 tok/s/req measured against 79 predicted). That decomposes into
+two budgets with different exchange rates, and `--max-num-seqs` holds the wrong one:
+
+  * per-step time -- one 80k-token row costs 1.6x a 1.5k row, one 236k row 2.9x. Concurrency is cheap here:
+    the 13.6 ms fixed part gets amortised, which is why total throughput climbs 144 -> ~1000 tok/s.
+  * the KV pool -- 902,153 tokens (6.65 GiB, ~7.7 KB/token), and a sequence costs nothing there while its
+    tokens cost 1:1. One 80k row is 8.9% of the pool: the same footprint as 53 short rows. **50x per row.**
+
+Both crashes this box has taken (2026-11-14 20:59, 2026-11-15 05:11) were steps carrying rows at 236k and 80k
+own-context; the slow windows of the long launch (11-12, 11-14) sat at kv_cache_usage 84-100% with a waiting
+queue, 423 preemptions in the last 3.3 h and TTFT p99 376 s / max 1 960 s. So the gate's decision variable is
+the pool -- the engine's own gauges -- and never a sequence count: `--max-num-seqs 32` was in the argv of every
+launch that was slow AND of the launch that was fine.
+
+What the gate does: it opens no upstream connection while it is closed. The client simply waits -- HTTP
+backpressure, no body read, nothing buffered, the same refusal to parse that the whole file exists for. It is
+a hold, not a rejection; the hold ceiling is the client-visible bound, and GATE_HOLD_S=0 turns it into a 503
+that names the reason.
+
+What it deliberately does NOT do: estimate prompt tokens. A body-reading proxy costs 2-3 ms a request
+(bench/webui_ab.py) and a Content-Length/N estimate is a number no test could hold, so the gate reads only
+what the engine already measured about itself: vllm:kv_cache_usage_perc and vllm:num_requests_waiting, one
+GET /metrics per GATE_METRICS_S (12 ms and 68 KB on this box, in a coroutine, off the request path).
+
+Fail-open is the default on purpose: a gauge that cannot be read, or a vLLM that renamed it, opens the gate
+and says so in `err`. A front door that stops serving because its telemetry broke is worse than no gate.
+
+Knobs: GATE_DISABLE=1 (off), GATE_KV_HIGH (0.85 -- close), GATE_KV_LOW (0.78 -- re-open: one 8 192-token
+prefill moves this pool ~0.9%, so a single threshold would chatter), GATE_WAIT (1: the engine itself queueing
+is the thrash signature; 0 disables), GATE_MAX_INFLIGHT (0 = off; the sequence axis, kept as a knob because
+the two budgets are independent), GATE_HOLD_S (25 s ceiling; 0 = refuse instead of hold), GATE_METRICS_S (1.0),
+GATE_STALE_S (5). Only /v1/chat/completions and /v1/completions are gated -- /health is what setup.py's
+watcher polls, /metrics is what the gate itself reads, /api/* is the page, and the two sidecar routes are CPU
+serves that cannot take a KV hit.
 """
 import asyncio
 import json
@@ -60,6 +103,158 @@ CHUNK = 64 * 1024
 EXACT = {"/v1/embeddings": EMBED, "/v1/embeddings/": EMBED, "/v1/rerank": RERANK, "/rerank": RERANK,
          "/reranking": RERANK, "/monitor": PAGES, "/about": PAGES, "/favicon.svg": PAGES}
 PREFIX = (("/web/", PAGES), ("/api/", PAGES))
+
+# ---- the gate -------------------------------------------------------------------------------------------
+GATE_ON = os.environ.get("GATE_DISABLE", "0") != "1"
+GATE_KV_HIGH = float(os.environ.get("GATE_KV_HIGH", "0.85"))
+GATE_KV_LOW = float(os.environ.get("GATE_KV_LOW", "0.78"))
+GATE_WAIT = int(os.environ.get("GATE_WAIT", "1"))
+GATE_MAX_INFLIGHT = int(os.environ.get("GATE_MAX_INFLIGHT", "0"))
+GATE_HOLD_S = float(os.environ.get("GATE_HOLD_S", "25"))
+GATE_POLL_S = float(os.environ.get("GATE_METRICS_S", "1.0"))
+GATE_STALE_S = float(os.environ.get("GATE_STALE_S", "5"))
+GATED = ("/v1/chat/completions", "/v1/completions")
+G = {"kv": None, "run": None, "wait": None, "at": 0.0, "err": None, "closed": False, "why": "",
+     # display only: turns the usage FRACTION into tokens in the reason string and in /api/gate, so a reader
+     # sees "770,000 of 902,153 tokens" rather than 0.854. The decision itself never reads it -- the fraction
+     # is what the engine measures, and this box's pool is 902,153 tokens (6.65 GiB, from its own boot log).
+     "pool_tokens": int(os.environ.get("GATE_POOL_TOKENS", "902153")),
+     "inflight": 0, "held": 0, "released": 0, "expired": 0, "refused": 0, "admitted": 0, "polls": 0,
+     # One entry per poll: 1 shut, 0 open. A poll whose gauges were unusable draws 0 on purpose: fail-open is
+     # shown, not hidden, because a strip that goes blank when the reading dies would blame the traffic for a
+     # telemetry fault. 180 polls ~= 3 min at the default GATE_METRICS_S -- long enough to watch a pool climb
+     # into the cliff and stay there, short enough that one bar is one decision a reader can line up against a
+     # request row. The span is tunable already (hist_n x GATE_METRICS_S), so hist_n stays a constant.
+     "hist": [], "hist_n": 180,
+     "task": None}
+
+# vLLM 0.32 spells them this way (verified against the live /metrics, 2026-11-15). `num_requests_waiting{` is
+# written with its brace on purpose: without it the prefix also matches num_requests_waiting_by_reason, and a
+# request waiting for a reason the scheduler chose would look like a queue the engine chose to grow.
+GAUGES = ((b"vllm:kv_cache_usage_perc", "kv"), (b"vllm:num_requests_running{", "run"),
+          (b"vllm:num_requests_waiting{", "wait"))
+
+
+async def read_gauges():
+    """One /metrics read. Aggregate: max over models/engines for a usage fraction, sum for counts."""
+    try:
+        host, port = split_url(ENGINE)
+        r, w = await asyncio.open_connection(host, port)
+        w.write(b"GET /metrics HTTP/1.1\r\nhost: gate\r\naccept: text/plain\r\nconnection: close\r\n\r\n")
+        await w.drain()
+        body = b""
+        while len(body) < 512 * 1024:
+            d = await r.read(CHUNK)
+            if not d:
+                break
+            body += d
+        try:
+            w.close()
+        except OSError:
+            pass
+    except (OSError, ValueError) as e:                       # a dead engine is the gate's data, not its policy
+        G["err"] = f"{type(e).__name__}: {e}"
+        return
+    got = {"kv": [], "run": [], "wait": []}
+    for line in body.split(b"\n"):
+        for pre, key in GAUGES:
+            if line.startswith(pre):
+                try:
+                    got[key].append(float(line.rsplit(b" ", 1)[1]))
+                except (ValueError, IndexError):
+                    pass
+                break
+    if not got["kv"]:
+        G["err"] = "no vllm:kv_cache_usage_perc in the answer"    # a rename must not close the gate
+        return
+    G["kv"] = max(got["kv"])
+    G["run"] = sum(got["run"]) if got["run"] else None
+    G["wait"] = sum(got["wait"]) if got["wait"] else None
+    G["at"], G["polls"], G["err"] = time.time(), G["polls"] + 1, None
+
+
+def gate_state():
+    """(closed, why). Hysteresis: while closed the re-open threshold is GATE_KV_LOW, not HIGH."""
+    if not GATE_ON:
+        return False, "off"
+    if G["at"] == 0.0 or time.time() - G["at"] > GATE_STALE_S:
+        return False, "no gauge"                            # unknown OPENS the gate
+    hi = GATE_KV_LOW if G["closed"] else GATE_KV_HIGH
+    why = []
+    if G["kv"] is not None and G["kv"] >= hi:
+        why.append(f"kv {G['kv']:.3f} >= {hi} ({G['kv'] * G['pool_tokens']:,.0f} of {G['pool_tokens']:,} tokens)")
+    if GATE_WAIT > 0 and (G["wait"] or 0) >= GATE_WAIT:
+        why.append(f"engine waiting {G['wait']}")
+    if GATE_MAX_INFLIGHT > 0 and G["inflight"] >= GATE_MAX_INFLIGHT:
+        why.append(f"in flight {G['inflight']} >= {GATE_MAX_INFLIGHT}")
+    return (bool(why), "; ".join(why))
+
+
+async def admit(path):
+    """Hold a new engine request while the gate is closed. (ok, held_s, why).
+
+    Holding means: no upstream connection, no body read. The ceiling exists because a client that waits 30
+    minutes for a first token is the failure mode this is meant to prevent (the 11-14 window's TTFT max was
+    1 960 s), not something to reach for."""
+    if path not in GATED:
+        return True, 0.0, "not gated"
+    G["inflight"] += 1
+    t0, was_held = time.time(), False
+    try:
+        while True:
+            closed, why = gate_state()
+            if not closed:
+                if was_held:
+                    G["released"] += 1
+                else:
+                    G["admitted"] += 1
+                return True, time.time() - t0, why
+            if not was_held:
+                was_held, G["held"] = True, G["held"] + 1
+            if GATE_HOLD_S <= 0:
+                G["refused"] += 1
+                return False, 0.0, why
+            if time.time() - t0 >= GATE_HOLD_S:
+                G["expired"] += 1                           # the ceiling is the promise; keep it
+                return True, time.time() - t0, f"held past the {GATE_HOLD_S:.0f} s ceiling: {why}"
+            await asyncio.sleep(min(0.25, GATE_POLL_S or 0.25))
+    finally:
+        G["inflight"] -= 1
+
+
+def gate_blob():
+    closed, why = gate_state()
+    G["closed"], G["why"] = closed, why
+    return json.dumps({"closed": closed, "why": why, "gauges": {k: G[k] for k in ("kv", "run", "wait", "at")},
+                       "err": G["err"], "inflight": G["inflight"], "polls": G["polls"],
+                       "hist": G["hist"], "hist_n": G["hist_n"],
+                       "gated": list(GATED),
+                       "counters": {k: G[k] for k in ("held", "released", "expired", "refused", "admitted")},
+                       "config": {"GATE_ON": GATE_ON, "GATE_KV_HIGH": GATE_KV_HIGH, "GATE_KV_LOW": GATE_KV_LOW,
+                                  "GATE_WAIT": GATE_WAIT, "GATE_MAX_INFLIGHT": GATE_MAX_INFLIGHT,
+                                  "GATE_HOLD_S": GATE_HOLD_S, "GATE_METRICS_S": GATE_POLL_S,
+                                  "GATE_STALE_S": GATE_STALE_S, "pool_tokens": G["pool_tokens"]},
+                       "at": time.time()}).encode()
+
+
+async def gate_page(writer):
+    """GET /api/gate -- the gate as data, so the Monitor can show why a request is late. Keep-alive survives it,
+    exactly as with /api/sidecars."""
+    body = gate_blob()
+    writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\n"
+                 b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+    await writer.drain()
+
+
+async def gate_poll():
+    while True:
+        await read_gauges()
+        # the strip is the poller's own record, not something /api/gate reconstructs on read: a page that asked
+        # the question during a shut window and a page that asked after it would otherwise disagree.
+        G["hist"].append(1 if gate_state()[0] else 0)
+        while len(G["hist"]) > G["hist_n"]:
+            G["hist"].pop(0)
+        await asyncio.sleep(GATE_POLL_S)
 
 
 def upstream(path):
@@ -236,6 +431,25 @@ async def handle(reader, writer):
         except (asyncio.IncompleteReadError, ValueError):
             return
         keep = version != b"HTTP/1.0" and b"connection: close" not in headers.lower()
+        if path == "/api/gate":
+            await gate_page(writer)
+            if not keep:
+                return
+            continue
+        ok, held, why = await admit(path)
+        if not ok:
+            # 503 only exists with GATE_HOLD_S=0. A held request that the gate refused never reached the
+            # engine, so the body says what the pressure was -- that is the whole difference between "the
+            # front door is slow" and "the front door is protecting something".
+            msg = json.dumps({"error": {"message": f"gateway refused {path!r} while the KV pool is at "
+                                                   f"{why}; retry later", "type": "gateway_admission",
+                                                   "gate": json.loads(gate_blob())}}).encode()
+            writer.write(b"HTTP/1.1 503 Service Unavailable\r\nRetry-After: 2\r\nContent-Type: application/json"
+                         b"\r\nContent-Length: " + str(len(msg)).encode() + b"\r\n\r\n" + msg)
+            await writer.drain()
+            if not keep:
+                return
+            continue
         if path == "/api/sidecars":
             # Answered here, and the CONNECTION stays open. The first version returned, ending the keep-alive
             # connection under a browser that still had polls to send down it: the next request on that socket
@@ -313,8 +527,19 @@ async def client(reader, writer):
 
 async def main():
     srv = await asyncio.start_server(client, BIND, PORT)
+    # flush=True: redirected to a log file, python block-buffers stdout, and the one line that names what this
+    # front door is actually configured to do stayed invisible in the log while its tracebacks (stderr, line
+    # buffered) filled the file. The gate's thresholds belong in the log for the same reason the launch line does.
     print(f"gateway: http://{BIND}:{PORT}/  engine={ENGINE} embed={EMBED} rerank={RERANK} pages={PAGES} "
-          f"sidecars={len(SIDECAR_STATE)}")
+          f"sidecars={len(SIDECAR_STATE)}", flush=True)
+    if GATE_ON:
+        G["task"] = asyncio.create_task(gate_poll())
+        print(f"gate: {', '.join(GATED)} held at kv>={GATE_KV_HIGH} / waiting>={GATE_WAIT}"
+              f"{' / inflight>=' + str(GATE_MAX_INFLIGHT) if GATE_MAX_INFLIGHT else ''}"
+              f", re-open at kv<{GATE_KV_LOW}, ceiling {GATE_HOLD_S:.0f}s, /metrics every {GATE_POLL_S}s "
+              f"(state: /api/gate)", flush=True)
+    else:
+        print("gate: disabled (GATE_DISABLE=1)", flush=True)
     async with srv:
         await srv.serve_forever()
 

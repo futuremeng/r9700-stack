@@ -15,7 +15,9 @@
 # itself holds 8080, starting this one on 8080 just fails to bind, and this script says so rather than
 # reporting the engine's own /health as success.
 #
-# Knobs: GATEWAY_PORT, GATEWAY_BIND, ENGINE, EMBED, RERANK, PAGES, SIDECAR_STATE, PYTHON, LOG, LOCAL_ENV.
+# Knobs: GATEWAY_PORT, GATEWAY_BIND, ENGINE, EMBED, RERANK, PAGES, SIDECAR_STATE, PYTHON, LOG, LOCAL_ENV,
+# and the admission gate's GATE_* set (below) -- passed through only when set, because the gate's defaults
+# live in serve/gateway.py and two copies of a default is how a launcher starts lying about the running one.
 
 GATEWAY_PORT=${GATEWAY_PORT:-8080}
 LOCAL_ENV=${LOCAL_ENV:-$HOME/.config/r9700-stack/native.env}
@@ -40,6 +42,16 @@ PYTHON=${PYTHON:-$HOME/r9700-stack/.venv/bin/python}
 LOG=${LOG:-$HOME/logs/gateway-$GATEWAY_PORT.log}; mkdir -p "$(dirname "$LOG")"
 PIDF=${PIDF:-$HOME/.r9700-state/gateway-$GATEWAY_PORT.pid}; mkdir -p "$(dirname "$PIDF")"
 
+# The gate (serve/gateway.py): it holds a NEW chat/completion request while the engine's own KV pool is at the
+# cliff, because that pool -- not the sequence count -- is the budget the slow windows of this box ran into.
+# Defaults are in gateway.py; these are the overrides, and what is live gets printed rather than implied.
+GATENAMES="GATE_DISABLE GATE_KV_HIGH GATE_KV_LOW GATE_WAIT GATE_MAX_INFLIGHT GATE_HOLD_S GATE_METRICS_S GATE_STALE_S GATE_POOL_TOKENS"
+GATEENV=(); GATEDESC=""
+for n in $GATENAMES; do
+  v=${!n:-}
+  [ -n "$v" ] && { GATEENV+=("$n=$v"); GATEDESC="$GATEDESC $n=$v"; }
+done
+
 if [ "${STOP:-0}" = 1 ]; then
   if [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null; then
     kill "$(cat "$PIDF")"
@@ -53,7 +65,7 @@ if [ "${STOP:-0}" = 1 ]; then
 fi
 
 ARGS=()
-[ "${DRY:-0}" = 1 ] && { echo "launch: GATEWAY_PORT=$GATEWAY_PORT GATEWAY_BIND=$BIND ENGINE=$ENGINE EMBED=$EMBED RERANK=$RERANK PAGES=$PAGES $PYTHON $HOME/r9700-stack/serve/gateway.py  (log: $LOG)"; exit 0; }
+[ "${DRY:-0}" = 1 ] && { echo "launch: GATEWAY_PORT=$GATEWAY_PORT GATEWAY_BIND=$BIND ENGINE=$ENGINE EMBED=$EMBED RERANK=$RERANK PAGES=$PAGES${GATEDESC:+ gate:$GATEDESC} $PYTHON $HOME/r9700-stack/serve/gateway.py  (log: $LOG)"; exit 0; }
 
 # bind first, then health: an engine that still owns this port answers /health on it, so a /health-only check
 # would congratulate a process that never bound (the exact mistake serve/embed.sh learned on 2026-11-15).
@@ -64,13 +76,15 @@ if ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":$GATEWAY_PORT\$"; then
   exit 1
 fi
 
-echo "launch: GATEWAY_PORT=$GATEWAY_PORT GATEWAY_BIND=$BIND ENGINE=$ENGINE EMBED=$EMBED RERANK=$RERANK PAGES=$PAGES $PYTHON serve/gateway.py  (log: $LOG)"
+echo "launch: GATEWAY_PORT=$GATEWAY_PORT GATEWAY_BIND=$BIND ENGINE=$ENGINE EMBED=$EMBED RERANK=$RERANK PAGES=$PAGES${GATEDESC:+ gate:$GATEDESC} $PYTHON serve/gateway.py  (log: $LOG)"
 if [ "${FORE:-0}" = 1 ]; then
   exec env GATEWAY_PORT="$GATEWAY_PORT" GATEWAY_BIND="$BIND" ENGINE="$ENGINE" EMBED="$EMBED" RERANK="$RERANK" \
-      PAGES="$PAGES" SIDECAR_STATE="$SIDECAR_STATE" "$PYTHON" "$HOME/r9700-stack/serve/gateway.py"
+      PAGES="$PAGES" SIDECAR_STATE="$SIDECAR_STATE" ${GATEENV[@]+"${GATEENV[@]}"} \
+      "$PYTHON" "$HOME/r9700-stack/serve/gateway.py"
 fi
 nohup env GATEWAY_PORT="$GATEWAY_PORT" GATEWAY_BIND="$BIND" ENGINE="$ENGINE" EMBED="$EMBED" RERANK="$RERANK" \
-    PAGES="$PAGES" SIDECAR_STATE="$SIDECAR_STATE" "$PYTHON" "$HOME/r9700-stack/serve/gateway.py" >>"$LOG" 2>&1 &
+    PAGES="$PAGES" SIDECAR_STATE="$SIDECAR_STATE" ${GATEENV[@]+"${GATEENV[@]}"} \
+    "$PYTHON" "$HOME/r9700-stack/serve/gateway.py" >>"$LOG" 2>&1 &
 PID=$!
 echo "$PID" > "$PIDF"
 for i in $(seq 1 15); do
@@ -81,5 +95,6 @@ for i in $(seq 1 15); do
 done
 [ "$code" = 200 ] || { echo "not healthy after 15 s (the engine behind it may not be up yet): $LOG" >&2; exit 1; }
 echo "gateway up: pid $PID on http://$BIND:$GATEWAY_PORT  (engine $ENGINE, embed $EMBED, rerank $RERANK, pages $PAGES)"
+echo "  gate:     http://127.0.0.1:$GATEWAY_PORT/api/gate  -- why a request waited, and what the gate is set to"
 echo "  clients:  http://<box>:$GATEWAY_PORT/v1/chat/completions | /v1/embeddings | /v1/rerank"
 echo "  monitor:  http://<box>:$GATEWAY_PORT/monitor"

@@ -22,6 +22,10 @@ nonzero exit. So this file tests framing, not features:
   (6) the hop is cheap. 40 sequential small GETs through the gateway vs straight to the same upstream: the
       median difference must stay under 2 ms, which is what a body-parsing proxy costs. If someone replaces
       this file with a framework, this check fails rather than quietly shipping the latency.
+  (7) the admission gate: it closes on the ENGINE's own kv_cache_usage_perc and num_requests_waiting, holds a
+      new chat request (no upstream connection) instead of refusing it, opens again under the low threshold,
+      never holds a path that cannot take a KV hit, never starves its own /metrics read, keeps its promise
+      about the hold ceiling, refuses only when told to, and OPENS when the gauge cannot be read.
 
 Nothing here needs a GPU, a model, or the box's real serve: the upstreams are three sockets on loopback.
 """
@@ -60,6 +64,26 @@ def free_port():
 # One server, three roles: it answers with what it received, so the body checks need no fixture.
 LOG = {"engine": [], "embed": [], "rerank": []}
 STATE_HITS = {"n": 0}
+# What the fake engine says about itself. Mutable from the checks, because the gate's decision variable is the
+# engine's own gauge and the only honest way to test a threshold is to move the number it reads.
+GAUGE = {"kv": 0.10, "run": 0, "wait": 0}
+METRICS = {}                                    # port -> bytes, for an engine whose /metrics has no gauges
+SLOW_METRICS = set()                            # ports whose /metrics hangs, so the gauge goes stale
+
+
+def metrics_text(port):
+    """vLLM 0.32's shape, byte for byte where it matters. The two `by_reason` lines are there on purpose: the
+    gateway matches `vllm:num_requests_waiting{` with its brace, and without that it would read a scheduler
+    waiting-for-a-reason counter as a queue it grew -- this fixture makes that failure visible."""
+    j = METRICS.get(port, GAUGE)
+    if isinstance(j, bytes):
+        return j
+    return ("# TYPE vllm:kv_cache_usage_perc gauge\n"
+            'vllm:kv_cache_usage_perc{engine="0",model_name="Qwen3.8"} %.4f\n' % j["kv"] +
+            'vllm:num_requests_running{engine="0",model_name="Qwen3.8"} %d.0\n' % j["run"] +
+            'vllm:num_requests_waiting{engine="0",model_name="Qwen3.8"} %d.0\n' % j["wait"] +
+            'vllm:num_requests_waiting_by_reason{engine="0",model_name="Qwen3.8",reason="capacity"} 7.0\n'
+            'vllm:num_requests_waiting_by_reason{engine="0",model_name="Qwen3.8",reason="deferred"} 9.0\n').encode()
 
 
 def _read_request(c, on_headers=None):
@@ -126,6 +150,15 @@ def upstream(role, port, slow_stream=False):
                 payload = json.dumps({"role": role, "path": path, "n": len(body),
                                       "sha": hashlib.sha256(body).hexdigest()[:16],
                                       "count": len(LOG[role])}).encode()
+                if role == "engine" and path == "/metrics":     # what the gate reads, not an echo
+                    if port in SLOW_METRICS:                    # a /metrics that never answers
+                        time.sleep(6)
+                    txt = metrics_text(port)
+                    c.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nContent-Length: "
+                              + str(len(txt)).encode() + b"\r\n\r\n" + txt)
+                    if hdrs.get("connection", "").lower() == "close":
+                        return
+                    continue
                 if method == "HEAD":                        # headers and no body, whatever the method asks
                     c.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
                               + str(len(payload)).encode() + b"\r\n\r\n")
@@ -222,7 +255,10 @@ env = {**os.environ, "GATEWAY_PORT": str(GW), "GATEWAY_BIND": "127.0.0.1",
        "SIDECAR_STATE": f"/v1/embeddings=http://127.0.0.1:{STA}/state.json,embed=http://127.0.0.1:{STA}/state.json",
        # no caching in the main run, so the checks below really do drive watcher fetches; the cache gets its own
        # gateway a few lines further down, with its own port
-       "SIDECAR_TTL": "0"}
+       "SIDECAR_TTL": "0",
+       # the gate is off in THIS gateway on purpose: its poller would add GET /metrics to the upstream's log, and
+       # the keep-alive check below counts the requests the upstream saw. The gate gets its own gateways.
+       "GATE_DISABLE": "1"}
 GWLOG = tempfile.NamedTemporaryFile(prefix="r9700-gateway-test-", suffix=".log", delete=False)
 gw = subprocess.Popen([sys.executable, os.path.join(ROOT, "serve/gateway.py")], env=env,
                       stdout=subprocess.DEVNULL, stderr=GWLOG)
@@ -405,6 +441,184 @@ try:
     ck("the hop costs under 2 ms on a small request (a body-parsing proxy costs 2-3 ms, which is what this "
        "file exists to keep out)",
        (via - direct) < 0.002, f"direct {direct*1000:.1f} ms, via gateway {via*1000:.1f} ms")
+
+    # (8) the admission gate. Why these thresholds and not a sequence cap: the engine's own 10 s stats fit
+    # step_ms ~= 13.6 + 1.79 x N + 14.9 ns x Sum(resident tokens) on this box, so a sequence costs about 1.8 ms
+    # a step while its TOKENS are what eat the 902,153-token pool -- one 80k row is 8.9% of it, the footprint
+    # of 53 short rows. The slow windows of the 6.8-day launch sat at kv 84-100% with a waiting queue (TTFT p99
+    # 376 s, max 1 960 s); the fine launch ran the SAME --max-num-seqs 32. So the gate reads the pool.
+    def bring(extra):
+        p = free_port()
+        pr = subprocess.Popen([sys.executable, os.path.join(ROOT, "serve/gateway.py")],
+                              env={**GENV, **extra, "GATEWAY_PORT": str(p)},
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            try:
+                socket.create_connection(("127.0.0.1", p), timeout=1).close()
+                return p, pr
+            except OSError:
+                time.sleep(0.1)
+        raise AssertionError("the gate gateway did not come up")
+
+    GENV = {**env, "GATE_DISABLE": "0", "ENGINE": f"http://127.0.0.1:{ENG}", "GATE_METRICS_S": "0.1",
+            "GATE_STALE_S": "2", "GATE_KV_HIGH": "0.85", "GATE_KV_LOW": "0.78", "GATE_WAIT": "1",
+            "GATE_HOLD_S": "1.5"}
+    GAUGE.update({"kv": 0.10, "run": 1, "wait": 0})
+    GP, ggate = bring({})
+
+    def gstate(p=GP):
+        return json.loads(http(p, "/api/gate", timeout=5)[1])
+
+    g = gstate()
+    ck("the gate reads the ENGINE's own gauges (not an estimate of the body it has not parsed)",
+       abs(g["gauges"]["kv"] - 0.10) < 0.001 and g["gauges"]["wait"] == 0 and not g["closed"], str(g)[:200])
+
+    # a closed gate HOLDS: no upstream connection, the client waits, and the request is served once the pool
+    # falls -- never refused, never re-sent.
+    GAUGE["kv"] = 0.95
+    time.sleep(0.3)
+    ck("kv above the high threshold closes the gate, and the reason it names carries the token count it is "
+       "protecting", gstate()["closed"] and "of 902,153 tokens" in gstate()["why"], gstate()["why"][:160])
+    threading.Timer(0.5, lambda: GAUGE.__setitem__("kv", 0.20)).start()   # the pool frees itself mid-hold
+    t0 = time.time()
+    st, b = http(GP, "/v1/chat/completions", "POST", '{"x":1}', timeout=15)
+    held = time.time() - t0
+    ck("a closed gate holds a chat request and then SERVES it (held, not dropped, not answered by the gateway)",
+       held >= 0.35 and json.loads(b)["role"] == "engine", f"waited {held:.2f} s, {st}")
+    g = gstate()
+    ck("the hold is counted as a hold and a release, so a late request is explainable afterwards",
+       g["counters"]["held"] >= 1 and g["counters"]["released"] >= 1, str(g["counters"]))
+
+    # hysteresis: one 8 192-token prefill moves this pool ~0.9%, so a single threshold would chatter closed/open
+    # once an hour and turn the gate into a metronome.
+    GAUGE["kv"] = 0.95
+    time.sleep(0.3)
+    closed_hi = gstate()["closed"]
+    GAUGE["kv"] = 0.82                                # between LOW and HIGH: must STAY closed
+    time.sleep(0.3)
+    mid = gstate()
+    GAUGE["kv"] = 0.70
+    time.sleep(0.3)
+    ck("hysteresis: closes at HIGH, stays shut down to LOW, opens below it",
+       closed_hi and mid["closed"] and not gstate()["closed"],
+       f"0.95->{closed_hi} 0.82->{mid['closed']} 0.70->{gstate()['closed']}")
+
+    # the second signature of the collapse windows: the engine queueing. It closes the gate on its own, at any
+    # pool fraction -- and it must read num_requests_waiting{, NOT the *_by_reason family.
+    GAUGE.update({"kv": 0.10, "wait": 3})
+    time.sleep(0.3)
+    g = gstate()
+    ck("the engine queueing closes the gate by itself, and reads num_requests_waiting{ rather than a "
+       "*_by_reason counter", g["closed"] and "waiting 3" in g["why"], g["why"][:160])
+    GAUGE["wait"] = 0
+
+    # what must never be held: /health is what setup.py's watcher polls, /metrics is what the gate reads itself,
+    # /api/* is the Monitor, and the sidecar routes are CPU serves that cannot take a KV hit.
+    GAUGE["kv"] = 0.99
+    time.sleep(0.3)
+    slow = {}
+    for pth in ("/health", "/metrics", "/v1/models", "/api/gate", "/v1/embeddings", "/v1/rerank"):
+        t0 = time.time()
+        http(GP, pth, timeout=10)
+        slow[pth] = time.time() - t0
+    ck("with the gate shut, /health /metrics /v1/models /api/gate and both sidecar routes answer immediately",
+       all(v < 0.3 for v in slow.values()), {k: f"{v*1000:.0f} ms" for k, v in slow.items()})
+    p0 = gstate()["polls"]
+    time.sleep(0.5)
+    ck("a closed gate does not starve its own reading (the poller keeps running while nothing is admitted)",
+       gstate()["polls"] > p0, f"polls {p0} -> {gstate()['polls']} while shut")
+    # the strip the Monitor draws is the poller's own record, so it has to say which polls were shut -- and a
+    # poll whose gauges were unusable draws OPEN rather than blank, because a gap would blame the traffic for a
+    # telemetry fault (the page cannot tell "open" from "we stopped looking" any other way).
+    h = gstate()["hist"]
+    ck("the history strip is one entry per poll and says which of them were shut",
+       2 <= len(h) <= gstate()["hist_n"] and sum(h) >= 1 and h == h[-len(h):],
+       f"{len(h)} polls, {sum(h)} shut: {h[-12:]}")
+
+    # the ceiling is a promise: a client never waits longer than GATE_HOLD_S, and the engine still gets the
+    # request -- a gate that trades a 30-minute TTFT for a hung connection has not improved anything.
+    t0 = time.time()
+    st, b = http(GP, "/v1/chat/completions", "POST", '{"x":1}', timeout=20)
+    waited = time.time() - t0
+    g = gstate()
+    ck("the hold ceiling holds: passed after ~GATE_HOLD_S with the ENGINE's answer, and counted as expired",
+       1.4 <= waited <= 2.6 and json.loads(b)["role"] == "engine" and g["counters"]["expired"] >= 1,
+       f"waited {waited:.2f} s, {st}, {g['counters']}")
+
+    # GATE_HOLD_S=0 is the other policy: refuse, and name what was refused for. It must be the GATE answering,
+    # not the engine -- the request never reaches it.
+    GF, gfail = bring({"GATE_HOLD_S": "0"})
+    GAUGE["kv"] = 0.99
+    time.sleep(0.3)
+    n_before = sum(1 for m, p, _n, _e in LOG["engine"] if p == "/v1/chat/completions")
+    st, b = http(GF, "/v1/chat/completions", "POST", '{"x":1}', timeout=10)
+    d = json.loads(b)
+    n_after = sum(1 for m, p, _n, _e in LOG["engine"] if p == "/v1/chat/completions")
+    ck("GATE_HOLD_S=0 refuses with a 503 that names the pressure, and the request never reaches the engine",
+       "503" in st and d["error"]["type"] == "gateway_admission" and "kv 0.99" in d["error"]["gate"]["why"]
+       and n_after == n_before, f"{st} {str(d)[:140]}")
+    gfail.terminate()
+    gfail.wait(timeout=5)
+
+    # fail-open, twice over: a /metrics with no gauges in it (a rename, another server), and a gauge older than
+    # GATE_STALE_S. Either way the gate must NOT be the thing that stops this box serving.
+    JUNK = free_port()
+    METRICS[JUNK] = b"# nothing of ours here\n"
+    upstream("engine", JUNK)
+    GJ, gjunk = bring({"ENGINE": f"http://127.0.0.1:{JUNK}"})
+    GAUGE["kv"] = 0.99
+    t0 = time.time()
+    st, b = http(GJ, "/v1/chat/completions", "POST", '{"x":1}', timeout=10)
+    g = json.loads(http(GJ, "/api/gate", timeout=5)[1])
+    ck("an engine whose /metrics carries no gauges opens the gate and says so (a rename is not an outage)",
+       time.time() - t0 < 0.4 and json.loads(b)["role"] == "engine" and not g["closed"]
+       and "kv_cache_usage_perc" in (g["err"] or ""), f"{st} {str(g)[:160]}")
+    # and the strip shows it: those polls read OPEN, not blank. A reader who sees a gap cannot tell "the pool
+    # was free" from "we stopped being able to look", and the second one is the finding.
+    ck("a poll with unusable gauges draws open in the history strip rather than a gap",
+       g["hist"] and not any(g["hist"]), f"{len(g['hist'])} polls: {g['hist'][-10:]}")
+    gjunk.terminate()
+    gjunk.wait(timeout=5)
+    # a /metrics that stops answering must not freeze the gate shut on the last number it saw: the gauge goes
+    # stale, the gate opens, and the request path is untouched while one poller sits inside a hung read.
+    HANG = free_port()
+    upstream("engine", HANG)
+    GH, ghang = bring({"ENGINE": f"http://127.0.0.1:{HANG}", "GATE_STALE_S": "1", "GATE_HOLD_S": "10"})
+    GAUGE["kv"] = 0.99
+    time.sleep(0.4)
+    shut = gstate(GH)["closed"]
+    SLOW_METRICS.add(HANG)
+    time.sleep(1.4)
+    t0 = time.time()
+    st, b = http(GH, "/v1/chat/completions", "POST", '{"x":1}', timeout=20)
+    waited, g = time.time() - t0, gstate(GH)
+    SLOW_METRICS.discard(HANG)
+    GAUGE["kv"] = 0.10
+    ck("a /metrics that stops answering OPENS the gate (stale gauge) rather than holding traffic shut on it",
+       shut and waited < 1.0 and json.loads(b)["role"] == "engine" and not g["closed"],
+       f"shut first: {shut}; waited {waited:.2f}s; {str(g)[:140]}")
+    ghang.terminate()
+    ghang.wait(timeout=5)
+
+    # and the kill switch, on a gateway that really was configured to gate.
+    GD, gdis = bring({"GATE_DISABLE": "1"})
+    GAUGE["kv"] = 0.99
+    time.sleep(0.3)
+    t0 = time.time()
+    st, b = http(GD, "/v1/chat/completions", "POST", '{"x":1}', timeout=10)
+    g = json.loads(http(GD, "/api/gate", timeout=5)[1])
+    ck("GATE_DISABLE=1 is a real switch: shut pool, instant chat, gate reports itself off",
+       time.time() - t0 < 0.35 and json.loads(b)["role"] == "engine" and g["closed"] is False
+       and g["why"] == "off", f"{time.time()-t0:.2f}s {str(g)[:120]}")
+    gdis.terminate()
+    gdis.wait(timeout=5)
+    gg = gstate()
+    ggate.terminate()
+    ggate.wait(timeout=5)
+    ck("the gate's own page carries its config and counters, so the Monitor can say why a request was late",
+       gg["config"]["GATE_KV_HIGH"] == 0.85 and gg["gated"] == ["/v1/chat/completions", "/v1/completions"]
+       and gg["config"]["pool_tokens"] == 902153, str(gg)[:180])
+    METRICS.pop(JUNK, None)
 finally:
     gw.terminate()
     gw.wait(timeout=5)
