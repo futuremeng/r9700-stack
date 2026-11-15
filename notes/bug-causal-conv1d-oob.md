@@ -707,3 +707,62 @@ So the remaining ways to keep serving while the card question stay open are:
 3. **Replace or move the card** (§15's silicon-vs-slot question, plus a real fix).
 
 Recipe note added next to the TP defaults, so nobody spends another boot cycle rediscovering the wall.
+
+## 17. The trigger-side dodge, measured: `R9K_GDN_PREFILL_MAX=1024` turned four instrumented hits into three clean arms, and costs ~45 ms of TTFT
+
+The knob decides, per step, whether the GDN core is ours or stock's `_forward_core` — the call `gdn.py:378`
+`_prefill_ok` makes from the step's prefill-token count (and the absence of plain decode rows). It had always been
+256, by code default. The recipe now **names** it (`: ${R9K_GDN_PREFILL_MAX:=256}`) so the live value is visible,
+held by `tools/recipe-check.py`, and overridable for a test launch; the engine says which value it loaded in its
+own log line (`r9700: GDN short-prefill core on r9k_gdn_seq (steps with <= N prefill tokens)`), which matters
+because a process's `environ` cannot be read from outside this box (`yama ptrace_scope=1`).
+
+Same soak as every other arm (`--pop 16 --max-load 30 --period 1.0`):
+
+| arm | `PREFILL_MAX` | instrumentation | outcome |
+| --- | --- | --- | --- |
+| baseline (many) | 256 | layer 0 | hit at 431 s, 250 s; 45 s with the card order permuted |
+| baseline | 256 | every layer | hit at 536 s |
+| 1 | 1024 | layer 0 | **clean 20 min** (2 329 requests, 0 failed, 0 faults) |
+| 2 | 1024 | layer 0 | **clean 20 min** |
+| 3 | 1024 | none | **clean 20 min** |
+| control | 256 | none | **clean 20 min** ← read this row |
+
+The routing claim is proven by the counters, not assumed: in arm 1 layer 0 logged 36→64 `fallback` steps over the
+arm (against 348 in the matched 256 arm), **and every one of those carried more than 1 024 prefill tokens**
+(`prefills=5 … act=2047`, `prefills=4 … act=1648`, `prefills=15 … act=5913`). So the knob is doing exactly what it
+says: short-and-mixed steps stop entering stock's core; only genuinely large prefill steps still do.
+
+**The nuance the table forces:** the uninstrumented 256 control also ran 20 clean minutes. So today's
+"minutes-wide" hit rate is partly associated with the diagnosis itself — the host syncs pace the step, and this
+fault lives in the overlap of launches, so the probe perturbs the thing it measures. That weakens arm 3 as
+evidence for the knob, and it sets a different, honest floor: **uninstrumented, this soak does not reproduce the
+fault within 20 minutes**, which is the same reason the field took a day. What holds up is the matched comparison:
+under layer-0 diagnosis, 256 hit four times in 45–536 s and 1024 came through two 20-minute arms.
+
+What the knob costs, from `tuning/prefill_ttft.py` (every probe `max_tokens=1`, and the 1300-token row is stock's
+path under both values — it moved 0.2 %, so the two runs are comparable):
+
+| prompt | conc 1 at 256 | conc 1 at 1024 | conc 8 at 256 | conc 8 at 1024 |
+| --- | --- | --- | --- | --- |
+| 208 tok | 99.1 ms | 91.8 ms | 316.8 ms | 318.7 ms |
+| 610 tok | 161.0 ms | 157.7 ms | 593.7 ms | 591.2 ms |
+| 900 tok | **160.7 ms** | **205.7 ms** | **774.6 ms** | **822.4 ms** |
+| 1300 tok (control) | 194.3 ms | 195.1 ms | 947.0 ms | 948.7 ms |
+
++45 ms at conc 1 and +48 ms at conc 8 for a 900-token prefill — against the header's warning that the
+token-by-token core costs ~1.8 µs per token per layer (900 × 36 × 1.8 µs ≈ 58 ms), which is the same order, so the
+model and the measurement agree. At 610 tokens our path is already level with or slightly ahead of stock's, which
+puts this box's crossover nearer 600–700 tokens of prefill than the ~240 quoted when the knob was introduced (that
+figure is the GPU cost of the step, not TTFT). Decode is untouched: the soak's per-request rate was 46.8 and
+46.9 tok/s with the knob at 1024, instrumented and not.
+
+Side finding worth keeping: **layer-0 diagnosis is almost free** — every probe row matched within 1 % between the
+instrumented and uninstrumented 1024 launches. So the guard and stage syncs can stay armed on a field launch,
+which is exactly where a future hit needs to be read from.
+
+Decision left open on purpose: production stays at 256. Raising it is a mitigation that would make this fault stop
+happening — and thereby stop being observable, which is the same trade already made about automatic restart. If
+the box is moved to 1024, the follow-up that keeps the diagnosis alive is a soak whose long arrivals exceed 1 024
+tokens, so stock's core still runs regularly: if the fault comes back there, the dodge is not protective and the
+trigger hypothesis is wrong; if it does not, the trigger is confirmed as stock's core on that card.
