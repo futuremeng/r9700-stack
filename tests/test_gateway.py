@@ -142,7 +142,9 @@ def upstream(role, port, slow_stream=False):
     return port
 
 
-def state_server(port):
+def state_server(port, slow_s=0.45):
+    """A watcher's state.json. Slow on purpose (0.45 s, a little over what this box's watchers actually take):
+    the gateway's answer is only correct if a slow watcher can hold up the rest of the port."""
     srv = socket.socket()
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("127.0.0.1", port))
@@ -152,6 +154,7 @@ def state_server(port):
         while True:
             c, _ = srv.accept()
             _read_request(c)
+            time.sleep(slow_s)
             body = json.dumps({"health": 200, "rates": {"rate": 1112.0}, "serve": {"threads": "15", "ctx": "8192"},
                                "host": {"committed_as_kb": 89397784, "embed_rss_kb": 1618092}}).encode()
             c.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
@@ -252,6 +255,23 @@ try:
        [x["name"] for x in d["sidecars"]] == ["/v1/embeddings", "embed"], str([x["name"] for x in d["sidecars"]]))
     _hd = http(GW, "/monitor", "HEAD")
     ck("HEAD gets headers and no body", "200" in _hd[0] and _hd[1] == b"", repr(_hd)[:160])
+
+    # The loop must stay free while a page polls /api/sidecars: the watcher fetches are blocking work, and a
+    # Monitor tab asks for this every 2 s. The first version called urllib straight from the async handler, so
+    # each poll parked the event loop for the whole fetch -- on the box that showed up as streamed chat chunks
+    # arriving in bursts (median gap 0.0 ms against an engine decoding at its normal 13 ms), which is the kind
+    # of harm no client attribute in the response would ever reveal.
+    ths = [threading.Thread(target=lambda: http(GW, "/api/sidecars", timeout=20)) for _ in range(3)]
+    for t in ths:
+        t.start()
+    time.sleep(0.05)
+    t0 = time.time()
+    st, b = http(GW, "/v1/models", timeout=10)
+    hop = time.time() - t0
+    for t in ths:
+        t.join()
+    ck("three slow /api/sidecars polls in flight do not hold up another request (the fetches leave the loop)",
+       hop < 0.2, f"/v1/models took {hop*1000:.0f} ms behind three 0.45 s watcher fetches")
 
     # (2) a big body arrives whole
     big = os.urandom(60 * 1024)

@@ -148,24 +148,39 @@ async def relay_body(uread, writer, headers):
         await writer.drain()
 
 
+def _state_fetch(url):
+    """One watcher's state.json. Blocking on purpose, and always called through a thread: this runs inside an
+    async handler, and a blocking read here parks the whole event loop. Measured on 2026-11-15 with three
+    concurrent /api/sidecars polls running (a Monitor tab polls every 2 s): streamed chat chunks arrived in
+    bursts -- median gap between chunks 0.0 ms instead of ~13 -- while the engine itself was decoding at its
+    normal rate. The hop was not slow; the page's own poll was holding the pipe shut."""
+    with urllib.request.urlopen(url, timeout=4) as r:
+        return json.loads(r.read().decode("utf-8", "replace"))
+
+
 async def sidecars(writer):
     """GET /api/sidecars -- the embed-watch pages' state in one blob, so the Monitor has ONE page for the
     engine and the CPU serves. With no SIDECAR_STATE configured it answers [] and the card does not appear.
 
     An entry may be `name=url` (the Monitor card labels itself from `name`); a bare url gets sidecar1, 2... --
-    the split is on the first = BEFORE the ://, so a url carrying a query string still works."""
-    out = []
+    the split is on the first = BEFORE the ://, so a url carrying a query string still works.
+
+    The watcher states are fetched CONCURRENTLY: each takes ~0.2 s on this box (the watcher holds a cache, but
+    its own metric scrape competes for the GIL), and serially that made this endpoint the slowest thing the
+    gateway answers -- 0.42 s for two serves, 1.2 s+ under three concurrent polls."""
+    pairs = []
     for i, e in enumerate(SIDECAR_STATE, 1):
         if "://" in e and "=" in e and e.index("=") < e.index("://"):
             name, url = e.split("=", 1)
         else:
             name, url = f"sidecar{i}", e
-        try:
-            with urllib.request.urlopen(url, timeout=4) as r:
-                d = json.loads(r.read().decode("utf-8", "replace"))
-        except Exception as ex:                                    # noqa: BLE001 -- a dead sidecar is data
-            d = {"error": str(ex), "health": None, "rates": {}, "host": {}, "serve": {}}
-        d.setdefault("name", name)
+        pairs.append((name, url))
+    got = await asyncio.gather(*[asyncio.to_thread(_state_fetch, u) for _, u in pairs],
+                               return_exceptions=True)
+    out = []
+    for (name, url), d in zip(pairs, got):
+        if isinstance(d, Exception):                                # a dead sidecar is data, not a 500
+            d = {"error": f"{type(d).__name__}: {d}", "health": None, "rates": {}, "host": {}, "serve": {}}
         d["name"], d["url"] = name, url
         out.append(d)
     body = json.dumps({"sidecars": out, "at": time.time()}).encode()

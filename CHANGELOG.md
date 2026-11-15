@@ -75,6 +75,14 @@ the **request line and nothing else**, opens the upstream, and pipes bytes both 
   stops implying the box serves only one model. `render-about.mjs` checks both rows **both ways** (a serve on its
   own port must not claim a front door), and `SIDECAR_STATE` entries are now named by the route they serve
   (`/v1/embeddings=http://...`), because the alternative was a second copy of the routing table in the page.
+- **`GET /api/sidecars` parked the event loop.** It called `urllib` straight from the async handler, so a Monitor
+  tab polling every 2 s blocked the whole port for the duration -- and the two watcher fetches ran serially:
+  0.42 s for the pair, **1.2 s** per call under three concurrent polls. Found on the post-cutover restart, by
+  asking the dumb question "what happens to a chat stream while the page polls?": streamed chunks arrived in
+  bursts, **median gap 0.0 ms**, while the engine decoded at its normal 13 ms -- the hop was not slow, the page's
+  own poll was holding the pipe shut. Fetched concurrently and off the loop (`asyncio.to_thread` + `gather`):
+  **203 ms**, and chat holds **13.2 ms** under the same storm. `tests/test_gateway.py` now fails if another
+  request takes over 0.2 s while three 0.45 s watcher fetches are in flight.
 - **The cutover was done in the order the 2026-11-01 wedge requires**: stop, watch `Committed_AS` fall 86.1 ->
   7.4 GiB and all four cards' VRAM to 0, then relaunch -- never relaunch while the previous server's pages are
   still mapped. Final layout: `0.0.0.0:8080` gateway, `127.0.0.1:8180` engine, `:8090/:8092` the two llama.cpp

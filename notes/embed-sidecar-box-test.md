@@ -193,6 +193,7 @@ FastAPI/uvicorn, which would buy the same class of problem at a similar price.
 | engine median ITL c1 / c4 / c16 | 13.0 / 18.6 / 27.4 ms | **12.8 / 18.3 / 27.4 ms** |
 | 60 KB chat request with `Expect:` | 0.32 s | 0.29 s |
 | 54 KB `/v1/embeddings` | 19.22 s | 19.20 s |
+| 3 concurrent `/api/sidecars` polls, chat alongside | chat median ITL **0.0 ms** (chunks in bursts) | **13.2 ms** after moving the watcher fetches off the event loop (`/api/sidecars` itself 1245 → 203 ms) |
 
 The ITL pair is the number that matters: a hop that costs anything at all shows up as a floor under every
 stream, and there is no floor. `tests/test_gateway.py` pins the framing (60 KB body by digest, `Expect:` sent in
