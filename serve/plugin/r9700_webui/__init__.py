@@ -79,6 +79,50 @@ def _version():
         return "vllm (version not read)"
 
 
+# The upstream fixes this box carries in its venv, as (installed path inside the vllm package, a string that only
+# exists once applied, the upstream PR). Mirrors setup.py's VPATCHES; the duplication is deliberate, because this
+# copy runs INSIDE the engine and can answer the only question that matters: does THIS process have it.
+_PATCHES = (("v1/worker/gpu/block_table.py", "_num_dirty_rows", "#61174"),)
+
+
+def patch_text():
+    """Which of those patches are in the vLLM code THIS process loaded -- one boot line, said out loud.
+
+    Why it exists: a patch applied to the venv after a launch started is not in that launch, and "running stock
+    0.32.0" describes both cases, so a soak that comes out clean would not be attributable to the patch. The
+    marker is read from the file the package lives in (not from an import, which would pull worker modules into
+    the API-server process). A patch whose marker is missing says ABSENT rather than raising: this is a report
+    line, and it must never be a reason a launch fails (patches/README.md).
+    """
+    try:
+        import vllm
+        base = Path(vllm.__file__).parent
+    except Exception as e:                                          # noqa: BLE001
+        return f"not read ({type(e).__name__})"
+    out = []
+    for rel, marker, pr in _PATCHES:
+        try:
+            out.append(f"{pr} {'present' if marker in (base / rel).read_text(errors='replace') else 'ABSENT'}")
+        except OSError:
+            out.append(f"{pr} unreadable")
+    return ", ".join(out) or "nothing to report"
+
+
+try:                                                      # said once per process that loads this plugin, so a
+    try:                                                  # soak can be attributed to a patch instead of hoped for.
+        from vllm.logger import init_logger               # vLLM's logger AND a direct fd-2 write: a plugin can be
+        _R9700_LOG = init_logger("r9700.webui")           # imported before vLLM's logging config exists, and a bare
+    except Exception:                                     # logging.getLogger under a non-vllm name is then held to
+        import logging                                    # WARNING by lastResort, so the logger line alone never
+        _R9700_LOG = logging.getLogger("r9700.webui")     # reached the launch log. (The first version of this block
+    _R9700_MSG = f"r9700 webui loaded in {_version()} -- venv patch state: {patch_text()}"
+    _R9700_LOG.info(_R9700_MSG)                           # printed nothing at all, because it swallowed a NameError
+    import os as _os                                      # of its own: the `_R9700_LOG = ` assignment sat in the
+    _os.write(2, (_R9700_MSG + "\n").encode())            # `except` arm, so the success path had no logger. Found
+except Exception:                                         # by letting the traceback print -- worth remembering when
+    pass                                                  # a report line is silent, silence is not "no news".)
+
+
 # -------------------------------------------------------------------------------------------- engine side
 try:                                                  # inside vLLM this import always resolves; the shim is
     from vllm.v1.metrics.loggers import StatLoggerBase     # for importing this module without vLLM (tests)

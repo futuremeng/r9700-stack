@@ -1062,6 +1062,51 @@ def shutil_which(x):
     return shutil.which(x)
 
 
+# Upstream fixes this box carries in its native venv, named here rather than remembered. The venv IS the artifact
+# of record (the 0.32 wheel cannot be re-fetched -- see native()'s own warning), so "we run stock vLLM 0.32.0"
+# stops being true the day a patch goes in, and a fix nobody can point at is a fix that gets lost at the next
+# rebuild. Each entry: the patch file under patches/, the installed file it touches, a string that only exists
+# once applied, and why this box wants it.
+VPATCHES = (
+    ("vllm-0.32.0-61174-clear-stale-block-table-rows.patch",
+     "v1/worker/gpu/block_table.py", "_num_dirty_rows",     # path inside the vllm package dir, which is what
+                                                            # venv_patches() is handed (`vllm.__file__`'s dirname)
+     "upstream #61174 (2026-10-17) 'Clear stale shared block-table rows': after a smaller batch, the rows a larger "
+     "one left in the SHARED input block-table buffer must be cleared -- otherwise the next step reads block ids "
+     "that are perfectly in range and name blocks since freed and reallocated. Measured on this box: upstream's "
+     "own test file fails 7/7 against the wheel as installed and passes 7/7 after the patch "
+     "(tests/test_vllm_stale_block_table_rows.py). Carried because it is a real bug in a buffer this box reads "
+     "block ids out of -- NOT because it fixes the mixed-step device faults: a soak hit the identical fault 250 s "
+     "into a launch that carried it (notes/bug-causal-conv1d-oob.md \u00a714)."),
+)
+
+
+def marker_of(patch):
+    """The marker string for a named venv patch (for the report line)."""
+    return next(m for p, _f, m, _w in VPATCHES if p == patch)
+
+
+def venv_patches(vdir):
+    """[(patch, file, present, why)] for a vllm install dir: is each fix actually in the code on disk?
+
+    Pure-ish (it only reads files), so tests/test_setup.py can hold it to its rules with a temporary tree -- the
+    real venv is not needed and its state is not something a host test should depend on."""
+    rows = []
+    for patch, rel, marker, why in VPATCHES:
+        root = None if vdir is None else Path(vdir)
+        if root is None or not root.is_dir():
+            present = None                         # no install directory to ask: unknown, not "missing the fix"
+        elif not (root / rel).exists():
+            present = False                        # the file it patches is not there: the fix is not in
+        else:
+            try:
+                present = marker in (root / rel).read_text(errors="replace")
+            except OSError:
+                present = None                     # a directory busy enough to refuse is not a verdict
+        rows.append((patch, rel, present, why))
+    return rows
+
+
 def native(cfg):
     """The no-docker, no-root path: serve/native-flashnext.sh. Its wheels are ~20 GB, so they are reported,
     never fetched here."""
@@ -1098,6 +1143,22 @@ def native(cfg):
         bad(f"native venv cannot import vllm: {(tail or txt.splitlines())[-1]}",
             "the LD_LIBRARY_PATH and OPENMPI= lines of serve/native-flashnext.sh are the answer for "
             "libmpi/libhipblas errors; a GPU is not needed for this import")
+    # the venv's patch state, reported like a version number: a patched wheel and a stock one are different
+    # artifacts, and the difference only bites at 05:00 when a fault is being attributed to something
+    rc2, vdir = out([str(py), "-c", "import vllm, os; print(os.path.dirname(vllm.__file__))"],
+                    timeout=240, env=env)
+    for patch, rel, present, why in venv_patches(vdir.strip() if rc2 == 0 else None):
+        if present:
+            ok(f"venv patch applied: {patch} ({rel} carries {marker_of(patch)})")
+            note(f"    why: {why}")
+            note("    a launch that started BEFORE the patch was applied does not carry it: the running process is "
+                 "the artifact that matters, not the file -- compare its start time with the patch file's mtime")
+        elif present is None:
+            note(f"venv patch state unknown ({patch}): cannot read {vdir or 'the vllm install directory'}")
+        else:
+            warn(f"venv patch NOT applied: {patch} -- {rel} has no {marker_of(patch)}",
+                 f"patch -p1 -d <site-packages> < patches/{patch}   then restart the launch "
+                 f"(a running engine keeps the old code)")
     rec = libr9k(cfg)
     versions = txt if rc == 0 else None
     prev = state_read("native.json")

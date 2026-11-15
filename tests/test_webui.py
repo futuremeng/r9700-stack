@@ -2817,5 +2817,36 @@ ck("the card head escapes what it interpolates, like the file's own rule says (s
    "slot ${esc(g.slot)}" in (_web / "common.js").read_text()
    and "esc(g.name || g.card)" in (_web / "common.js").read_text())
 
+# ---------------------------------------------------------------------------- boot-time patch state (patches/)
+# The box carries upstream fixes in a frozen venv, and a launch that started before a patch does not carry it.
+# So the engine has to SAY what it holds, and something has to check that it says the truth.
+PLG = (Path(ROOT) / "serve" / "plugin" / "r9700_webui" / "__init__.py").read_text()
+sys.path.insert(0, str(Path(ROOT) / "serve" / "plugin"))
+try:
+    import r9700_webui as PL                                        # imports with no vLLM: the plugin's own shim
+    booted, pairs = getattr(PL, "_R9700_MSG", ""), [(rel, mk) for rel, mk, _ in PL._PATCHES]
+except Exception as e:                                              # noqa: BLE001
+    booted, pairs = f"import failed: {type(e).__name__}", []
+import importlib.util as _ilu                                       # noqa: E402
+_sspec = _ilu.spec_from_file_location("r9700_setup_boot_check", str(Path(ROOT) / "setup.py"))
+ST = _ilu.module_from_spec(_sspec)
+_saved, sys.argv = sys.argv[:], sys.argv[:1]                        # setup.py parses argv at import
+try:
+    _sspec.loader.exec_module(ST)
+finally:
+    sys.argv = _saved
+ck("the plugin announces at load which carried patches THIS process holds -- a clean soak has to be attributed "
+   "to the engine's own words, not to a file's mtime (patches/README.md)",
+   "venv patch state" in booted and hasattr(PL, "patch_text"), booted[:70])
+ck("and the list it announces is setup.py's list, marker for marker: two copies of a fact are only safe if a "
+   "test compares them", pairs == [(rel, mk) for _, rel, mk, _ in ST.VPATCHES], str(pairs))
+ck("the marker is read from the package's own file instead of by importing worker modules into the API server, "
+   "and a missing marker is reported rather than raised",
+   "vllm.__file__" in PLG and "ABSENT" in PLG and "_PATCHES" in PLG)
+ck("it goes out on fd 2 as well as through a logger, and the logger is bound on the SUCCESS arm -- the first "
+   "version bound it only in the `except` arm, so the report printed nothing at all for an hour",
+   "_os.write(2," in PLG and "_R9700_LOG.info(_R9700_MSG)" in PLG
+   and sum(1 for ln in PLG.splitlines() if ln.strip().startswith("_R9700_LOG = ")) == 2)
+
 print("PASS" if fail == 0 else "FAIL", f"({fail} failing)")
 sys.exit(1 if fail else 0)

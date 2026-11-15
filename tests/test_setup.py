@@ -172,6 +172,36 @@ with tempfile.TemporaryDirectory() as td:
     ck("newest_source finds the .hip sources build.sh compiles", src_file is not None
        and src_file.suffix == ".hip", str(src_file))
 
+    # The native venv is a frozen wheel (it cannot be re-fetched -- setup.py's own warning), so an upstream fix
+    # reaches this box as a file on disk. Its state therefore has to be reported like a version number: a patched
+    # 0.32.0 and a stock 0.32.0 are different artifacts, and confusing them is how a fix gets lost at the next
+    # rebuild. Everything below uses a fake install tree -- a host test must not depend on whether THIS box's
+    # venv happens to be patched today.
+    fake = Path(td) / "site"                                # vdir is the vllm PACKAGE dir, not site-packages
+    (fake / "v1" / "worker" / "gpu").mkdir(parents=True)
+    bt = fake / "v1" / "worker" / "gpu" / "block_table.py"
+    rows = S.venv_patches(fake)
+    ck("a venv without the fix reads as NOT applied (the state a rebuilt box starts in)",
+       rows and all(r[2] is False for r in rows), str(rows)[:140])
+    bt.write_text("class BlockTables:\n    self._num_dirty_rows = 0\n")
+    ck("...and the marker string, not the filename, is what makes it count as applied",
+       all(r[2] is True for r in S.venv_patches(fake)), str(S.venv_patches(fake))[:140])
+    ck("an unreadable install dir says unknown, never 'not applied' (a false alarm there invites a rebuild of "
+       "an artifact that cannot be rebuilt)",
+       all(r[2] is None for r in S.venv_patches(None)) and all(r[2] is None for r in S.venv_patches("/nope")))
+    ck("every patch the box walk names ships in patches/, so a rebuilt box can re-apply it",
+       all((ROOTP / "patches" / r[0]).exists() for r in rows), str([r[0] for r in rows]))
+    unpatched = ROOTP / "patches" / "vllm-0.32.0-block_table.py.unpatched"
+    ck("the marker is a real proof, not a word that already appears in the wheel's own file",
+       all(S.marker_of(r[0]) not in unpatched.read_text() for r in rows))
+    fake2 = Path(td) / "site2"
+    (fake2 / "vllm" / "v1" / "worker" / "gpu").mkdir(parents=True)
+    (fake2 / "vllm" / "v1" / "worker" / "gpu" / "block_table.py").write_text(unpatched.read_text())
+    r = subprocess.run(["patch", "-p1", "--dry-run", "-d", str(fake2)],
+                       stdin=open(ROOTP / "patches" / S.VPATCHES[0][0]), capture_output=True, text=True)
+    ck("the patch still applies cleanly to the wheel's own copy (drift in the venv is caught here, not at "
+       "05:00 during a fault hunt)", r.returncode == 0, (r.stdout + r.stderr)[:200])
+
 # -------------------------------------------------------------------------------------- log and state ----
 with tempfile.TemporaryDirectory() as td:
     log = Path(td) / "launch.log"
