@@ -651,13 +651,15 @@ mattered (`notes/bug-causal-conv1d-oob.md` §18). **Which physical card each ran
 per-process records, not `/proc/<pid>/fd` (every rank holds all four render nodes open for P2P, so the fd list
 identifies nothing) and not from the launch order, which is precisely what an operator permutes when testing
 whether a fault follows the rank or the card; **how many `[gfxhub]` page faults the driver has logged against each
-card this boot**, which is the only place a fault is ever written down, with an unreadable journal reporting
-`unknown` rather than zero; and **whether the traffic still builds the step shape that faults** — the share of
-finished requests whose prompt clears the GDN routing bound, taken at the nearest bucket vLLM publishes and
-printed with that bound named, because "no faults since the change" is worth nothing if nobody knows big prefills
-are still arriving. With them, the four-way engine state including **`wedged`**: /health silent while ranks go on
-holding ~30 GiB each is a state with a fix, and on 2026-11-15 both the record and this page called it healthy for
-26 minutes.
+card**, which is the only place a fault is ever written down, counted for the launch on screen rather than since
+boot — a page fault is a rank dying, so the faults of a launch that is over describe a machine that no longer
+exists, and a badge that never clears is one the reader learns to ignore (§19); with an unreadable journal still
+reporting `unknown` rather than zero; and **whether the traffic still builds the step shape that faults** — the
+share of finished requests whose prompt clears the GDN routing bound, taken at the nearest bucket vLLM publishes
+and printed with that bound named, because "no faults since the change" is worth nothing if nobody knows big
+prefills are still arriving. With them, the four-way engine state including **`wedged`**: /health silent while
+ranks go on holding ~30 GiB each is a state with a fix, and on 2026-11-15 both the record and this page called it
+healthy for 26 minutes.
 
 The About page hands out client config that is right where you paste it: a grid with one column per model family
 the port answers (chat, embeddings, rerank) and one row per config field — model name, base URL, LiteLLM provider,
