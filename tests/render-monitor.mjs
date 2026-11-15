@@ -227,7 +227,12 @@ for (const r of rows.slice(0, 6)) console.log("  " + r.textContent.replace(/\s+/
 // answer "is the live serve the new one?" without an ssh. The stub DOM creates #brand-line on demand, so this
 // checks the JS and the payload; the CSS around it still needs a browser.
 const brand = t("brand-line");
-const STAT = FIX ? FIX.status : await (await fetch(`${BASE}/api/status`)).json();
+// Compare against the payload the PAGE actually drew (the fetch stub clones every /api/status the page makes),
+// not against a fresh fetch of our own. On a box that idles between requests two fetches seconds apart disagree
+// by more than a 2% ratio allows -- 1.955 against 2.02 tok/s over a 15-minute window -- and that disagreement
+// says when we asked, not what the page rendered. A separate fetch also made the check intermittently red on a
+// freshly restarted, otherwise quiet box.
+const STAT = (FIX && FIX.status) || LAST_STATUS || await (await fetch(`${BASE}/api/status`)).json();
 const want = STAT?.stack?.plugin ? `plugin ${STAT.stack.plugin}` : null;
 console.log(`\nbrand line: ${brand}${STAT?.stack ? ` (status stack: ${JSON.stringify(STAT.stack)})` : " (no stack in the payload)"}`);
 if (!STAT?.stack) { console.log("BAD  the status payload carries no stack"); process.exitCode = 1; }
@@ -289,7 +294,14 @@ for (const [id, avgKey, rateKey] of [["rate-gen", "generation_tok_s", "generatio
   console.log(`  ${(id + "            ").slice(0, 14)} ${String(html(id)).replace(/<[^>]*>/g, "").trim()}`
               + `   [${winShown} wants ${want === undefined ? "-" : want}]`);
   const tol = winShown === "live" ? 0.30 : 0.02;
-  const okLive = (w) => near(got, w, tol) || (winShown === "live" && Math.abs(got - w) <= 1.0);
+  // The tolerance can never be finer than the resolution the page is ALLOWED to print. These cards show at most
+  // one decimal at small magnitude, so "2" is the correct rendering of 1.9554 -- and a pure ratio test fails on
+  // it (2.28%). It did fail, on a launch restarted into an idle box, where the 15-minute average decode rate was
+  // 1.96 tok/s: a magnitude this harness had never been pointed at, because every launch it had watched was busy.
+  const printed = String(html(id)).replace(/<[^>]*>/g, "").match(/[\d,]+(?:\.(\d+))?/);
+  const tolAbs = Math.max(0.02, 0.5 * 10 ** -(printed ? (printed[1] || "").length : 1));
+  const okLive = (w) => Math.abs(got - w) <= Math.max(tolAbs, Math.abs(w) * tol)
+    || (winShown === "live" && Math.abs(got - w) <= 1.0);
   if (wants.length && !wants.some(okLive)) {
     console.log(`BAD  ${id} shows ${got} for a ${winShown} window whose values are ${wants.join(" / ")}`);
     process.exitCode = 1;

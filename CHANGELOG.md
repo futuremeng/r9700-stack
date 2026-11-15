@@ -83,6 +83,14 @@ the **request line and nothing else**, opens the upstream, and pipes bytes both 
   own poll was holding the pipe shut. Fetched concurrently and off the loop (`asyncio.to_thread` + `gather`):
   **203 ms**, and chat holds **13.2 ms** under the same storm. `tests/test_gateway.py` now fails if another
   request takes over 0.2 s while three 0.45 s watcher fetches are in flight.
+- **The render harness was comparing the page against the wrong sample.** It fetched its own `/api/status` and
+  demanded the card match within 2%, while the page had rendered a different fetch from seconds earlier. On a
+  restarted, otherwise quiet box a 15-minute average moves more than that between those two instants
+  (1.955 against 2.02 tok/s), so the check went red intermittently -- 3 of 9 runs -- with the page correct every
+  time. It now compares against the payload the page actually drew (the fetch stub already clones every
+  `/api/status` the page makes), and the tolerance is never finer than the resolution the page is allowed to
+  print: a card showing `2` for 1.9554 tok/s is correct rendering at one decimal, not a wrong number. A real
+  disagreement still fails -- the floor is half a unit in the last printed decimal, not a free pass.
 - **The cutover was done in the order the 2026-11-01 wedge requires**: stop, watch `Committed_AS` fall 86.1 ->
   7.4 GiB and all four cards' VRAM to 0, then relaunch -- never relaunch while the previous server's pages are
   still mapped. Final layout: `0.0.0.0:8080` gateway, `127.0.0.1:8180` engine, `:8090/:8092` the two llama.cpp
