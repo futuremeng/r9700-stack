@@ -1916,6 +1916,29 @@ from whether the page happens to be moving. It is the same rule the page already
 (`meta_mtime`) and to the version header (`version_src`): a Monitor that outlives the thing it describes has to say
 **which** launch it is talking about.
 
+### The journal's NAME is part of the wiring: a restart moved the file, and the page froze without an error (2026-11-16)
+
+Following the attached file is necessary and not sufficient: the two sides also have to **agree on its name**. At
+02:15 the engine was relaunched (`./setup.sh --config 262k`), and the new launch journalled
+`~/logs/requests-8181.jsonl` while the standalone page was still attaching `~/logs/requests-8180.jsonl`. Gauges,
+the GPU grid and the watchdog stayed live; the request list stopped at 02:11 and every card derived from it —
+ crowding, context size — began describing a launch that had already ended. Nothing anywhere reported an error:
+the page was faithfully following a real file that nobody was writing to.
+
+The name comes from `WPORT`, and the recipe's old one-liner was `WPORT=${WEBUI_PORT:-…}` — which honours this box's
+machine-local `WEBUI_PORT=8181` (the standalone page's port) **even in `WEBUI=same` mode, where there is no second
+port for it to mean**. The comment above that line already said a merged page's files are named after `PORT`, and
+naming after `PORT+1` is exactly how the merged About page once lost its recipe card; the environment override
+quietly reinstated the bug for the journal. In merged mode the name now follows the serve's own port whatever the
+environment says, and the launch prints `note: WEBUI_PORT=8181 ignored — WEBUI=same has no second port`, because a
+rule that fires silently is a rule nobody will remember at 05:00.
+
+Two guards, both behavioural rather than textual (`tests/test_setup.py`): the recipe's WEBUI_PORT block is
+extracted and **run** in four combinations (merged with a box-file port → serve port; sidecar with one → that port;
+sidecar without → `PORT+1`; merged without → `PORT`), and the live box is asked which journal each answering page
+source attaches — engine page and standalone page must name the same file. That second check is the one that would
+have caught this at the moment it happened.
+
 ## Context size, printed rather than enforced: prompt sent vs uncached (2026-11-16)
 
 Asked what the policy for long and short requests is, the honest answer is that there isn't one: one port, one

@@ -925,5 +925,94 @@ ck("and the engine-side dead end is named where it lives (vLLM's finished-reques
    "v1/metrics/stats.py" in _ws_txt and "no user field" in _ws_txt,
    str([s for s in ("v1/metrics/stats.py", "no user field") if s not in _ws_txt]))
 
+# ------------------------------------------------ journal naming: merged mode has no second port ----------
+# The recipe's own comment already said WEBUI_PORT cannot mean anything in WEBUI=same mode, and this box's
+# machine-local file carries a real WEBUI_PORT=8181 (the standalone page's port). A WEBUI=same relaunch on
+# 2026-11-16 honoured it, so the launch journalled requests-8181.jsonl while the standalone page attached
+# requests-8180.jsonl: gauges live, request list frozen at the restart. A name was enough to reopen the hole.
+_rsrc = (ROOTP / "serve" / "native-flashnext.sh").read_text()
+_wb = re.search(r'  if \[ "\$\{WEBUI:-\}" = same \]; then\n(.*?)\n  fi\n', _rsrc, re.S)
+ck("the recipe's WEBUI_PORT handling is a block a test can run, not a comment about it",
+   _wb is not None and "WPORT=" in (_wb.group(1) if _wb else ""),
+   "block found" if _wb else "no evaluable block")
+if _wb:
+    import urllib.request                                  # noqa: E402  (the live comparison below)
+    Path("/tmp/r9700-wport-block.sh").write_text(_wb.group(0))
+
+    def _wp(env):
+        r = subprocess.run(["bash", "-c", f'{env}; . /tmp/r9700-wport-block.sh; echo "$WPORT"'],
+                           capture_output=True, text=True, timeout=30)
+        return r.stdout.strip().splitlines()[-1] if r.stdout.strip() else r.stderr.strip()[:80]
+
+    ck("merged mode names after the SERVE's port even when the box file says WEBUI_PORT (the drift that froze "
+       "the page's list)",
+       _wp("PORT=8180 WEBUI=same WEBUI_PORT=8181") == "8180", _wp("PORT=8180 WEBUI=same WEBUI_PORT=8181"))
+    ck("and the launch says out loud that a named WEBUI_PORT was ignored, so the next reader is not guessing",
+       "ignored" in subprocess.run(["bash", "-c", 'PORT=8180 WEBUI=same WEBUI_PORT=8181; '
+                                   '. /tmp/r9700-wport-block.sh'],
+                                   capture_output=True, text=True, timeout=30).stdout,
+       "no note printed")
+    ck("while a real sidecar launch still takes WEBUI_PORT when it is given one, and PORT+1 when it is not",
+       _wp("PORT=8180 WEBUI=1 WEBUI_PORT=8181") == "8181" and _wp("PORT=8100 WEBUI=1") == "8101",
+       f"{_wp('PORT=8180 WEBUI=1 WEBUI_PORT=8181')} / {_wp('PORT=8100 WEBUI=1')}")
+    ck("and merged mode without a box file is unchanged (the pages ride the serve)",
+       _wp("PORT=8100 WEBUI=same") == "8100", _wp("PORT=8100 WEBUI=same"))
+
+# The live version of the same claim: the engine and the page source must name the SAME journal. A page that
+# attaches a file nobody writes keeps its gauges live and its request list dead -- which is exactly the state no
+# amount of follow()-on-tail code can save, and the reason this is checked against the running box.
+def _jpath(port):
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=10) as r:
+            return ((json.loads(r.read()) or {}).get("journal") or {}).get("path")
+    except Exception:
+        return None
+
+
+_jp = {p: _jpath(p) for p in (8180, 8181)}
+_have = {p: v for p, v in _jp.items() if v}
+ck("every page source answering on this box attaches the SAME request journal the engine writes",
+   len(_have) < 2 or len(set(_have.values())) == 1,
+   "only one source answering: " + str(_have) if len(_have) < 2 else str(_have))
+ck("and the engine itself publishes which journal it writes, so the comparison is answerable from the payload",
+   bool(_jp.get(8180)), str(_jp))
+
+# ------------------------------------------------- the machine-local file, read the way the launcher reads it
+# serve/lib/localenv.sh moved every launcher's LOCAL_ENV default into ONE file, and setup.py's reader kept looking
+# for the inline `LOCAL_ENV=${LOCAL_ENV:-...}` line. It answered None, launcher_var fell back to the recipe's
+# ${PORT:-8080}, and the launch record wrote port 8080 on a box whose engine binds 8180 with a front door on 8080.
+# recipe-check then read the DOOR's payload (a sidecar's argv, a sidecar's env) and reported "1 knob and 19 env
+# deviations" on an engine configured exactly as the recipe says -- and the watchdog was probing the door, where a
+# dead door would read as a dead engine and restart a healthy one.
+_le = S.launcher_local_env(_rsrc)
+ck("the machine-local file is found through the helper the launcher sources, not only through an inline line",
+   _le is not None and str(_le).endswith("native.env"), str(_le))
+ck("and PORT is then what the launcher really binds (this box: the engine on 8180, the door on 8080)",
+   S.launcher_var(_rsrc, "PORT", "8080") == "8180", S.launcher_var(_rsrc, "PORT", "8080"))
+ck("and the watchdog asks the record's port first, falling back to the launcher rather than to a bare 8080",
+   S.watch_port({"port": 8123}) == 8123 and S.watch_port({"recipe": "native-flashnext.sh"}) == 8180,
+   f"{S.watch_port({'port': 8123})} / {S.watch_port({'recipe': 'native-flashnext.sh'})}")
+
+
+def _argv_of(port):
+    if not port:
+        return ""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=10) as r:
+            return (json.loads(r.read()) or {}).get("argv") or ""
+    except Exception:
+        return ""
+
+
+_rec = (json.loads((ROOTP / ".r9700-state" / "launch.json").read_text())
+        if (ROOTP / ".r9700-state" / "launch.json").exists() else {})
+_av = _argv_of(_rec.get("port"))
+ck("the port on the launch record is one whose page answers with the SERVE's argv, not a monitor's",
+   not _rec or ("vllm" in _av and "webui.py" not in _av),
+   f"record port {_rec.get('port')} answered argv: {_av[:90] or '(nothing)'}")
+ck("and that port is not the front door's, so a dead door cannot be mistaken for a dead engine",
+   not _rec or _rec.get("port") != int(S.env_file_var(_rsrc, "GATEWAY_PORT") or 8080),
+   f"record port {_rec.get('port')} == the gateway port")
+
 print("PASS" if fail == 0 else "FAIL", f"({fail} failing)")
 sys.exit(1 if fail else 0)

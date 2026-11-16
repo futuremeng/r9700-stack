@@ -2907,8 +2907,9 @@ else:
 lf = (ROOT + "/serve/native-flashnext.sh")
 nf = open(lf).read()
 ck("the launcher names the recipe file in exactly one place, and merged mode names it after its own port",
-   nf.count("r9700-web-meta-") == 1 and 'same ] && echo "${PORT' in nf,
-   f"{nf.count('r9700-web-meta-')} default meta paths in {lf}")
+   nf.count("r9700-web-meta-") == 1 and 'if [ "${WEBUI:-}" = same ]; then' in nf and "WPORT=${PORT:-8080}" in nf,
+   f"{nf.count('r9700-web-meta-')} default meta paths in {lf}; merged branch forcing WPORT=PORT: "
+   f"{'WPORT=${PORT:-8080}' in nf}")
 
 for srvx in (srv, srv2, srv3):
     srvx.shutdown()

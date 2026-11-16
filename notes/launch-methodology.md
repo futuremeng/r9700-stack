@@ -348,6 +348,32 @@ visible consequences on the page. The checks in `tests/test_webui.py` run the pr
 it must print `--bind 0.0.0.0`, with `LOCAL_ENV=/nonexistent-box.env` it must print `--bind 127.0.0.1`, and the
 sidecar that is actually running must be listening on the address the file claims (`ss -ltn`).
 
+### The file moved into a helper, and the reader kept looking for the old line (2026-11-16)
+
+`launcher_local_env` found a launcher's machine-local file by matching the inline line
+`LOCAL_ENV=${LOCAL_ENV:-…}`. Section 10's own refactor moved that default into **one** file —
+`serve/lib/localenv.sh`, which says `: "${LOCAL_ENV:=$HOME/.config/r9700-stack/native.env}"` — and the reader was
+not moved with it. It returned `None`, so `launcher_var` fell through to the recipe's `${PORT:-8080}` and the launch
+record wrote **port 8080 on a box whose engine binds 8180 with the front door on 8080**. Two consequences, both found
+only because something else was being checked:
+
+* `tools/recipe-check.py` follows the record's port to reach *the engine's own* page and read the launch argv. Sent
+to 8080, it read the front door's payload instead — a sidecar's argv and a sidecar's env — and printed "NOT the
+production recipe: 1 measured knob and 19 environment knobs differ" against an engine that `#61174`-verified and
+`R9K_GDN_PREFILL_MAX=1024`-loaded was configured exactly as the recipe says. A gate that reports noise on a good
+state is a gate that gets ignored.
+* `setup.py --watch` probed `os.environ.get("PORT", "8080")`, i.e. the **door**. It worked by luck — the gateway
+forwards `/health` to the engine — but it makes a dead door indistinguishable from a dead engine, which is exactly
+the confusion an automatic restart must not act on, and it left the record naming a port nothing served.
+
+So the resolution order is now explicit in one place: an exported `LOCAL_ENV`, then the launcher's own inline
+default, then the helper's — and the watchdog's probe port comes from `watch_port()`: the record's port first (a
+death should be judged against the port that launch bound), the launcher's second (the record may be missing after a
+load that died), `8080` last. `watch_loop` prints the answer once at the claim — `probing :8180 for this launch
+(session …); restart on a known crash signature: yes (up to 3 per 60 min)` — because "the watchdog called it dead"
+is only checkable if the record says what was probed. `tests/test_setup.py` pins all of it, including a live claim
+that the record's port answers `/api/status` with the **serve's** argv and is not the gateway's port.
+
 ## 11. `STOP=1` kills anything whose command line contains the pattern -- including your own command
 
 The stop path is `pkill -9 -f 'VLLM[::]'; pkill -9 -f 'vll[m] serve'`. The brackets are there so the launcher does

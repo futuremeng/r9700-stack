@@ -465,13 +465,34 @@ def launcher_env(text, webui=None, log=None):
     return env
 
 
+LOCAL_ENV_HELPER = ROOT / "serve" / "lib" / "localenv.sh"      # where every launcher's LOCAL_ENV default lives
+
+
 def launcher_local_env(text):
-    """The machine-local file a launcher sources, from its own LOCAL_ENV line (None if there is none)."""
-    m = re.search(r"LOCAL_ENV=\$\{LOCAL_ENV:-([^}]+)\}", text)
-    if not m:
-        return None
-    p = Path(os.path.expanduser(os.path.expandvars(m.group(1).strip().strip('"'))))
-    return p if p.is_file() else None
+    """The machine-local file a launcher sources.
+
+    It used to be found by one regex for the inline line `LOCAL_ENV=${LOCAL_ENV:-...}`. On 2026-11-15 that line
+    moved out of every launcher into ONE file (serve/lib/localenv.sh, which defaults it with
+    `: "${LOCAL_ENV:=$HOME/.config/r9700-stack/native.env}"`), and this reader kept looking for the inline form:
+    it answered None, `launcher_var` fell back to the launcher's `${PORT:-8080}`, and the launch record wrote
+    port 8080 on a box whose engine binds 8180 with the front door on 8080 — which sent recipe-check to the
+    door's payload (a sidecar's argv, a sidecar's env) and made it report 1 knob and 19 environment
+    "deviations" on an engine that was configured exactly as the recipe says. So: an exported LOCAL_ENV wins,
+    then the launcher's own inline default, then the helper's — the same order the shell reads them in.
+    """
+    cands = []
+    if os.environ.get("LOCAL_ENV"):
+        cands.append(os.environ["LOCAL_ENV"])
+    cands += [m.group(1).strip().strip('"') for m in re.finditer(r"LOCAL_ENV=\$\{LOCAL_ENV:-([^}]+)\}", text)]
+    if "lib/localenv.sh" in text and LOCAL_ENV_HELPER.is_file():
+        _h = LOCAL_ENV_HELPER.read_text(errors="replace")
+        cands += [m.group(1).strip().strip('"')
+                  for m in re.finditer(r':\s*"\$\{LOCAL_ENV:=([^}]+)\}"', _h)]
+    for c in cands:
+        p = Path(os.path.expanduser(os.path.expandvars(c)))
+        if p.is_file():
+            return p
+    return None
 
 
 def env_file_var(text, name):
@@ -1154,6 +1175,24 @@ def watch_restarts(rec, env=None):
     return bool((rec or {}).get("restart_on_crash"))
 
 
+def watch_port(rec=None):
+    """Which port the watchdog should probe: the launch record's if it names one, else what the launcher will bind.
+
+    `--watch` used to read `os.environ.get("PORT", "8080")`. On this box that is 8080, which is the FRONT DOOR: the
+    door forwards /health to the engine, so the probe still answered, but it also means a dead door reads as a dead
+    engine (and would restart a healthy one), and it is the same half-read that let a launch record name a port
+    nothing served. The record first, because a death should be judged against the port that launch actually bound;
+    the launcher second, because the record may be missing (a launch that died during its load).
+    """
+    rec = rec if rec is not None else state_read("launch.json")
+    if rec and rec.get("port"):
+        return int(rec["port"])
+    pick = (rec or {}).get("recipe")
+    if pick and (ROOT / "serve" / pick).is_file():
+        return int(launcher_var((ROOT / "serve" / pick).read_text(errors="replace"), "PORT", "8080"))
+    return int(os.environ.get("PORT", "8080"))
+
+
 def watch_loop(port, sess, log):
     """Poll a launch that is already up until it stops, then put the moment on the record and exit.
 
@@ -1174,6 +1213,13 @@ def watch_loop(port, sess, log):
                      restart_max=(RESTART_MAX if restart else 0), restart_window_s=RESTART_WINDOW_S)
     else:
         warn("no launch.json for this session: the watcher reports on stdout only")
+    # Which port am I asking? Said once, at the claim, because the question gets asked the moment it matters:
+    # "the watchdog called it dead" is only checkable if the record says what it probed. A door port answered
+    # here for a day on this box (it forwards /health, so it appeared to work) while the engine was on 8180.
+    say(f"[watcher] probing :{port} for this launch"
+        + (f" (session {sess})" if sess else " (session: whatever the record names)")
+        + f"; restart on a known crash signature: {'yes' if restart else 'no'}"
+        + (f" (up to {RESTART_MAX} per {RESTART_WINDOW_S // 60} min)" if restart else ""))
     while True:
         rec = state_read("launch.json")
         d = watch_dead(port, sess, rec, quiet)
@@ -2391,7 +2437,7 @@ def main():
                     "docker": cfg.docker != "auto", "tmux": cfg.no_tmux, "rest": bool(extra)}
     cfg.webui = cfg.webui or ("off" if cfg.no_webui else "side")
     if cfg.watch:                            # no box walk: the watcher has one job and no questions
-        sys.exit(watch_loop(int(os.environ.get("PORT", "8080")),
+        sys.exit(watch_loop(watch_port(),
                             os.environ.get("WATCH_SESSION") or None, os.environ.get("LOG") or None))
     if cfg.list_configs:                     # the store alone: no box walk, no questions
         conf_tell(cfg)

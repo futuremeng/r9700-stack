@@ -21,6 +21,27 @@ is not a count: a relaunch into a PCIe link running below its rated width (the c
 `notes/launch-methodology.md`) is a card already in a bad state, so the watcher stops and leaves the box up for
 inspection. A restart that "fixes" a degrading GPU is how a repairable machine becomes an unexplained outage.
 
+### Which port the watchdog asks, and what a stop costs in messages (2026-11-16)
+
+The probe port is a claim, not a default. `--watch` used to read `os.environ.get("PORT", "8080")`, which on this box
+is the **front door**: the gateway forwards `/health` to the engine, so the probe kept working — while the launch
+record named a port nothing served, and `tools/recipe-check.py`, following that record, read the door's payload (a
+sidecar's argv, a sidecar's env) and reported 20 "deviations" on an engine configured exactly as the recipe says.
+Probing the door is also the wrong question for a breaker: a dead door would read as a dead engine, and a restart
+would be spent on a healthy serve. `watch_port()` now takes the record's port first, the launcher's second, `8080`
+last; `watch_loop` says the answer once at the claim — `probing :8180 for this launch (session …); restart on a known
+crash signature: yes (up to 3 per 60 min)` — so "the watchdog called it dead" can be checked against what it
+actually asked. `tests/test_setup.py` pins that the record's port answers `/api/status` with the serve's argv and is
+not the gateway's.
+
+One rough edge found while restarting on purpose, and left as a judgement rather than fixed quietly: a **deliberate**
+`STOP=1` writes its ledger line honestly (`reason: the tmux session … is gone`, `sig: null`, `restart: False`), and
+the same pass re-evaluates the standing hardware claim — which re-sends it. On 2026-11-16 a planned restart put a
+second DingTalk message into the group for an unchanged claim (`alerts.jsonl` grew from 1 line to 2, `sent: true,
+errcode: 0`). Either the claim should carry a fingerprint and stay quiet until the count or the card changes, or the
+second message is the price of always re-checking on death. Worth deciding before the next planned restart, not
+after.
+
 ## 2. One ledger line per death — including the restarts that worked
 
 `.r9700-state/faults.jsonl`. A line per death, appended and fsynced before any relaunch: the verdict and the

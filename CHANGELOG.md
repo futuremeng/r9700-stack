@@ -1,5 +1,50 @@
 # Changelog
 
+## A restart moved the journal: the front door's request list froze at 02:11 with no error anywhere, and the fix exposed a second half-read
+
+The engine was stopped and relaunched on purpose (2026-11-16, to carry the page payload that only an engine restart
+can carry). Gauges came back, `/health` answered, the launch looked fine. The request list stopped at 02:11 — the
+moment of the restart — and with it every card derived from those rows (crowding, context size). Nothing reported an
+error, because nothing was broken in the sense of crashing: the page was faithfully following a real file that
+nobody was writing to any more. The new launch journalled `~/logs/requests-8181.jsonl`; the standalone page was
+still attaching `~/logs/requests-8180.jsonl`.
+
+The name comes from the recipe's `WPORT`, whose old one-liner was `${WEBUI_PORT:-…}` — and this box's machine-local
+file carries `WEBUI_PORT=8181` (the standalone page's port). In `WEBUI=same` there is **no second port** for that
+name to mean: the pages, the recipe file and the journal all ride the serve's own port, which is what the comment
+sitting directly above that line already said (it is the same bug that once made the merged About page lose its
+recipe card). Merged mode now names after the serve's port whatever the environment says, and the launch prints
+`note: WEBUI_PORT=8181 ignored — WEBUI=same has no second port` — a rule that fires silently is a rule nobody
+remembers at 05:00.
+
+Chasing why the tooling believed the wrong port found a second half-read, older and wider: after
+`serve/lib/localenv.sh` moved every launcher's `LOCAL_ENV` default into one file, `launcher_local_env` kept looking
+for the inline `LOCAL_ENV=${LOCAL_ENV:-…}` line. It answered None, `launcher_var` fell back to `${PORT:-8080}`, and
+the launch record wrote **port 8080 on a box whose engine binds 8180**. Consequence one: `tools/recipe-check.py`
+follows the record's port to reach the engine's own page, so it read the front door's payload (a sidecar's argv, a
+sidecar's env) and printed "NOT the production recipe — 1 knob and 19 environment knobs differ" about an engine that
+was carrying `#61174` and `R9K_GDN_PREFILL_MAX=1024` exactly as configured. Consequence two: `setup.py --watch`
+probed `PORT or 8080`, i.e. the **door** — which only works because the gateway forwards `/health`, and which makes a
+dead door indistinguishable from a dead engine in front of an automatic restart. Resolution order is now written down
+once (exported `LOCAL_ENV` → launcher's inline default → the helper's), the watchdog's probe port comes from
+`watch_port()` (record first, launcher second, 8080 last), and the watcher prints its answer at the claim:
+`probing :8180 for this launch (session r9700-native-flashnext); restart on a known crash signature: yes (up to 3
+per 60 min)`.
+
+Four guards, all behavioural: `tests/test_setup.py` extracts the recipe's WEBUI_PORT block and **runs** it in four
+combinations (merged+box-file → serve port; sidecar+box-file → that port; sidecar alone → `PORT+1`; merged alone →
+`PORT`), compares the journal path each answering page source attaches (engine page and standalone page must name the
+same file), checks `watch_port()`'s precedence, and requires the record's port to answer `/api/status` with the
+**serve's** argv and not the gateway's. After the fix, `recipe-check` is green and provable again: `PRODUCTION
+recipe (http://127.0.0.1:8180): every measured knob, every R9K_/R9700_ env name and every launch flag in the live
+argv matches this tree's launcher`, with the engine's own page answering for the flags.
+
+Two honest footnotes. A deliberate `STOP=1` re-evaluates the standing hardware claim and therefore **re-sends** it: a
+second DingTalk message went to the group for an unchanged claim (`alerts.jsonl` 1 line → 2, `sent: true, errcode
+0`) — dedupe-by-fingerprint versus always-recheck is left as an open judgement, written in notes/supervision.md.
+And the mis-named journal from the two interrupted launches is left on disk (`requests-8181.jsonl`, 2 rows) rather
+than deleted: it is what the drift looked like.
+
 ## Same rows, one ask later: the embeddings/rerank row is the **second** row of the first screen, not the last
 
 The row moved up out of the Hardware screen and then, asked again the same day, moved up once more inside it: engine

@@ -330,7 +330,22 @@ if [ "${WEBUI:-0}" = 1 ] || [ "${WEBUI:-}" = same ]; then
   # PORT itself for WEBUI=same: the plugin reads the file the launch wrote, and there is no second port in
   # merged mode for WEBUI_PORT to mean. Naming it after PORT+1 in both modes is how the merged About page
   # lost its "how this box was launched" card: written to -8081.json, read from -8080.json.
-  WPORT=${WEBUI_PORT:-$([ "${WEBUI:-}" = same ] && echo "${PORT:-8080}" || echo "$(( ${PORT:-8080} + 1 ))")}
+  #
+  # And WEBUI_PORT must not be allowed to undo that, because this box's machine-local file carries a real
+  # WEBUI_PORT (8181, the standalone page's port -- notes/webui.md) and a WEBUI=same relaunch honoured it on
+  # 2026-11-16: the launch then journalled requests-8181.jsonl while the standalone page was told to attach
+  # requests-8180.jsonl. The gauges stayed live and the front door's request list froze at the moment of the
+  # restart -- the exact hole the journal-follow work closed, reopened through a NAME. In merged mode naming
+  # therefore follows the serve's own port whatever the environment says, and the launch says so out loud.
+  if [ "${WEBUI:-}" = same ]; then
+    if [ -n "${WEBUI_PORT:-}" ] && [ "$WEBUI_PORT" != "${PORT:-8080}" ]; then
+      echo "  note: WEBUI_PORT=$WEBUI_PORT ignored -- WEBUI=same has no second port. The pages, the recipe file"
+      echo "        and the request journal all take the serve's own port ${PORT:-8080}."
+    fi
+    WPORT=${PORT:-8080}
+  else
+    WPORT=${WEBUI_PORT:-$(( ${PORT:-8080} + 1 ))}
+  fi
   META=${WEBUI_META:-$HOME/r9700-web-meta-$WPORT.json}
   D="$(dirname "$(realpath "$0")")"
   VER=$($VENV/bin/python -c "import importlib.metadata as m; print('native vllm '+m.version('vllm'))" 2>/dev/null \
