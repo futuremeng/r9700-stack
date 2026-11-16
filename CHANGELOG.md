@@ -1,5 +1,31 @@
 # Changelog
 
+## The CPU serve rows moved to the end of the first screen — "is the embedder answering" is asked in the same breath as the four rates
+
+The embeddings and rerank cards sat at the bottom of the Hardware screen — the fourth one — away from the
+throughput numbers they are read next to. The ask (2026-11-16): move them to the end of **Now**. The reason they had been filed under
+hardware was never that they are CPU work — it is the memory red line: the GGUFs map clean, but every serve's KV
+pool is anon, and `Committed_AS` is what the 2026-11-01 wedge was about ([notes/load-oom-svm-wedge.md
+](notes/load-oom-svm-wedge.md)). That reason does not move with the row: the memory half of each serve card is still
+read against the card grid, which stays where it is.
+
+What the move changed in the tests, since the layout is a set of claims rather than a preference: the Hardware pin
+that used to read `gpus < watchdog < sidecars` (the previous plan) now reads `_scr[-2:] == hardware` with
+`sidecars < band-hardware`, and a new pin says the sidecar row is the **last row of the first screen** — after the
+rates row, before the Recent band. `_scr[:3] == [now, now, now]` is what fails if it drifts back down or gets
+promised a place among the four headline rates it does not have. Nothing else moved: the cards, the chain behind
+each, the engine-state/fault row and the death line are still the Hardware screen, and `GET /api/sidecars` is still
+answered only by the gateway, so the row keeps hiding itself on the engine's own port.
+
+A markup change needs a sidecar restart to reach the browser, and restarting it by hand bit once: with
+`python3 serve/webui.py --port 8181 …` typed straight into a shell, the About page then said `env names: (0
+whitelisted names set)` and `render-about` failed `facts-env` — correctly, because that block prints what the
+*process* holds and a hand-typed start holds none of what `serve/webui.sh` sources from `serve/lib/localenv.sh`.
+`bash serve/webui.sh` (it stops the old one itself) fills the block again: 6 names. Static files are read at
+startup, so the restart is required; the launcher is what makes the restart not lose the box's own facts.
+
+## The Monitor prints what a context costs — prompt sent and the part the cache did NOT have — and the front door's request list stopped being 8.9 hours old
+
 ## The Monitor prints what a context costs — prompt sent and the part the cache did NOT have — and the front door's request list stopped being 8.9 hours old
 
 The serve imposes no length policy, and that is deliberate: one port, one pool, `--max-model-len` is the only hard

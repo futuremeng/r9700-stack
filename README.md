@@ -613,12 +613,18 @@ Flash-Next configuration needs about 120 GB of host RAM; eight-card runs on a 12
 The page is in four screens, and the order is the order the questions get asked (2026-11-15, restated by the
 operator and pinned by `tests/test_webui.py`): **Now** — the engine's counters and the four rates, with two
 one-line states in the same strip as the freshness stamp: `Answering / Loading / Gone / Wedged` and
-`Door open / Door held`. **Recent** — the activity waveforms, the admission gate's 15-minute history and counters,
-the last request's numbers, and the per-request means vLLM only reports as averages. **Requests** — the list, and
+`Door open / Door held`; at the end of that screen, the embeddings and rerank serve rows. **Recent** — the
+activity waveforms, the admission gate's 15-minute history and counters, the last request's numbers, and the
+per-request means vLLM only reports as averages. **Requests** — the list, and
 each row says only what a row has to: time, its own prefill and decode tok/s, `prompt → output` tokens, first
 token and whole-request seconds, and its id; the spans in seconds live in the detail pane, a status is printed only
-when it is not what it should be, and the crowding chip appears only above 1.5 streams. **Hardware** — engine state
-and the driver's page faults, the cards with the chain behind each, and the CPU sidecars sharing the box.
+when it is not what it should be, and the crowding chip appears only above 1.5 streams. **Hardware** — the cards
+with the chain behind each, and below them engine state and what the driver has faulted on.
+
+The embeddings/rerank rows moved from Hardware to the end of Now on 2026-11-16, and the reason they had been filed
+under hardware is worth keeping: never the CPU, always the memory red line (the GGUFs map clean, every serve's KV
+pool is anon, and `Committed_AS` is the number the 2026-11-01 wedge was about). That reason does not move with the
+row — the memory half of each serve card is still read against the card grid on the fourth screen.
 
 Two things are deliberately *not* moved by that rule. The alarm row went to the fourth screen because it is read to
 decide about a card, not about a request — but the one read that has to stay where the rates are is the engine's

@@ -2127,7 +2127,7 @@ ck("no PCIe panel is left on the page: no section, no per-chain row, no AER wave
    'id="pcie"' not in monhtml and 'id="pcie-spark"' not in monhtml and 'class="pcie-rows"' not in monhtml
    and 'class="card pcie-card"' not in monhtml and "pcieRow(" not in monjs and "perPoll" not in monjs)
 ck("the account moved under the cards rather than vanishing with the panel, and stays inside the hardware screen",
-   monhtml.index('id="gpus"') < monhtml.index('id="pcie-detail"') < monhtml.index('id="sidecars"')
+   monhtml.index('id="gpus"') < monhtml.index('id="pcie-detail"') < monhtml.index('id="watchdog"')
    and monhtml.index('id="pcie-detail"') > monhtml.index('id="band-hardware"')
    and "paintPcieDetail(s);" in monjs)
 ck("a card states its link as a generation, not a GT/s string -- the string nobody reads as one generation short",
@@ -3394,11 +3394,20 @@ ck("and every section belongs to one of them -- an unclassified row is a row tha
    and _scr == [x for x in _scr if x == "now"] + [x for x in _scr if x == "recent"]
    + [x for x in _scr if x == "requests"] + [x for x in _scr if x == "hardware"] and len(_scr) >= 8, str(_scr))
 # The operator's ask, verbatim: "the hardware error information, below, after the cards". So the hardware screen
-# reads cards -> what the driver faulted on -> the other services on the box.
+# reads cards -> what the driver faulted on, and nothing else is on it: the CPU sidecars moved up to the end of
+# the first screen on 2026-11-16 ("is the embedder answering, how fast" is a now question, asked in the same
+# breath as the four rates), which left the alarm row as the tail of Hardware rather than the third of four.
 ck("the hardware screen carries the fault information BELOW the cards it describes, and nothing else is on it",
-   _scr[-3:] == ["hardware", "hardware", "hardware"]
-   and _wh.index('id="gpus"') < _wh.index('id="watchdog"') < _wh.index('id="sidecars"')
-   and _wh.index('id="death-line"') > _wh.index('id="gpus"'), str(_scr))
+   _scr[-2:] == ["hardware", "hardware"]
+   and _wh.index('id="gpus"') < _wh.index('id="watchdog"')
+   and _wh.index('id="death-line"') > _wh.index('id="gpus"')
+   and _wh.index('id="sidecars"') < _wh.index('id="band-hardware"'), str(_scr))
+# ...and the CPU serves sit at the END of the first screen, after the rates and before the Recent band: not
+# promoted into the four headline cards (they are not the engine), and not two screens away from them either.
+ck("the CPU sidecar row is the last row of the first screen -- after the rates, before the Recent band",
+   _scr[:3] == ["now", "now", "now"]
+   and _wh.index('class="grid grid--4 grid--rates scr-now"') < _wh.index('id="sidecars"')
+   < _wh.index('id="band-recent"'), str(_scr[:4]))
 # What did NOT move down: one state read stays beside the rates, on the first screen. Measured, not preferred --
 # on 2026-11-15 the four headline rates kept printing plausible numbers for 26 minutes while /health was silent
 # and three ranks held ~29 GiB each.

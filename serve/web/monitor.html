@@ -74,7 +74,7 @@
     <div class="small down-line" id="down-line" hidden></div>
 
   <div class="band" id="band-now">
-    <h2>Now</h2><span class="small">what the engine is doing this second — counters, rates over the window you pick, the door in front of it</span>
+    <h2>Now</h2><span class="small">what the engine is doing this second — counters, rates over the window you pick, and the CPU serves sharing the port</span>
   </div>
   <!-- row 1: the engine's own counters, from GET /metrics, differenced over the poll window -- the pool, the
        stream count, the generation rate, and what speculation is accepting. -->
@@ -200,6 +200,33 @@ sidecar has only been up a few minutes - the label says what was averaged.">1 h<
       <div class="small slot" id="poll-step">—</div>
     </div>
   </section>
+  <!-- The CPU sidecars that came in through the same port (serve/gateway.py), at the END of the first screen:
+       they answer a NOW question -- is the embedder answering, how fast, is it falling over -- the same way the
+       four rates do, and the operator asked for them beside the engine's own numbers rather than two screens
+       down. What makes them hardware-adjacent was never the CPU, it is the memory red line: the GGUFs map clean,
+       but every serve's KV pool is anon, and Committed_AS is the number the 2026-11-01 wedge was about
+       (notes/load-oom-svm-wedge.md); the memory half of each card is still read against the card grid, which
+       stays on the Hardware screen. Built from GET /api/sidecars, which only the gateway answers -- the page is
+       also reachable on the engine's own port, where that route does not exist, and there the section hides
+       itself. -->
+  <section class="grid grid--4 sidecars scr-now" id="sidecars" hidden>
+
+    <div class="card" id="embed-card">
+      <div class="label"><span class="dot" id="embed-dot"></span><span id="embed-name">Embed</span> · CPU</div>
+      <div class="value" id="embed-rate">—<span class="unit">tok/s</span></div>
+      <div class="small slot slot--lead" id="embed-args">—</div>
+      <div class="small slot" id="embed-slots">—</div>
+      <div class="small slot" id="embed-mem">—</div>
+    </div>
+    <div class="card" id="rerank-card">
+      <div class="label"><span class="dot" id="rerank-dot"></span><span id="rerank-name">Rerank</span> · CPU</div>
+      <div class="value" id="rerank-rate">—<span class="unit">tok/s</span></div>
+      <div class="small slot slot--lead" id="rerank-args">—</div>
+      <div class="small slot" id="rerank-slots">—</div>
+      <div class="small slot" id="rerank-mem">—</div>
+    </div>
+  </section>
+
   <div class="band" id="band-recent">
     <h2>Recent</h2><span class="small">the last hour of this launch — waveforms, the last request, and the means the engine only reports as averages</span>
   </div>
@@ -430,7 +457,7 @@ connection improves nothing. GATE_HOLD_S=0 is the other policy: a 503 that carri
   </section>
 
   <div class="band" id="band-hardware">
-    <h2>Hardware</h2><span class="small">the cards, the chain behind each one, what the driver has faulted on, and the CPU sidecars sharing this box</span>
+    <h2>Hardware</h2><span class="small">the cards, the chain behind each one, and what the driver has faulted on</span>
   </div>
   <section class="card gpus-card scr-hardware">
     <div class="panel-bar"><h2>Cards</h2><span class="small" id="gpus-note">amdgpu sysfs · busy %, VRAM, temperature, link</span></div>
@@ -484,28 +511,6 @@ connection improves nothing. GATE_HOLD_S=0 is the other policy: a 503 that carri
          an uncorrectable machine check naming the same physical core's execution unit. Without this line the
          page comes back green and forgets. -->
     <div class="small" id="death-line" hidden></div>
-  <!-- The CPU sidecars that came in through the same port (serve/gateway.py). They are on this page because
-       they are on this box and share its memory red line: the GGUFs map clean, but every serve's KV pool is
-       anon, and Committed_AS is the number the 2026-11-01 wedge was about (notes/load-oom-svm-wedge.md).
-       The cards are built from GET /api/sidecars, which only the gateway answers -- the page is also reachable
-       on the engine's own port, where that route does not exist, and there the section hides itself. -->
-  <section class="grid grid--4 sidecars scr-hardware" id="sidecars" hidden>
-    <div class="card" id="embed-card">
-      <div class="label"><span class="dot" id="embed-dot"></span><span id="embed-name">Embed</span> · CPU</div>
-      <div class="value" id="embed-rate">—<span class="unit">tok/s</span></div>
-      <div class="small slot slot--lead" id="embed-args">—</div>
-      <div class="small slot" id="embed-slots">—</div>
-      <div class="small slot" id="embed-mem">—</div>
-    </div>
-    <div class="card" id="rerank-card">
-      <div class="label"><span class="dot" id="rerank-dot"></span><span id="rerank-name">Rerank</span> · CPU</div>
-      <div class="value" id="rerank-rate">—<span class="unit">tok/s</span></div>
-      <div class="small slot slot--lead" id="rerank-args">—</div>
-      <div class="small slot" id="rerank-slots">—</div>
-      <div class="small slot" id="rerank-mem">—</div>
-    </div>
-  </section>
-
   <footer>
     <span>Requests are kept in this process's memory only, last <span id="kept">100</span> of them. Nothing here
       is written to disk; nothing here leaves the box.</span>

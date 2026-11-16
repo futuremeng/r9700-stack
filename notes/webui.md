@@ -1831,6 +1831,30 @@ the pool-in-tokens are all windows, so the row went to the Recent screen. After 
 polls of a shut door, every arrival paying the hold ceiling — the pair "engine is slow" vs "the door has not let
 mine in" has to be distinguishable without scrolling.
 
+The CPU serve rows moved up, and they are the one row whose screen was chosen for the wrong reason. They had been
+put at the bottom of the Hardware screen because of their memory: the GGUFs map clean, but every serve's KV pool is
+anon, and `Committed_AS` is the number the 2026-11-01 wedge was about (notes/load-oom-svm-wedge.md). On 2026-11-16
+the operator asked for them at the end of the first screen instead — "is the embedder answering, how fast, is it
+falling over" is asked in the same breath as the four rates, and three scrolls away is where nobody reads it. The
+reason they were filed under hardware survives the move: the memory half of each card is still read against the card
+grid on the fourth screen. What changed in the tests is the interesting part, because it is what a re-layout actually
+costs: the Hardware pin that read `gpus < watchdog < sidecars` was a claim about the OLD plan, so it became
+`_scr[-2:] == [hardware, hardware]` plus `sidecars < band-hardware`, and a new pin says the row is the last row of
+the first screen (`_scr[:3] == [now, now, now]`, rates row before it, Recent band after it). Both directions are
+pinned: it cannot drift back down, and it cannot creep into the four headline rate cards, which are the engine's and
+not theirs. The trade taken is honest to name — the first screen grew by one row (~136 px), so the GPU grid and the
+fault row are further down than they were; the protection for "the rates look fine and the engine is not" is the
+`Answering / Loading / Gone / Wedged` chip in the window bar, which is exactly why that chip stayed up here when the
+alarm row moved down.
+
+One trap this move exposed, because a markup change needs a sidecar restart to show up. The sidecar was restarted by
+hand — `python3 serve/webui.py --port 8181 ...` — and the About page then reported `env names: (0 whitelisted names
+set)` and `render-about` failed the `facts-env` check. That is the page being correct: it prints the whitelisted part
+of the environment the *process* holds, and a hand-typed start holds none of what `serve/webui.sh` sources from
+`serve/lib/localenv.sh` (HOST, PORT, WEBUI_PORT, META, JOURNAL_ATTACH, R9K_WEB_BIND). Restart it through the
+launcher — `bash serve/webui.sh`, which also stops the old one itself — and the block fills again (6 names after
+the redo). Static files are read at startup, so a page change needs the restart; the restart needs the launcher.
+
 Request rows were cut to what a row has to carry: time, its own prefill and decode tok/s, `prompt → output` tokens,
 first token (with the queue part of it), whole-request seconds, cache hits when any, its id, and marks for the
 things that change a reading (state, preemption count, hit max_tokens, crowding above 1.5 streams). What went:
