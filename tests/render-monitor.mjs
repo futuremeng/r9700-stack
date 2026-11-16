@@ -1010,6 +1010,155 @@ console.log(`  caption slots now: ${t("gen-note1")} | ${t("gen-note2")}`);
 
 // The page swallows render errors into its notice bar, so a broken section can look like an empty one.
 const bar = t("error");
+// ---- context size: prompt sent, and the part of it the cache did NOT already have -------------------------
+// The chips have to be a recount of the rows the page was fed, not of whatever the summary block happens to
+// carry: the card's claim is that it describes the list beside it. The exclusion rules are mirrored here on
+// purpose -- no usage means out of both histograms, no cached count means out of the uncached one AND counted as
+// unknown -- because the tempting shortcut (reading a missing cached count as zero) is exactly what would turn
+// "we do not know" into "that 150k context was a cache miss", and that mistake costs someone their afternoon.
+{
+  const L = (LAST_STATUS || {}).lengths;
+  const sec = byId.get("lengths") || new El();
+  const rpays = ((FIX && FIX.requests) || LAST_REQUESTS || {}).requests || [];
+  const nf = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const secs = (n) => (n >= 100 ? `${(n / 60).toFixed(1)} min` : `${n.toFixed(2)} s`);
+  if (!L || !L.rows) {
+    if (!sec.hidden) {
+      console.log("BAD  no lengths block in the payload and the context-size card is showing anyway -- an empty "
+                  + "one of these reads as 'this traffic is all short'");
+      process.exitCode = 1;
+    }
+    console.log("\ncontext size: hidden (no lengths block in the payload)");
+  } else {
+    if (sec.hidden) {
+      console.log("BAD  the payload carries context sizes and the card is hidden"); process.exitCode = 1;
+    }
+    const labels = (L.bands || []).map((b) => b.label);
+    const EDGES = [1024, 8192, 32768, 65536, 131072, 262144];
+    const band = (v) => { for (let i = 0; i < EDGES.length; i++) { if (v < EDGES[i]) return i; } return EDGES.length; };
+    const recount = { p: new Array(EDGES.length + 1).fill(0), u: new Array(EDGES.length + 1).fill(0) };
+    let sumU = 0, over = 0, unknown = 0, big = null;
+    for (const r of rpays) {
+      const p = r.usage && r.usage.prompt_tokens;
+      if (typeof p !== "number") continue;
+      recount.p[band(p)]++;
+      const det = r.usage && r.usage.prompt_tokens_details;
+      const c = det ? det.cached_tokens : undefined;
+      if (typeof c !== "number") { unknown++; continue; }
+      const un = Math.max(0, p - c);
+      recount.u[band(un)]++; sumU += un;
+      if (un >= 8192) over++;
+      if (!big || un > big.uncached) big = { uncached: un, id: r.id || `req-${r.seq}` };
+    }
+    const chips = (id) => {
+      const out = {};
+      for (const m of String(html(id) || "").matchAll(/data-band="([^"]+)"[^>]*data-count="(\d+)"/g)) {
+        out[m[1]] = Number(m[2]);
+      }
+      return out;
+    };
+    const cp = chips("len-bars-p"), cu = chips("len-bars-u");
+    console.log(`\ncontext size: hidden=${sec.hidden} | ${t("len-scope")} | prompt ${t("len-prompt")}`
+                + ` | uncached ${t("len-uncached")}`);
+    console.log(`  prompt  ${labels.map((l) => `${l}:${cp[l] === undefined ? "?" : cp[l]}`).join(" ")}`);
+    console.log(`  uncached ${labels.map((l) => `${l}:${cu[l] === undefined ? "?" : cu[l]}`).join(" ")}`);
+    console.log(`  cold ${t("len-read")} at ${t("len-rate")} = ${t("len-cost")} | biggest ${t("len-big")}`);
+    if (labels.length !== EDGES.length + 1) {
+      console.log(`BAD  the payload names ${labels.length} bands and the harness knows ${EDGES.length + 1}`
+                  + " -- the band edges are the claim (GDN bound, one step, the old 32k recipe, the 128k client "
+                  + "cap, the window edge), so a change here is a change to what the card says");
+      process.exitCode = 1;
+    }
+    for (const [id, got, want] of [["len-bars-p", cp, L.prompt.bands], ["len-bars-u", cu, L.uncached.bands]]) {
+      labels.forEach((l, i) => {
+        if (got[l] === undefined) {
+          console.log(`BAD  #${id} has no chip for the ${l} band -- the payload has a count for it and the page `
+                      + "draws an axis with a hole in it");
+          process.exitCode = 1;
+        } else if (got[l] !== (want || [])[i]) {
+          console.log(`BAD  #${id} ${l} chip says ${got[l]} and the payload says ${want[i]}`);
+          process.exitCode = 1;
+        }
+      });
+    }
+    // Against the ROWS, not just against the summary: a card that silently describes another launch's list is
+    // the failure mode, and that is only catchable by recounting what the page was handed. Live mode fetches the
+    // two payloads a moment apart, so a row or two of drift is honest; a fixture is exact.
+    if (rpays.length) {
+      const tol = FIX ? 0 : 3;
+      let off = 0;
+      labels.forEach((l, i) => {
+        off += Math.abs((cp[l] || 0) - recount.p[i]) + Math.abs((cu[l] || 0) - recount.u[i]);
+      });
+      if (off > tol) {
+        console.log(`BAD  the chips do not match a recount of the ${rpays.length} rows the page was fed `
+                    + `(${off} off across the bands) -- the card describes the list beside it or it describes `
+                    + "nothing");
+        process.exitCode = 1;
+      }
+      if (big && t("len-big").replace(/,/g, "") !== nf(big.uncached).replace(/,/g, "") + " tok uncached") {
+        console.log(`BAD  #len-big says "${t("len-big")}" and the biggest cold context among the rows fed is `
+                    + `${big.uncached} (${big.id})`);
+        process.exitCode = 1;
+      }
+    }
+    // The bands at or above one step (8,192 = --max-num-batched-tokens) carry the amber edge: that is the first
+    // band whose prefill cannot hide inside a single step, which is the line the whole card is drawn around.
+    for (const m of String(html("len-bars-u") || "").matchAll(/data-band="([^"]+)" data-tail="(\d)"/g)) {
+      const overStep = labels.indexOf(m[1]) >= 2;
+      if (overStep !== (m[2] === "1")) {
+        console.log(`BAD  the ${m[1]} band is marked data-tail="${m[2]}" while its lower edge is `
+                    + `${overStep ? "at or above" : "below"} one 8,192-token step`);
+        process.exitCode = 1;
+      }
+    }
+    const need = { "len-read": nf(L.uncached.sum) + " tok",
+                   // the page prints the rate whole (fmt's default is zero decimals): "9,250 tok/s", not
+                   // "9,250.4" -- a prefill rate measured over a handful of rows has no fourth significant digit
+                   "len-rate": isnum(L.rate_tok_s) ? `${nf(Math.round(L.rate_tok_s))} tok/s`
+                                                   : "not measurable here" };
+    for (const [id, want] of Object.entries(need)) {
+      if (t(id) !== want) {
+        console.log(`BAD  #${id} says "${t(id)}" for a payload that says ${want}`); process.exitCode = 1;
+      }
+    }
+    if (isnum(L.read_s) && !t("len-cost").includes(secs(L.read_s).split(" ")[0])) {
+      console.log(`BAD  #len-cost says "${t("len-cost")}" and the payload's cold tokens at its own measured rate `
+                  + `are ${L.read_s} s`); process.exitCode = 1;
+    }
+    if (!isnum(L.rate_tok_s) && !((byId.get("len-rate") || new El()).title || "").includes("prefill_s")) {
+      console.log("BAD  no measurable rate and the slot does not say WHY (no row carries prefill_s) -- an empty "
+                  + "cost line has to be explainable"); process.exitCode = 1;
+    }
+    const unote = t("len-uncached-note");
+    if (!unote.includes(nf(L.uncached.sum)) || !unote.includes(nf(L.prompt.sum))) {
+      console.log(`BAD  #len-uncached-note does not print both sums the gap between which is the cache: "${unote}"`);
+      process.exitCode = 1;
+    }
+    if (isnum(L.uncached.over_step) && !unote.includes(nf(L.uncached.over_step))) {
+      console.log(`BAD  ${L.uncached.over_step} request(s) cost more than one step and the note does not say so:`
+                  + ` "${unote}"`);
+      process.exitCode = 1;
+    }
+    if (L.cached_unknown && !unote.includes(nf(L.cached_unknown))) {
+      console.log(`BAD  ${L.cached_unknown} row(s) carry no cached count and the note reads as though they were `
+                  + `misses: "${unote}"`);
+      process.exitCode = 1;
+    }
+    if (L.biggest && !((byId.get("len-big") || new El()).title || "").includes(String(L.biggest.id))) {
+      console.log("BAD  the biggest cold context has no request id in reach -- a client that wants to find itself "
+                  + "in this list needs the id");
+      process.exitCode = 1;
+    }
+    const note = t("len-note");
+    if (!/sample is the request list in view/.test(note)) {
+      console.log(`BAD  #len-note does not say what the sample is: "${note}" -- p99 over 100 rows is one request, `
+                  + "and the card must not imply an afternoon");
+      process.exitCode = 1;
+    }
+  }
+}
+
 if (bar) { console.log("\nPAGE NOTICE:", bar); process.exitCode = 1; }
 if (!rows.length) { console.log("\nno request rows rendered"); process.exitCode = 1; }
 console.log(`\ncards the page wrote a value into: ${shown.sort().join(" ")}`);

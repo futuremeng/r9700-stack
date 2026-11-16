@@ -644,8 +644,10 @@ function renderStatus(s) {
     jl.textContent = j
       ? (j.ok
         ? `request journal ${j.path} · ${j.restored} row${j.restored === 1 ? "" : "s"} carried over from `
-          + `earlier launches${j.readonly
-            ? " · <b>attached read-only</b>: these rows belong to the launch that owns the file"
+          + `earlier launches${j.readonly && j.followed
+            ? ` · ${j.followed} row${j.followed === 1 ? "" : "s"} read live from the attached file since this `
+              + "page started" : ""}${j.readonly
+            ? " · attached read-only: these rows belong to the launch that owns the file"
             : ` · this launch ${j.boot}`}`
         : `request journal FAILED (${j.error}) — the list is memory only and dies with the serve`)
       : "";
@@ -931,6 +933,7 @@ function renderStatus(s) {
   paintPcieDetail(s);
   paintLiveState(s);
   paintWatchdog(s);
+  paintLengths(s);
 }
 
 // One alarm read stays on the first screen even though the alarm row moved to the fourth: engine state, in the
@@ -940,6 +943,81 @@ function renderStatus(s) {
 // the wedged ranks keep holding; meanwhile three VLLM::Worker_TP* sat on ~29 GiB each. A page whose first screen
 // is rates must therefore say, in the same line as the freshness of those rates, whether the engine is
 // answering at all. Two words, one dot: `Answering`, `Loading`, `Gone`, `Wedged`.
+// Context size, prompt sent versus UNCACHED. The serve imposes no length policy on purpose (one port, one pool,
+// --max-model-len is the only hard edge, and the front door reads a header and nothing else), so the size of a
+// context is a client decision -- and a client can only make it well if the box says what each size costs.
+// The second histogram is the one that costs anything: prompt_tokens is traffic, prompt_tokens minus cached_tokens
+// is work. Measured on this box 2026-11-16: one 186,739-token context cost 26.3 s cold and 0.69 s warm, and
+// running cold prefills of ~165k serialized -- last first-token at 22 s, 47 s, 70 s for one, two and three of
+// them, with the short requests alongside waiting 0.8 s, 23 s, 45 s -- while the pool never passed 18% and the
+// preemption counter never moved. So a card that printed only prompt size would rank harmless rows and
+// expensive ones in the same list.
+function paintLengths(s) {
+  const sec = $("lengths");
+  if (!sec) return;
+  const L = s.lengths;
+  if (!L || !L.rows) {
+    sec.hidden = true;              // an older sidecar sends no lengths block at all: no card, not a zero
+    return;
+  }
+  sec.hidden = false;
+  const p = L.prompt || {}, u = L.uncached || {}, bands = L.bands || [];
+  text("len-scope", `${fmt(L.rows)} request${L.rows === 1 ? "" : "s"} in this list`
+       + (L.span_s ? ` · ${seconds(L.span_s)} from oldest arrival to newest` : ""));
+  lenBars("len-bars-p", bands, p.bands || []);
+  lenBars("len-bars-u", bands, u.bands || []);
+  qualText("len-prompt", `${fmt(p.p95)} p95 · ${fmt(p.max)} max tok`, `median ${fmt(p.median)}`);
+  text("len-prompt-note", `${fmt(p.sum)} prompt tokens sent in all`);
+  qualText("len-uncached", `${fmt(u.p95)} p95 · ${fmt(u.max)} max tok`, `median ${fmt(u.median)}`);
+  const cachePct = p.sum ? (100 * (1 - (u.sum || 0) / p.sum)) : null;
+  text("len-uncached-note", `${fmt(u.sum)} of ${fmt(p.sum)} tokens had to be computed`
+       + (cachePct === null ? "" : ` — the cache already had ${cachePct.toFixed(1)}%`)
+       + `; ${fmt(u.over_step)} cost more than one step (8,192 tok or more)`
+       + (u.n !== L.rows ? ` · ${fmt(L.rows - u.n)} row(s) carry no cached count and are excluded, `
+                            + "not counted as misses" : ""));
+  slot("len-read", `${fmt(u.sum)} tok`,
+       "prompt tokens minus cached tokens, summed over the rows in this list. This is the work the prefix cache "
+       + "did NOT spare, and it is the quantity that sits in front of every other request's first token.");
+  slot("len-rate", L.rate_tok_s ? `${fmt(L.rate_tok_s)} tok/s` : "not measurable here",
+       L.rate_tok_s
+         ? `measured from these rows: uncached tokens ÷ the engine's own prefill_s, over the ${L.rate_rows} `
+           + `row(s) big enough to be throughput-bound (8,192 or more uncached, one step at this recipe's `
+           + "--max-num-batched-tokens). Over ALL rows the same division reads 1,600-3,050 tok/s because a "
+           + "300-token prompt's prefill_s is scheduling, not computation."
+         : "no row here carries timings.prefill_s, so no rate is invented from a remembered constant");
+  slot("len-cost", L.read_s !== null && L.read_s !== undefined ? seconds(L.read_s) : "—",
+       "What this list's cold context cost in ENGINE TIME, at the rate above. It is not latency anyone felt "
+       + "directly — it is the share of the step budget that went into computing prompt tokens instead of "
+       + "advancing streams. Measured shape on 2026-11-16: 17-23 s of it per cold ~165k context, landing on "
+       + "everyone else's first token.");
+  const b = L.biggest;
+  slot("len-big", b ? `${fmt(b.uncached)} tok uncached` : "—",
+       b ? `${b.id} · ${stamp(b.started_at)} · ${fmt(b.prompt)} sent, ${fmt(b.cached)} already cached`
+         : "no row in this list has a cached count, so no cold context can be identified");
+  text("len-note", (L.clamp ? `${L.clamp} row(s) reported cached > prompt and were clamped to zero uncached. ` : "")
+       + (L.no_usage ? `${L.no_usage} row(s) have no usage yet (still in flight) and are excluded. ` : "")
+       + "The sample is the request list in view, not the whole launch — with this few rows p99 is one request, "
+       + "so read the bands, not the percentile.");
+}
+
+// One chip per band, count inside, width proportional to the count. Chips rather than a stacked bar on purpose:
+// a 338/0/23/33/6 traffic shape drawn as one bar puts the interesting band (six requests over 64k) under a
+// pixel wide, and the whole reason this card exists is the tail.
+function lenBars(id, bands, counts) {
+  const el = $(id);
+  if (!el) return;
+  const max = Math.max(1, ...counts);
+  const html = bands.map((b, i) => {
+    const c = counts[i] || 0;
+    const w = c ? Math.max(3, Math.round(58 * c / max)) : 2;
+    const tail = (b.lo || 0) >= 8192 ? 1 : 0;
+    return `<div class="len-bar" data-band="${b.label}" data-tail="${tail}" data-count="${c}"`
+         + ` title="${c} of the rows in view fall in ${b.label} tokens">`
+         + `<span>${b.label}</span><i style="width:${w}px"></i><b>${c.toLocaleString("en-US")}</b></div>`;
+  }).join("");
+  if (el.innerHTML !== html) el.innerHTML = html;
+}
+
 function paintLiveState(s) {
   const box = $("live-state");
   if (!box) return;

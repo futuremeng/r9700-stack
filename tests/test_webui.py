@@ -563,6 +563,150 @@ ck("the listing carries the derived field, and the journal does not write it to 
 ck("so does the proxy path's listing, which is the other way a row arrives",
    r1.listing()[0].get("shared_decode") is not None, str(r1.listing()[0])[:120])
 
+# --------------------------------------- (2d) length_stats: what a context cost, cache included -------
+# The serve imposes no length policy, so the client's cap is the only knob -- and a client cannot pick one from
+# "how many tokens did I send". Measured on this box 2026-11-16: the SAME 186,739-token context cost 26.3 s cold
+# and 0.69 s warm; three cold ~165k prefills serialized (last first-token 22 s, 47 s, 70 s for one, two, three of
+# them) and put short requests behind them at 0.8 s, 23 s, 45 s -- with the pool never past 18% and
+# num_preemptions_total never moving. So the quantity to print is prompt_tokens MINUS cached_tokens, and these
+# are the judgements that print makes.
+def _sz(prompt, cached="gone", prefill=None, started=None, rid=None, seq=1):
+    u = {"prompt_tokens": prompt, "completion_tokens": 5}
+    if cached != "gone":
+        u["prompt_tokens_details"] = ({"cached_tokens": cached} if cached is not None else {})
+    return {"id": rid, "seq": seq, "usage": u, "started_at": started,
+            "timings": ({"prefill_s": prefill} if prefill else None), "wallclock_s": 3.0}
+
+
+_szrows = [_sz(500, 0, started=100.0), _sz(5000, 4000, started=200.0), _sz(100000, 2000, started=700.0),
+           _sz(40000, 0, started=710.0)]
+_szst = W.length_stats(_szrows)
+ck("bands are the ones this box has argued over (GDN bound, one step, the old 32k recipe, the 128k client cap, "
+   "the 256k window) and are labelled so a chip can say which is which",
+   [b["label"] for b in _szst["bands"]] == ["under 1k", "1k-8k", "8k-32k", "32k-64k", "64k-128k", "128k-256k",
+                                            "over 256k"], str([b["label"] for b in _szst["bands"]]))
+ck("prompt bands count the traffic", _szst["prompt"]["bands"][:4] == [1, 1, 0, 1]
+   and _szst["prompt"]["bands"][4] == 1 and sum(_szst["prompt"]["bands"]) == 4, str(_szst["prompt"]))
+ck("uncached bands count the WORK, and a cached 100k prompt lands where its 98k of real work lands, not where "
+   "the 100k it sent lands",
+   _szst["uncached"]["bands"][:5] == [2, 0, 0, 1, 1] and _szst["uncached"]["max"] == 98000,
+   str(_szst["uncached"]))
+ck("sums carry both, so the gap between them (the cache) is aritable on the page",
+   _szst["prompt"]["sum"] == 145500 and _szst["uncached"]["sum"] == 139500
+   and _szst["uncached"]["cached_tokens"] == 6000, str(_szst["prompt"]["sum"]) + " " + str(_szst["uncached"]))
+ck("over_step names the rows whose prefill cannot hide inside one 8192-token step",
+   _szst["uncached"]["over_step"] == 2, str(_szst["uncached"]["over_step"]))
+ck("the sample's span is stated, because "
+   "100 rows over six hours is not 100 rows over six minutes",
+   _szst["span_s"] == 610.0, str(_szst["span_s"]))
+ck("the biggest cold context is named, id and all -- so a client can find itself in the list",
+   _szst["biggest"]["uncached"] == 98000 and _szst["biggest"]["prompt"] == 100000
+   and _szst["biggest"]["started_at"] == 700.0, str(_szst["biggest"]))
+# A missing cached count is NOT a cache miss. Rows written by this engine always carry it; a foreign or older
+# journal may not. Reading absent as zero would report a 100k-token miss that may never have happened, which is
+# the direction a "should I cap my context?" decision goes wrong.
+_unk = W.length_stats([_sz(150000, "gone"), _sz(150000, None), _sz(500, 0)])
+ck("a row with no prompt_tokens_details is excluded from the uncached histogram and COUNTED as unknown, "
+   "not read as a miss",
+   _unk["cached_unknown"] == 2 and _unk["uncached"]["n"] == 1 and _unk["uncached"]["sum"] == 500
+   and _unk["prompt"]["n"] == 3, str(_unk["uncached"]) + " " + str(_unk["cached_unknown"]))
+_cl = W.length_stats([_sz(1000, 4000)])
+ck("cached > prompt is clamped to zero uncached and the clamp is reported rather than hidden",
+   _cl["clamp"] == 1 and _cl["uncached"]["max"] == 0 and _cl["uncached"]["sum"] == 0, str(_cl["uncached"]))
+ck("a row still in flight (no usage) is counted in no_usage and kept out of both histograms",
+   (lambda r: r["no_usage"] == 1 and r["prompt"]["n"] == 1)(
+       W.length_stats([{"id": "x", "seq": 1, "usage": None, "started_at": 1.0}, _sz(500, 0)])),
+   str(W.length_stats([{"id": "x", "seq": 1, "usage": None}, _sz(500, 0)])["no_usage"]))
+# The seconds estimate has to be MEASURED, and measured over the rows that are throughput-bound. Over every row
+# the same division reads 1,600-3,050 tok/s on this box's journals (a 300-token prompt's prefill_s is scheduling,
+# not computing); over the rows at or above one step it reads 7,220-8,314 tok/s, which matches the 7,238 tok/s
+# notes/context-262k.md measured independently above 160k. Estimate on the all-rows number and the card overstates
+# what a cold context costs by 2-5x.
+_rate = W.length_stats([_sz(500, 0, prefill=0.5), _sz(40000, 0, prefill=0.4), _sz(3000, 0, prefill=0.02)])
+ck("the prefill rate is taken over the rows big enough to be throughput-bound, and says how many rows that was",
+   _rate["rate_tok_s"] == 100000.0 and _rate["rate_rows"] == 1, str((_rate["rate_tok_s"], _rate["rate_rows"])))
+ck("read_s is that measured rate applied to the sample's cold tokens",
+   _rate["read_s"] == round(43500 / 100000.0, 1), str(_rate["read_s"]))
+ck("no prefill_s anywhere means no seconds line and no invented constant",
+   (lambda r: r["rate_tok_s"] is None and r["read_s"] is None)(W.length_stats([_sz(40000, 0)])),
+   str(W.length_stats([_sz(40000, 0)])["rate_tok_s"]))
+ck("an empty sample yields an empty block, not a zero-filled one a card would happily print",
+   (lambda r: r["rows"] == 0 and r["prompt"]["median"] is None and r["biggest"] is None)(W.length_stats([])),
+   str(W.length_stats([])["prompt"]))
+ck("the 262,144-token window edge lands in the overflow band (a request that used the whole window is visible "
+   "as one)", W._band(262144) == len(W.LEN_BANDS) and W._band(262143) == len(W.LEN_BANDS) - 1
+   and W._band(0) == 0, str([W._band(0), W._band(262143), W._band(262144)]))
+
+# --------------------------- (2e) an ATTACHED journal has to be FOLLOWED, not only replayed -------------
+# The bug this covers, found 2026-11-16: the standalone Monitor attaches the merged monitor's journal read-only,
+# replayed it ONCE at startup, and never looked again. The front door's request list was showing rows 8.9 hours
+# old while every number above it updated every second (the engine's own journal tail was 1.2 s old at that same
+# moment). Anything DERIVED from the list -- shared_decode, length_stats -- inherits that freeze, so a card can
+# describe a launch that is not running while the gauges next to it are live.
+_JF = Path("/tmp/r9700-webui-follow.jsonl")
+_JF.unlink(missing_ok=True)
+
+
+def _jrow(seq, model="Qwen3.8", prompt=500):
+    return json.dumps({"seq": seq, "id": f"r{seq}", "path": "/v1/chat/completions", "model": model,
+                       "state": "completed", "started_at": 1000.0 + seq, "wallclock_s": 1.0,
+                       "usage": {"prompt_tokens": prompt, "completion_tokens": 2,
+                                 "prompt_tokens_details": {"cached_tokens": 0}}, "boot": "owner-1"}) + "\n"
+
+
+_JF.write_text(_jrow(1) + _jrow(2))
+_J = W.Journal(_JF, keep=6, readonly=True)
+_R = W.Records(keep=6, journal=_J)
+ck("an attached journal replays at startup and reports itself read-only", len(_R.items) == 2 and _J.readonly,
+   str(len(_R.items)))
+_JF.open("a").write(_jrow(3))
+_f1 = _J.follow()
+ck("a row another process appended shows up on the next beat", [r["seq"] for r in _f1] == [3], str(_f1)[:120])
+_R.absorb(_f1)
+ck("absorbed rows land newest-first, like every other row on the page",
+   [r["seq"] for r in _R.listing()][:2] == [3, 2], str([r["seq"] for r in _R.listing()]))
+ck("feeding the same rows back adds nothing (follow() re-anchors after a rotation, so overlap is normal)",
+   _R.absorb(_f1) == 0 and len(_R.items) == 3, str(len(_R.items)))
+# A half-written line is the one being written now, or the one a hard reset cut in half. Waiting one beat is
+# better than inventing a request from it -- and the row is still delivered once it is complete.
+_JF.open("a").write('{"seq": 4, "id": "r4", "boot": "owner-1", "started_at": 1004.0, '
+                    '"usage": {"prompt_tokens": 10')
+_torn = _J.follow()
+ck("a line with no trailing newline is not returned, so a torn write cannot become a request",
+   _torn == [], str(_torn)[:120])
+_JF.open("a").write(', "completion_tokens": 1}}\n')
+_fixed = _J.follow()
+ck("once that line is complete it is returned -- the beat is waited out, the request is not dropped",
+   [r["seq"] for r in _fixed] == [4], str([r.get("seq") for r in _fixed]))
+_JF.unlink(missing_ok=True)
+_JF.write_text(_jrow(10) + _jrow(11, model="中文模型名"))
+_J = W.Journal(_JF, keep=6, readonly=True)
+_R = W.Records(keep=6, journal=_J)
+_JF.open("a").write(_jrow(12, model="中文模型名"))   # text mode: the writer emits UTF-8 BYTES, which is what
+                                                       # the offset has to be counted in
+_f2 = _J.follow()
+ck("the follow offset counts BYTES (a non-ASCII model name must not drift it into re-reading or skipping rows)",
+   [r["seq"] for r in _f2] == [12], str([r.get("seq") for r in _f2]))
+# Rotation: the owner rewrote the file keeping only its last rows, so the bytes this reader had already counted
+# no longer exist. Re-anchor near the tail; the (boot, seq) dedupe sorts the overlap out.
+_JF.write_text(_jrow(13) + _jrow(14))
+_f3 = _J.follow()
+_R.absorb(_f3)
+ck("a journal that got SMALLER (rotate/compact) is re-anchored, and the overlap is deduped rather than doubled",
+   len(_f3) >= 1 and len([r for r in _R.items if r["seq"] == 13]) == 1
+   and len([r for r in _R.items if r["seq"] == 14]) == 1, str(sorted(r["seq"] for r in _R.items)))
+ck("a row with no seq cannot be placed or deduped, and is dropped",
+   _R.absorb([{"id": "nope", "usage": {}}]) == 0, str(len(_R.items)))
+ck("the journal's own info() says how many rows arrived live, so "
+   "is this list live? is answerable from the payload", _J.info()["followed"] >= 3, str(_J.info()))
+_OWN = Path("/tmp/r9700-webui-follow-owned.jsonl")
+_OWN.unlink(missing_ok=True)
+_OW = W.Journal(_OWN, keep=5)
+ck("an OWNED journal is never followed (it has no other writer, and following would replay our own appends)",
+   _OW.follow() == [], str(_OW.follow()))
+ck("and following does not turn an attached journal into a writer (no append handle, no rotation)",
+   _J.f is None and _J.append({"seq": 99, "boot": "x"}) is False, str(_J.f))
+
 # ------------------------------------------------------------------ (3) the sysfs read -----------
 fake = Path("/tmp/r9700-webui-sysfs")
 shutil.rmtree(fake, ignore_errors=True)                       # built from scratch every run
@@ -1148,6 +1292,14 @@ ck("and an engine with no /version route at all (older vLLM: a 404 with an error
    "than a version made out of the error message",
    W.engine_version("", '{"detail":"Not Found"}') == {} and W.engine_version("", "") == {})
 ck("status reads the engine", s["reachable"] and s["model_name"] == "Qwen3.8", str(s)[:120])
+ck("the status payload carries the context-size block beside the rates, over the rows THIS list holds -- the "
+   "engine enforces no length policy, so the client's own cap is the knob, and it can only be picked from what "
+   "each size costs",
+   isinstance(s.get("lengths"), dict) and sum(s["lengths"]["prompt"]["bands"]) == s["lengths"]["prompt"]["n"]
+   and s["lengths"]["prompt"]["n"] + s["lengths"]["no_usage"] == s["lengths"]["rows"],
+   str(s.get("lengths"))[:200])
+ck("and the uncached half never silently includes rows whose cached count is missing: they are counted apart",
+   (lambda L: L["uncached"]["n"] + L["cached_unknown"] == L["rows"])(s["lengths"]), str(s["lengths"])[:200])
 ck("status carries config labels", s["config"].get("block_size") == "1088")
 # -- the alert-channel endpoint: what the About page's form writes, and what it must never write back ----
 _npath_ep = "/tmp/r9700-webui-notify-endpoint.json"
@@ -3281,6 +3433,26 @@ ck("no id appears twice in the markup (getElementById answers the first, so a du
 ck("the serve's identity sits beside the request list it describes, not on the first screen",
    _wh.index('id="model-state"') > _wh.index('id="band-requests"')
    and _wh.count('id="model-state"') == 1 and "panel-model" in _wh, str(_wh.index('id="model-state"')))
+# Context size sits at the TOP of the requests screen, above the list it summarizes: the reading order is "what
+# came in and what it cost", then the rows that make that up. And it must be a REQUESTS-screen card, not a
+# hardware or first-screen one -- the quantity it prints (uncached prompt tokens) is a property of the traffic.
+ck("the context-size card is on the requests screen, above the list it is a summary of",
+   _wh.index('id="band-requests"') < _wh.index('id="lengths"') < _wh.index('id="requests"')
+   and "scr-requests" in _wh.split('id="lengths"')[0].rsplit("<section", 1)[-1],
+   str(_wh.index('id="lengths"')))
+ck("it prints prompt sent AND uncached, with the two sharing their bands -- prompt_tokens is traffic and the "
+   "difference is what the engine had to compute (same 186,739-token context: 26.3 s cold, 0.69 s warm)",
+   'id="len-bars-p"' in _wh and 'id="len-bars-u"' in _wh and 'lenBars("len-bars-p"' in _mjs2
+   and 'lenBars("len-bars-u"' in _mjs2 and len(_wh.split('id="len-bars-p"')) == 2)
+ck("a sidecar with no lengths block hides the card rather than printing zeros into it",
+   'if (!L || !L.rows) {\n    sec.hidden = true;' in _mjs2, "hidden, not zeroed")
+ck("the cold-token total, the rate it was measured at and the seconds it cost are three separate facts, so the "
+   "estimate cannot be read as a measurement of latency anyone felt",
+   all(f'id="{i}"' in _wh for i in ("len-read", "len-rate", "len-cost"))
+   and 'L.rate_tok_s ? `${fmt(L.rate_tok_s)} tok/s`' in _mjs2 and "not measurable here" in _mjs2)
+ck("and the cost row is sized by its contents, so three facts on it do not leave a hole in a fixed grid",
+   ".len-cost{display:grid;grid-template-columns:repeat(auto-fit,minmax(" in _mcss,
+   "auto-fit on .len-cost")
 ck("the recent screen carries a recent-set fact about the list (how many retained rows did not finish), and the "
    "active streams are not folded into it",
    'id="err-count"' in _wh and 'qualText("err-count"' in _mjs2 and '!active(r)' in _mjs2, "err-count")

@@ -180,3 +180,25 @@ main>.down-line{margin:10px 0 4px}
 .panel-model{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin:12px 0 0}
 .panel-model .value--sm{font-size:15px}
 .panel-model .model{font-size:13px}
+
+/* Context size (prompt sent vs uncached). Two chip rows that share their bands, so the GAP between them is the
+   prefix cache doing its job, which is the whole reading of the card: on a 2026-11-16 sample 2,414,804 prompt
+   tokens arrived and only 452,116 had to be computed. Chips, not a stacked bar -- with a 338/0/23/33/6 shape a
+   stacked bar draws the six expensive requests a pixel wide, and the tail is the reason the card exists. Bands
+   at or above one step (8,192 = --max-num-batched-tokens) get the amber edge: that is the first band whose
+   prefill cannot hide inside a single step. */
+.len-block{margin:10px 0 0}
+.len-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.len-head .value--sm{font-size:15px}
+.len-bars{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 0}
+.len-bar{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--st-line);border-radius:4px;
+         padding:2px 7px;font-size:12px}
+.len-bar span{opacity:.7}
+.len-bar i{display:inline-block;height:8px;border-radius:2px;background:var(--st-line)}
+.len-bar b{font-variant-numeric:tabular-nums;font-weight:600}
+.len-bar[data-tail="1"]{border-color:#e0a13c}
+.len-bar[data-tail="1"] i{background:#e0a13c}
+.len-cost{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px;margin:12px 0 0}
+.len-cost>div{border:1px solid var(--st-line-soft);border-radius:4px;padding:5px 8px}
+.len-cost span{display:block;font-size:11px;opacity:.7}
+.len-cost b{font-size:15px;font-variant-numeric:tabular-nums}

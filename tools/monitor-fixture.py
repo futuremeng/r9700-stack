@@ -10,6 +10,16 @@ small_passed, held_over), so the row can be rendered against a gateway that has 
 `--alert` adds the standing hardware alert (the claim setup.py raises into .r9700-state/ALERT.json), so the
 fault card's alert branch can be rendered offline.
 
+`--no-lengths` deletes the context-size block, which is what a sidecar older than the card sends. The card has
+to be provably HIDDEN rather than filled with zeros in that case, and the only way to keep that covered is to
+render a payload that lacks the block.
+
+`--sizes` replaces the newest-N rows with a sample that COVERS the context bands: per band, the row with the
+largest uncached context in it. The newest rows on this box are 24-token data-processing pings, so a fixture
+built from them fills one band and leaves the card's whole reason to exist (the tail: 64k, 128k, the one request
+that used the entire window) unchecked. The rows stay real rows from the journal, and the list goes back to
+newest-first like the page's own.
+
 `--wedged` replaces the watchdog fields with the branch a healthy box never shows: a wedged launch (ranks still
 holding the GPUs while /health is silent) and several fault lines across fewer events on one card. Keep it in the
 pair of runs -- from 2026-11-15 the live serve DOES carry these reads, so a harness that only ever renders a
@@ -32,7 +42,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "serve"))
-from webui import Journal, shared_decode                            # noqa: E402
+from webui import LEN_BANDS, Journal, _band, length_stats, shared_decode      # noqa: E402
 
 
 def main(argv):
@@ -49,6 +59,21 @@ def main(argv):
     for r, n in zip(wide, shared_decode(wide)):
         r["shared_decode"] = n
     keep = wide[:rows]
+    if "--sizes" in argv:
+        def _cold(r):
+            u = r.get("usage") or {}
+            return u.get("prompt_tokens", 0) - ((u.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
+        picked, seen = [], set()
+        for b in range(len(LEN_BANDS) + 1):
+            cand = [r for r in wide if _band(((r.get("usage") or {}).get("prompt_tokens") or -1)) == b]
+            if not cand:
+                continue
+            best = max(cand, key=_cold)
+            if best.get("seq") not in seen:
+                seen.add(best.get("seq"))
+                picked.append(best)
+        if picked:
+            keep = sorted(picked, key=lambda r: -(r.get("started_at") or 0))
     try:
         with urllib.request.urlopen(f"{base}/api/status", timeout=5) as f:
             status = json.load(f)
@@ -172,9 +197,22 @@ def main(argv):
         if forced or "faults_launch" not in g:
             g["faults_launch"] = ((status.get("faults") or {}).get("now") or {}).get("by_card", {}) \
                 .get((g.get("bus") or "").lower(), 0)
+    # Context size, computed HERE over exactly the rows this fixture hands to the page. Overriding whatever the
+    # live box reported is deliberate: the live block describes the 100 rows that serve holds, while the page is
+    # about to be handed these N, and the render harness checks the chips against a recount of the rows. A block
+    # that describes a different set than the list beside it is the failure mode (the card would be self-
+    # inconsistent and the check would pass anyway).
+    if "--no-lengths" in argv:
+        status.pop("lengths", None)
+    else:
+        status["lengths"] = length_stats(keep)
     out.write_text(json.dumps({"status": status, "requests": {"requests": keep},
                                "sidecars": sidecars, "gate": gate}, indent=1))
     print(f"{out}: status from {src}, {len(keep)} rows from {journal}")
+    L = status.get("lengths") or {}
+    if L:
+        print(f"  lengths: {L['rows']} rows, prompt max {L['prompt']['max']}, uncached max {L['uncached']['max']}, "
+              f"rate {L['rate_tok_s']} tok/s, cold {L['uncached']['sum']} tok = {L['read_s']} s")
     for r in keep[-3:]:
         t = r.get("timings") or {}
         print(f"  {r.get('seq')}: prompt {r['usage']['prompt_tokens']} decode {t.get('predicted_per_second')} "

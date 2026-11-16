@@ -1924,6 +1924,144 @@ def shared_decode(rows):
     return out
 
 
+# The bands the context-size card prints. Chosen from the numbers this box has actually argued over, not from
+# round decades: 1k is the GDN short-prefill bound (R9K_GDN_PREFILL_MAX=1024) and also the median request on a
+# data-processing day; 8k is --max-num-batched-tokens, so above it a prefill costs more than one step; 32k was
+# this recipe's --max-model-len until 2026-11-15; 128k is the client-side cap discussed on 2026-11-16; 256k is
+# the launch's own ceiling (262,144), so a request in the last band is one that used the whole window.
+LEN_BANDS = ((1024, "1k"), (8192, "8k"), (32768, "32k"), (65536, "64k"), (131072, "128k"), (262144, "256k"))
+
+
+def length_stats(rows):
+    """How big the requests were, and -- the part that costs anyone anything -- how much of that was NOT cached.
+
+    Why this is a card and not a limit. This serve deliberately imposes no length policy: one port, one pool,
+    every request may declare up to --max-model-len, and the front door's only length-adjacent rule is a header
+    read (Content-Length <= 8 KiB passes a shut door). The knob that decides how big a context gets is the
+    CLIENT's, so the useful move is to print what each size costs and let the client choose. This card is that
+    print-out.
+
+    prompt_tokens is not the quantity that costs the box; prompt_tokens - cached_tokens is. Measured on this
+    box on 2026-11-16: one 186,739-token context cost 26.3 s cold and 0.69 s warm, and running cold prefills of
+    ~165k put a wall in front of everything else -- the last dev request's first token came at 22 s, 47 s, 70 s
+    for one, two and three of them (they serialize; aggregate decode barely moved, 17 -> 19 -> 22 tok/s), while
+    short requests alongside waited 0.8 s, 23 s and 45 s for theirs. Over the whole storm the pool peaked at
+    18% and `num_preemptions_total` never moved. So "how many tokens did you send" is the wrong question and
+    "how many did the engine have to compute" is the right one; on this launch 79% of queried prompt tokens
+    were already cached, which is why the two histograms are printed side by side and the gap between them is
+    the cache doing its job.
+
+    The seconds estimate is measured, not a constant: `rate_tok_s` is the rows' own uncached tokens divided by
+    their own `timings.prefill_s`, taken over the rows big enough to be throughput-bound (uncached >= 8192, one
+    step at this recipe's --max-num-batched-tokens). It lands at 7.2-8.3k tok/s on this box, matching
+    notes/context-262k.md's independently measured 7,238 tok/s above 160k. If the rows carry no prefill_s, the
+    seconds line is dropped rather than computed from a remembered constant.
+
+    What is refused rather than guessed:
+    - a row with no `usage` (still in flight, or a row the engine never finished) is counted in `no_usage` and
+      kept out of the histograms -- an unfinished request has no size yet;
+    - a row whose `cached_tokens` is absent goes to `cached_unknown` and out of the uncached histogram. A
+      missing count is NOT a zero: reading it as zero would report a cache miss that may never have happened,
+      which is exactly the direction a "should I cap my context?" decision goes wrong. (Rows written by this
+      box's engine always carry it; a foreign or older journal may not.)
+    - `cached_tokens > prompt_tokens` is clamped to 0 uncached and counted in `clamp` instead of going negative.
+    - percentiles are over THIS sample and say so (`rows` beside them): with 100 rows and 3 long requests, p99 is
+      one request, and a card that implied an afternoon would be selling a smoother story than the sample gives.
+    """
+    prompt, uncached = [], []
+    counts_p = [0] * (len(LEN_BANDS) + 1)
+    counts_u = [0] * (len(LEN_BANDS) + 1)
+    no_usage = unknown = clamped = 0
+    sum_p = sum_c = sum_u = 0
+    pre_tok = pre_s = 0.0
+    pre_n = 0
+    big = None
+    t0 = t1 = None
+    for r in rows:
+        st = r.get("started_at")
+        if isinstance(st, (int, float)):
+            t0 = st if t0 is None else min(t0, st)
+            t1 = st if t1 is None else max(t1, st)
+        u = r.get("usage")
+        p = u.get("prompt_tokens") if isinstance(u, dict) else None
+        if not isinstance(p, int) or p < 0:
+            no_usage += 1
+            continue
+        counts_p[_band(p)] += 1
+        prompt.append(p)
+        sum_p += p
+        det = u.get("prompt_tokens_details")
+        c = det.get("cached_tokens") if isinstance(det, dict) else None
+        un = None
+        if isinstance(c, (int, float)):
+            c = int(c)
+            if c > p:
+                clamped += 1
+                c = p
+            un = p - c
+            counts_u[_band(un)] += 1
+            uncached.append(un)
+            sum_c += c
+            sum_u += un
+            ts = (r.get("timings") or {}).get("prefill_s")
+            if un >= LEN_BANDS[1][0] and isinstance(ts, (int, float)) and ts > 0:
+                # The rate is measured over the rows whose prefill is long enough to be THROUGHPUT-bound. Over
+                # every row the same arithmetic reads 1,600-3,050 tok/s on this journal, because a 300-token
+                # prompt's prefill_s is dominated by scheduling, not by computing prompt tokens; over the rows
+                # at or above one step (8192 = --max-num-batched-tokens, the same edge as the "8k" band) it reads
+                # 7,220-8,314 tok/s, which is the same number notes/context-262k.md measured independently
+                # (7,238 tok/s above 160k). A seconds estimate built on the all-rows number would overstate the
+                # cost of a cold context by 2-5x.
+                pre_tok += un                      # the tokens that row actually had to compute, against the
+                pre_s += ts                        # seconds the engine says computing them took
+                pre_n += 1
+        else:
+            unknown += 1
+        if un is not None and (big is None or un > big["uncached"]):
+            big = {"id": r.get("id") or f"req-{r.get('seq')}", "prompt": p, "cached": c, "uncached": un,
+                   "started_at": st}
+    out = {"rows": len(prompt), "no_usage": no_usage, "cached_unknown": unknown, "clamp": clamped,
+           "at": time.time(),
+           "span_s": round(t1 - t0, 1) if (t0 is not None and t1 is not None and t1 > t0) else None,
+           "bands": [{"label": _band_label(i), "lo": (0 if i == 0 else LEN_BANDS[i - 1][0]),
+                      "hi": (LEN_BANDS[i][0] if i < len(LEN_BANDS) else None)}
+                     for i in range(len(LEN_BANDS) + 1)],
+           "prompt": _dist(prompt, counts_p, sum_p),
+           "uncached": _dist(uncached, counts_u, sum_u)}
+    out["uncached"]["cached_tokens"] = sum_c
+    out["uncached"]["over_step"] = sum(1 for v in uncached if v >= 8192)   # >= NBT: more than one step of prefill
+    out["rate_tok_s"] = round(pre_tok / pre_s, 1) if pre_n and pre_s > 0 else None
+    out["rate_rows"] = pre_n
+    out["read_s"] = round(sum_u / out["rate_tok_s"], 1) if out["rate_tok_s"] and sum_u else None
+    out["biggest"] = big
+    return out
+
+
+def _band(v):
+    for i, (edge, _) in enumerate(LEN_BANDS):
+        if v < edge:
+            return i
+    return len(LEN_BANDS)
+
+
+def _band_label(i):
+    if i == 0:
+        return "under 1k"
+    if i >= len(LEN_BANDS):
+        return f"over {LEN_BANDS[-1][1]}"
+    return f"{LEN_BANDS[i - 1][1]}-{LEN_BANDS[i][1]}"
+
+
+def _dist(vals, counts, total):
+    def pct(f):
+        if not vals:
+            return None
+        s = sorted(vals)
+        return s[min(len(s) - 1, int(len(s) * f))]
+    return {"n": len(vals), "bands": counts, "sum": total, "mean": round(total / len(vals)) if vals else None,
+            "median": pct(0.5), "p95": pct(0.95), "p99": pct(0.99), "max": (max(vals) if vals else None)}
+
+
 class Journal:
     """Append-only JSONL of finished request rows, so the list survives what this box does.
 
@@ -1950,6 +2088,10 @@ class Journal:
         self.lock = threading.Lock()
         self.boot = f"{int(time.time())}-{os.getpid()}"
         self.f, self.error, self.rows_in = None, None, 0
+        # Where the last read of an ATTACHED journal stopped, and how many rows were folded in from it after
+        # startup. None means "not positioned yet": the first follow() anchors near the tail and the caller's
+        # dedupe sorts out the overlap with what replay() already handed over.
+        self._off, self.followed = None, 0
         self.start()
 
     def start(self):
@@ -1961,6 +2103,10 @@ class Journal:
             self.f = None
             try:
                 self.path.open(encoding="utf-8").close()
+                # Anchor the follow cursor at the end of what is already on disk: replay() above has just handed
+                # over the newest `keep` rows, so everything currently in the file is history this reader has
+                # already accounted for, and follow() should start at whatever appears NEXT.
+                self._off = self.path.stat().st_size
             except OSError as e:
                 self.error = f"{type(e).__name__}: {e}"
             return self
@@ -2027,9 +2173,67 @@ class Journal:
                     break
         return rows
 
+    def follow(self):
+        """Rows appended to an ATTACHED journal since the last call, oldest first. Empty for an owned journal.
+
+        An attached journal used to be read exactly once, at startup, and the bug that bought: a sidecar pointed
+        at the merged monitor's journal replayed its 100 rows and never looked again, so on 2026-11-16 the front
+        door's request list was showing rows 8.9 hours old while every number above it moved each second (the
+        engine's own journal tail was 1.2 s old at the same moment). Anything DERIVED from the request list --
+        shared_decode, length_stats -- inherits that freeze, so following is a prerequisite for those cards, not
+        a nicety.
+
+        Three rules, all about not inventing a request:
+        - only WHOLE lines come back. A line with no trailing newline is the one being written now, or the one a
+          hard reset cut in half; it stays at the offset and is re-read next beat (replay() drops such lines,
+          and for the live path waiting one beat is better than dropping it).
+        - a file that got SMALLER was rotated or rewritten by _compact. Re-anchor near the tail instead of
+          reading a byte range that no longer means what it meant; absorb() dedupes on (boot, seq).
+        - read in binary and seek in bytes. Text-mode offsets are characters, and this journal is full of non-ASCII
+          request paths and model names; a character offset drifts and either re-reads rows or skips them.
+        """
+        if not self.readonly:
+            return []
+        try:
+            size = self.path.stat().st_size
+        except OSError as e:
+            self.error = f"{type(e).__name__}: {e}"
+            return []
+        if self._off is None or size < self._off:
+            self._off = max(0, size - (1 << 20))
+        if size <= self._off:
+            return []
+        try:
+            with self.path.open("rb") as f:
+                f.seek(self._off)
+                blob = f.read()
+        except OSError as e:
+            self.error = f"{type(e).__name__}: {e}"
+            return []
+        cut = blob.rfind(b"\n")
+        if cut < 0:
+            return []                                    # a partial line, and nothing else
+        self._off += cut + 1
+        rows = []
+        for ln in blob[:cut + 1].split(b"\n"):
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                r = json.loads(ln.decode("utf-8", "replace"))
+            except ValueError:
+                continue                                 # the torn line, same judgement as replay()
+            if isinstance(r, dict) and r.get("seq") is not None:
+                rows.append(r)
+        self.followed += len(rows)
+        return rows
+
     def info(self):
         return {"path": str(self.path), "ok": self.error is None if self.readonly else self.f is not None,
                 "error": self.error, "restored": self.rows_in, "boot": self.boot,
+                # How many rows arrived AFTER startup, so "is this list live?" is answerable from the payload
+                # instead of from whether the page happens to be moving.
+                "followed": self.followed,
                 # Attached rows belong to another process's launch list: the page says so rather than letting
                 # them read as this Monitor's own record of a live launch.
                 "readonly": self.readonly}
@@ -2163,6 +2367,35 @@ class Records:
             journal.rows_in = len(rows)
             self.items.extend(rows)
             self.n = max([r.get("seq") or 0 for r in rows], default=0)
+
+    def absorb(self, rows):
+        """Fold rows from an ATTACHED (foreign, read-only) journal into the live list. Rows are oldest-first.
+
+        Deduped on (boot, seq), which is what makes follow() safe to re-anchor after a rotation: overlap is
+        expected, duplicates are not. A row with no seq cannot be placed or deduped and is dropped -- replay()
+        applies the same judgement to a line it cannot trust.
+
+        `self.n` only has to not go backwards: in this mode the Monitor is not the relay, so it never assigns a
+        seq itself, but a counter that jumps back would make a later relay row claim a number already on screen.
+        """
+        if not rows:
+            return 0
+        with self.lock:
+            seen = {(r.get("boot"), r.get("seq")) for r in self.items}
+            added = 0
+            for r in sorted(rows, key=lambda x: -int(x.get("seq") or 0)):     # newest first, like self.items
+                if r.get("seq") is None:
+                    continue
+                key = (r.get("boot"), r.get("seq"))
+                if key in seen:
+                    continue
+                self.items.appendleft(r)
+                seen.add(key)
+                added += 1
+                while len(self.items) > self.keep:
+                    self.items.pop()
+            self.n = max([self.n] + [int(r.get("seq") or 0) for r in rows])
+            return added
 
     def start(self, path, model, body, stream):
         with self.lock:
@@ -2482,6 +2715,15 @@ class Hub:
             return fn()
         return self.get("/metrics")[1].decode("utf-8", "replace")
 
+    def rows(self):
+        """The request list the page shows: engine records when running inside the serve, relay rows otherwise.
+
+        One method because three callers now want the same thing (the payload, /api/requests, and the derived
+        context-size block), and a fourth that reads `self.rec.listing()` directly would be a fourth that
+        reports a different launch in merged mode.
+        """
+        return self.eng.listing() if self.eng is not None else self.rec.listing()
+
     def kept(self):
         return len(self.eng) if self.eng is not None else len(self.rec.items)
 
@@ -2564,6 +2806,14 @@ class Hub:
                 # a page describing yesterday's recipe is the failure this prevents.
                 self._read_alert()
                 self.refresh_meta()
+                # An ATTACHED journal is another process's file, and it keeps growing while this page is up.
+                # Outside the lock and before the metrics work: the rows it yields are what the request list, the
+                # crowding chips and the context-size card are all derived from, so a list that stopped following
+                # quietly turns every one of those into a description of the past (measured 2026-11-16: 8.9 h stale).
+                if self.journal is not None and self.journal.readonly and self.eng is None:
+                    new = self.journal.follow()
+                    if new:
+                        self.rec.absorb(new)
                 cur, cap, info = parse_metrics(self.metrics_text())
                 dt = (t0 - self.prev_t) if self.prev_t else None
                 with self.lock:
@@ -2637,6 +2887,11 @@ class Hub:
                     # came from -- after a hard reset, the rows on screen are evidence from the dead launch.
                     j = getattr(self.eng, "journal", None) or self.journal
                     payload["journal"] = j.info() if j else None
+                    # Context size, prompt vs UNCACHED, over the rows this list holds. It rides the status payload
+                    # rather than only /api/requests because it is a derived summary of the same rows, and the
+                    # reader needs it beside the rates: the measured fact on this box is that cold prefill -- not
+                    # pool pressure -- is what puts seconds in front of everyone else's first token.
+                    payload["lengths"] = length_stats(self.rows())
                     # The last thing the firmware recorded about the death that precedes this launch.
                     payload["last_death"] = self.death
                     payload["deaths"] = self.deaths
@@ -2803,7 +3058,7 @@ class Hub:
             with self.lock:
                 return dict(self.status, requests_kept=self.kept())
         if path == "/api/requests":
-            return {"requests": (self.eng.listing() if self.eng is not None else self.rec.listing()),
+            return {"requests": self.rows(),
                     "kept": self.cfg["keep"], "mode": self.cfg["mode"],
                     "source": "engine" if self.eng is not None else "relay"}
         if path == "/api/host":
