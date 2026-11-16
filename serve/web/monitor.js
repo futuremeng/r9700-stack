@@ -1391,10 +1391,18 @@ async function paintGate() {
   }
   sec.hidden = false;
   const c = g.config, n = g.counters || {}, gg = g.gauges || {};
+  // A gateway old enough to report no `policy` field WAS holding: the words follow the payload, never the page.
+  // Shipped since 2026-11-16: observe. What changed in these two cards is the verb -- they used to say what the
+  // door did to your request, and now they say what the engine's harm signals say and what the door WOULD have
+  // done. Same numbers, minus an intervention measured at +5.0 s on 25 of 28 holds while freeing no KV block at
+  // all (notes/admission-gate.md §7).
+  const OBS = (g.policy || "hold") !== "hold";
+  const sh = g.shut || {};
   // open = the door is up (live); holding = traffic is waiting (busy, not danger: a hold is the gate working);
-  // off = the operator switched it off (dot--off is the file's "not running" dot).
+  // harm = the engine's harm signals are on and the door is deliberately not acting on them; off = switched off
+  // at the front door (dot--off is the file's "not running" dot).
   $("gate-dot").className = `dot${!c.GATE_ON ? " dot--off" : g.closed ? " dot--busy" : " dot--live"}`;
-  text("gate-state", !c.GATE_ON ? "Off" : g.closed ? "Held" : "Open");
+  text("gate-state", !c.GATE_ON ? "Off" : OBS ? (g.closed ? "Harm" : "Watch") : (g.closed ? "Held" : "Open"));
   // The first-screen strip: one word about the door, in the same line as the engine's state. The row below this
   // one has the 15-minute history and the counters; what has to be visible while the rates are being read is
   // whether a request arriving now would be held, because that is the difference between "the engine is slow" and
@@ -1404,24 +1412,40 @@ async function paintGate() {
     const box = $("door-state");
     if (box) {
       box.hidden = false;
-      const word = !c.GATE_ON ? "Door off" : g.closed ? "Door held" : "Door open";
+      const word = !c.GATE_ON ? "Door off" : OBS ? "Door watching" : (g.closed ? "Door held" : "Door open");
       text("door-word", word);
       $("door-dot").className = `dot${!c.GATE_ON ? " dot--off" : g.closed ? " dot--busy" : " dot--live"}`;
       box.dataset.tone = !c.GATE_ON ? "" : g.closed ? "busy" : "";
       const n2 = g.counters || {}, held = n2.held_now ?? n2.held ?? 0;
+      // Observe mode says the reassuring half OUT LOUD: a reader must not need to know the code to know whether
+      // the front door is standing between them and the engine. Nothing is held here; the number kept is how many
+      // arrivals the harm signal found.
       text("door-note", !c.GATE_ON ? "the gate is switched off at the front door"
+        : OBS ? `${g.closed ? "harm signal on" : "no harm signal"} · it holds nothing`
         : g.closed ? `${held} request(s) waiting at it` : `small ${dnum(n2.small_passed ?? 0)} passed, ${dnum(held)} held`);
       box.title = `${word}: ${(g.why || "").trim() || (c.GATE_ON ? "no harm signal, so arrivals go straight to the engine"
         : "GATE_ON=0 -- every request goes through regardless of engine state")}`
-        + `. Hold ceiling ${c.GATE_HOLD_S}s, harm window ${c.GATE_PREEMPT_S}s, no more than ${c.GATE_MAX_HELD} held `
-        + `at once, and a declared body of <= ${c.GATE_SMALL_BYTES} B passes a shut door. The gate's history, "was `
-        + `it shut at 15:05", and every counter are on the gate row (Recent screen). Held means the gateway opened `
-        + `no upstream connection at all: the hop stays a byte pipe and no request body was read.`;
+        + (OBS
+          ? `. GATE_POLICY=observe: it reads the engine and holds, refuses and delays NOTHING. What it would have
+             done is counted: ${dnum(n2.arrived_shut ?? 0)} request(s) arrived while the harm signal was on
+             (${dnum(n2.arrived_shut_big ?? 0)} declaring a body over ${c.GATE_SMALL_BYTES} B, ${dnum(n2.arrived_shut_small ?? 0)}
+             under it).` + (isnum(sh.frac)
+             ? ` The harm signal was on for ${Math.round(sh.frac * 100)}% of the ring; its current unbroken span is
+               ${sh.run_s}s and the longest inside the ring is ${sh.max_s}s.` : "")
+             + ` The gate's history and every counter are on the gate row (Recent screen).`
+          : `. Hold ceiling ${c.GATE_HOLD_S}s, harm window ${c.GATE_PREEMPT_S}s, no more than ${c.GATE_MAX_HELD} held `
+            + `at once, and a declared body of <= ${c.GATE_SMALL_BYTES} B passes a shut door. The gate's history, "was `
+            + `it shut at 15:05", and every counter are on the gate row (Recent screen). Held means the gateway opened `
+            + `no upstream connection at all: the hop stays a byte pipe and no request body was read.`);
     }
   }
   // the headline is the running total since the gateway started, not "right now": a hold is a thing that
-  // happened to a request, and the number a reader wants after the fact is how many it happened to.
-  text("gate-held", dnum(n.held ?? 0));
+  // happened to a request, and the number a reader wants after the fact is how many it happened to. Under observe
+  // the equivalent number is how many arrivals FOUND the harm signal on -- the exact set a holding policy would
+  // have held, which is the only way to price a policy without running it on a live box to find out.
+  text("gate-held", dnum(OBS ? (n.arrived_shut ?? 0) : (n.held ?? 0)));
+  if ($("gate-held-unit")) text("gate-held-unit", OBS ? "while harm" : "held");
+  if ($("gate-holds-label")) text("gate-holds-label", OBS ? "Arrivals at the door" : "Holds at the door");
   spark($("gate-spark"), g.hist, { baseLo: 0, baseHi: 1 });
   $("gate-spark").dataset.tone = g.closed ? "warn" : "ok";
   // How far back the strip reaches, printed rather than inferred. The strip exists to answer "was the door shut at
@@ -1449,11 +1473,12 @@ async function paintGate() {
   slot("gate-why", !c.GATE_ON ? "off" : g.closed ? (shutFor || "at the cliff")
        : (g.err ? "open: no gauge" : "no harm signal"),
        (g.why || "") + (g.err ? ` ${g.err}` : "")
-       + " -- the door closes on the engine's own harm signals: num_preemptions_total MOVING (blocks taken back "
-       + "from a running request) and a pool at GATE_KV_HIGH. It does not close because the engine has a queue: a "
-       + "batch of long prompts parks the pool above any useful threshold for its whole duration, and closing on "
-       + "that costs every new arrival seconds while protecting KV that is already held (notes/admission-gate.md). "
-       + "It fails OPEN when the gauges are missing or stale: a front door that stops serving because its "
+       + " -- the harm signals, in the engine's own words: num_preemptions_total MOVING (blocks taken back from a "
+       + "running request) and a pool at GATE_KV_HIGH. It is not the engine having a queue: a batch of long prompts "
+       + "parks the pool above any useful threshold for its whole duration, and closing on that measured as +25 s on "
+       + "every new arrival for no protection at all (notes/admission-gate.md \u00a76). Under GATE_POLICY=observe "
+       + "nothing acts on this string; it is the report, and what the door would have done is counted on the card "
+       + "beside it. It fails OPEN when the gauges are missing or stale: a front door that stops serving because its "
        + "telemetry broke is worse than no gate.");
   // The pool in tokens, which is the axis the threshold is really about (0.85 of 902,153 is a number of tokens,
   // and one 80k request is 53 short ones). The percent is on the engine's own KV card; the waiting count is on
@@ -1465,7 +1490,14 @@ async function paintGate() {
        + "the gate compares polls, so it closes when that counter moves). A sequence costs 1.8 ms of step time and "
        + "its own tokens of pool, so the pool is the budget a long request spends (notes/admission-gate.md).");
   const hasSmall = isnum(n.small_passed);
-  slot("gate-counters", hasSmall ? `expired ${dnum(n.expired || 0)} \u00b7 small ${dnum(n.small_passed)}`
+  // OBSERVE: the line carries the traffic SPLIT rather than a hold outcome, because that split is the pair of
+  // numbers the 2026-11-16 afternoon showed the door had backwards. What it would have held -- a declared body over
+  // GATE_SMALL_BYTES, i.e. a long PROMPT -- was 94.8% served from the prefix cache and cost 7-37 s apiece, while
+  // the four rows that actually filled the pool declared ~1.2 KB each and passed the size test. "big" is a declared
+  // size CLASS, not a pool cost, and the gloss says so out loud.
+  slot("gate-counters", OBS
+       ? `big ${dnum(n.declared_big ?? 0)} \u00b7 small ${dnum(n.declared_small ?? 0)}`
+       : hasSmall ? `expired ${dnum(n.expired || 0)} \u00b7 small ${dnum(n.small_passed)}`
        // an older gateway has no small-pass escape to report; show its released/expired pair rather than a 0 that
        // would read as "nothing came through".
        : `released ${dnum(n.released || 0)} \u00b7 expired ${dnum(n.expired || 0)}`
@@ -1473,7 +1505,23 @@ async function paintGate() {
        // only exists when the hold queue hits its bound; both are worth the line running wide when they are not
        // zero, because either one is the gate choosing traffic over protection and a silent count would hide that.
        + (n.refused ? ` \u00b7 refused ${dnum(n.refused)}` : "") + (n.held_over ? ` \u00b7 over ${dnum(n.held_over)}` : ""),
-       "expired: it went anyway after the ceiling, because a 30-minute TTFT is the failure this exists to prevent, "
+       OBS
+       ? `GATE_POLICY=observe: the gate reads the engine's harm signals and holds, refuses and delays NOTHING, so
+          the headline is the count that replaces "held" -- ${dnum(n.arrived_shut ?? 0)} gated request(s) arrived
+          while the harm signal was on, and that is exactly the set a holding policy would have held
+          (${dnum(n.arrived_shut_big ?? 0)} of them declaring a body over ${c.GATE_SMALL_BYTES} B, ${dnum(n.arrived_shut_small ?? 0)}
+          under it). Since the gateway started: ` + [`seen ${dnum(n.gated_seen ?? 0)} requests on the gated paths`,
+            `declared big ${dnum(n.declared_big ?? 0)} (over ${c.GATE_SMALL_BYTES} B)`,
+            `declared small ${dnum(n.declared_small ?? 0)}`,
+            `arrived ${dnum(n.arrived_shut ?? 0)} while the harm signal was on`, `admitted ${dnum(n.admitted ?? 0)}`,
+            `held ${dnum(n.held ?? 0)} and refused ${dnum(n.refused ?? 0)}, both of which stay 0 while observing`,
+            isnum(sh.frac) ? `door shut on ${Math.round(sh.frac * 100)}% of the ring, ${sh.run_s}s unbroken now and `
+              + `${sh.max_s}s the longest run inside it` : ""].filter(Boolean).join(", ")
+          + ". A declared body is a PROMPT size, not a pool cost: the rows that filled this box's pool on "
+          + "2026-11-16 declared ~1.2 KB each (max_tokens unset, so their commitment was the rest of the "
+          + "262,144-token window), and the long-prompt rows were the ones never preempted "
+          + "(notes/admission-gate.md \u00a77)."
+       : "expired: it went anyway after the ceiling, because a 30-minute TTFT is the failure this exists to prevent, "
        + "not something to reach for. small: requests whose declared body is under GATE_SMALL_BYTES, admitted "
        + "through a shut door -- they are the ones a pool threshold starves, and they are not what fills the pool. "
        + "Since the gateway started: " + [`held ${dnum(n.held ?? 0)}` + (isnum(n.held_now) ? ` (${dnum(n.held_now)}`
@@ -1483,11 +1531,27 @@ async function paintGate() {
          [`refused ${dnum(n.refused ?? 0)} (a 503, which only GATE_HOLD_S=0 issues)`,
           `admitted ${dnum(n.admitted ?? 0)} never met a shut door`]).join(", ")
        + ". expired against held is the ratio that says whether the ceiling is a bound or just a delay.");
-  slot("gate-ceil", isnum(c.GATE_PREEMPT_S) ? `hold ${c.GATE_HOLD_S}s \u00b7 win ${c.GATE_PREEMPT_S}s`
+  slot("gate-ceil", OBS
+       // The door's own duty cycle, in one line. The strip draws 900 dots and cannot say "it is effectively shut",
+       // which on 2026-11-16 WAS the finding: 0.71 of the ring, a 339 s unbroken span and still running, with a
+       // preemption rate of 12.9/min against a 20 s window -- arithmetic under which the door has no way to open.
+       ? `shut ${isnum(sh.frac) ? `${Math.round(sh.frac * 100)}%` : "?"} \u00b7 ${isnum(sh.run_s) ? `${sh.run_s}s` : "?"}`
+       : isnum(c.GATE_PREEMPT_S) ? `hold ${c.GATE_HOLD_S}s \u00b7 win ${c.GATE_PREEMPT_S}s`
        // an older gateway's payload has no preemption window to name; show its poll rate rather than print
        // 'undefined' into the page.
        : `hold ${c.GATE_HOLD_S}s \u00b7 poll ${c.GATE_METRICS_S}s`,
-       `${g.polls} polls so far; gauges older than ${c.GATE_STALE_S}s count as unknown, and unknown opens the `
+       OBS
+       ? `${g.polls} polls so far, every ${c.GATE_METRICS_S}s; gauges older than ${c.GATE_STALE_S}s count as unknown,
+          and unknown opens the door. GATE_POLICY=observe: the thresholds below are still computed, drawn and
+          counted, and no request is held, refused or delayed. What WOULD close it: ${c.GATE_KV_HIGH} on the pool
+          axis (re-open at ${c.GATE_KV_LOW}) or a preemption within ${c.GATE_PREEMPT_S}s; the small class is a
+          declared body of ${c.GATE_SMALL_BYTES} B or less, and at most ${c.GATE_MAX_HELD} would ever be held. To
+          arm the intervention: GATE_POLICY=hold bash serve/gateway.sh (restarts the front door only, ~2 s -- and
+          bounces the streams already passing through it). Neither way this door calls itself shut is guaranteed to
+          END: an event every ${c.GATE_PREEMPT_S}s re-arms the window, and a pool whose steady state sits above
+          ${c.GATE_KV_LOW} latches the pool axis, which is why the duty cycle is printed here instead of left to be
+          counted off the strip (notes/admission-gate.md §7).`
+       : `${g.polls} polls so far; gauges older than ${c.GATE_STALE_S}s count as unknown, and unknown opens the `
        + `door. hold: the ceiling on any single hold (shipped 5 s, because 9 of v1's 14 holds ended by hitting its `
        + `25 s -- a bound usually reached is a delay). window: how long after the LAST preemption the door stays `
        + `shut, which is what makes the shutdown end under a long batch. pool axis: shut at ${c.GATE_KV_HIGH}, `

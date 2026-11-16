@@ -3,7 +3,11 @@
 Box: `jiulu-9700`, 4 x R9700, engine recipe `native-flashnext.sh` (`--max-model-len 262144 --max-num-seqs 32
 --max-num-batched-tokens 8192 --kv-cache-dtype fp8_e4m3`, MTP `num_speculative_tokens=2`).
 Code: `serve/gateway.py` (the gate), `serve/gateway.sh` (its overrides), checks in `tests/test_gateway.py` §(8).
-Status: **on** on this box since 2026-11-15 05:37, at the built-in defaults.
+Status: **observe-only**, live on this box since 2026-11-16 09:21:28 (`GATE_POLICY=observe`, front door pid
+1233396; the previous process, up 17 h 36 min, ended at `held 30 / expired 27`): the harm signals are read, counted
+and drawn, and no request is held, refused or delayed. §7 is why. `GATE_POLICY=hold` re-arms the intervention and
+every threshold below is still a knob and still tested. Bouncing the door cut the 19 connections it was carrying --
+the engine, its queue and its pid were untouched (still 1071930), and no new `[gfxhub]` line appeared.
 
 ## 1. What the logs said, in their own numbers
 
@@ -281,3 +285,128 @@ process ever polled, and the baseline is the first reading rather than zero -- t
 only movement is harm. And restarting the front door resets the counters: `held/expired/small_passed` are since-
 this-gateway-process, which is the same trade the engine's own counters make. The history that mattered from the
 old process is in this file, not in the process.
+
+## 7. The afternoon the door could not open, and why it is now observe-only (2026-11-16)
+
+The operator's complaint was availability, not latency: "long requests are being blocked, and the box feels less
+usable than before the gate". The journal and the engine's own counters say the box really was unusable for ~80
+minutes -- and that the gate was neither the cause nor able to be the cure. Everything below is from
+`~/logs/requests-8180.jsonl`, `~/logs/setup-022707.log` (the 10 s engine stats), `GET /api/gate` and `GET :8180/metrics`
+of the launch that started 02:27.
+
+**What actually happened.** Until 07:45 the box was serving a long-prompt batch: 973 requests, prompt p50 43k /
+p95 126k, **94.8% of their prompt tokens served from the prefix cache**, wall clock 7.6-37 s apiece, and a maximum
+per-request preemption count of **zero**. That traffic was never the problem; it is the traffic the gate would later
+tax. At 07:08-07:31 four requests arrived with **no `max_tokens`**: prompt 515-532, and vLLM's default commitment is
+the rest of the window, so `max_tokens_param` was 261,612-261,629 (exactly `max_model_len - prompt_tokens`). Each
+decoded 3,196-4,214 s and finished with `finish_reason=length`. Four such rows are 1,046,516 tokens against the
+**902,153**-token pool -- the engine's own boot line prints `Maximum concurrency for 262,144 tokens per request:
+3.44x`. From there the chain is mechanical: pool pegged at 92-100% for the rest of the hour, engine queue 66-72
+with **every** waiter on `reason="capacity"`, aggregate decode 8.9-51.7 tok/s (against 1,198-1,836 tok/s in the
+README's 32-in-flight benchmarks), `num_preemptions_total` 165 → 296 in ten minutes, TTFT: 79 of 2,029 requests
+over 640 s and 54 of them in the 640-2,560 s bucket. Across the launch, 543 of 1,997 requests (27.2%) declared a
+`max_tokens` commitment over 200,000, and the mean per-request commitment was 98,733 tokens. The pool holds 3.44.
+
+**Measurement one: the door cannot re-open -- not because of a threshold that is too low, but because neither way
+it closes has an end.**
+
+```
+hist: 0.63 -> 0.71 of the 900-poll ring closed, current unbroken run 339 s (and still running)
+why:  296 preemption(s) observed, door shut 18 s more (window 20 s); kv 0.990 >= 0.85 (892,698 of 902,153 tokens)
+prem_seen 165 -> 296 in 10.2 min = 12.9 events/min; 12.9 x 20 s = 258 s of shut per 60 s of wall clock
+kv p50 for the 08:00 hour: 0.945, and 69% of its 10 s samples at >= 0.92   (GATE_KV_LOW is 0.85)
+```
+
+The preemption axis re-arms `thrash_until` on every event, so under a stream of events the window is not a window;
+§6's "a window, which ends" is true of one event and false of twelve a minute. The pool axis is still a latch, and
+0.85 is below this workload's steady state -- the same mistake §6 diagnosed in v1, on the axis §6 did not change.
+
+**Measurement two: holding an arrival cannot relieve harm that lives in rows already running.** Live A/B on the
+shipped defaults with the door shut (bogus model name, so the engine answers 404 and schedules nothing):
+
+```
+20 KB body   through the gate : 5.019 s   (counted expired)
+20 KB body   direct to :8180  : 0.002 s
+   73 B body through the gate : 0.003 s   (small_passed)
+counters: held 28 | released 3 | expired 25 | refused 0 | held_over 0
+```
+
+25 of 28 holds ended by hitting the ceiling. The KV those arrivals were waiting for is held by requests that are
+*already running* and growing, so the only thing a 5 s hold can do is add 5 s. A second queue in front of a 70-deep
+engine queue also reorders nothing.
+
+**Measurement three: the class the door taxed and the class that harmed are different classes.** The four rows that
+filled the pool declared ~1.2 KB bodies each, so `GATE_SMALL_BYTES=8192` waved all four through a shut door. The
+per-request preemption counts in the engine's journal name the victims: 19 requests / 79 preemptions, every one of
+them prompt ≤ 1k (one victim preempted 40 times, 40 whole re-prefills), and zero across the 973 long-prompt rows.
+`Content-Length` predicts the prompt, and the pool is spent on prompt **plus output**; with `max_tokens` unset the
+output half is unbounded, so a small declared body is not a small footprint -- it is close to the opposite.
+
+**Two code-level findings, both fixed by the mode change or by the comment that now names them.**
+
+* `GATE_MAX_INFLIGHT` is not the sequence axis. `G["inflight"]` is incremented inside `admit()` and released the
+  moment the request is forwarded, so it counts the queue *at the door*, never the engine's running set. The knob
+  that actually does what the docstring claimed is the engine's `--max-num-active-seqs`.
+* A hold is not interruptible. Nothing is read from the client socket while the door is shut, so a client that
+  gives up still gets its request forwarded: `curl -m 2` aborted at 2.0 s and the engine's `POST /v1/completions`
+  count still rose at t+5 s. A client with a short timeout and a retry therefore buys the engine a new (huge)
+  request per give-up.
+
+**So the mode changed and the measurement stayed.** `GATE_POLICY` is the new knob; `observe` is shipped:
+
+| | what it does | what it costs a request |
+|---|---|---|
+| `GATE_DISABLE=1` | no gate: no poller, no `/api/gate`, no Monitor row | 0 |
+| `GATE_POLICY=observe` (shipped) | reads the engine, computes harm, fills the ring, counts arrivals | **0** |
+| `GATE_POLICY=hold` | the intervention: hold / refuse, with every threshold below | 5.019 s measured |
+
+Observe adds counters that price the policy without running it: `gated_seen`, `declared_small` / `declared_big`, and
+`arrived_shut` with the same split -- 61 arrivals would have been held in the fixture's window. And it adds `shut`,
+which states the door in one number instead of 900 dots:
+
+```
+"shut": {"frac": 0.71, "run_s": 339, "max_s": 464}
+```
+
+The Monitor's row follows the payload rather than the page: `Harm` / `Watch` and "Arrivals at the door … while harm"
+while observing, `Held` / `Open` and "Holds at the door … held" if it is ever armed -- and the first-screen strip
+says "Door watching · harm signal on · it holds nothing", because the whole reason that strip exists is to keep
+"the engine is slow" and "the front door has not let mine in" from looking identical.
+
+**What this does not fix, stated plainly.** The box is still oversubscribed by construction: nothing bounds what a
+request may *commit*, and the front door cannot -- it is a byte pipe and it will stay one. The levers that would, in
+the order they'd be tried, all of them token-shaped and all of them on the engine side where the token count is
+known:
+
+* `--max-num-queued-tokens` / `--max-num-queued-reqs` (already in this vLLM, enforced in the API server, answers
+  **503** so the client backs off, and counted in `vllm:admission_rejections_total{reason=...}` -- which reads 0.0
+  for both reasons on this box, i.e. the mechanism is installed and switched off). Sized as the docs say:
+  `target_TTFT x prefill throughput`, e.g. ~10 s x ~3k tok/s of *uncached* prefill ≈ 30k.
+* The commitment itself: a cap on `max_tokens` (client-side per README's "the cap belongs on the client", or a
+  smaller `--max-model-len` for the port general traffic uses). 3.44 full-context rows is the whole budget; the box
+  had four inside 23 minutes and nothing said no.
+* `--max-num-active-seqs` and `--long-prefill-token-threshold` (`_adaptive` floors it at a fair share of the token
+  budget) for the long/short mix -- the fairness question the gate was invented to answer, in the place that knows
+  prompt lengths.
+
+None of those are wired: they need an engine restart, and `tools/recipe-check.py` will hold the running engine to
+whatever is added. What is live now is the measurement, so that the next time this box feels slow the question "was
+the door in the way?" has an answer in a file.
+
+**Went live at 09:21:28** by restarting the front door alone (`STOP=1 bash serve/gateway.sh`, then start -- 9 s
+start to start). The engine was not touched: same pid 1071930, `/health` 200 through the new door and direct, and
+no new `[gfxhub]` line in the kernel journal (still 09:52:00 on `c3:00.0`). What the bounce cost is written down:
+19 established connections were riding the old door and were cut; 14 were back within a minute. The last readings of
+the armed process: **`held 30, released 3, expired 27`** with the ring 0.62 closed. The new process, in its first
+three minutes of real traffic:
+
+```
+gate: OBSERVE ONLY (GATE_POLICY=observe) -- ... holds, refuses or delays NOTHING
+counters: gated_seen 69  declared_small 48  declared_big 21  arrived_shut 0  held 0
+shut: {"frac": 0.0, "run_s": 0, "max_s": 0}
+```
+
+21 of those 69 were the declared-big class the armed door used to hold for 5 s each; `held` is 0 and will stay 0 in
+this mode. With no harm signal on the ring reads 0.0 -- the same payload that read 0.71 before the bounce, from the
+same gauges, is the point: the measurement is what's permanent now, and the decision is a flag
+(`GATE_POLICY=hold bash serve/gateway.sh`) with its cost measured above.

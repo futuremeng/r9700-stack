@@ -463,11 +463,14 @@ try:
                 time.sleep(0.1)
         raise AssertionError("the gate gateway did not come up")
 
-    GENV = {**env, "GATE_DISABLE": "0", "ENGINE": f"http://127.0.0.1:{ENG}", "GATE_METRICS_S": "0.1",
-            "GATE_STALE_S": "2", "GATE_KV_HIGH": "0.85", "GATE_KV_LOW": "0.78", "GATE_WAIT": "1",
-            "GATE_HOLD_S": "1.5"}
-    # The shipped defaults, which the v1 thresholds in GENV above deliberately override: the shipped policy is the
-    # one a reader of the Monitor sees, so it has to be tested as shipped, not as tuned.
+    GENV = {**env, "GATE_DISABLE": "0", "GATE_POLICY": "hold", "ENGINE": f"http://127.0.0.1:{ENG}",
+            "GATE_METRICS_S": "0.1", "GATE_STALE_S": "2", "GATE_KV_HIGH": "0.85", "GATE_KV_LOW": "0.78",
+            "GATE_WAIT": "1", "GATE_HOLD_S": "1.5"}
+    # Two things are shipped defaults here and neither is what these v1-era thresholds are: the MODE is observe (so
+    # UNARMED drops GATE_POLICY and gets the shipped one), and the thresholds are 0.92/0.85 with WAIT=0 and a 5 s
+    # ceiling (so DEFAULTS drops the tuned ones). The gate has to be tested as configured AND as shipped: the armed
+    # door's thresholds are what a re-armed box will run, and observe is what the box runs now.
+    UNARMED = {k: v for k, v in GENV.items() if k != "GATE_POLICY"}
     DEFAULTS = {k: v for k, v in GENV.items() if k not in ("GATE_KV_HIGH", "GATE_KV_LOW", "GATE_WAIT", "GATE_HOLD_S")}
     # A body that declares more than GATE_SMALL_BYTES: the hold path needs a request big enough to be the kind of
     # request the door exists for. The v1-era one-line body is now, correctly, a request that always passes.
@@ -629,13 +632,72 @@ try:
     t0 = time.time()
     st, b = http(GD, "/v1/chat/completions", "POST", '{"x":1}', timeout=10)
     g = json.loads(http(GD, "/api/gate", timeout=5)[1])
-    ck("GATE_DISABLE=1 is a real switch: shut pool, instant chat, gate reports itself off",
+    ck("GATE_DISABLE=1 is a real switch: shut pool, instant chat, gate reports itself off -- and it is NOT reading "
+       "the engine either, which is the difference between that switch and GATE_POLICY=observe (off removes the "
+       "measurement too)",
        time.time() - t0 < 0.35 and json.loads(b)["role"] == "engine" and g["closed"] is False
-       and g["why"] == "off", f"{time.time()-t0:.2f}s {str(g)[:120]}")
+       and g["why"] == "off" and g["polls"] == 0 and not g["hist"], f"{time.time()-t0:.2f}s {str(g)[:120]}")
     gdis.terminate()
     gdis.wait(timeout=5)
 
-    # ---- the shipped policy, tested as shipped ---------------------------------------------------------------
+    # ---- what is shipped now: GATE_POLICY=observe, measured and not acted on -------------------------------
+    # 2026-11-16, the second afternoon. Four requests with no max_tokens (prompt ~520 each, so vLLM's default
+    # commitment was the rest of the 262,144-token window) filled a 902,153-token pool: the engine queue went to
+    # 66-72 all on reason="capacity", aggregate decode fell to 8.9-51.7 tok/s, and num_preemptions_total ran 165 ->
+    # 296 in ten minutes. Against that, the armed door could not re-open (a preemption every 20 s re-arms the
+    # window, and kv p50 0.945 sits above GATE_KV_LOW=0.85), and its hold could not take one block back from the
+    # rows already running: measured 5.019 s through the gate for a 20 KB body against 0.002 s direct to the
+    # engine, with 25 of 28 holds ending at the ceiling. So the intervention is off and the measurement stays --
+    # these are the assertions that mode needs.
+    GO, gobs = bring({"GATE_KV_HIGH": "0.85", "GATE_KV_LOW": "0.78", "GATE_WAIT": "1"}, base=UNARMED)
+    GAUGE.update({"kv": 0.95, "run": 5, "wait": 3, "prem": 2})
+    time.sleep(0.4)
+    g = gstate(GO)
+    hist_seen = list(g["hist"])
+    ck("as shipped the gate is OBSERVE, and the harm signal is still computed and still named: the report did not "
+       "leave with the intervention",
+       g["policy"] == "observe" and g["config"]["GATE_POLICY"] == "observe" and g["closed"]
+       and "kv 0.950" in g["why"], g["why"][:140])
+    t0 = time.time()
+    st, b = http(GO, "/v1/chat/completions", "POST", BIG, timeout=10)     # a body the armed door would hold
+    seen, g = time.time() - t0, gstate(GO)
+    ck("and a big-body request met by the harm signal goes through with the ENGINE's answer and no delay: the "
+       "5.019 s the armed door measured on this box is exactly what was removed",
+       seen < 0.4 and json.loads(b)["role"] == "engine" and g["closed"], f"waited {seen:.3f} s, {st}")
+    cn = g["counters"]
+    ck("nothing is held, refused or expired while observing, and the arrivals a policy would have acted on are "
+       "counted instead -- that is how 'what would this have cost?' is answered without running it on a live box",
+       cn["held"] == 0 and cn["held_now"] == 0 and cn["expired"] == 0 and cn["refused"] == 0
+       and cn["arrived_shut"] >= 1 and cn["arrived_shut_big"] >= 1 and cn["gated_seen"] >= 1
+       and cn["declared_big"] >= 1, str(cn))
+    ck("the door states its own duty cycle -- fraction of the ring shut, the run it is inside, the longest run -- "
+       "because 900 strip dots cannot say 'effectively permanently shut', and on 2026-11-16 that was the finding",
+       g["shut"]["frac"] is not None and g["shut"]["frac"] > 0 and g["shut"]["run_s"] >= 0
+       and g["shut"]["max_s"] >= g["shut"]["run_s"], str(g["shut"]))
+    ck("and the reading keeps running while it decides nothing: the poller and the ring are not the intervention",
+       g["polls"] > 0 and len(hist_seen) >= 2 and sum(hist_seen) >= 1, f"{g['polls']} polls")
+    gobs.terminate()
+    gobs.wait(timeout=5)
+    # A knob whose value is a typo is a knob that is off, and off has to mean the shipped mode rather than a
+    # surprise -- the fail-open direction of this whole file is the request path.
+    GB, gbad = bring({"GATE_POLICY": "halt"}, base=UNARMED)
+    GAUGE["kv"] = 0.99
+    time.sleep(0.4)
+    t0 = time.time()
+    st, b = http(GB, "/v1/chat/completions", "POST", BIG, timeout=10)
+    g = gstate(GB)
+    ck("GATE_POLICY spelled wrong observes and SAYS SO, rather than silently holding",
+       time.time() - t0 < 0.5 and json.loads(b)["role"] == "engine" and g["policy"] == "observe"
+       and "halt" in (g["policy_err"] or ""), f"{time.time()-t0:.2f}s {str(g)[:160]}")
+    gbad.terminate()
+    gbad.wait(timeout=5)
+    _gmode = open(os.path.join(ROOT, "serve/gateway.py")).read()
+    ck("the shipped default in the source is observe, and the launcher can name the knob (an unnamed knob is a knob "
+       "the tmux launch cannot set)",
+       'GATE_POLICY", "observe"' in _gmode
+       and "GATE_POLICY" in open(os.path.join(ROOT, "serve/gateway.sh")).read(),
+       [l.strip()[:64] for l in _gmode.splitlines() if "GATE_POLICY" in l][:2])
+    # ---- the shipped THRESHOLDS, on an armed door (GATE_POLICY=hold) ----------------------------------------
     # 2026-11-15, read off the live box: a batch of ~100k-token data-processing prompts parked the pool at
     # 0.87-0.90 with 17 requests waiting on scheduling capacity, and num_preemptions_total moved ONCE all day.
     # v1 read exactly that as "shut the door": 180 of 180 polls closed, 14 requests held, 9 of them admitted

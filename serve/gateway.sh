@@ -45,13 +45,18 @@ PYTHON=${PYTHON:-$HOME/r9700-stack/.venv/bin/python}
 LOG=${LOG:-$HOME/logs/gateway-$GATEWAY_PORT.log}; mkdir -p "$(dirname "$LOG")"
 PIDF=${PIDF:-$HOME/.r9700-state/gateway-$GATEWAY_PORT.pid}; mkdir -p "$(dirname "$PIDF")"
 
-# The gate (serve/gateway.py): it holds a NEW chat/completion request while the engine shows HARM -- its
-# preemption counter moving, or its KV pool at GATE_KV_HIGH -- because that pool, not the sequence count, is the
-# budget the slow windows of this box ran into, and a door shut on a merely full pool was measured as pure delay.
+# The gate (serve/gateway.py): since 2026-11-16 it OBSERVES by default. It reads the engine's harm signals -- its
+# preemption counter moving, or its KV pool at GATE_KV_HIGH -- and reports them on the Monitor and at /api/gate,
+# counting the requests it WOULD have held (arrived_shut, split by declared size class), but it holds, refuses and
+# delays nothing. That change was bought with the numbers in notes/admission-gate.md §7: the door could not
+# re-open (a preemption every 20 s re-arms the window, and a pool whose steady state sits above GATE_KV_LOW latches
+# the pool axis), a 5 s hold cannot free one block that requests already running are holding, and the traffic that
+# filled the pool that day was the traffic the small-request escape waved through. GATE_POLICY=hold re-arms the
+# intervention; the defaults below are still the thresholds it would use, and they stay measured, not guessed.
 # Defaults are in gateway.py; these are the overrides, and what is live gets printed rather than implied. A knob
 # missing from GATENAMES is a knob the tmux launch cannot set, so tests/test_setup.py holds this list against the
 # names gateway.py actually reads.
-GATENAMES="GATE_DISABLE GATE_KV_HIGH GATE_KV_LOW GATE_PREEMPT_S GATE_WAIT GATE_MAX_INFLIGHT GATE_SMALL_BYTES GATE_MAX_HELD GATE_HOLD_S GATE_METRICS_S GATE_STALE_S GATE_HIST GATE_POOL_TOKENS"
+GATENAMES="GATE_DISABLE GATE_POLICY GATE_KV_HIGH GATE_KV_LOW GATE_PREEMPT_S GATE_WAIT GATE_MAX_INFLIGHT GATE_SMALL_BYTES GATE_MAX_HELD GATE_HOLD_S GATE_METRICS_S GATE_STALE_S GATE_HIST GATE_POOL_TOKENS"
 GATEENV=(); GATEDESC=""
 for n in $GATENAMES; do
   v=${!n:-}
@@ -111,6 +116,6 @@ if ! curl -fsS -m 2 "$PAGES/health" >/dev/null 2>&1; then
   echo "        start it:  bash serve/webui.sh" >&2
   echo "        or serve pages from the engine again: PAGES=$ENGINE in ${LOCAL_ENV:-$HOME/.config/r9700-stack/native.env}" >&2
 fi
-echo "  gate:     http://127.0.0.1:$GATEWAY_PORT/api/gate  -- why a request waited, and what the gate is set to"
+echo "  gate:     http://127.0.0.1:$GATEWAY_PORT/api/gate  -- the harm signals, what the door would have done, and what it is set to"
 echo "  clients:  http://<box>:$GATEWAY_PORT/v1/chat/completions | /v1/embeddings | /v1/rerank"
 echo "  monitor:  http://<box>:$GATEWAY_PORT/monitor"

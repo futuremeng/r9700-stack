@@ -1147,14 +1147,21 @@ def gateway_counters(port=None):
     The gateway is a separate process: it survives the engine, so it is the only witness that can still say how
     much traffic was in flight, how many requests it had admitted and how many it had held at the door when the
     rank died. None if nothing is listening on 8080: a box without a gateway is normal, and an answer-less
-    question is not a zero."""
+    question is not a zero.
+
+    `policy` goes in with them, because since 2026-11-16 the door usually holds NOTHING on purpose: a ledger line
+    reading `held 0` has to be distinguishable from a door that held nobody because it was watching, from one that
+    was armed and idle, and from one that was not there at all. `arrived_shut` is the count that mode keeps -- the
+    arrivals its harm signal found.
+    """
     port = port or os.environ.get("GATEWAY_PORT", "8080")
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/gate", timeout=3) as r:
             d = json.loads(r.read())
         c = d.get("counters") or {}
         return {"admitted": c.get("admitted"), "held": c.get("held"), "expired": c.get("expired"),
-                "closed": d.get("closed")}
+                "arrived_shut": c.get("arrived_shut"), "policy": d.get("policy"), "closed": d.get("closed"),
+                "shut": (d.get("shut") or {}).get("frac")}
     except (urllib.error.URLError, OSError, ValueError):
         return None
 

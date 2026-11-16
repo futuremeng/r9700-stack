@@ -582,16 +582,22 @@ through it: +0.8 ms on a small request, engine ITL unchanged (13.0 -> 12.8 ms at
 request line and pipes bytes, because a proxy that parses bodies costs 2-3 ms. `tests/test_gateway.py` keeps that
 promise; [notes/embed-sidecar-box-test.md](notes/embed-sidecar-box-test.md) has the numbers and the restart order.
 
-In front of the engine it also runs an **admission gate**, and its trigger is harm, not fullness: it holds a new
-chat/completion request when the engine's `num_preemptions_total` **moved** (blocks taken back from a running
-request) or its pool reached `GATE_KV_HIGH=0.92`, and it does **not** close because the pool is busy or the engine
-has a queue. That distinction was bought with the numbers in
-[notes/admission-gate.md](notes/admission-gate.md) §6: a batch of 100k-token prompts held the pool at 0.87-0.90 and
-the engine queue at 17 all afternoon with **one** preemption, and the earlier thresholds kept the door shut for
-180 of 180 polls while 9 of 14 held requests waited the entire ceiling and went through anyway. A request declaring
-a body of `GATE_SMALL_BYTES=8192` B or less passes a shut door (the ones a pool threshold starves are the cheap
-ones), no more than `GATE_MAX_HELD=8` are ever held at once, and the ceiling on a hold is 5 s. Its state -- reason,
-gauges, counters, and a 180-poll history strip -- is on the Monitor's fourth row and at `GET /api/gate`.
+In front of the engine it also runs an **admission gate**, and since 2026-11-16 it **observes rather than acts**:
+`GATE_POLICY=observe` reads the engine's harm signals -- `num_preemptions_total` **moving** (blocks taken back from a
+running request) or the pool reaching `GATE_KV_HIGH=0.92` -- keeps the ring, the counters and the Monitor row, and
+holds, refuses and delays **nothing**. Both of the interventions that came before it were measured as pure delay, by
+two different afternoons of numbers: v1's held 14 requests with 9 waiting out the whole 25 s ceiling
+[notes/admission-gate.md](notes/admission-gate.md) §6, and v2's held 28 with 25 waiting out its 5 s -- **5.019 s
+through the door against 0.002 s direct to the engine** -- while the KV those arrivals were waiting for was held by
+requests already running (§7). It also had the classes backwards: the four rows that filled the 902,153-token pool
+that day declared ~1.2 KB bodies each (`max_tokens` unset, so their commitment was the rest of the 262,144-token
+window) and passed the small-body escape, while 973 long-prompt requests -- 94.8% prefix-cached, 7-37 s each -- were
+never preempted once. What observe counts instead of doing: `gated_seen`, the declared-size split, `arrived_shut`
+(the arrivals a policy would have acted on), and `shut` -- the fraction of the history ring the harm signal was on
+and the longest unbroken span, which is the number the strip's 900 dots could not say (0.71 of the ring, 339 s and
+still running). `GATE_POLICY=hold` re-arms the intervention, `GATE_DISABLE=1` removes the reading as well. Its
+state -- reason, gauges, counters, duty cycle and a 900-poll history strip -- is on the Monitor's Recent screen and
+at `GET /api/gate`.
 
 **3. Check it.**
 

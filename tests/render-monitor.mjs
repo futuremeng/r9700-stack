@@ -371,23 +371,41 @@ const isnum = (v) => typeof v === "number" && isFinite(v);
       console.log("BAD  the gateway answers /api/gate and the first-screen door strip is hidden -- a request "
                   + "waiting at the door would read as a slow engine");
       process.exitCode = 1; }
-    const want = !G.config.GATE_ON ? "Door off" : G.closed ? "Door held" : "Door open";
+    // Observe mode must say, in the one word and the one note, that NOTHING is being held: the reason this strip
+    // exists is that "the engine is slow" and "the front door has not let mine in" look identical from a browser.
+    const OBSS = (G.policy || "hold") !== "hold";
+    const want = !G.config.GATE_ON ? "Door off" : OBSS ? "Door watching" : (G.closed ? "Door held" : "Door open");
     if (word !== want) {
-      console.log(`BAD  the gateway reports closed=${G.closed} GATE_ON=${G.config.GATE_ON} and the strip reads `
-                  + `"${word}" (want "${want}")`);
+      console.log(`BAD  the gateway reports closed=${G.closed} GATE_ON=${G.config.GATE_ON} policy=${G.policy} and `
+                  + `the strip reads "${word}" (want "${want}")`);
       process.exitCode = 1; }
     const ti = box.title || "";
-    if (G.closed && !/held/.test(ti)) {
-      console.log("BAD  a shut door is described on the first screen without saying arrivals are being held");
-      process.exitCode = 1; }
-    if (!ti.includes(String(G.config.GATE_HOLD_S))) {
-      console.log(`BAD  the strip omits the ${G.config.GATE_HOLD_S} s hold ceiling -- past it the request goes `
-                  + "through anyway, and that bound is the reason holding is acceptable at all");
-      process.exitCode = 1; }
-    if (isnum(G.config.GATE_SMALL_BYTES) && !ti.includes(String(G.config.GATE_SMALL_BYTES))) {
-      console.log("BAD  the strip omits the small-body allowance: cheap requests pass a shut door, and a held "
-                  + "count without that reads as everyone waiting");
-      process.exitCode = 1; }
+    if (OBSS) {
+      if (!/holds nothing/i.test(note)) {
+        console.log(`BAD  an observing door's first-screen note reads "${note}" -- the one thing a caller needs from `+
+                    "this strip is whether the front door is standing between them and the engine");
+        process.exitCode = 1; }
+      if (!ti.includes("GATE_POLICY=observe")) {
+        console.log("BAD  the strip does not name GATE_POLICY=observe: the mode belongs where the question is "
+                    + "asked, not two screens away on the gate row");
+        process.exitCode = 1; }
+      if (!/arrived while the harm signal was on/i.test(ti)) {
+        console.log("BAD  the strip omits the count the policy would have acted on -- that is what makes the harm "
+                    + "report mean something to a caller rather than only to the operator");
+        process.exitCode = 1; }
+    } else {
+      if (G.closed && !/held/.test(ti)) {
+        console.log("BAD  a shut door is described on the first screen without saying arrivals are being held");
+        process.exitCode = 1; }
+      if (!ti.includes(String(G.config.GATE_HOLD_S))) {
+        console.log(`BAD  the strip omits the ${G.config.GATE_HOLD_S} s hold ceiling -- past it the request goes `
+                    + "through anyway, and that bound is the reason holding is acceptable at all");
+        process.exitCode = 1; }
+      if (isnum(G.config.GATE_SMALL_BYTES) && !ti.includes(String(G.config.GATE_SMALL_BYTES))) {
+        console.log("BAD  the strip omits the small-body allowance: cheap requests pass a shut door, and a held "
+                    + "count without that reads as everyone waiting");
+        process.exitCode = 1; }
+    }
   } else if (!box.hidden) {
     console.log("BAD  no /api/gate answering (the engine's own port) and the strip shows a door state anyway -- "
                 + "there is no door here to report on");
@@ -725,7 +743,8 @@ console.log(`  caption slots now: ${t("gen-note1")} | ${t("gen-note2")}`);
   const sparkEl = (byId.get("gate-spark") || new El());
   const strip = (((sparkEl.children || [])[0]) || new El()).children.length;
   console.log(`\ngate row: hidden=${sec.hidden} | ${g2("gate-state")} | ${g2("gate-why")}`
-              + ` | ${g2("gate-level")} | held ${g2("gate-held")} | ${g2("gate-counters")} | ${g2("gate-ceil")}`
+              + ` | ${g2("gate-level")} | ${g2("gate-holds-label")} ${g2("gate-held")} ${g2("gate-held-unit")}`
+              + ` | ${g2("gate-counters")} | ${g2("gate-ceil")}`
               + ` | strip ${strip} node(s), ${GPAY?.hist?.length ?? 0} polls`
               + (Number.isFinite(GPAY?.hist_span_s) ? ` over ${Math.round(GPAY.hist_span_s / 60)} min` : "")
               + " of history");
@@ -743,10 +762,38 @@ console.log(`  caption slots now: ${t("gen-note1")} | ${t("gen-note2")}`);
         console.log(`BAD  #${id} still holds the markup placeholder while the row is visible`); process.exitCode = 1;
       }
     }
-    const want = GPAY.config?.GATE_ON ? (GPAY.closed ? "Held" : "Open") : "Off";
+    // The word on the card follows the PAYLOAD's policy, not the page's preference: a gateway that reports no
+    // `policy` field was holding, and a page that printed "Watch" over it would be describing an intervention that
+    // is not running -- the exact failure this row exists to make visible.
+    const OBS = (GPAY.policy || "hold") !== "hold";
+    const want = !GPAY.config?.GATE_ON ? "Off"
+                 : OBS ? (GPAY.closed ? "Harm" : "Watch") : (GPAY.closed ? "Held" : "Open");
     if (g2("gate-state") !== want) {
       console.log(`BAD  the gate card says "${g2("gate-state")}" for a payload whose state is "${want}"`);
       process.exitCode = 1;
+    }
+    // The card's headline changes MEANING with the policy, so its label has to change with it: "held" is a thing a
+    // door did to a request, and under observe nothing is done -- the headline is the arrivals a holding policy
+    // would have held. A label left saying "Holds" over an observe payload is the lie, not the number.
+    if (GPAY.config?.GATE_ON) {
+      const lblWant = OBS ? "Arrivals at the door" : "Holds at the door";
+      const unitWant = OBS ? "while harm" : "held";
+      if (g2("gate-holds-label") !== lblWant) {
+        console.log(`BAD  the second gate card is labelled "${g2("gate-holds-label")}" for a policy whose headline `
+                    + `counts ${lblWant}`);
+        process.exitCode = 1;
+      }
+      if (g2("gate-held-unit") !== unitWant) {
+        console.log(`BAD  the gate headline unit reads "${g2("gate-held-unit")}" under GATE_POLICY=${GPAY.policy}`);
+        process.exitCode = 1;
+      }
+      const headWant = OBS ? (GPAY.counters?.arrived_shut ?? 0) : (GPAY.counters?.held ?? 0);
+      const headGot = Number((g2("gate-held") || "0").replace(/[^\d]/g, ""));
+      if (headGot !== Number(headWant)) {
+        console.log(`BAD  the gate headline shows ${headGot} for a payload whose ${OBS ? "arrived_shut" : "held"} `
+                    + `is ${headWant}`);
+        process.exitCode = 1;
+      }
     }
     // The gateway's reason is not reformatted by the page: the visible line is its FIRST CLAUSE (the tight 4-up
     // card holds 24 characters), and the exact full string -- the one carrying the token count the gate is
@@ -774,19 +821,21 @@ console.log(`  caption slots now: ${t("gen-note1")} | ${t("gen-note2")}`);
     }
     const ctr = ((byId.get("gate-counters") || new El()).title || "");
     const hasSmall = Number.isFinite(GPAY.counters?.small_passed), hasOver = Number.isFinite(GPAY.counters?.held_over);
-    // expired and small are the two counts that decide whether the door is doing anything at all: expired against
-    // held says whether the ceiling is a bound or just a delay, and small says how many cheap requests had to be
-    // let through a shut door (which is the sign a pool threshold was starving the wrong traffic). An older
-    // gateway reports neither and its page prints released/expired instead, so what is required follows the
-    // payload rather than the page.
-    for (const k of ["expired", hasSmall ? "small" : "released"]) {
+    // What the tight line has to carry depends on the policy, and which one it depends on is exactly the point:
+    // under HOLD, `expired` against `held` says whether the ceiling is a bound or just a delay, and `small` says how
+    // many cheap requests were waved through a shut door. Under OBSERVE there is no ceiling and no door, and the two
+    // numbers that matter are the declared-size classes -- the pair this box was caught reading backwards on
+    // 2026-11-16. An older gateway reports neither and its page prints released/expired instead, so what is required
+    // follows the payload rather than the page.
+    for (const k of OBS ? ["big", "small"] : ["expired", hasSmall ? "small" : "released"]) {
       if (!new RegExp(k + " \\d").test(g2("gate-counters"))) {
         console.log(`BAD  the counters line does not carry ${k}: "${g2("gate-counters")}"`); process.exitCode = 1;
       }
     }
     // the counters the tight line drops have to be stated in the gloss, or they are just hidden numbers
-    for (const k of ["released", "refused", "admitted", "held"]
-             .concat(hasSmall ? ["small"] : []).concat(hasOver ? ["over"] : [])) {
+    for (const k of (OBS ? ["seen", "arrived", "big", "small", "admitted", "held"]
+                         : ["released", "refused", "admitted", "held"]
+                           .concat(hasSmall ? ["small"] : []).concat(hasOver ? ["over"] : []))) {
       if (!new RegExp(k + " \\d").test(ctr)) {
         console.log(`BAD  the counters gloss never states ${k} -- a number hidden from the line has to be in the title`);
         process.exitCode = 1;
@@ -795,10 +844,23 @@ console.log(`  caption slots now: ${t("gen-note1")} | ${t("gen-note2")}`);
     // the ceiling line names the two timers the door runs on. The window is the one that lets the door re-open
     // under a long batch; a pool release line alone could not (2026-11-15: 180 of 180 polls shut). It is only
     // required when the gateway in front of the page reports one -- an older gateway does not, and its page
-    // degrades to the poll interval on purpose.
-    for (const k of Number.isFinite(GPAY.config?.GATE_PREEMPT_S) ? ["hold", "win"] : ["hold"]) {
+    // degrades to the poll interval on purpose. Under OBSERVE the line carries the door's duty cycle instead: the
+    // strip cannot say "effectively permanently shut", and that is the number the 2026-11-16 finding needed.
+    for (const k of OBS ? ["shut"]
+             : Number.isFinite(GPAY.config?.GATE_PREEMPT_S) ? ["hold", "win"] : ["hold"]) {
       if (!new RegExp(k + " \\d").test(g2("gate-ceil"))) {
         console.log(`BAD  the ceiling line does not name ${k}: "${g2("gate-ceil")}"`); process.exitCode = 1;
+      }
+    }
+    if (OBS) {
+      // The actionable half belongs in the same tooltip as the diagnosis: an operator who reads "the door would be
+      // shut 71% of the ring" and wants the intervention back must not have to go find the flag in the code.
+      for (const s of ["GATE_POLICY=observe", "GATE_POLICY=hold"]) {
+        if (!((byId.get("gate-ceil") || new El()).title || "").includes(s)) {
+          console.log(`BAD  #gate-ceil's gloss never states ${s} -- what the door is running, and how to arm it, `
+                      + "belong next to the number that made the question askable");
+          process.exitCode = 1;
+        }
       }
     }
     // the strip draws a base line even with no history, so a visible row must never have an empty spark box

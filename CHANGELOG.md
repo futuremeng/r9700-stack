@@ -1,5 +1,71 @@
 # Changelog
 
+## The admission gate is now observe-only: the door could not re-open, its hold bought nothing, and it was charging the traffic that was not the problem
+
+The complaint was availability -- "long requests are being blocked, and the box feels less usable than before the
+gate". The logs say the box really was unusable for ~80 minutes today, and that the gate was neither the cause nor
+capable of being the cure. `GATE_POLICY` is a new knob and **`observe` is the shipped default**: the poller, the
+harm signal, the 15-minute ring, `/api/gate` and the Monitor row all stay, and no request is held, refused or
+delayed. `GATE_POLICY=hold` re-arms the intervention; `GATE_DISABLE=1` still removes the reading as well.
+
+What happened, from `requests-8180.jsonl` + the engine's own 10 s stats: at 07:08-07:31 four requests arrived with
+**no `max_tokens`** -- prompt 515-532, so vLLM's default commitment was the rest of the window
+(`max_tokens_param` = 262,144 - prompt = 261,612-261,629), each decoding 3,196-4,214 s and finishing on length.
+Four full-context rows are 1,046,516 tokens against a 902,153-token pool; the engine's boot line says *"Maximum
+concurrency for 262,144 tokens per request: 3.44x"*. The pool then sat at 92-100% with 66-72 requests waiting, all
+of them `reason="capacity"`, aggregate decode fell to 8.9-51.7 tok/s, TTFT put 79 of 2,029 requests over 640 s, and
+`num_preemptions_total` went 165 → 296 in ten minutes. Across the launch, 27.2% of requests declared a commitment
+over 200,000 tokens and the mean was 98,733 -- the pool holds 3.44.
+
+Three measurements decided the mode:
+
+* **the door cannot re-open, and not because a threshold was too low.** Neither way it closes has an end: the
+  preemption window re-arms on every event (12.9 events/min x 20 s = **258 s of shut per 60 s of wall clock**), and
+  the pool latch's release line (0.85) sits below the workload's steady state (kv p50 0.945, 69% of samples >= 0.92).
+  §6's "a window, which ends" is true of one event and false of twelve a minute. Ring: 0.71 closed, an unbroken
+  339 s run and still running.
+* **holding an arrival cannot relieve harm that lives in rows already running.** Live A/B with the door shut, bogus
+  model name so the engine schedules nothing: **5.019 s** through the gate for a 20 KB body, **0.002 s** direct to
+  the engine, 0.003 s for a 73 B body. Counters: 28 held, 3 released, **25 expired** -- a 5 s tax on the long class
+  that freed not one KV block.
+* **the class it taxed and the class that harmed are different classes.** The four rows that filled the pool declared
+  ~1.2 KB bodies each and passed the `GATE_SMALL_BYTES=8192` escape; the journal's per-request preemption counts say
+  19 requests / 79 preemptions, every one prompt <= 1k (one victim 40 times), and **zero** across the 973 long-prompt
+  requests, which were 94.8% prefix-cached and cost 7-37 s. `Content-Length` predicts the prompt; the pool is spent
+  on prompt **plus output**, and with `max_tokens` unset the output half is unbounded.
+
+Two things found while measuring, both now named where they live: `GATE_MAX_INFLIGHT` never counted the engine's
+in-flight set (it counts the queue at the door -- the real sequence axis is `--max-num-active-seqs`), and a hold is
+not interruptible, so a client that gives up at 2 s still has its request forwarded 5 s later (measured: the engine's
+POST count rose after `curl -m 2` aborted) -- retries therefore buy the engine a huge request per give-up.
+
+Observation got the numbers the intervention used to be the only way to see. The payload carries `policy`,
+`policy_err`, `shut` (`{"frac": 0.71, "run_s": 339, "max_s": 464}` -- the door's duty cycle, because 900 strip dots
+cannot say "effectively permanently shut") and the counters `gated_seen`, `declared_small`/`declared_big`,
+`arrived_shut` with the same split: 4 arrivals through an observing door in a window whose harm signal was on 100%
+of the time, `held 0`. The Monitor follows the payload rather than the page -- `Harm`/`Watch` and "Arrivals at the
+door … while harm" when observing, `Held`/`Open` and "Holds at the door … held" when armed -- and the first-screen
+strip says "Door watching · harm signal on · it holds nothing", since that strip exists precisely to keep "the
+engine is slow" from being mistaken for "the door has not let mine in".
+
+Held in tests: `tests/test_gateway.py` §(8) now runs the threshold checks against an **armed** door
+(`GATE_POLICY=hold`) and adds the shipped-mode checks -- a big-body request met by the harm signal is served by the
+engine with **no delay**, `held/held_now/expired/refused` stay 0 while `arrived_shut` counts, the duty cycle is
+stated, the poller still runs, a misspelled `GATE_POLICY` observes *and says so*, `GATE_DISABLE=1` is proven
+different (no poller, no ring), and the shipped default is read out of the source. `tools/monitor-fixture.py`
+gains `--gate-observe`/`--gate-hold` so both wordings are rendered, and `tests/render-monitor.mjs` derives every
+gate expectation from the payload's policy -- including that an observing door's headline unit is not "held" and
+that its gloss states both the mode and how to arm it. Verified on this box against the live engine (pool 1.000,
+harm on): a throwaway :18080 in observe mode answered the 20 KB body in 0.01 s, `held 0`, `arrived_shut 4`; it was
+stopped by pid.
+
+What this does **not** fix, stated rather than left to rot: the box is still oversubscribed by construction, and a
+byte pipe cannot bound what a request commits. The levers are token-shaped and live where the token count is known
+-- `--max-num-queued-tokens` / `--max-num-queued-reqs` (already installed in this vLLM, answering 503 and counted in
+`vllm:admission_rejections_total`, which reads 0.0 on this box: installed and switched off), a cap on `max_tokens`,
+and `--max-num-active-seqs` / `--long-prefill-token-threshold`. All of them need an engine restart, so none is
+wired without a decision. notes/admission-gate.md §7 is the whole file.
+
 ## A restart moved the journal: the front door's request list froze at 02:11 with no error anywhere, and the fix exposed a second half-read
 
 The engine was stopped and relaunched on purpose (2026-11-16, to carry the page payload that only an engine restart

@@ -95,15 +95,59 @@ itself: vllm:kv_cache_usage_perc, vllm:num_requests_running, vllm:num_requests_w
 vllm:num_preemptions_total, one GET /metrics per GATE_METRICS_S (12 ms and 68 KB on this box, in a coroutine, off
 the request path).
 
+## and then it was turned off: GATE_POLICY=observe is the shipped mode (2026-11-16)
+
+A second afternoon said v2 was wrong the same way v1 had been, and this time the numbers name the mechanism. The
+box was running a 100k-token-prompt batch (median prompt 43k, 94.8% of its prompt tokens served from the prefix
+cache, wall clock 7.6-37 s) when four requests arrived with **no `max_tokens`** -- prompt 515-532, and vLLM's
+default commitment is the rest of the window, so each asked for 261,612-261,629 tokens and each ran 3,196-4,214 s
+(finish_reason=length). Four full-context rows are 1,046,516 tokens against a **902,153**-token pool: the engine's
+own boot line says `Maximum concurrency for 262,144 tokens per request: 3.44x`. The pool pegged at 92-100%, the
+engine queue went to 66-72 (all reason="capacity"), aggregate decode fell to 8.9-51.7 tok/s, TTFT p99 landed in
+the 640-2560 s bucket, and num_preemptions_total ran 165 -> 296 in ten minutes.
+
+Three things follow, all of them measured:
+
+  * **the door cannot re-open.** Two axes, both non-terminating. The preemption window re-arms on every event, and
+    at 12.9 events/min a 20 s window buys 258 s of shut per 60 s of wall clock -- the door has no way to be open.
+    And the pool axis latches below the workload's own steady state: GATE_KV_LOW=0.85 against an hour whose kv p50
+    was 0.945, 69% of samples >= 0.92. §6's claim that a window "always ends" is true of one event, not of a
+    stream of them.
+  * **holding the arrival does not touch the harm.** The blocks are held by requests that are already running, and
+    they are being taken back as those rows GROW. Delaying a new arrival by 5 s cannot free one block. Measured on
+    the live box with the door shut: a 20 KB-body request took 5.019 s through the gate and 0.002 s direct to the
+    engine; 25 of 28 holds ended by hitting the ceiling and 3 by the door opening. A flat delay, not a bound.
+  * **the class it taxes and the class that harms are different classes.** The four full-context rows declared
+    ~1.2 KB bodies, so the small-request escape waved all four through. The per-request preemption counts in the
+    engine's journal say who paid: 19 requests / 79 preemptions, every one of them in the prompt<=1k class (one
+    victim 40 times); across the 973 long-prompt requests the maximum was **zero**. The door was closing on harm
+    made by traffic it waved in and charging the traffic it could see.
+
+So the shipped policy is `GATE_POLICY=observe`: the poller reads the engine, `gate_state()` computes harm exactly
+as before, the ring, `/api/gate` and the Monitor row stay -- and **no request is held, refused or delayed**. What
+is counted instead of done: `gated_seen`, `declared_small`/`declared_big`, and `arrived_shut` with the same split,
+which is the set a holding policy would have delayed. `shut` states the door in one number -- the fraction of the
+ring it was shut, the unbroken span it is inside now, the longest one in the ring -- because "was it effectively
+permanently shut?" was the question of the afternoon and 900 dots are not an answer to it.
+
+`GATE_POLICY=hold` re-arms the intervention (every v1/v2 threshold is still a knob and still tested); an unknown
+value observes and says so in `policy_err`, because the fail-open direction of this file has always been the
+request path. `GATE_DISABLE=1` is the other switch and stays different: it removes the gate, the reading and the
+row, while observe keeps all three and touches nothing.
+
 Fail-open is the default on purpose: a gauge that cannot be read, or a vLLM that renamed it, opens the gate
 and says so in `err`. A front door that stops serving because its telemetry broke is worse than no gate.
 
-Knobs: GATE_DISABLE=1 (off), GATE_KV_HIGH (0.92 -- close), GATE_KV_LOW (0.85 -- re-open the pool axis: one
+Knobs: GATE_DISABLE=1 (the gate does not exist: no reading, no /api/gate, no Monitor row), GATE_POLICY
+(`observe` shipped -- the harm signals are read, counted and drawn, and no request is touched; `hold` arms the
+intervention described above), GATE_KV_HIGH (0.92 -- close), GATE_KV_LOW (0.85 -- re-open the pool axis: one
 8 192-token prefill moves this pool ~0.9%, so a single threshold would chatter), GATE_PREEMPT_S (20 -- stay shut
 this long after the last observed preemption), GATE_WAIT (0 shipped: an engine queue alone never closes the
 door; set it to make the queue a trigger), GATE_SMALL_BYTES (8192 -- a declared body this size or smaller passes
-a shut door; 0 disables), GATE_MAX_HELD (8 -- never hold more than this many at once), GATE_MAX_INFLIGHT
-(0 = off; the sequence axis, kept as a knob because the two budgets are independent), GATE_HOLD_S (5 s ceiling;
+a shut door; 0 disables; it is also the size CLASS the observation reports, which on 2026-11-16 turned out to be
+a prompt size and not a pool cost), GATE_MAX_HELD (8 -- never hold more than this many at once), GATE_MAX_INFLIGHT
+(0 = off; counts the queue at the door, NOT the engine's in-flight count -- see the note at its definition),
+GATE_HOLD_S (5 s ceiling;
 0 = refuse instead of hold), GATE_METRICS_S (1.0), GATE_STALE_S (5). Only /v1/chat/completions and
 /v1/completions are gated -- /health is what setup.py's
 watcher polls, /metrics is what the gate itself reads, /api/* is the page, and the two sidecar routes are CPU
@@ -160,11 +204,19 @@ PREFIX = (("/web/", PAGES), ("/api/", PAGES))
 #   * the hold ceiling got short (25 s -> 5 s) because the data said the ceiling, not the release, is how most
 #     held requests left; and GATE_MAX_HELD bounds the number held at all, because a gate with an unbounded hold
 #     queue has just become a queue with extra steps.
+# observe = measure harm and never touch a request; hold = the intervention. See "and then it was turned off"
+# above: on 2026-11-16 the door could not re-open, a hold could not relieve the harm it keyed on, and 25 of 28
+# holds were pure delay. An unknown value observes and records the mistake rather than acting on it.
+GATE_POLICY_REQ = os.environ.get("GATE_POLICY", "observe").strip().lower()
+GATE_POLICY = GATE_POLICY_REQ if GATE_POLICY_REQ in ("observe", "hold") else "observe"
 GATE_ON = os.environ.get("GATE_DISABLE", "0") != "1"
 GATE_KV_HIGH = float(os.environ.get("GATE_KV_HIGH", "0.92"))     # near-full backstop; preempt usually starts here
 GATE_KV_LOW = float(os.environ.get("GATE_KV_LOW", "0.85"))       # re-open line (hysteresis)
 GATE_PREEMPT_S = float(os.environ.get("GATE_PREEMPT_S", "20"))   # close this long after the last preemption
 GATE_WAIT = int(os.environ.get("GATE_WAIT", "0"))                # 0 = waiting alone never closes (v1's 1 did)
+# NOT the engine's in-flight count: G["inflight"] is incremented inside admit() and released the moment the
+# request is forwarded, so it is the DEPTH OF THE QUEUE AT THE DOOR. The sequence axis the engine itself enforces
+# is --max-num-active-seqs, not this.
 GATE_MAX_INFLIGHT = int(os.environ.get("GATE_MAX_INFLIGHT", "0"))
 GATE_SMALL_BYTES = int(os.environ.get("GATE_SMALL_BYTES", "8192"))   # a declared body at most this big passes
 GATE_MAX_HELD = int(os.environ.get("GATE_MAX_HELD", "8"))        # never a second queue: beyond this, admit
@@ -186,6 +238,11 @@ G = {"kv": None, "run": None, "wait": None, "at": 0.0, "err": None, "closed": Fa
      "pool_tokens": int(os.environ.get("GATE_POOL_TOKENS", "902153")),
      "inflight": 0, "held": 0, "held_now": 0, "released": 0, "expired": 0, "refused": 0, "admitted": 0,
      "small_passed": 0, "held_over": 0, "polls": 0,
+     # Counted because observing is now the job: who came, of which declared-size class, and how many arrived while
+     # the harm signal was on -- i.e. exactly the set a holding policy would have delayed. "What would this policy
+     # have cost?" stays answerable without arming it on a live box to find out.
+     "gated_seen": 0, "declared_small": 0, "declared_big": 0,
+     "arrived_shut": 0, "arrived_shut_small": 0, "arrived_shut_big": 0,
      # One entry per poll: 1 shut, 0 open. A poll whose gauges were unusable draws 0 on purpose: fail-open is
      # shown, not hidden, because a strip that goes blank when the reading dies would blame the traffic for a
      # telemetry fault. The ring is GATE_HIST polls (~15 min at the default 1 s), and the payload carries the span
@@ -258,6 +315,15 @@ def gate_state():
 
     Hysteresis stays for the pool backstop (re-open at LOW, not HIGH: one 8 192-token prefill moves this pool
     ~0.9 %, so one threshold would chatter).
+
+    Under GATE_POLICY=observe this function is a REPORT, not a decision: it still says what the harm signals say
+    and still drives the ring, and nothing acts on it. Two caveats it now carries, both from 2026-11-16 and both
+    relevant if the intervention is ever re-armed: neither way this returns "shut" is guaranteed to end (a
+    preemption event every GATE_PREEMPT_S re-arms the window forever, and a pool whose steady state sits above
+    GATE_KV_LOW latches the pool axis shut), and when the harm is resident rows GROWING, no delay applied to an
+    arrival can relieve it. The fix for either is not a better threshold -- it is a limit on what a request may
+    COMMIT (max_tokens) and on the queue the engine will hold, which is token arithmetic the engine can do and a
+    byte pipe cannot.
     """
     if not GATE_ON:
         return False, "off"
@@ -286,6 +352,26 @@ def gate_state():
     return (bool(why), "; ".join(why))
 
 
+def shut_stats():
+    """The DOOR as one number rather than 900 dots: the fraction of the ring it was shut, the unbroken span it is
+    inside now, and the longest unbroken span inside the ring. On 2026-11-16 the answer was the finding (0.71 of
+    the ring shut, a 339 s run and still running) and the strip could not say it: a preemption rate of 12.9/min
+    against a 20 s window leaves no arithmetic under which the door is open."""
+    h = G["hist"]
+    if not h:
+        return {"frac": None, "run_s": None, "max_s": None}
+    run = 0
+    for x in reversed(h):
+        if not x:
+            break
+        run += 1
+    best = cur = 0
+    for x in h:
+        cur = cur + 1 if x else 0
+        best = max(best, cur)
+    return {"frac": round(sum(h) / len(h), 3), "run_s": round(run * GATE_POLL_S), "max_s": round(best * GATE_POLL_S)}
+
+
 def declared_length(headers):
     """How big the request DECLARES its body is, from the header bytes already in hand. None if chunked/absent.
 
@@ -298,19 +384,44 @@ def declared_length(headers):
 
 
 async def admit(path, declared=None):
-    """Hold a new engine request while the gate is closed. (ok, held_s, why).
+    """Ask the gate about a new engine request. (ok, held_s, why).
 
-    Holding means: no upstream connection, no body read. Three escapes, all of them measured needs:
+    AS SHIPPED (GATE_POLICY=observe) this function decides nothing: it counts the arrival -- size class, and
+    whether the harm signal was on when it arrived -- and returns immediately. No hold, no refusal, no delay,
+    no upstream connection opened early. The counting is the point: it is what lets "was the door shut during my
+    batch, and how much would holding it have cost?" be answered from a file instead of from a feeling, which is
+    the thing that could not be answered on 2026-11-16 and cost a day of believing the front door was the fix.
+
+    Under GATE_POLICY=hold it holds, and holding means: no upstream connection, no body read. Three escapes, all
+    of them measured needs:
       * a declared-small body passes a shut door (v1 starved exactly these); GATE_SMALL_BYTES=0 turns that off;
       * at most GATE_MAX_HELD requests are ever held -- past that, admit, because a gate with an unbounded hold
         queue has just become a queue with extra steps and the engine already has one;
       * the ceiling GATE_HOLD_S is the client-visible bound. It is 5 s, not v1's 25, because the counter said the
         ceiling (not the re-open) was how most held requests left: 14 held, 9 expired. A bound that is usually
-        hit is not a bound, it is a delay.
+        hit is not a bound, it is a delay -- and 2026-11-16's numbers made it 25 expired of 28 holds, which is
+        why this path is no longer the shipped one.
     """
     if path not in GATED:
         return True, 0.0, "not gated"
-    if GATE_SMALL_BYTES > 0 and declared is not None and declared <= GATE_SMALL_BYTES:
+    small = GATE_SMALL_BYTES > 0 and declared is not None and declared <= GATE_SMALL_BYTES
+    # Counted in BOTH modes: in observe mode this is the whole job -- who came, of which declared-size class, and
+    # how many of them arrived while the harm signal was on.
+    G["gated_seen"] += 1
+    G["declared_small" if small else "declared_big"] += 1
+    closed_now, why_now = gate_state()
+    if closed_now:
+        G["arrived_shut"] += 1
+        G["arrived_shut_small" if small else "arrived_shut_big"] += 1
+    if GATE_POLICY != "hold":
+        G["admitted"] += 1
+        return True, 0.0, why_now
+    # Two facts about the hold path, both measured on 2026-11-16 and both worth reading before re-arming it. A
+    # client that gives up DURING a hold is not noticed -- nothing is read from the socket while the door is shut,
+    # so the request is forwarded anyway and a retrying client buys the engine a new request per give-up. And a
+    # declared body is a PROMPT size, not a pool cost: the four rows that filled the pool that day declared ~1.2 KB
+    # each and passed this exact line, while the 100k-prompt rows that cost nothing were the ones held.
+    if small:
         G["admitted"], G["small_passed"] = G["admitted"] + 1, G["small_passed"] + 1
         return True, 0.0, f"declared {declared} B <= {GATE_SMALL_BYTES} B: small requests pass a shut door"
     G["inflight"] += 1
@@ -346,17 +457,24 @@ async def admit(path, declared=None):
 def gate_blob():
     closed, why = gate_state()
     G["closed"], G["why"] = closed, why
-    return json.dumps({"closed": closed, "why": why, "gauges": {k: G[k] for k in ("kv", "run", "wait", "prem",
+    return json.dumps({"closed": closed, "why": why, "policy": GATE_POLICY,
+                       "policy_err": (None if GATE_POLICY == GATE_POLICY_REQ
+                                      else f"GATE_POLICY={GATE_POLICY_REQ!r} is not a policy: observing"),
+                       "gauges": {k: G[k] for k in ("kv", "run", "wait", "prem",
                                                                                    "at")},
-                       "err": G["err"], "inflight": G["inflight"], "polls": G["polls"],
+                       "err": G["err"], "shut": shut_stats(),
+                       "inflight": G["inflight"], "polls": G["polls"],
                        "thrash_left": max(0.0, G["thrash_until"] - time.time()),
                        "prem_seen": G["prem_seen"], "pool_shut": G["pool_shut"],
                        "hist": G["hist"], "hist_n": G["hist_n"],
                        "hist_span_s": int(round(G["hist_n"] * GATE_POLL_S)),
                        "gated": list(GATED),
                        "counters": {k: G[k] for k in ("held", "held_now", "released", "expired", "refused",
-                                                      "admitted", "small_passed", "held_over")},
-                       "config": {"GATE_ON": GATE_ON, "GATE_KV_HIGH": GATE_KV_HIGH, "GATE_KV_LOW": GATE_KV_LOW,
+                                                      "admitted", "small_passed", "held_over", "gated_seen",
+                                                      "declared_small", "declared_big", "arrived_shut",
+                                                      "arrived_shut_small", "arrived_shut_big")},
+                       "config": {"GATE_ON": GATE_ON, "GATE_POLICY": GATE_POLICY,
+                                  "GATE_KV_HIGH": GATE_KV_HIGH, "GATE_KV_LOW": GATE_KV_LOW,
                                   "GATE_PREEMPT_S": GATE_PREEMPT_S, "GATE_WAIT": GATE_WAIT,
                                   "GATE_MAX_INFLIGHT": GATE_MAX_INFLIGHT, "GATE_SMALL_BYTES": GATE_SMALL_BYTES,
                                   "GATE_MAX_HELD": GATE_MAX_HELD,
@@ -661,9 +779,21 @@ async def main():
     # buffered) filled the file. The gate's thresholds belong in the log for the same reason the launch line does.
     print(f"gateway: http://{BIND}:{PORT}/  engine={ENGINE} embed={EMBED} rerank={RERANK} pages={PAGES} "
           f"sidecars={len(SIDECAR_STATE)}", flush=True)
-    if GATE_ON:
+    if GATE_ON and GATE_POLICY != "hold":
         G["task"] = asyncio.create_task(gate_poll())
-        print(f"gate: {', '.join(GATED)} held at kv>={GATE_KV_HIGH} / waiting>={GATE_WAIT}"
+        # The MODE goes in the log next to the thresholds: someone comparing two gateway logs has to be able to tell
+        # "this door was measuring" from "this door was deciding" without asking anybody.
+        print(f"gate: OBSERVE ONLY (GATE_POLICY=observe) -- watches {', '.join(GATED)} for harm "
+              f"(preemption window {GATE_PREEMPT_S:.0f}s / kv>={GATE_KV_HIGH}, re-open kv<{GATE_KV_LOW}, "
+              f"waiting>={GATE_WAIT}) and holds, refuses or delays NOTHING; what it would have done is counted "
+              f"at /api/gate", flush=True)
+        if GATE_POLICY != GATE_POLICY_REQ:
+            print(f"gate: GATE_POLICY={GATE_POLICY_REQ!r} is not a policy -- observing, which is the shipped "
+                  f"default; set GATE_POLICY=hold in serve/gateway.sh if intervention was intended", flush=True)
+    elif GATE_ON:
+        G["task"] = asyncio.create_task(gate_poll())
+        print(f"gate: HOLDING (GATE_POLICY=hold) {', '.join(GATED)} held at kv>={GATE_KV_HIGH}"
+              f" / waiting>={GATE_WAIT}"
               f"{' / inflight>=' + str(GATE_MAX_INFLIGHT) if GATE_MAX_INFLIGHT else ''}"
               f", re-open at kv<{GATE_KV_LOW}, ceiling {GATE_HOLD_S:.0f}s, /metrics every {GATE_POLL_S}s "
               f"(state: /api/gate)", flush=True)

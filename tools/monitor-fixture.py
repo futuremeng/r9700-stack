@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Build a Monitor fixture: today's live status plus yesterday's finished rows, for the render harness.
 
-    ~/venv-r9700/bin/python tools/monitor-fixture.py [JOURNAL] [BASE] [OUT] [--rows N] [--wedged] [--gate-v2]
-                                                                                          [--alert]
+    ~/venv-r9700/bin/python tools/monitor-fixture.py [JOURNAL] [BASE] [OUT] [--rows N] [--wedged] [--gate-observe]
+                                                                                                    [--gate-hold]
+                                                                                                    [--alert]
 
-`--gate-v2` replaces whatever the live gateway reported with the SHIPPED gate's payload shape (preemption window,
-small_passed, held_over), so the row can be rendered against a gateway that has not been restarted yet.
+`--gate-observe` (and the fallback when no gateway answers) replaces whatever the live gateway reported with the
+SHIPPED gate's payload shape: GATE_POLICY=observe, harm signal on, `arrived_shut` split by declared size class, and
+the door's duty cycle (`shut`: fraction of the ring, the current unbroken span, the longest one). `--gate-hold`
+gives the shape of an armed door (`held_now`, `expired`, `small_passed`, `held_over`); `--gate-v2` is its old name.
 
 `--alert` adds the standing hardware alert (the claim setup.py raises into .r9700-state/ALERT.json), so the
 fault card's alert branch can be rendered offline.
@@ -102,31 +105,50 @@ def main(argv):
              "host": {"committed_as_kb": 89397784, "embed_rss_kb": 1171012}}], "at": time.time()}
     # The gateway's admission gate (GET /api/gate), for the same reason the sidecars are here: the render
     # harness fails any slot in monitor.html the page never writes, so a card that only exists while a gateway
-    # is answering would fail the offline render. The fallback is deliberately the HELD branch, and the branch it
-    # shows is the SHIPPED policy's: shut because a preemption counter moved (not because the pool is merely full),
-    # with the pool clause as the second reason, and the counters carrying the two escapes the shipped gate has --
-    # small_passed (cheap requests admitted through a shut door) and held_over (admitted because the hold queue hit
-    # its bound). Numbers of the shape this box produces at 0.86 of a 902,153-token pool; the strip is 18 open
-    # polls followed by 12 shut ones, which is what a load ramp looks like on a 1 s axis.
+    # is answering would fail the offline render. The fallback is deliberately the branch the shipped box shows:
+    # GATE_POLICY=observe, harm signal ON (a preemption counter that moved, with the pool clause as the second
+    # reason), and the counters reporting what the door would have done rather than what it did -- arrived_shut
+    # split by declared size class. Numbers of the shape this box produced at 0.86 of a 902,153-token pool on
+    # 2026-11-16, including the duty cycle (0.71 of the ring, a 339 s unbroken span) that is now printed because
+    # 900 strip dots could not say "effectively permanently shut". `--gate-hold` (--gate-v2 is its old name) swaps
+    # in the HOLDING shape: held/held_now/released/expired/small_passed/held_over, the two escapes and the ceiling
+    # the armed door runs on. Both shapes are rendered, because the page's words follow the payload and a fixture
+    # that only ever shows one stops covering the copy that exists for the other.
     try:
         with urllib.request.urlopen(f"{base}/api/gate", timeout=5) as f:
             gate = json.load(f)
     except OSError:
         gate = {}
-    if "--gate-v2" in argv or not gate.get("config"):
-        gate = {"closed": True,
-                "why": "7 preemption(s) observed, door shut 12 s more (window 20 s); "
-                       "kv 0.860 >= 0.85 (775,851 of 902,153 tokens)",
-                "gauges": {"kv": 0.86, "run": 24.0, "wait": 3.0, "prem": 7.0, "at": time.time()}, "err": None,
+    CFG = {"GATE_ON": True, "GATE_POLICY": "observe", "GATE_KV_HIGH": 0.92, "GATE_KV_LOW": 0.85,
+           "GATE_PREEMPT_S": 20.0, "GATE_WAIT": 0, "GATE_MAX_INFLIGHT": 0, "GATE_SMALL_BYTES": 8192,
+           "GATE_MAX_HELD": 8, "GATE_HOLD_S": 5.0, "GATE_METRICS_S": 1.0,
+           "GATE_STALE_S": 5.0, "GATE_HIST": 900, "pool_tokens": 902153}
+    WHY = ("7 preemption(s) observed, door shut 12 s more (window 20 s); "
+           "kv 0.860 >= 0.85 (775,851 of 902,153 tokens)")
+    GAUGES = {"kv": 0.86, "run": 24.0, "wait": 3.0, "prem": 7.0, "at": time.time()}
+    HIST = [0] * 18 + [1] * 12                      # a load ramp on a 1 s axis: open, then shut
+    if "--gate-hold" in argv or "--gate-v2" in argv:
+        gate = {"closed": True, "why": WHY, "policy": "hold", "policy_err": None,
+                "gauges": GAUGES, "err": None, "shut": {"frac": 0.4, "run_s": 12, "max_s": 12},
                 "inflight": 27, "polls": 4210, "thrash_left": 12.0, "prem_seen": 7, "pool_shut": True,
-                "hist": [0] * 18 + [1] * 12, "hist_n": 900, "hist_span_s": 900,
+                "hist": HIST, "hist_n": 900, "hist_span_s": 900,
                 "gated": ["/v1/chat/completions", "/v1/completions"],
                 "counters": {"held": 41, "held_now": 2, "released": 26, "expired": 11, "refused": 0,
-                             "admitted": 812, "small_passed": 214, "held_over": 4},
-                "config": {"GATE_ON": True, "GATE_KV_HIGH": 0.92, "GATE_KV_LOW": 0.85, "GATE_PREEMPT_S": 20.0,
-                           "GATE_WAIT": 0, "GATE_MAX_INFLIGHT": 0, "GATE_SMALL_BYTES": 8192, "GATE_MAX_HELD": 8,
-                           "GATE_HOLD_S": 5.0, "GATE_METRICS_S": 1.0,
-                           "GATE_STALE_S": 5.0, "pool_tokens": 902153}, "at": time.time()}
+                             "admitted": 812, "small_passed": 214, "held_over": 4, "gated_seen": 1026,
+                             "declared_small": 214, "declared_big": 812, "arrived_shut": 61,
+                             "arrived_shut_small": 19, "arrived_shut_big": 42},
+                "config": {**CFG, "GATE_POLICY": "hold"}, "at": time.time()}
+    elif "--gate-observe" in argv or not gate.get("config"):
+        gate = {"closed": True, "why": WHY, "policy": "observe", "policy_err": None,
+                "gauges": GAUGES, "err": None, "shut": {"frac": 0.71, "run_s": 339, "max_s": 464},
+                "inflight": 0, "polls": 4210, "thrash_left": 12.0, "prem_seen": 7, "pool_shut": True,
+                "hist": HIST, "hist_n": 900, "hist_span_s": 900,
+                "gated": ["/v1/chat/completions", "/v1/completions"],
+                "counters": {"held": 0, "held_now": 0, "released": 0, "expired": 0, "refused": 0,
+                             "admitted": 1026, "small_passed": 0, "held_over": 0, "gated_seen": 1026,
+                             "declared_small": 214, "declared_big": 812, "arrived_shut": 61,
+                             "arrived_shut_small": 19, "arrived_shut_big": 42},
+                "config": CFG, "at": time.time()}
     # The watchdog row's inputs (webui's KFD rank->card join and its kernel-journal fault count). Same reason the
     # gate and sidecar blocks are here: the render harness fails any slot the page never writes, so a row that
     # only exists against a newer sidecar has to be renderable offline or it is invisible to that check. The
