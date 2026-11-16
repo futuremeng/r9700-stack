@@ -897,5 +897,33 @@ ck("the kernel-journal section reads the real journal and splits the two familie
    "read / SQC (data) / ring 24" in _rp.stdout or "CANNOT READ" in _rp.stdout,
    _rp.stdout[-260:].replace("\n", " | "))
 
+# --------------------------------------------------------- tools/litellm-spy.py + notes/who-sent-it.md ----
+# "Who sent it?" cannot be answered from source IP on this box: everything arrives through LiteLLM. The answer
+# is a list of headers a specific proxy version forwards, so it is measured by a tool and dated in a note rather
+# than remembered -- and the note's claims are what the tool can be re-run to check next time litellm moves.
+_SPY = ROOTP / "tools" / "litellm-spy.py"
+ck("the proxy question has a tool, not a recollection", _SPY.exists(), str(_SPY))
+_spy_src = _SPY.read_text() if _SPY.exists() else ""
+ck("and the spy records the HEADERS (the thing the front door could key on), not just the body shape",
+   '"headers": dict(self.headers.items())' in _spy_src and "x-stainless" not in _spy_src.split("class Spy")[0],
+   "headers recorded")
+ck("and it forwards the body VERBATIM, so what it measures is what the gateway would have received",
+   "data=body" in _spy_src and "json.loads(body)" in _spy_src and "dump(" in _spy_src,
+   "passthrough + --dump")
+ck("and it says out loud that it parses bodies only because it is a stand, while the real gateway must not",
+   "byte pipe" in _spy_src and "serve/gateway.py" in _spy_src, "byte-pipe caveat in the docstring")
+_ws_note = (ROOTP / "notes" / "who-sent-it.md")
+_ws_txt = _ws_note.read_text() if _ws_note.exists() else ""
+ck("the note names the three dead ends by name, so nobody re-invents them (IP, the body user field, the model "
+   "alias) and the one mechanism that works (litellm_params.extra_headers)",
+   all(s in _ws_txt for s in ("`user`", "model alias", "extra_headers", "source IP")),
+   str([s for s in ("`user`", "model alias", "extra_headers", "source IP") if s not in _ws_txt]))
+ck("and it pins the version the measurement belongs to -- a header list read once is a header list that rots",
+   "1.109.1" in _ws_txt and "0.32.0" in _ws_txt, "version pinned")
+ck("and the engine-side dead end is named where it lives (vLLM's finished-request stats carry no user), so the "
+   "note cannot quietly become wrong on an upgrade",
+   "v1/metrics/stats.py" in _ws_txt and "no user field" in _ws_txt,
+   str([s for s in ("v1/metrics/stats.py", "no user field") if s not in _ws_txt]))
+
 print("PASS" if fail == 0 else "FAIL", f"({fail} failing)")
 sys.exit(1 if fail else 0)

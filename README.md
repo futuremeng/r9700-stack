@@ -646,6 +646,13 @@ over only the rows big enough to be throughput-bound (7,220-8,314 tok/s — over
 an ATTACHED journal used to be replayed once at startup, which left the front door's request list 8.9 hours old
 under numbers that moved every second.
 
+Attributing a context to a *caller* is a separate question, and it is measured rather than assumed: every request
+arrives from one address because traffic comes through LiteLLM. Of everything a client or a proxy config can send,
+the only thing that reaches this box is `litellm_params.extra_headers` — the `user` body field, the model alias, a
+custom client header and the client's bearer token are all dropped — and vLLM's own finished-request records carry
+no user field to hang one on. That is why the handle is a header: [notes/who-sent-it.md](notes/who-sent-it.md),
+with `tools/litellm-spy.py` to re-measure it when the proxy version moves.
+
 
 <p align="center">
   <a href="docs/r9700-stack-monitor.png"><img src="docs/r9700-stack-monitor.png" alt="The Monitor page: engine state and the KV pool, request counts at the engine, generation and speculation, every card's busy% and VRAM, the engine's timings over the poll window, and the request list with each request's own wall clock, token counts and prefill"></a>
