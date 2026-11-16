@@ -1,5 +1,18 @@
 # Changelog
 
+## Same rows, one ask later: the embeddings/rerank row is the **second** row of the first screen, not the last
+
+The row moved up out of the Hardware screen and then, asked again the same day, moved up once more inside it: engine
+counters, then the two CPU serve cards, then the four rates. The reading changes — embed/rerank is read with the
+vitals (is it answering at all) and not underneath inference throughput.
+
+What made this worth a commit rather than a drag: `second` is a claim about two neighbours, so the test now names all
+three rows (`engine scr-now` before `id="sidecars"`, `id="sidecars"` before `grid--rates scr-now`, and the first
+three sections all `scr-now`). It cannot slide back under the rates and it cannot be promoted into the rate cards.
+Checked rather than assumed: the CSS has no positional coupling on that screen — the rows size themselves
+(`section.sidecars` is auto-fit, the engine and rate rows are per-section grids) — so the order lives entirely in the
+markup and the test, which is where a layout claim has to live to survive the next edit.
+
 ## The CPU serve rows moved to the end of the first screen — "is the embedder answering" is asked in the same breath as the four rates
 
 The embeddings and rerank cards sat at the bottom of the Hardware screen — the fourth one — away from the

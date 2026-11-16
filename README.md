@@ -613,7 +613,8 @@ Flash-Next configuration needs about 120 GB of host RAM; eight-card runs on a 12
 The page is in four screens, and the order is the order the questions get asked (2026-11-15, restated by the
 operator and pinned by `tests/test_webui.py`): **Now** — the engine's counters and the four rates, with two
 one-line states in the same strip as the freshness stamp: `Answering / Loading / Gone / Wedged` and
-`Door open / Door held`; at the end of that screen, the embeddings and rerank serve rows. **Recent** — the
+`Door open / Door held`; as that screen's second row — under the engine's own counters, above the four rates —
+the embeddings and rerank serve rows. **Recent** — the
 activity waveforms, the admission gate's 15-minute history and counters, the last request's numbers, and the
 per-request means vLLM only reports as averages. **Requests** — the list, and
 each row says only what a row has to: time, its own prefill and decode tok/s, `prompt → output` tokens, first
@@ -621,10 +622,13 @@ token and whole-request seconds, and its id; the spans in seconds live in the de
 when it is not what it should be, and the crowding chip appears only above 1.5 streams. **Hardware** — the cards
 with the chain behind each, and below them engine state and what the driver has faulted on.
 
-The embeddings/rerank rows moved from Hardware to the end of Now on 2026-11-16, and the reason they had been filed
-under hardware is worth keeping: never the CPU, always the memory red line (the GGUFs map clean, every serve's KV
-pool is anon, and `Committed_AS` is the number the 2026-11-01 wedge was about). That reason does not move with the
-row — the memory half of each serve card is still read against the card grid on the fourth screen.
+The embeddings/rerank rows moved from Hardware to the first screen on 2026-11-16, and one ask later they sit as its
+second row rather than its last: read with the vitals, not under the inference throughput. The reason they had been
+filed under hardware is worth keeping: never the CPU, always the memory red line (the GGUFs map clean, every serve's
+KV pool is anon, and `Committed_AS` is the number the 2026-11-01 wedge was about). That reason does not move with the
+row — the memory half of each serve card is still read against the card grid on the fourth screen. Nothing in the CSS
+depends on which row it is (the rows size themselves), so "second" is pinned only by the tests: row 1 and row 3 are
+named in the same claim, which is what makes it mean second.
 
 Two things are deliberately *not* moved by that rule. The alarm row went to the fourth screen because it is read to
 decide about a card, not about a request — but the one read that has to stay where the rates are is the engine's

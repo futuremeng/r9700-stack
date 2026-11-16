@@ -3402,12 +3402,14 @@ ck("the hardware screen carries the fault information BELOW the cards it describ
    and _wh.index('id="gpus"') < _wh.index('id="watchdog"')
    and _wh.index('id="death-line"') > _wh.index('id="gpus"')
    and _wh.index('id="sidecars"') < _wh.index('id="band-hardware"'), str(_scr))
-# ...and the CPU serves sit at the END of the first screen, after the rates and before the Recent band: not
-# promoted into the four headline cards (they are not the engine), and not two screens away from them either.
-ck("the CPU sidecar row is the last row of the first screen -- after the rates, before the Recent band",
+# ...and the CPU serves sit as the SECOND row of the first screen: under the engine's own counters, above the
+# four rates (asked 2026-11-16, one minute after they left the fourth screen -- they are read with the vitals, not
+# with the inference throughput). Row 1 and row 3 are pinned too, so "second" means second: they are not promoted
+# into the four headline rate cards, and they do not slide back below the rates.
+ck("the CPU sidecar row is the SECOND row of the first screen -- under the engine counters, above the rates",
    _scr[:3] == ["now", "now", "now"]
-   and _wh.index('class="grid grid--4 grid--rates scr-now"') < _wh.index('id="sidecars"')
-   < _wh.index('id="band-recent"'), str(_scr[:4]))
+   and _wh.index('class="grid grid--4 engine scr-now"') < _wh.index('id="sidecars"')
+   < _wh.index('class="grid grid--4 grid--rates scr-now"'), str(_scr[:4]))
 # What did NOT move down: one state read stays beside the rates, on the first screen. Measured, not preferred --
 # on 2026-11-15 the four headline rates kept printing plausible numbers for 26 minutes while /health was silent
 # and three ranks held ~29 GiB each.

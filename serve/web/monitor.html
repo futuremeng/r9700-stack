@@ -162,6 +162,33 @@ sidecar has only been up a few minutes - the label says what was averaged.">1 h<
       <span class="small" id="door-note">—</span>
     </span>
   </div>
+  <!-- The CPU sidecars that came in through the same port (serve/gateway.py), as the SECOND row of the first
+       screen: under the engine's own counters, above the four rates. They answer a NOW question -- is the
+       embedder answering, how fast, is it falling over -- and the operator asked for them read right after the
+       engine's vitals rather than below the numbers that describe inference. What makes them hardware-adjacent was never the CPU, it is the memory red line: the GGUFs map clean,
+       but every serve's KV pool is anon, and Committed_AS is the number the 2026-11-01 wedge was about
+       (notes/load-oom-svm-wedge.md); the memory half of each card is still read against the card grid, which
+       stays on the Hardware screen. Built from GET /api/sidecars, which only the gateway answers -- the page is
+       also reachable on the engine's own port, where that route does not exist, and there the section hides
+       itself. -->
+  <section class="grid grid--4 sidecars scr-now" id="sidecars" hidden>
+
+    <div class="card" id="embed-card">
+      <div class="label"><span class="dot" id="embed-dot"></span><span id="embed-name">Embed</span> · CPU</div>
+      <div class="value" id="embed-rate">—<span class="unit">tok/s</span></div>
+      <div class="small slot slot--lead" id="embed-args">—</div>
+      <div class="small slot" id="embed-slots">—</div>
+      <div class="small slot" id="embed-mem">—</div>
+    </div>
+    <div class="card" id="rerank-card">
+      <div class="label"><span class="dot" id="rerank-dot"></span><span id="rerank-name">Rerank</span> · CPU</div>
+      <div class="value" id="rerank-rate">—<span class="unit">tok/s</span></div>
+      <div class="small slot slot--lead" id="rerank-args">—</div>
+      <div class="small slot" id="rerank-slots">—</div>
+      <div class="small slot" id="rerank-mem">—</div>
+    </div>
+  </section>
+
   <!-- Four rate cards, three SLOT lines each. A slot is a fixed line that never wraps: it ellipsizes and puts
        its full text in the title. That is deliberate. These lines carry numbers whose WIDTH changes every poll
        (13 tok/s, then 5,417 tok/s, then 13.6k), and a line that wraps when the number grows taller moves every
@@ -200,32 +227,7 @@ sidecar has only been up a few minutes - the label says what was averaged.">1 h<
       <div class="small slot" id="poll-step">—</div>
     </div>
   </section>
-  <!-- The CPU sidecars that came in through the same port (serve/gateway.py), at the END of the first screen:
-       they answer a NOW question -- is the embedder answering, how fast, is it falling over -- the same way the
-       four rates do, and the operator asked for them beside the engine's own numbers rather than two screens
-       down. What makes them hardware-adjacent was never the CPU, it is the memory red line: the GGUFs map clean,
-       but every serve's KV pool is anon, and Committed_AS is the number the 2026-11-01 wedge was about
-       (notes/load-oom-svm-wedge.md); the memory half of each card is still read against the card grid, which
-       stays on the Hardware screen. Built from GET /api/sidecars, which only the gateway answers -- the page is
-       also reachable on the engine's own port, where that route does not exist, and there the section hides
-       itself. -->
-  <section class="grid grid--4 sidecars scr-now" id="sidecars" hidden>
 
-    <div class="card" id="embed-card">
-      <div class="label"><span class="dot" id="embed-dot"></span><span id="embed-name">Embed</span> · CPU</div>
-      <div class="value" id="embed-rate">—<span class="unit">tok/s</span></div>
-      <div class="small slot slot--lead" id="embed-args">—</div>
-      <div class="small slot" id="embed-slots">—</div>
-      <div class="small slot" id="embed-mem">—</div>
-    </div>
-    <div class="card" id="rerank-card">
-      <div class="label"><span class="dot" id="rerank-dot"></span><span id="rerank-name">Rerank</span> · CPU</div>
-      <div class="value" id="rerank-rate">—<span class="unit">tok/s</span></div>
-      <div class="small slot slot--lead" id="rerank-args">—</div>
-      <div class="small slot" id="rerank-slots">—</div>
-      <div class="small slot" id="rerank-mem">—</div>
-    </div>
-  </section>
 
   <div class="band" id="band-recent">
     <h2>Recent</h2><span class="small">the last hour of this launch — waveforms, the last request, and the means the engine only reports as averages</span>

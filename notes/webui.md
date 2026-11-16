@@ -1834,15 +1834,19 @@ mine in" has to be distinguishable without scrolling.
 The CPU serve rows moved up, and they are the one row whose screen was chosen for the wrong reason. They had been
 put at the bottom of the Hardware screen because of their memory: the GGUFs map clean, but every serve's KV pool is
 anon, and `Committed_AS` is the number the 2026-11-01 wedge was about (notes/load-oom-svm-wedge.md). On 2026-11-16
-the operator asked for them at the end of the first screen instead — "is the embedder answering, how fast, is it
-falling over" is asked in the same breath as the four rates, and three scrolls away is where nobody reads it. The
+the operator asked for them on the first screen instead — "is the embedder answering, how fast, is it falling over"
+is asked in the same breath as the four rates, and three screens away is where nobody reads it. One ask later they
+moved again, from the last row to the **second**: under the engine's counters, above the four rates. Read with the
+vitals, not under inference throughput. The
 reason they were filed under hardware survives the move: the memory half of each card is still read against the card
 grid on the fourth screen. What changed in the tests is the interesting part, because it is what a re-layout actually
 costs: the Hardware pin that read `gpus < watchdog < sidecars` was a claim about the OLD plan, so it became
-`_scr[-2:] == [hardware, hardware]` plus `sidecars < band-hardware`, and a new pin says the row is the last row of
-the first screen (`_scr[:3] == [now, now, now]`, rates row before it, Recent band after it). Both directions are
+`_scr[-2:] == [hardware, hardware]` plus `sidecars < band-hardware`, and a new pin says the row is the second row of
+the first screen — and it names the other two rows to do it (`engine` row before it, `grid--rates` row after it,
+with `_scr[:3] == [now, now, now]`), because "second" is only checkable against its neighbours. Both directions are
 pinned: it cannot drift back down, and it cannot creep into the four headline rate cards, which are the engine's and
-not theirs. The trade taken is honest to name — the first screen grew by one row (~136 px), so the GPU grid and the
+not theirs. Nothing in the CSS cares which row it is — the rows size themselves — so the ordering is a test claim and
+not a style claim, which is the way this page keeps its layout from drifting. The trade taken is honest to name — the first screen grew by one row (~136 px), so the GPU grid and the
 fault row are further down than they were; the protection for "the rates look fine and the engine is not" is the
 `Answering / Loading / Gone / Wedged` chip in the window bar, which is exactly why that chip stayed up here when the
 alarm row moved down.
