@@ -1854,3 +1854,92 @@ The generalisation, which this file has now written down about four times in fou
 set of claims about what the reader is asking**, and every one of them has to be checkable without a browser. Bands
 and screen classes, chips instead of panels for the reads that must stay near the numbers, and a render harness that
 compares each rendered element to the payload that produced it.
+
+## An attached journal is a live file: the request list was 8.9 hours old, and a context-size card would have lied with it (2026-11-16)
+
+The Monitor's request list is not only what the page shows — `shared_decode` (the crowding chip) and now
+`length_stats` (the context-size card) are computed from those rows. So when the standalone sidecar on this box
+reported a list whose newest row started **32,117 s (8.9 h) earlier**, while the engine's own journal tail was
+**1.2 s** old, the page was not merely stale: every derived read on it described a launch that had already ended.
+
+The cause was one line of design that had outlived its reason. `Journal` is replayed in `Records.__init__` — at
+construction — and nothing read the attached file again. That was harmless while the only Monitor was the one
+running *inside* the serve (its rows arrive from the engine's stat logger, and its journal is its own). It became a
+bug on 2026-11-15 when the page moved to a standalone sidecar on `:8181` that **attaches** the engine's journal
+read-only, which is the whole point of that arrangement: keep answering after the engine dies. Attaching without
+following means "I will show you the launch as it was when I started".
+
+`Journal.follow()` is the missing half, and it is deliberately unclever in three ways:
+
+* **Whole lines only.** A line with no trailing newline is either the one being written right now or the one a hard
+  reset cut in half (this box hard-resets without a shutdown record; that is why the journal exists). It stays at
+  the offset and is re-read next beat. Inventing a request out of half a JSON object is the one thing a request
+  list must never do.
+* **Bytes, in binary mode.** The journal carries non-ASCII model names and paths; a text-mode *character* offset
+  drifts, and the drift shows up as either re-read rows or skipped ones. The test appends a row after a non-ASCII
+  row precisely to keep that honest.
+* **A smaller file means re-anchor, not seek past.** The owner rotates at 8 MiB (`_compact`). A byte range counted
+  against a rewritten file means nothing; the reader starts near the tail again and `Records.absorb()` dedupes on
+  `(boot, seq)`, so overlap is expected rather than doubled. A row with no `seq` cannot be placed or deduped and is
+  dropped — same judgement `replay()` applies to a line it cannot trust.
+
+`journal.followed` rides the payload, because "is this list live?" should be answerable from the payload and not
+from whether the page happens to be moving. It is the same rule the page already applies to the recipe file
+(`meta_mtime`) and to the version header (`version_src`): a Monitor that outlives the thing it describes has to say
+**which** launch it is talking about.
+
+## Context size, printed rather than enforced: prompt sent vs uncached (2026-11-16)
+
+Asked what the policy for long and short requests is, the honest answer is that there isn't one: one port, one
+pool, every request may declare up to `--max-model-len`, and the front door reads a header and nothing else. Which
+makes the client's context cap the knob, and a knob cannot be turned from a page that prints only throughput. So the
+page prints the cost.
+
+The card's central claim, and the reason the two histograms share their bands: **`prompt_tokens` is traffic,
+`prompt_tokens - cached_tokens` is work.** Measured on this box while building it:
+
+| probe | prompt | first token | note |
+|---|---|---|---|
+| cold, unique content | 40,875 tok | **5.03 s** | 8,126 tok/s of prefill |
+| same content again | 40,875 tok | **0.35 s** | the cache had it |
+| cold, unique content | 186,739 tok | **26.26 s** | 7,110 tok/s |
+| same content again | 186,739 tok | **0.69 s** | 38x cheaper |
+
+And the externalities, with 6 short data-processing requests running alongside:
+
+| cold ~165k streams in parallel | last dev first token | short-class first token (median) | dev aggregate decode |
+|---|---|---|---|
+| 1 | 22.3 s | 0.8 s | 17.2 tok/s |
+| 2 | 46.7 s | 23.3 s | 18.7 tok/s |
+| 3 | 69.7 s | 45.3 s | 22.1 tok/s |
+
+They **serialize** — 23 s, 47 s, 70 s is one 23-second prefill and then another — so there is no throughput to be
+won by sending three cold contexts at once (aggregate decode moves 17 → 22 tok/s) while the short class pays 0.8 s
+→ 45 s for the privilege. Through the whole storm the KV pool peaked at 18% and `num_preemptions_total` did not
+move at all, which is the same fact the admission gate's v2 rewrite found from the other direction: on this model
+the damage is step-budget and queueing, not the pool. The launch's prefix cache reused 79.2% of queried prompt
+tokens (41.79M of 52.80M), which is why the uncached histogram is the one worth reading.
+
+The band edges are claims, and `tests/test_webui.py` fails if they move without the test moving: **1k** is
+`R9K_GDN_PREFILL_MAX` and also the median request on a data-processing day; **8k** is
+`--max-num-batched-tokens`, i.e. the first band whose prefill cannot hide inside one step; **32k** was this
+recipe's `--max-model-len`; **128k** is the client cap under discussion; **256k** is the window edge (a 262,144-token
+request lands in the overflow band, because a request that used the entire window should be visible as one).
+
+Three refusals, each of which changes an answer someone might act on:
+
+* **A missing `cached_tokens` is not a cache miss.** It is counted in `cached_unknown` and kept out of the uncached
+  histogram. Reading it as zero reports a 150k-token miss that may never have happened — and that is exactly the
+  direction a "should I cap my context?" decision goes wrong.
+* **`cached > prompt` is clamped to zero uncached and the clamp is counted**, not left negative.
+* **No invented constants.** The seconds estimate is `uncached / timings.prefill_s`, measured from these rows — and
+  only over rows at or above one step, because over *all* rows the division reads **1,600-3,050 tok/s** on this
+  box's journals (a 300-token prompt's `prefill_s` is scheduling, not computing) against **7,220-8,314 tok/s** over
+  the throughput-bound ones. The first number overstates what a cold context costs by 2-5x. It also independently
+  agrees with the 7,238 tok/s that [context-262k.md](context-262k.md) measured by a different route.
+
+The card also says what its sample is — the rows in the list, over a stated span — because `p99` over 100 rows is
+one request, and a card that implies an afternoon sells a smoother story than the sample gives. `--sizes` in
+`tools/monitor-fixture.py` exists because the newest rows on this box are 24-token pings: a fixture built from them
+fills one band and lets the tail rot unchecked. `--no-lengths` renders the older-payload arm, where the card must be
+**hidden** rather than zero-filled — an empty-looking context card reads as "this traffic is all short".

@@ -627,6 +627,25 @@ went silent while three ranks held ~29 GiB each. And the serve-down banner (`the
 answering — here is the command to bring it back`) sits above the first screen rather than inside the request list,
 where it used to be three screens down.
 
+At the top of the Requests screen sits the card that answers **what a context costs**, because this serve imposes no
+length policy and that is a choice, not an omission: one port, one pool, `--max-model-len` is the only hard edge,
+and the front door's single length-adjacent rule is a header read. So the size of a context is the **client's**
+decision, and the page prints the cost instead of the server gaining a limit. Two histograms share their bands —
+`prompt_tokens`, and `prompt_tokens - cached_tokens` — because prompt size is traffic and the difference is work.
+Measured while building it: one 186,739-token context cost **26.3 s cold and 0.69 s warm**, cold prefills of ~165k
+**serialize** (last first token at 22 s, 47 s, 70 s for one, two, three of them, aggregate decode 17 → 19 → 22
+tok/s) and the short requests beside them waited **0.8 s, 23 s, 45 s** — all of it with the pool peaking at **18%**
+and zero preemptions. What that says about a cap: the launch boots printing `GPU KV cache size: 902,153 tokens,
+Maximum concurrency for 262,144 tokens per request: 3.44x`; a client capped at 128k turns the same memory into
+6.88x and halves the worst-case per-request commitment, and the cold-prefill tax per task drops from ~23 s to
+~17-18 s. Changing the engine's `--max-model-len` buys no memory (497,588 tokens at 32k, 902,153 at 262k — the pool
+is free HBM and `--max-num-batched-tokens`, not MAXLEN), so the cap belongs on the client. A missing `cached_tokens`
+is counted apart rather than read as a miss, and the seconds estimate is measured from the rows' own `prefill_s`
+over only the rows big enough to be throughput-bound (7,220-8,314 tok/s — over all rows the same division reads
+1,600-3,050 and would overstate a cold context by 2-5x). The list this summarizes follows the engine's journal live:
+an ATTACHED journal used to be replayed once at startup, which left the front door's request list 8.9 hours old
+under numbers that moved every second.
+
 
 <p align="center">
   <a href="docs/r9700-stack-monitor.png"><img src="docs/r9700-stack-monitor.png" alt="The Monitor page: engine state and the KV pool, request counts at the engine, generation and speculation, every card's busy% and VRAM, the engine's timings over the poll window, and the request list with each request's own wall clock, token counts and prefill"></a>

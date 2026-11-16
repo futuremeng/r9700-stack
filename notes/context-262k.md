@@ -595,3 +595,52 @@ Roll back to the 32k recipe: `STOP=1 bash serve/native-flashnext.sh` then
 `MAXLEN=32768 NSEQ=32 NBT=8192 WEBUI=same bash serve/native-flashnext.sh`.
 Logs: `~/logs/ctx262k-final-045115.log.out` (262k, recipe defaults), `~/logs/ctx262k-nseq32-041130.log.out`,
 `~/logs/ctx262k-035005.log.out` (NSEQ=4 / PREFIX_CACHE=1), `~/logs/lpt-044037.log.out` (long-prefill A/B).
+
+## Capacity as a function of the CLIENT's cap, not the engine's (2026-11-16)
+
+Asked how much room there is for long-context work, the two numbers people reach for are the wrong pair. Memory is
+not the binding constraint, and the engine's `--max-model-len` is not the knob that buys it.
+
+**Memory, from the launch's own boot line** (`logs/setup-132052.log`):
+
+```
+GPU KV cache size: 902,153 tokens, Maximum concurrency for 262,144 tokens per request: 3.44x
+kv cache group sizes (832, 832, 832, 832, 8, 832) | kv lcm block sizes 832
+```
+
+Same memory, different client cap: 902,153 / 131,072 = **6.88x**. The worst-case commitment per request halves
+(29% of the pool to 14.5%), and the pool-stop shape this note chased (a batch of ~110k prompts walking the pool to
+its line) loses half its teeth. **Raising or lowering `--max-model-len` does not buy the pool**: 497,588 tokens at
+MAXLEN 32,768 vs 902,153 at 262,144 (540,202 on the identical run a day earlier — it moves with weights and
+activation memory, which the memory-profiling run bounds at `--max-num-batched-tokens`, not at MAXLEN). So a cap
+belongs on the client, and the engine stays at 262,144 because real traffic here has already contained a 227,421-token
+request that a 128k engine would answer with a 400.
+
+**Time is the constraint, and it is cold prefill.** Measured on the live box, unique content each time:
+
+| probe | prompt tokens | first token | implied prefill |
+|---|---|---|---|
+| cold | 40,875 | 5.03 s | 8,126 tok/s |
+| same content, warm | 40,875 | 0.35 s | — |
+| cold | 186,739 | 26.26 s | 7,110 tok/s |
+| same content, warm | 186,739 | 0.69 s | — |
+
+With six short data-processing requests running alongside, N cold ~165k streams:
+
+| N | last dev first token | short-class first token | dev aggregate decode | pool peak | preemptions |
+|---|---|---|---|---|---|
+| 1 | 22.3 s | 0.8 s | 17.2 tok/s | <18% | 0 |
+| 2 | 46.7 s | 23.3 s | 18.7 tok/s | <18% | 0 |
+| 3 | 69.7 s | 45.3 s | 22.1 tok/s | <18% | 0 |
+
+They **serialize** (23 s per cold context, one after another), so parallel cold long contexts buy no throughput
+(17 → 22 tok/s) and cost the short class a factor of ~50 in time-to-first-token. Reading 17-23 tok/s here is not a
+regression against this note's 157.7 tok/s alone: these rows shared the box with ~18 background streams, and
+`shared_decode` in [webui.md](webui.md) exists to make that explicit rather than arguable.
+
+The consequence for how much long-context work to run at once, stated as the arithmetic rather than as a rule:
+a cold 128k context costs ~17-18 s of step budget, a cold 165k ~23 s, and a warm one (same session, same document —
+79% of queried prompt tokens are reused on this launch) costs under a second. **Two cold** dev tasks is the point
+aggregate decode still holds (~238 tok/s at two long streams against ~68 at three, measured earlier in this note);
+**4-5 warm** sessions is fine and is limited by memory rather than by time. A client cap at 128k does not change
+the two; it shortens each cold start by ~25% and halves the worst-case pool claim.

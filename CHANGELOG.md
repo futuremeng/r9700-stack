@@ -1,5 +1,60 @@
 # Changelog
 
+## The Monitor prints what a context costs — prompt sent and the part the cache did NOT have — and the front door's request list stopped being 8.9 hours old
+
+The serve imposes no length policy, and that is deliberate: one port, one pool, `--max-model-len` is the only hard
+edge, and the front door's single length-adjacent rule is a header read (`Content-Length <= 8 KiB` passes a shut
+door). Which means the knob that decides how big a context gets is the **client's** — and a client cannot pick one
+from a page that prints only throughput. So the Monitor gained a card that prints the cost instead of the server
+gaining a limit: two histograms sharing their bands, one for `prompt_tokens` and one for `prompt_tokens -
+cached_tokens`, plus the cold total, the prefill rate it was measured at, what that costs in step-seconds, and the
+id of the biggest cold context in the list.
+
+The second histogram is the whole point. `prompt_tokens` is traffic; the difference is work. Measured on this box
+while building the card: one 186,739-token context cost **26.3 s cold and 0.69 s warm**; cold prefills of ~165k
+**serialize** — the last of one, two and three of them saw its first token at 22 s, 47 s and 70 s (aggregate
+decode barely moved: 17, 19, 22 tok/s) — and the six short data-processing requests running alongside waited
+**0.8 s, 23 s and 45 s** for theirs. Through all of that the pool peaked at **18%** and
+`num_preemptions_total` never moved once, and the launch's own prefix cache reused **79%** of queried prompt
+tokens (41.79M of 52.80M). A length distribution that prints prompt size ranks the harmless rows and the expensive
+ones in the same list; it cannot even see the difference between a 150k context that is already resident and one
+that is not.
+
+Three refusals, because the decision this feeds is "should I cap my client at 128k", and the easy implementation
+biases that answer. A row with no `cached_tokens` is counted apart and kept out of the uncached histogram —
+a missing count is not a cache miss. `cached > prompt` is clamped to zero and the clamp is reported. The seconds
+estimate is measured from the rows themselves (`uncached / timings.prefill_s`) over only the rows big enough to be
+throughput-bound: over ALL rows that division reads 1,600-3,050 tok/s on this box's journals (a 300-token prompt's
+`prefill_s` is scheduling, not computing) and would overstate what a cold context costs by 2-5x; over rows at or
+above one step (8,192 = `--max-num-batched-tokens`) it reads **7,220-8,314 tok/s**, which is the same number
+[notes/context-262k.md](notes/context-262k.md) measured independently by a different route (7,238 above 160k).
+
+What the card is for, stated in the numbers it prints: the launch boots with `GPU KV cache size: 902,153 tokens,
+Maximum concurrency for 262,144 tokens per request: 3.44x`. Capping the client at 128k turns that same memory into
+6.88x, and halves the worst-case per-request commitment (29% of the pool to 14.5%) — while changing the engine's
+`--max-model-len` buys no memory at all (the pool is set by free HBM and `--max-num-batched-tokens`: 497,588
+tokens at 32k, 902,153 at 262k, measured). The cold-prefill cost, which is what actually puts seconds in front of
+everyone else, scales with the cap: ~23 s per ~165k, ~17-18 s per 128k.
+
+Getting the card to describe the present needed a bug fixed first. The standalone Monitor ATTACHES the merged
+monitor's journal read-only and **replayed it once, at startup** — so on 2026-11-16 the front door's request list
+was showing rows **8.9 hours** old while every number above it updated every second (the engine's own journal tail
+was 1.2 s old at that same moment). Anything derived from the list inherits that freeze, so the crowding chips and
+this card would have described a launch that was not running. `Journal.follow()` now reads what the other process
+appended: whole lines only (a line with no trailing newline is the one being written now, or the one a hard reset
+cut in half, and waits a beat), byte offsets in binary (this journal carries non-ASCII model names; a character
+offset drifts into re-reading or skipping rows), re-anchor near the tail when the file gets smaller (rotation),
+and `Records.absorb()` dedupes on `(boot, seq)` so overlap is expected rather than doubled. `journal.followed` rides
+the payload so "is this list live?" is answerable without watching the page move.
+
+`tests/test_webui.py` pins the band edges, both exclusion rules, the clamp, the throughput-bound rate, the
+follow/absorb rules (torn line, non-ASCII, rotation, dedupe, owned-journal) and the card's place at the top of the
+Requests screen. `tools/monitor-fixture.py --sizes` builds a sample that COVERS the bands — the newest rows on this
+box are 24-token pings, so a fixture of newest-N checks one band and lets the tail rot unchecked — and `--no-lengths`
+renders a payload with no block so the card is proven HIDDEN rather than zero-filled. `tests/render-monitor.mjs`
+recounts the chips from the rows the page was fed, not from the summary it was fed: the card's claim is that it
+describes the list beside it.
+
 ## The Monitor re-planned into four screens — Now, Recent, Requests, Hardware — and the request rows cut to what a row has to carry
 
 The hardware error row moved off the first screen at the operator's request, and with it the per-card sensors, the
