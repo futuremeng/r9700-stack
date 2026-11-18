@@ -1005,6 +1005,14 @@ these numbers runs.
    CTX=262k bash serve/native-flashnext.sh                 # 262,144 window, images on, 16 streams
    CTX=1m bash serve/native-flashnext.sh                   # 1,048,576: images off, NSEQ=1, one request at a time
    ```
+   The serve answers exactly one name -- **`SuperVL`** -- and there is deliberately no `Qwen3.8` alias: a client still
+   sending the old string believes it is wired to a model this box does not run, and vLLM's refusal (`The model \`X\` does
+   not exist.`, with no list of what it does serve) is the honest end of that. Every bench and tool asks by reading
+   `/v1/models` (`bench/served_model.py`), with `MODEL=<name>` as the override for an A/B against a second engine; the
+   name is never remembered in a source file (`tests/test_served_names.py`).
+   ```bash
+   curl -s localhost:8080/v1/models | jq -r '.data[].id'   # what to ask for, straight from the serve
+   ```
    The Qwen3.8-Flash-Next launch -- four cards, the checkpoint's full 262k context, and the fp8 main KV the launcher
    now defaults, with Monitor and About on the serve's own port -- is one `MODEL=` away; its stored launch config is
    parked in `~/.config/r9700-stack/launches-available/262k.json` so the store holds exactly one standing launch.

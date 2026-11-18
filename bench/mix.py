@@ -2,8 +2,11 @@
 """conc-8 aggregate by workload mix on one server: 8 copies of one prompt type vs the mixed probe set.
 usage: mix.py [URL] [-v] [--only=code,mixed4]
 Separates prompt diversity (distinct experts streamed per step with offloaded experts) from prompt type."""
-import json, sys, time, threading, urllib.request, random, statistics as st
+import json, os, sys, time, threading, urllib.request, random, statistics as st
 B = next((a for a in sys.argv[1:] if a.startswith("http")), "http://localhost:8080")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from served_model import resolve          # the model name comes from the serve, never from this file
+MODEL = resolve(B)
 P = {
  "code": "Write a Python class implementing an LRU cache with type hints, docstrings and unit tests.",
  "prose": "Write a long, vivid short story about a lighthouse keeper during a storm.",
@@ -12,7 +15,7 @@ P = {
  "harness": "Explain concept number 0: describe tensor parallelism in depth.",
 }
 def req(p, n=256):
-    b = {"model": "Qwen3.8", "messages": [{"role": "user", "content": p}], "max_tokens": n, "temperature": 0,
+    b = {"model": MODEL, "messages": [{"role": "user", "content": p}], "max_tokens": n, "temperature": 0,
          "ignore_eos": True, "chat_template_kwargs": {"enable_thinking": False}}
     return json.loads(urllib.request.urlopen(urllib.request.Request(B + "/v1/chat/completions",
         json.dumps(b).encode(), {"Content-Type": "application/json"}), timeout=900).read())["usage"]["completion_tokens"]

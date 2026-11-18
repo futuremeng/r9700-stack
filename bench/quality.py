@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fast quality gate for an OpenAI-compatible server: GSM8K subset (no thinking) + needle-in-haystack.
 
-usage: quality.py [N_GSM8K=100] [CONC=8] [BASE=http://localhost:8080] [MODEL=Qwen3.8]
+usage: quality.py [N_GSM8K=100] [CONC=8] [BASE=http://localhost:8080] [MODEL=<the serve's first id>]
 Prints accuracy and needle hits; exit 0. Deterministic (temperature 0) so two stacks can be compared.
 """
 import concurrent.futures as cf
@@ -16,7 +16,9 @@ import urllib.request
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 100
 CONC = int(sys.argv[2]) if len(sys.argv) > 2 else 8
 BASE = (sys.argv[3] if len(sys.argv) > 3 else "http://localhost:8080") + "/v1/chat/completions"
-MODEL = sys.argv[4] if len(sys.argv) > 4 else "Qwen3.8"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from served_model import resolve          # the model name comes from the serve, never from this file
+MODEL = sys.argv[4] if len(sys.argv) > 4 else resolve(BASE)
 
 
 def chat(content, max_tokens):

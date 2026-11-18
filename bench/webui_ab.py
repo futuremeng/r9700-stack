@@ -42,13 +42,15 @@ import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "serve"))
+sys.path.insert(0, os.path.join(ROOT, "bench"))
 import webui as W  # noqa: E402
+from served_model import resolve  # noqa: E402  (the model name comes from the serve, never from this file)
 
 ARGS = sys.argv[1:]
 N = int(next((ARGS[i + 1] for i, a in enumerate(ARGS) if a == "--n"), 25))
 FAKE = "--fake" in ARGS
 URL = next((a for a in ARGS if a.startswith("http")), "http://127.0.0.1:8080")
-MODEL = os.environ.get("MODEL_NAME", "Qwen3.8")
+MODEL = os.environ.get("MODEL_NAME") or resolve(URL)
 TIERS = [int(t) for t in next((ARGS[i + 1] for i, a in enumerate(ARGS) if a == "--tiers"),
                               "45,1500,3000").split(",")]
 SHAPE = next((ARGS[i + 1] for i, a in enumerate(ARGS) if a == "--shape"), "all")

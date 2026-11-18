@@ -24,7 +24,7 @@ import threading
 import time
 import urllib.request
 
-MODEL = "Qwen3.8"
+MODEL = os.environ.get("MODEL")      # unset -> resolved from the serve this run is pointed at (see run())
 ESSAY = "Write a detailed 300-word essay about the history of computing."
 
 
@@ -112,6 +112,11 @@ def _stats(xs):
 
 
 def run(a):
+    global MODEL
+    if not MODEL:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from served_model import resolve      # the model name comes from the serve, never from this file
+        MODEL = resolve(a.base)
     base, reps = a.base, a.reps
     one(base, "hi", 4)                                                  # connection + graph warm
     metrics = {}

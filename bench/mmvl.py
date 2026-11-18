@@ -24,7 +24,9 @@ import urllib.error
 import urllib.request
 
 BASE = os.environ.get("BASE", "http://localhost:8080")
-SERVED = os.environ.get("SERVED_NAME", "SuperVL")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from served_model import resolve          # the model name comes from the serve, never from this file
+SERVED = os.environ.get("SERVED_NAME") or resolve(BASE)
 ONLY = {s.strip() for s in os.environ.get("ONLY", "").split(",") if s.strip()}
 DIR = os.path.expanduser("~/r9700-mm-vl")
 

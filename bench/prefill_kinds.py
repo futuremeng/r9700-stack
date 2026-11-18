@@ -12,6 +12,9 @@ usage: prefill_kinds.py [URL] [--text FILE] [--depths 8000,24000] [--reps 3] [-v
 import json, os, random, sys, time, urllib.request, statistics as st
 
 B = next((a for a in sys.argv[1:] if a.startswith("http")), "http://localhost:8080")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from served_model import resolve          # the model name comes from the serve, never from this file
+MODEL = resolve(B)
 def opt(name, default):
     return next((sys.argv[i + 1] for i, a in enumerate(sys.argv[:-1]) if a == name), default)
 TEXT = opt("--text", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "PROGRESS.md"))
@@ -37,7 +40,7 @@ def ask(kind, chars):
     """-> (prompt_tokens, ttft_s) for one request; 2 output tokens, streamed."""
     msg = f"[{random.getrandbits(48):012x}] Read the following context, then reply with the single word: ack.\n\n" \
           f"{body(kind, chars)}\n\nReply with one word: ack."
-    b = {"model": "Qwen3.8", "messages": [{"role": "user", "content": msg}], "max_tokens": 2, "temperature": 0,
+    b = {"model": MODEL, "messages": [{"role": "user", "content": msg}], "max_tokens": 2, "temperature": 0,
          "stream": True, "stream_options": {"include_usage": True}, "chat_template_kwargs": {"enable_thinking": False}}
     t0 = time.perf_counter(); first = None; pt = 0
     with urllib.request.urlopen(urllib.request.Request(B + "/v1/chat/completions", json.dumps(b).encode(),

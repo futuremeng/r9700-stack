@@ -20,6 +20,7 @@ actually cost is printed from the serve's own usage.prompt_tokens. A ~0 token pr
 not one that stays queued.
 """
 import json
+import os
 import random
 import subprocess
 import sys
@@ -30,6 +31,9 @@ import urllib.request
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 8
 TOKENS = int(sys.argv[2]) if len(sys.argv) > 2 else 30000
 BASE = (sys.argv[3] if len(sys.argv) > 3 else "http://127.0.0.1:8080").rstrip("/")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from served_model import resolve          # the model name comes from the serve, never from this file
+MODEL = resolve(BASE)
 OUT = sys.argv[4] if len(sys.argv) > 4 else "docs/r9700-stack-monitor-cards.svg"
 # The kept poll lives next to the figure it produced, in the repo: "drawn from a live poll" is only checkable if
 # the poll itself is checkable. Re-running the figure is then `python3 docs/monitor-cards.py
@@ -46,7 +50,7 @@ def get(path):
 
 
 def post(prompt):
-    body = json.dumps({"model": "Qwen3.8", "max_tokens": MAXOUT, "stream": False,
+    body = json.dumps({"model": MODEL, "max_tokens": MAXOUT, "stream": False,
                        "messages": [{"role": "user", "content": prompt}]}).encode()
     req = urllib.request.Request(BASE + "/v1/chat/completions", data=body,
                                  headers={"Content-Type": "application/json"})

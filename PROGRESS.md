@@ -3430,6 +3430,13 @@ What is owed after this:
   `refusing to launch: 4 vLLM process(es) still holding the GPUs`). Deaths that clear their ranks restart fine;
   that class needs a `STOP=1` or a human. The guard is right about live serves and wrong about a dead launch's
   own stale ranks, and the record already knows the difference (its /health answered dead).
-- **Owed for clients: the gateway has no model alias.** `serve/gateway.py` is a byte pipe, so a client still asking for
-  `Qwen3.8` gets an error rather than `SuperVL`. Either the clients change, or an alias layer gets written, or the box
-  serves Qwen.
+- **Decided 2026-11-18: this box serves exactly ONE name, `SuperVL`, and there is no `Qwen3.8` alias.** The engine's own
+  `--served-model-name` was the mechanism considered (vLLM accepts a list, `check_model` takes any of them, and
+  `/v1/models` would list them all) and several candidate names were weighed, but the box ships one: an alias that
+  names a different model is the same lie the standing-launch work of the same day was meant to end, and **no client was
+  actually being rejected** -- every log since the switch was scanned for vLLM's `does not exist` signature and there
+  were zero hits. What was stale was the tree's own tooling: sixteen files under `bench/` and `tools/` still posted
+  `"model": "Qwen3.8"`, and their 404s (which do not list what is served) read like a server bug mid-measurement. All of
+  them now read the name from `/v1/models` through `bench/served_model.py`, `MODEL=` overrides for A/B, and
+  `tests/test_served_names.py` guards the class of mistake. **Still owed: if some external client is found that must not
+  be reconfigured, its alias has to be an explicit, dated, logged decision -- not a silent mapping.**

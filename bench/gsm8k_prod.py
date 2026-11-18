@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 import os
 import json, re, sys, time, urllib.request, concurrent.futures as cf
-BASE=os.environ.get("PROD_BASE", "http://localhost:8000") + "/v1/chat/completions"; MODEL="Qwen3.8"
+BASE=os.environ.get("PROD_BASE", "http://localhost:8000") + "/v1/chat/completions"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from served_model import resolve          # the model name comes from the serve, never from this file
+MODEL=resolve(BASE)
 N=int(sys.argv[1]) if len(sys.argv)>1 else 200
 CONC=int(sys.argv[2]) if len(sys.argv)>2 else 8
 def load_gsm8k():

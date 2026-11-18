@@ -26,7 +26,9 @@ import urllib.request
 
 BASE = os.environ.get("BASE", "http://localhost:8080")
 IMG = os.environ.get("IMG", os.path.expanduser("~/r9700-mm-test.png"))
-SERVED = os.environ.get("SERVED_NAME", "Qwen3.8")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from served_model import resolve          # the model name comes from the serve, never from this file
+SERVED = os.environ.get("SERVED_NAME") or resolve(BASE)
 
 
 def img_part():

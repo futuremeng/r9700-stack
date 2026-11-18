@@ -5,8 +5,11 @@ ITL_BASE overrides the endpoint: on 2026-11-15 the box grew a gateway in front o
 127.0.0.1:8180), and the only way to show the hop costs nothing is to run the same bench down both paths."""
 import json, os, statistics, sys, threading, time, urllib.request
 BASE = os.environ.get("ITL_BASE", "http://localhost:8080/v1/chat/completions")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from served_model import resolve          # the model name comes from the serve, never from this file
+MODEL = resolve(BASE)
 def stream(i, out):
-    body = {"model": "Qwen3.8", "messages": [{"role": "user", "content": f"Topic {i}: write a long essay about rivers."}],
+    body = {"model": MODEL, "messages": [{"role": "user", "content": f"Topic {i}: write a long essay about rivers."}],
             "max_tokens": 150, "temperature": 0, "stream": True, "chat_template_kwargs": {"enable_thinking": False}}
     req = urllib.request.Request(BASE, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
     ts = []

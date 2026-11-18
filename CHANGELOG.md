@@ -182,6 +182,22 @@ MTP draft path reads that file rather than `config.json`'s `quantization_config`
   open and now the only sharp edge: `MAX_INPUT_TOKENS` is off, so whoever runs one of the deep profiles is letting a
   single client occupy the box for minutes.
 
+* **the box answers exactly one name, `SuperVL`, and there is no `Qwen3.8` alias -- what had gone stale was our own
+  tooling.** Aliases were worked through properly before being declined: vLLM's `--served-model-name` takes a list,
+  `check_model` accepts any entry and `/v1/models` advertises all of them, so `Nemotron-Super-VL-120B` (no quant suffix,
+  so it survives a repack) and the upstream model-card id were both available, with the first entry canonical because
+  the serving layer returns `base_model_paths[0].name`. One name shipped: every alias is a surface that has to stay true
+  across a model change, and `Qwen3.8` would have kept a client believing in a model this box does not run. The claim
+  that anything was broken was checked rather than assumed -- every log since the switch searched for vLLM's
+  `does not exist` refusal, **zero hits**. What was actually stale: **sixteen files under `bench/` and `tools/` still
+  posting `"model": "Qwen3.8"`**, whose 404s (which list nothing) read like a server bug in the middle of a measurement.
+  All of them now resolve through `bench/served_model.py` -- `MODEL=` if set, else the first id on `/v1/models` -- and
+  `bench/needle_long.py` additionally takes its **tokenizer** from the ModelCard's `root`, because an id from one model
+  and a tokenizer from another mis-counts every tier and errors nowhere. Verified end to end: `eval.py selftest`,
+  `warmup.py` and a 1,276-token needle tier all ran against `SuperVL` with no name given anywhere; `tests/test_served_names.py`
+  now forbids a literal name in `bench/`/`tools/`, asserts `/v1/models` answers exactly one id equal to the launcher's
+  `SERVED_NAME`, and proves the stale name is refused.
+
 ## The admission gate is now observe-only: the door could not re-open, its hold bought nothing, and it was charging the traffic that was not the problem
 
 The complaint was availability -- "long requests are being blocked, and the box feels less usable than before the

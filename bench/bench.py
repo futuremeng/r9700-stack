@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 import os, sys, time, json, urllib.request, threading, statistics
-BASE="http://localhost:8080/v1/chat/completions"; MODEL=os.environ.get("MODEL","Qwen3.8")
+BASE="http://localhost:8080/v1/chat/completions"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from served_model import resolve          # the model name comes from the serve, never from this file
+MODEL=resolve(BASE)
 def call(prompt, max_tokens, no_think=False):
     body={"model":MODEL,"messages":[{"role":"user","content":prompt}],"max_tokens":max_tokens,"temperature":0.0,"stream":False}
     if no_think: body["chat_template_kwargs"]={"enable_thinking":False}

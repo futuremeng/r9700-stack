@@ -12,6 +12,9 @@ usage: ttft_breakdown.py [URL] [LABEL]        (default http://localhost:8080; th
 env ITEMS=0,2,6,... picks the prompt lengths (about 45 + 20 tokens per item)."""
 import json, os, sys, time, urllib.request
 B = next((a for a in sys.argv[1:] if a.startswith("http")), "http://localhost:8080")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from served_model import resolve          # the model name comes from the serve, never from this file
+MODEL = resolve(B)
 lab = next((a for a in sys.argv[1:] if not a.startswith("http")), "diag")
 N = 15
 ITEMS = [int(v) for v in os.environ.get("ITEMS", "0,2,6,14,30,60").split(",")]   # ~45 + 20 tokens per item
@@ -31,7 +34,7 @@ def met():
 def ask(items, nonce, max_tokens=1):
     p = f"[{nonce}] Summarize in one sentence: " + " ".join(
         f"Item {i}: the quick brown fox jumps over the lazy dog near river bank {i}." for i in range(items))
-    b = {"model": "Qwen3.8", "messages": [{"role": "user", "content": p}], "max_tokens": max_tokens, "temperature": 0,
+    b = {"model": MODEL, "messages": [{"role": "user", "content": p}], "max_tokens": max_tokens, "temperature": 0,
          "chat_template_kwargs": {"enable_thinking": False}}
     t = time.time()
     u = json.loads(urllib.request.urlopen(urllib.request.Request(B + "/v1/chat/completions", json.dumps(b).encode(),

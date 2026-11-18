@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Prefill throughput with unique random prompts (no prefix-cache hits). usage: prefill.py [words ...]"""
-import json, random, sys, time, urllib.request
+import json, os, random, sys, time, urllib.request
 BASE = "http://localhost:8080/v1/chat/completions"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from served_model import resolve          # the model name comes from the serve, never from this file
+MODEL = resolve(BASE)
 for w in [int(x) for x in (sys.argv[1:] or ["120", "500", "2000", "8000"])]:
     p = " ".join(f"{random.choice(['alpha','river','stone','cloud','north'])}{random.randint(0, 999)}" for _ in range(w))
-    body = {"model": "Qwen3.8", "messages": [{"role": "user", "content": p + " Summarize."}], "max_tokens": 1,
+    body = {"model": MODEL, "messages": [{"role": "user", "content": p + " Summarize."}], "max_tokens": 1,
             "chat_template_kwargs": {"enable_thinking": False}}
     t = time.time()
     r = json.loads(urllib.request.urlopen(urllib.request.Request(BASE, json.dumps(body).encode(),

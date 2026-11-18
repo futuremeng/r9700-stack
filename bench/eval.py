@@ -34,7 +34,9 @@ import sys
 import urllib.request
 
 BASE = os.environ.get("EVAL_BASE", "http://localhost:8080") + "/v1/chat/completions"
-MODEL = os.environ.get("EVAL_MODEL", "Qwen3.8")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from served_model import resolve          # the model name comes from the serve, never from this file
+MODEL = os.environ.get("EVAL_MODEL") or resolve(BASE)
 OUT = pathlib.Path(os.environ.get("EVAL_DIR", os.path.expanduser("~/.r9keval")))
 CACHE = pathlib.Path(os.path.expanduser("~/.cache/r9keval"))
 

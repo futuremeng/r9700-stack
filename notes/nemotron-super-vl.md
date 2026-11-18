@@ -473,6 +473,37 @@ the profiles with `DRY=1`, which is safe because the launcher guards every write
 box is serving. One thing that is *not* guarded: `MAX_INPUT_TOKENS` is still 0/off, so whichever of these profiles gets
 used, a single client can send a prompt that occupies the box for minutes.
 
+## The one name this box answers: `SuperVL`, and why there is no `Qwen3.8` alias
+
+Settled on 2026-11-18 after the switch left the question hanging: what should clients ask for?
+
+* **One name, `SuperVL`, set by the launcher's family block** (`: ${SERVED_NAME:=SuperVL}`). Aliases were considered and
+  the mechanism is real -- vLLM takes a list for `--served-model-name`, `check_model` accepts any entry, and `/v1/models`
+  would have advertised all of them; the first entry is what `model_name()` returns, so ordering would have made the
+  canonical one explicit. Candidates were the mid-length honest handle (`Nemotron-Super-VL-120B`, no quant suffix, so it
+  survives a repack) and the upstream model-card id (`NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4`). **Shipped: one
+  name.** Every extra name is a surface that has to stay true across a model change, and slot-style names (`default`,
+  `main`) are worse still -- they outlive the model and hide the change.
+* **`Qwen3.8` was deliberately not aliased.** It names a model this box no longer runs, so the alias's only effect would
+  be to keep a client believing something false -- the same class of ambiguity the standing-launch work of the same day
+  removed. And nothing was broken by its absence: every log since the switch was searched for vLLM's
+  `does not exist` refusal, and there are **zero** hits. The refusal path is verified in
+  `tests/test_served_names.py` (posting `Qwen3.8` today gets `The model `Qwen3.8` does not exist.`).
+* **What actually had gone stale was our own tooling**: sixteen files under `bench/` and `tools/` still posted
+  `"model": "Qwen3.8"`. That is the pattern worth remembering -- a remembered name in a request fails at *request* time,
+  in the middle of a measurement, and the error looks like a server bug because vLLM's 404 does not list what is served.
+  All of them now resolve through **`bench/served_model.py`**: `MODEL=` if set, otherwise the first id on `/v1/models`.
+  The first id is canonical by construction, not by convention (vLLM builds `base_model_paths` in the order
+  `--served-model-name` is given and answers `base_model_paths[0].name`). `bench/needle_long.py` additionally takes its
+  **tokenizer** from the ModelCard's `root`, because counting a haystack against a tokenizer that is not the loaded
+  checkpoint mis-counts every tier and errors nowhere.
+* **Guarded** by `tests/test_served_names.py`: no literal model name in any `bench/` or `tools/` source, `/v1/models`
+  answers exactly one id, that id equals the launcher's `SERVED_NAME` default, a stale name is refused, and the card's
+  checkpoint path exists on disk.
+
+If an external client ever turns up that cannot be reconfigured, the alias has to be an explicit, dated, logged
+decision -- not a silent mapping.
+
 ## Gotchas that cost time
 
 1. **`hf_quant_config.json` must be in the checkpoint dir.** The MTP draft path (`nemotron_h_mtp.py` ->

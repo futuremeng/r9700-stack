@@ -130,7 +130,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://127.0.0.1:8180",
                     help="engine port by default: the gateway's admission gate deliberately holds this regime")
-    ap.add_argument("--model", default="Qwen3.8")
+    ap.add_argument("--model", default=None, help="default: the first id this serve advertises on /v1/models")
     ap.add_argument("--minutes", type=float, default=30.0)
     ap.add_argument("--pop", type=int, default=24, help="standing spec-decoding requests (the dumps had 23 and 30)")
     ap.add_argument("--short", type=int, default=165, help="the paired arrival's prompt tokens (dump: 160, 156)")
@@ -229,6 +229,15 @@ def main():
     except (urllib.error.URLError, OSError) as e:
         log(f"BAD  nothing answering on {a.base}: {type(e).__name__}: {e}")
         return 2
+
+    if not a.model:
+        # The name is read from the serve rather than remembered in this file: on 2026-11-18 the box switched to
+        # SuperVL and every tool holding a remembered name failed at request time instead of at launch time.
+        if not names:
+            log("BAD  the serve advertises no model id -- pass --model")
+            return 2
+        a.model = names[0]
+        log(f"--model not given: asking this serve by its own first id, {a.model}")
 
     pm = Prompt(a.base, a.model)
     kv, run, wait = gauge(a.base)

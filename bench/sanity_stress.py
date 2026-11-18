@@ -10,6 +10,9 @@ usage: sanity_stress.py [URL] [--rounds 20] [--sanity-reps 1] [--conc 8] [--pre 
 import json, os, random, re, sys, threading, time, urllib.request
 
 B = next((a for a in sys.argv[1:] if a.startswith("http")), "http://localhost:8080")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from served_model import resolve          # the model name comes from the serve, never from this file
+MODEL = resolve(B)
 def opt(name, default):
     return next((sys.argv[i + 1] for i, a in enumerate(sys.argv[:-1]) if a == name), default)
 ROUNDS, CONC, DEPTH = int(opt("--rounds", "20")), int(opt("--conc", "8")), int(opt("--depth", "24000"))
@@ -29,7 +32,7 @@ THINK = os.environ.get("THINK", "0") == "1"
 def post(content, max_tokens, temperature=0):
     if THINK and max_tokens < 1024:
         max_tokens = 1024
-    b = {"model": "Qwen3.8", "messages": [{"role": "user", "content": content}], "max_tokens": max_tokens,
+    b = {"model": MODEL, "messages": [{"role": "user", "content": content}], "max_tokens": max_tokens,
          "temperature": temperature, "chat_template_kwargs": {"enable_thinking": THINK}}
     try:
         r = json.loads(urllib.request.urlopen(urllib.request.Request(B + "/v1/chat/completions", json.dumps(b).encode(),

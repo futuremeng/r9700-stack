@@ -12,6 +12,7 @@ transfer (that needs a long-prompt prefill, which is a bigger ask on a serving b
 Reads only sysfs (ordinary user) plus one POST of its own. Nothing else on the box is touched.
 """
 import json
+import os
 import sys
 import threading
 import time
@@ -28,7 +29,9 @@ CHAIN = {
 NODES = sorted({b for ids in CHAIN.values() for b in ids})
 CARDS = ["card1", "card2", "card3", "card4"]
 URL = "http://127.0.0.1:8080/v1/chat/completions"
-MODEL = "Qwen3.8"
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bench"))
+from served_model import resolve          # the model name comes from the serve, never from this file
+MODEL = resolve(URL)
 HZ = 10.0
 
 

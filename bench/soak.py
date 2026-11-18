@@ -8,6 +8,9 @@ usage: soak.py [URL] [--text FILE] [--conc 8] [--seconds 900] [--lo 18000] [--hi
 import json, os, random, sys, threading, time, urllib.request, urllib.error, statistics as st
 
 B = next((a for a in sys.argv[1:] if a.startswith("http")), "http://localhost:8080")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from served_model import resolve          # the model name comes from the serve, never from this file
+MODEL = resolve(B)
 def opt(name, default):
     return next((sys.argv[i + 1] for i, a in enumerate(sys.argv[:-1]) if a == name), default)
 TEXT = opt("--text", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "PROGRESS.md"))
@@ -18,7 +21,7 @@ DOC = open(TEXT, errors="replace").read()
 def post(chars, max_tokens):
     o = random.randrange(0, max(1, len(DOC) - chars))
     msg = f"[{random.getrandbits(48):012x}] Summarize the following notes in three paragraphs.\n\n{(DOC + DOC)[o:o + chars]}"
-    b = {"model": "Qwen3.8", "messages": [{"role": "user", "content": msg}], "max_tokens": max_tokens,
+    b = {"model": MODEL, "messages": [{"role": "user", "content": msg}], "max_tokens": max_tokens,
          "temperature": 0.7, "chat_template_kwargs": {"enable_thinking": False}}
     return json.loads(urllib.request.urlopen(urllib.request.Request(B + "/v1/chat/completions", json.dumps(b).encode(),
                                              {"Content-Type": "application/json"}), timeout=1800).read())["usage"]

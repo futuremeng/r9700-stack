@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Long-context gate for this box: needle-in-haystack out to the checkpoint's own context ceiling.
 
-usage: needle_long.py [TIERS=30000,67000,150000,250000] [BASE=http://127.0.0.1:8080] [MODEL=Qwen3.8]
-                     [TOKENS=/home/jiulu/models/Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ] [MAXOUT=32] [WARM=1]
+usage: needle_long.py [TIERS=30000,67000,150000,250000] [BASE=http://127.0.0.1:8080] [MODEL=<the serve's first id>]
+                     [TOKENS=<the checkpoint that serve has loaded>] [MAXOUT=32] [WARM=1]
 
 bench/quality.py's needle stops at 31,166 tokens because the recipe it gates runs at MAXLEN=32768. Asking
 "how far does this box actually go" needs the same test taken to the model's own max_position_embeddings, and
@@ -27,6 +27,7 @@ your prompt, and a highly repetitive haystack is far cheaper to attend to than p
 """
 import json
 import os
+import os
 import random
 import sys
 import threading
@@ -36,8 +37,12 @@ import urllib.request
 
 TIERS = [int(t) for t in (sys.argv[1] if len(sys.argv) > 1 else "30000,67000,150000,250000").split(",")]
 BASE = (sys.argv[2] if len(sys.argv) > 2 else "http://127.0.0.1:8080").rstrip("/")
-MODEL = sys.argv[3] if len(sys.argv) > 3 else "Qwen3.8"
-TOKENIZER = sys.argv[4] if len(sys.argv) > 4 else "/home/jiulu/models/Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from served_model import resolve, served_card      # name AND checkpoint come from the serve, not from this file
+MODEL = sys.argv[3] if len(sys.argv) > 3 else resolve(BASE)
+# The haystack is counted against the checkpoint that is actually loaded: an id from one model and a tokenizer from
+# another mis-counts every tier and nothing errors anywhere. The serve publishes its own path on /v1/models, so read it.
+TOKENIZER = sys.argv[4] if len(sys.argv) > 4 else served_card(BASE)[1]
 MAXOUT = int(sys.argv[5]) if len(sys.argv) > 5 else 32
 WARM = (sys.argv[6] if len(sys.argv) > 6 else "1") != "0"
 SEED = int(sys.argv[7]) if len(sys.argv) > 7 else 0   # offset so two runs of the same tier are different haystacks
