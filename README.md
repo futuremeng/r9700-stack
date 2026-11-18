@@ -60,18 +60,34 @@ checkpoint, and a launch that is already running is left alone. Both paths, imag
 
 ## Four cards, the numbers worth knowing
 
-Qwen3.8-Flash-Next (MoE, MXFP4 experts plus fp8 dense) on four Radeon AI PRO R9700, TP4, MTP-3, 31.9 GiB a card:
+**What this box serves since 2026-11-18 is Nemotron-3.5-Super-VL-120B-A12B** - NVIDIA's published NVFP4 pack: a 120B
+MoE with **512 routed experts, 22 active per token**, 40 Mamba-2 + 40 MoE + 8 attention layers, and vision. Same four
+R9700, TP4, MTP-4, 18.5 GiB of weights a card:
+
+| | measured | where it came from |
+|---|---:|---|
+| **decoding, one stream** | **94-112 tok/s** | graphs + libr9k MXFP4 grouped experts + native dense NVFP4 + MTP-4, the standing launch. Stock vLLM on the same checkpoint on the same cards reads **27** eager and **73** with graphs - same weights, 3.5x apart, and the difference is the load-time conversion ([notes/nemotron-super-vl.md](notes/nemotron-super-vl.md)) |
+| **decoding, 8 and 16 streams** | **440-460 / 712-752 tok/s** aggregate | 300-token waves on the standing launch; the identical launch with vLLM's own NVFP4 MoE emulation reads **262-272** at 8 streams, so the conversion is worth +68-72% under load |
+| **quality, converted vs stock** | GSM8K **191/200** vs **190/200**, needle found at every tier | n=200 is noise-limited on its own (±3 questions), but the two arms also agree on 30k / 150k / 250k needles, which is the part a conversion could plausibly break |
+| **context** | **600,068-token** needle found; the 1,048,576 window boots with images off | the wall is time, not memory: 250k costs 144 s to the first token, 600k costs 713 s, and per-card VRAM never moved off 29.5-29.8 GiB. `CTX=32k \| 262k \| 1m` are launch profiles |
+| **images** | **256-3,328 tokens each**, and a third of the wave when interleaved with decode | the checkpoint's own patch budget (1024-13,312 patches, merge 2), not a knob; a 3.7 MP page lands on the cap and misreads fine print, so clients should send crops |
+
+Qwen3.8-Flash-Next (MoE, MXFP4 experts plus fp8 dense) on four Radeon AI PRO R9700, TP4, MTP-3, 31.9 GiB a card -
+the launch this fork's kernels were built for, parked rather than deleted, and still the fastest thing these cards run:
 
 | | measured | where it came from |
 |---|---:|---|
 | **decoding, one stream** | **225 tok/s** (best sample 228) | 14.3-14.4 ms a step; release configuration, 210 W cap, 32k |
 | **decoding, 32 streams** | **1,823 tok/s** aggregate (best sample 1,836.3) | 1,200-token waves, `bench/probe32.sh`; the native box, uncapped. The fp8 main-KV launch this box now defaults to reads **1,792** (1,789 / 1,796) at the same protocol, and the 2026-11-08 standing launch (vLLM 0.32, router cap 4, util 0.96, `PREFIX_CACHE=0`) read **1,767 / 1,780** — inside that spread, so the router cap costs nothing measurable here (notes/bug-router-gemm-oob.md) |
 | **reading a prompt** | **9,633 tok/s** | 7,789-token prompt, the native box uncapped (7,141 at the 210 W gate); **9,702** on the fp8 launch, 7,792 tokens |
-| **context** | **262,144 tokens**, needle found at 250,078 | the checkpoint's own ceiling, running on this box today; KV pool **902,153 tokens** (`Maximum concurrency for 262,144 tokens per request: 3.44x`) on the standing launch — fp8 e4m3 main KV, image inputs on, `--gpu-memory-utilization 0.96`. At 0.97 the same launch read 935,216 with the vision knobs and 1,009,899 without them; 540,202 at bf16 main KV |
+| **context** | **262,144 tokens**, needle found at 250,078 | the checkpoint's own ceiling, which this box ran at until the Super VL launch took the cards; KV pool **902,153 tokens** (`Maximum concurrency for 262,144 tokens per request: 3.44x`) on the standing launch — fp8 e4m3 main KV, image inputs on, `--gpu-memory-utilization 0.96`. At 0.97 the same launch read 935,216 with the vision knobs and 1,009,899 without them; 540,202 at bf16 main KV |
 | **decoding, in real work** (not a benchmark) | **162 tok/s** with the box to yourself, **115 tok/s** as a request actually finishes | 1,568 real requests off the fp8 launch's journal over 10.25 h, prompts p50 52,083; the benchmark rows above describe a machine nobody sits on |
 
-<sub>Two different machines, so the rows are not comparable with each other; each one names its own. The last row is
-not a benchmark at all — it is what the running serve reported about other people's requests, and it is the row to
+<sub>These tables are not comparable with each other, and the second one is not even comparable within itself: its
+first row is the 210 W-capped release configuration and the rest is the uncapped native box, each row naming which.
+The Super VL table is the uncapped native box alone, and the rows below add the two-card and eight-card configurations.
+Every row names its own launch. The last row is not a benchmark at all — it is what the running serve reported about
+other people's requests, and it is the row to
 believe when asking what a request will feel like. Full protocols,
 sample lists and the measurements that were tried and rejected: <a href="#speed">Speed</a>,
 <a href="notes/native-4xr9700.md">notes/native-4xr9700.md</a>,
@@ -83,8 +99,11 @@ You run the stock vLLM ROCm image with this plugin installed. From there:
 
 1. **Load.** The plugin registers through vLLM's platform, quantization, model and attention-backend entry points and
    brings its own kernel library (`libr9k`, HIP and Triton). The checkpoints are the published ones, unmodified.
-2. **Convert at load.** NVFP4 weights become MXFP4 with MSE-searched block exponents; fp8 dense, drafter and lm-head
-   GEMMs take per-token fp8 activations; the KV cache is fp8; large tables (Flash-Next's per-layer embedding as int6,
+2. **Convert at load.** NVFP4 weights become MXFP4 with MSE-searched block exponents, and where a checkpoint declares
+   its own scales - NVIDIA's `modelopt_mixed` MIXED_PRECISION pack for Nemotron, fp8 on 113 linears and NVFP4 on
+   41,152 expert matrices - the checkpoint's numbers are carried across rather than re-derived, while the dense NVFP4
+   linears keep their exact bits on the native fragments; fp8 dense, drafter and lm-head GEMMs take per-token fp8
+   activations; the KV cache is fp8; large tables (Flash-Next's per-layer embedding as int6,
    DeepSeek's Engram tables) go to pinned host memory; EXL3 trellis weights (2-6 bits) serve through exllamav3's gfx1201
    extension and our own batched expert kernel.
 3. **Decode on our kernels.** Grouped MoE GEMMs with routing, activation and top-k sum fused around them; WMMA
@@ -105,8 +124,8 @@ On the four-card native box this fork runs, the main KV cache is fp8 e4m3 by def
 
 | | |
 |---|---|
-| 🧠 **Four models, unmodified checkpoints** | **Qwen3.8-27B-NVFP4** with the DFlash2-FP8 block drafter (two cards); **Qwen3.8-Flash-Next** (MoE, 288 experts; four cards, or two with the experts streamed from host RAM); **GLM-5.3-Flash** (sparse MLA + indexer, RedHat NVFP4 with its MTP layer; eight cards); **DeepSeek-V4.1-Flash** (552B MoE, 384 experts, Engram, DSpark) from the published EXL3 2.9 bpw pack (eight cards, tensor + expert parallel). |
-| 🧮 **Weight formats handled at load** | NVFP4 → MXFP4 (bit-exact on the 27B), fp8 dense / drafter / lm-head with per-token activations, fp8 KV, int6 and fp8 tables in pinned host RAM, EXL3 trellis with the unshardable pieces dequantized to bf16. |
+| 🧠 **Five models, unmodified checkpoints** | **Qwen3.8-27B-NVFP4** with the DFlash2-FP8 block drafter (two cards); **Qwen3.8-Flash-Next** (MoE, 288 experts; four cards, or two with the experts streamed from host RAM); **GLM-5.3-Flash** (sparse MLA + indexer, RedHat NVFP4 with its MTP layer; eight cards); **DeepSeek-V4.1-Flash** (552B MoE, 384 experts, Engram, DSpark) from the published EXL3 2.9 bpw pack (eight cards, tensor + expert parallel); **Nemotron-3.5-Super-VL-120B-A12B** (120B MoE, 512 experts with 22 active, hybrid Mamba-2 + attention, vision) from NVIDIA's NVFP4 `modelopt_mixed` pack (four cards). |
+| 🧮 **Weight formats handled at load** | NVFP4 → MXFP4 (bit-exact on the 27B; and the `modelopt_mixed` MIXED_PRECISION layout NVIDIA ships for Nemotron, converted with the checkpoint's own scales rather than re-quantized), fp8 dense / drafter / lm-head with per-token activations, fp8 KV, int6 and fp8 tables in pinned host RAM, EXL3 trellis with the unshardable pieces dequantized to bf16. |
 | ⚡ **Decode kernels** | Fused MoE GEMMs, WMMA weight-only GEMMs, one GDN core per layer, RDNA4-tuned sparse-MLA decode, one-launch hyper-connection seams, fused routing and norms, a multi-row EXL3 GEMV (1-48 rows) and a batched EXL3 expert decode. |
 | 🔗 **Collectives over PCIe** | One-shot / two-shot P2P for 2 and 4 cards; an eight-rank all-reduce and all-gather that never cross a root complex (pairs over P2P, the cross stage through pinned host pools); compressed 4/6-bit all-reduce for prefill; RCCL above. |
 | 🎯 **Speculative decoding on every family** | MTP-3 (Flash-Next, GLM), DFlash2 (27B), DSpark with adaptive verification (DeepSeek), draft metadata and all-reduces inside the HIP graphs. |
@@ -131,14 +150,70 @@ streams. DeepSeek accuracy on this stack: GSM8K 193-196 / 200, needles 9 / 9 to 
 prompts, decode flat to 28k of context. How each number was produced, and what was tried and rejected:
 [PROGRESS.md](PROGRESS.md) and `notes/`.
 
-The tables below add the two configurations this fork measures on its own box, and they are **not comparable with
-the table above**. The first is the release configuration again (210 W a card, a -42 mV offset, 32k context); the
-next two are one native box with the cards uncapped, the same recipe at 32k and then at the checkpoint's full
-262,144-token context. Those are all **benchmarks**: fixed prompt lengths, equal `max_tokens` waves, nothing else
-arriving while you measure. The last subsection is **not** a benchmark - it is 1,400 real requests that arrived at
-the running serve, and its decode numbers are roughly a third of the benchmark ones for reasons that are understood
-rather than surprising. Read the benchmark tables for what the kernels can do; read the real-traffic one for what a
-user gets.
+The subsections below are what this fork measures on its own box, and they are **not comparable with the table
+above** - the first is a different model. Of the rest: the second is the release configuration again (210 W a card, a
+-42 mV offset, 32k context); the next two are one native box with the cards uncapped, the same recipe at 32k and then
+at the checkpoint's full 262,144-token context. Those are all **benchmarks**: fixed prompt lengths, equal `max_tokens`
+waves, nothing else arriving while you measure. The last subsection is **not** a benchmark - it is 1,400 real requests
+that arrived at the running serve, and its decode numbers are roughly a third of the benchmark ones for reasons that
+are understood rather than surprising. Read the benchmark tables for what the kernels can do; read the real-traffic
+one for what a user gets.
+
+### Nemotron-3.5-Super-VL-120B-A12B: a 120B MoE with 512 experts, on four cards
+
+This is the box's standing launch since 2026-11-18, and it was not a launch-config change. The checkpoint is NVIDIA's
+published NVFP4 pack, quantized `modelopt_mixed` MIXED_PRECISION: **41,152 of its 41,239 quantized tensors are routed
+experts**, 113 linears are fp8 and 83 are dense NVFP4. The plugin had never seen `modelopt_mixed` - it falls back to
+stock, and stock on ROCm **dequantizes expert by expert**. That is what the numbers below are separated by.
+
+| what changed | one stream | 8-stream wave |
+|---|---:|---:|
+| stock vLLM, `--enforce-eager`, vLLM's own NVFP4 MoE emulation | 26.9-27.5 | - |
+| + HIP graphs, nothing else | 73.0-73.4 | 306-328 |
+| graphs + libr9k MXFP4 grouped experts | 86.2-89.6 (MTP-2) | 442-462 |
+| + native dense NVFP4, MTP-4, `max_num_seqs` 16 | **94-112** | **440-460** (and **712-752** at 16) |
+
+Same weights, same cards, same protocol, wave-to-wave noise ±10%. The vendor reference quoted for this model on a
+single DGX Spark is 19-20 tok/s without speculative decoding and 38-50 with a draft model; quoted, not measured here.
+
+What had to be built, and the two things that nearly stopped it:
+
+- **`r9700_vllm/quant/modelopt.py`** registers the stock name and routes the expert matrices through the MXFP4
+  conversion the plugin already had, keeping the checkpoint's declared scales instead of re-deriving them. The
+  conversion consumes fp32, and the sign convention is the one trap in the whole change: ModelOpt dequantizes as
+  `e2m1 * s8 * scale_2` where our helper divides by its argument, so it is fed `1 / scale_2`. A probe names it:
+  right way, 11% against an exact NVFP4 dequant; wrong way, 2.4e11%.
+- **The family's MLP is ungated** (`up = relu(x)²`, one matrix per expert), and libr9k's MoE said no: *kernel does not
+  support no act_and_mul MLP layer*. So the kernel was written rather than the model left on emulation -
+  `r9k_relu2_quant_fp8` (fp32 scale per row, e4m3 payload, dynamic) whose fp8 bytes match vLLM's own `RELU2_NO_MUL`
+  reference exactly at four shapes, with the capability routing to admit it.
+- **The graph sizes were off by the drafter.** A decode step carries `NSEQ x (k+1)` rows, so 8 streams at MTP-4 is 40
+  rows, and `cudagraph_capture_sizes` stopped at 32: every step padded to 48 and paid for 8 phantom rows. The family
+  default now carries 40, 80 and 160.
+- Rollback is one flag: `R9K_DISABLE=nvfp4` puts the whole model back on stock kernels, weights and correctness intact.
+
+Quality of the conversion, measured against the stock arm and not assumed: GSM8K-200 **191/200 vs 190/200** (3.8 vs 7.1
+minutes wall), and needles found at 30k, 150k and 250k in both arms. n=200 cannot resolve better than ±3 questions; the
+needle agreement is the part a requantization could plausibly break.
+
+The step is accounted for and the accounting is closed: at 16 streams a step is ~70 ms, of which the two grouped MoE
+GEMMs are 16.5 ms, the MoE's non-GEMM moves 5.2 ms, the Mamba family 6.1 ms, all-reduce <= 5.3 ms, and the rest is
+attention, drafter passes, lm-head, sampler and launch gaps. **No single remaining piece has a ceiling above ~5 ms, so
+no new kernels were written for this model** - the probes that established that (`tuning/decode_mamba_probe.py`,
+`tuning/decode_moe_glue_probe.py`) are in the tree, and both were run before writing anything. Engine-level profiling
+is not an option here: the torch profiler stops a worker mid-MTP and the capture never lands, which is why those
+standalone graph-timed probes exist.
+
+Vision and context on this checkpoint: images arrive as **256-3,328 tokens** whatever their pixels (the checkpoint's
+own patch budget, not a knob), fine print is destroyed by the cap, five images in one prompt answer 200 rather than
+400 because the compat filter keeps only the last turn's, and interleaving four images with a decode wave costs ~35%
+against a ~28% prefill-only control. The context can be read to **600,068 tokens** with the needle found and per-card
+VRAM flat at 29.5-29.8 GiB; 1M boots only with images off, because the encoder-cache budget follows the window and
+261,121 is fine while 1,046,529 kills a worker at init. `CTX=32k | 262k | 1m` are launch profiles; 32k is standing.
+
+Full record, including the launch it runs under and the gotchas that cost hours (`hf_quant_config.json` is not
+optional, `REASONING=none` is not a value, the plugin registers `modelopt_mixed` at `register()` time so an
+import-time failure silently serves stock): [notes/nemotron-super-vl.md](notes/nemotron-super-vl.md).
 
 ### The release configuration: four, two and eight cards, 210 W cap, 32k context
 
@@ -548,8 +623,11 @@ the installed vLLM before a tree is served.
 
 You need 2, 4 or 8 Radeon AI PRO R9700s, ROCm 10 on the host, docker, and the weights under `~/models`:
 `Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ`, `Qwen3.8-27B-NVFP4` with `Qwen3.8-27B-DFlash2-FP8`, `GLM-5.3-Flash-NVFP4-RedHat`
-(eight cards), and for DeepSeek-V4.1-Flash a directory composed of the EXL3 pack's shards and config plus the base
-checkpoint's two Engram shards and tokenizer (`serve/ds41-exl3.sh`'s header has the recipe; about 200 GB of host RAM).
+(eight cards), `NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4` (four cards, and its **`hf_quant_config.json` must be in
+the snapshot** - the drafter's quant config is read from that file, not from `config.json`, and without it vLLM dies
+with "Cannot find the config file for modelopt_mixed" after 22 s of work), and for DeepSeek-V4.1-Flash a directory
+composed of the EXL3 pack's shards and config plus the base checkpoint's two Engram shards and tokenizer
+(`serve/ds41-exl3.sh`'s header has the recipe; about 200 GB of host RAM).
 
 **1. Build the image** (the stock vLLM ROCm 10 image plus the plugin; the kernels and exllamav3's extension compile inside):
 
@@ -570,10 +648,13 @@ MODEL=/models/GLM-5.3-Flash-NVFP4-RedHat GPUS=0,1,2,3,4,5,6,7 TP=8 OFFLOAD_GB=0 
   'SPEC_EXTRA="use_local_argmax_reduction": true' 'R9K_FP8_LINEARS=self_attn\.(in_proj_qkvbfg_a|o_proj|f_b_proj|g_b_proj)$' \
   bash serve/serve.sh                                               # GLM-5.3-Flash, eight cards (notes/glm53.md)
 bash serve/ds41-exl3.sh                                            # DeepSeek-V4.1-Flash EXL3, eight cards (notes/exl3-plan.md)
+bash serve/native-flashnext.sh                                     # this box, no docker: Nemotron-3.5-Super-VL-120B, four cards (Deploying it)
 ```
 
 An OpenAI-compatible API answers on port 8080 (`PORT=`), model name `Qwen3.8` (`DeepSeek-V4.1` for the DeepSeek
-launcher). `MAXLEN=131072 KVMEM=0.8` is DeepSeek's 128k recipe.
+launcher). This box's native launch advertises exactly one name, **`SuperVL`**, and has no aliases by decision: the
+tools in `bench/` and `tools/` ask `/v1/models` rather than remembering a name, and
+`tests/test_served_names.py` fails if a literal model name comes back into them. `MAXLEN=131072 KVMEM=0.8` is DeepSeek's 128k recipe.
 
 On a box that sets `GATEWAY_PORT` in its machine-local file, 8080 belongs to `serve/gateway.py` instead: it routes
 by path to the engine (`/v1/chat/completions`, `/metrics`), the CPU embedding and reranking serves
@@ -1003,7 +1084,11 @@ these numbers runs.
    unknown `CTX` is refused with exit 2 rather than quietly falling through to 32k.
    ```bash
    CTX=262k bash serve/native-flashnext.sh                 # 262,144 window, images on, 16 streams
-   CTX=1m bash serve/native-flashnext.sh                   # 1,048,576: images off, NSEQ=1, one request at a time
+   ```
+   And the checkpoint's own 1,048,576 - one fenced command of its own, because it is a different kind of serve: images
+   off, one request at a time, and minutes to a first token on a deep prompt.
+   ```bash
+   CTX=1m bash serve/native-flashnext.sh                   # 1,048,576: images off, NSEQ=1
    ```
    The serve answers exactly one name -- **`SuperVL`** -- and there is deliberately no `Qwen3.8` alias: a client still
    sending the old string believes it is wired to a model this box does not run, and vLLM's refusal (`The model \`X\` does

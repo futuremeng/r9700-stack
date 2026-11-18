@@ -3421,6 +3421,18 @@ What is owed after this:
   fault ledger behind it). `tools/recipe-check.py` passes; the stored-config launch measured 99.1 tok/s at one stream
   and 709 aggregate at 16. Tests updated with it: `test_setup.py`'s launcher/README MAXLEN check is now per-family, and
   `test_webui.py`'s multimodal fixtures pin the Flash-Next family instead of inheriting whatever this box serves.
+- **Caught tonight about my own process: the model swap landed in the README's launch section and not in its front
+  matter.** The headline table, the Features count, "What it does" step 2 and the Quick start checkpoint list still
+  described a box serving Qwen3.8-Flash-Next, a day after this box started serving a 120B NVIDIA MoE as its standing
+  launch. A README's bottom half is where the command lives; its top half is where a reader decides what the machine
+  is. The front matter now names Super VL -- a headline table for it, five models rather than four, the `modelopt_mixed`
+  conversion in the load step, the checkpoint (and `hf_quant_config.json`) in the quick start, and a Speed subsection
+  with the ladder, the quality A/B, the closed step accounting and the vision/context facts. Two things the pass also
+  fixed: the Qwen context row claimed "running on this box today" (it is parked), and the footnote asserted "two
+  different machines" when the two tables are two models on one machine. `tests/test_readme.py` additionally caught a
+  violation I committed with the `CTX=` profiles -- one fenced block holding two commands, which GitHub's copy button
+  copies as a unit -- so those are two blocks now. Lesson for the next model: the front matter is part of the landing,
+  not a follow-up.
 - **Owed, pre-existing and unrelated to the family work: one `tests/test_webui.py` failure** -- "the About page run for
   real against an mm-ON payload says both caps". It failed the same way before any of today's changes (verified by
   stashing them) and `node` is installed, so it is a real assertion failure in the mm-ON About payload path.
