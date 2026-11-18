@@ -3398,6 +3398,12 @@ What is owed after this:
 - **Owed, pre-existing and unrelated to the family work: one `tests/test_webui.py` failure** -- "the About page run for
   real against an mm-ON payload says both caps". It failed the same way before any of today's changes (verified by
   stashing them) and `node` is installed, so it is a real assertion failure in the mm-ON About payload path.
+- **Owed: the auto-restart cannot answer the crash shape we actually hit.** `restart_launch()` re-runs
+  `setup.py --yes --launch ...` with no `FORCE`, and both setup.py and the launcher refuse to start while ranks
+  still hold the GPUs -- which is what a hung-worker death leaves behind (seen twice today:
+  `refusing to launch: 4 vLLM process(es) still holding the GPUs`). Deaths that clear their ranks restart fine;
+  that class needs a `STOP=1` or a human. The guard is right about live serves and wrong about a dead launch's
+  own stale ranks, and the record already knows the difference (its /health answered dead).
 - **Owed for clients: the gateway has no model alias.** `serve/gateway.py` is a byte pipe, so a client still asking for
   `Qwen3.8` gets an error rather than `SuperVL`. Either the clients change, or an alias layer gets written, or the box
   serves Qwen.

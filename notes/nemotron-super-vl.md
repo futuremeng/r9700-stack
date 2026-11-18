@@ -362,6 +362,15 @@ inheriting whatever this box happens to serve. Neither test caught the change be
 (A pre-existing `tests/test_webui.py` failure -- the About page mm-ON payload check -- was there before this change and
 is still there: it is unrelated to the family work and unchased.)
 
+**One honest hole in the auto-restart, found while arming it**: `restart_launch()` re-runs `setup.py --yes --launch ...`
+without `FORCE`, and both setup.py and the launcher refuse to start while ranks still hold the GPUs. Most deaths clear
+their ranks, and then the restart works. But the shape we hit twice today (the profiler hanging the workers, and the
+`refusing to launch: 4 vLLM process(es) still holding the GPUs` line that followed it) is exactly the case where ranks
+stay behind -- so that class of crash needs a human, or a `STOP=1`, before the watcher's restart can succeed. The
+refusal is not stupid (launching into someone else's live serve is worse); the missing piece is that a *dead* launch's
+own stale ranks are distinguishable from a live serve (the record's /health already answered dead), and the restart path
+does not use that distinction. Recording it as owed rather than quietly changing the guard.
+
 ## Gotchas that cost time
 
 1. **`hf_quant_config.json` must be in the checkpoint dir.** The MTP draft path (`nemotron_h_mtp.py` ->
