@@ -104,6 +104,21 @@ MTP draft path reads that file rather than `config.json`'s `quantization_config`
   probed. And the profiler verdict is final now: CUDA-activity-only, `record_shapes:false`, one 40-token request in the
   window -> request 500 after 300 s, EngineCore dead, empty trace directory. No per-kernel ledger for this model.
 
+* **the MoE glue got probed too, and it fails the same test.** `tuning/decode_moe_glue_probe.py` times every non-GEMM
+  move a MoE layer makes at this checkpoint's shapes (512 experts, top-22, `moe_latent_size 1024`, bf16 **replicated**
+  `fc1/fc2_latent_proj`, relu2, grouped top-k with an `e_score_correction_bias`). A layer costs 89.1 us at one stream,
+  98.7 at eight, 123.8 at sixteen -> **3.6 / 4.0 / 5.2 ms a step** = 11% / 5.8% / 7.5% of the step. The largest item is
+  **`grouped_topk` at 42-51 us and nearly batch-independent** (the 512-expert scan/sort dominates) = 1.7-2.0 ms a step
+  -- and it is *already* vLLM's fused fast path (`VLLM_USE_FUSED_MOE_GROUPED_TOPK` defaults on and its conditions
+  `num_expert_group <= 32, topk <= 32, bias present` all hold here), so there is no flag to flip. Our own fused router
+  cannot take it over: `R9K_MOE_ROUTE` defaults to `stock` and `moe/route.py` refuses any `scoring_func` that is not
+  plain softmax. For scale, on Flash-Next that router does top-k + align in one launch at ~2.2 us. A glue project is
+  therefore worth ~2.5-3 ms a step: under the bar. With this, the subtraction closes: at 16 streams of a ~70 ms step,
+  MoE GEMMs 16.5 ms (26%), MoE glue 5.2 (7.5%), mamba 6.1 (9%), all-reduce <= 5.3 (<= 7.5%), and the remaining ~35 ms
+  is a long tail of 1-3 ms pieces (attention, the drafter's 4 passes, lm_head, sampler/spec-rejection, launch gaps).
+  **Nothing on this model has a 5 ms ceiling left** -- which is what "close to the box's limit for this checkpoint"
+  looks like in numbers. Remaining gains are config-level and gated on the repeated-run harness.
+
 ## The admission gate is now observe-only: the door could not re-open, its hold bought nothing, and it was charging the traffic that was not the problem
 
 The complaint was availability -- "long requests are being blocked, and the box feels less usable than before the

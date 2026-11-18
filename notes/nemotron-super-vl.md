@@ -276,6 +276,54 @@ experts), the drafter's 4 draft passes, attention, lm_head, sampler, and the lau
 step. The next measurement, not the next line of kernel code, is a standalone probe of the MoE glue at this
 checkpoint's shapes.
 
+## The MoE glue, measured (2026-11-18) -- the last candidate above the bar, and it is not
+
+`tuning/decode_moe_glue_probe.py` times everything a MoE layer does that is *not* its two grouped GEMMs, at this
+checkpoint's shapes (512 experts, top-22, `moe_latent_size 1024` so the experts work in a 1024-wide latent space and
+`fc1_latent_proj [1024,4096]` / `fc2_latent_proj [4096,1024]` are **bf16 and replicated across TP**, relu2 ungated,
+grouped top-k with `n_group=1, topk_group=1`, `routed_scaling_factor 5.0`, `e_score_correction_bias`). Us a layer:
+
+| piece | S=1 | S=8 | S=16 |
+|---|---:|---:|---:|
+| router gate GEMM (bf16, 512x4096) | 8.8 | 9.5 | 11.6 |
+| **grouped_topk (top-22 of 512)** | **42.3** | **46.6** | **51.0** |
+| align tables (`moe_align_block_size`) | 7.0 | 7.0 | 7.2 |
+| `quant_rows_fp8` (M x 4096) | 3.1 | 3.3 | 3.5 |
+| `relu2_quant_fp8` (numel x 672) | 4.8 | 7.6 | 12.1 |
+| `moe_sum` (22 x 1024 -> 1024) | 6.4 | 6.5 | 6.5 |
+| `fc1_latent` bf16 (4096 -> 1024) | 10.6 | 11.5 | 17.7 |
+| `fc2_latent` bf16 (1024 -> 4096) | 9.7 | 10.2 | 17.4 |
+| rms_norm (M x 4096) | 3.4 | 3.6 | 3.9 |
+| **a layer** | **89.1** | **98.7** | **123.8** |
+| **x40 = ms a step** | **3.57** | **3.95** | **5.2** |
+| **share of the step** | **11%** | 5.8% | **7.5%** |
+
+Things this table teaches:
+
+* **`grouped_topk` is 42-51 us and almost independent of batch size** -- at 512 experts it is dominated by the expert
+  scan/sort, not by the rows. It is 1.7-2.0 ms a step, the single biggest glue item.
+* **It is already vLLM's fused fast path.** `grouped_topk` dispatches to `fused_grouped_topk` when
+  `VLLM_USE_FUSED_MOE_GROUPED_TOPK` (default **on**) holds, `num_expert_group <= 32`, `topk <= 32` and a score bias is
+  present -- all true here. There is no env-var win to find; 42-51 us is what the fast path costs.
+* **Our fused router cannot take it over as written**: `R9K_MOE_ROUTE` defaults to `stock`, and `moe/route.py`
+  refuses any router whose `scoring_func` is not plain `softmax` (and requires `FusedTopKRouter`, while this model
+  builds a grouped-topk router). For scale: on Flash-Next the libr9k router does softmax top-k + align in **one
+  launch, ~2.2 us** (`notes/decode-step.md`). Reaching something similar for sigmoid + correction-bias top-22 of 512
+  would buy ~1.8 ms a step -- the plumbing already exists, the missing part is the scoring/selection logic.
+* The two **bf16 latent projections are replicated across TP** and stream 16.8 MB a layer a step (0.85 ms at 16
+  streams); quantizing them would recover maybe a third of that.
+
+Against the rule: a whole-glue project has a ceiling of ~2.5-3 ms a step (top-k ~1.8 + latent quantization ~0.4-0.8 +
+fusing the small quants/sums), i.e. **under the ~5 ms bar**, and at one stream where its share looks biggest (11%) the
+prize is still 5.6% for top-k alone -- inside the +-10% floor, so it could never be shown. **Not a lever either.**
+
+That closes the subtraction for this checkpoint at 16 streams (step ~70 ms): MoE GEMMs 16.5 ms (26%), MoE glue 5.2
+(7.5%), mamba 6.1 (9%, of which the scan core 4.1), all-reduce <= 5.3 (<= 7.5%). What is left, ~35 ms, is a long tail
+of 1-3 ms items -- 8 attention layers, the drafter's 4 draft passes, lm_head, sampler and spec-rejection, the
+non-MoE norms/residuals, and the launch gaps between ~1,700 kernels a step. No single one of them has a 5 ms ceiling,
+which is the signature of a step that is already close to what this box can do for this model. Further gains are
+config-level (MTP depth, NSEQ, graph sizes) and need the repeated-run harness, not kernels.
+
 ## Gotchas that cost time
 
 1. **`hf_quant_config.json` must be in the checkpoint dir.** The MTP draft path (`nemotron_h_mtp.py` ->

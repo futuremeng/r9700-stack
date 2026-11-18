@@ -3341,10 +3341,22 @@ What is owed after this:
   Tool gaps to fix when it pays: `R9K_AR_HIST=1` only instruments the TP=2 `R9kAllReduce` (the TP4 N-rank/ar4 path we
   run is silent), and `R9K_ARN_CAL_SIZES_KB` drops probes above the scratch pool (~480 KiB), so our exact 640 KB size
   is never probed.
-- **So the next measurement is the MoE glue, not the fabric.** topk / align / sort at top-22 of 512 experts, the
-  drafter's 4 draft passes, attention, lm_head, sampler and the launch gaps between ~1,700 kernels a step are what is
-  left of the 45 ms. `tuning/decode_mamba_probe.py` is the pattern for a standalone graph-timed probe of the glue at
-  this checkpoint's shapes (rows=80, topk=22, E=512); write that before touching any kernel.
+- **Done 2026-11-18: the MoE glue was probed (`tuning/decode_moe_glue_probe.py`) and it is not a lever either.** A
+  MoE layer's non-GEMM moves cost 89.1 us at one stream, 98.7 at eight, 123.8 at sixteen -> 3.57 / 3.95 / 5.2 ms a
+  step = 11% / 5.8% / 7.5% of the step. Biggest item: `grouped_topk` at **42-51 us, nearly batch-independent** (the
+  512-expert scan/sort dominates) = 1.7-2.0 ms a step, and it is already vLLM's fused fast path
+  (`VLLM_USE_FUSED_MOE_GROUPED_TOPK` defaults on; `num_expert_group <= 32`, `topk <= 32`, bias present all hold), so
+  there is no flag to flip. `R9K_MOE_ROUTE=r9k` cannot take it over as written -- `moe/route.py` refuses non-softmax
+  `scoring_func` and requires `FusedTopKRouter`; on Flash-Next that router does top-k + align in one launch at ~2.2 us,
+  so the plumbing for a Nemotron-H variant exists but the scoring/bias/selection logic does not. Also measured: the two
+  bf16 latent projections are **replicated across TP** and stream 16.8 MB a layer a step (0.85 ms at 16 streams).
+  Whole-glue ceiling ~2.5-3 ms a step -> under the 5 ms bar.
+- **The subtraction now closes**: at 16 streams of a ~70 ms step -- MoE GEMMs 16.5 ms (26%), MoE glue 5.2 (7.5%),
+  mamba 6.1 (9%, scan core 4.1), all-reduce <= 5.3 (<= 7.5%), and ~35 ms of long tail (attention, the drafter's 4
+  draft passes, lm_head, sampler/spec-rejection, non-MoE norms, launch gaps between ~1,700 kernels). **No remaining
+  piece has a 5 ms ceiling**, so kernel work on this checkpoint is done pending a new symptom; the open work is
+  config-level (MTP depth, NSEQ, graph sizes, dense/expert quant choices) and image-path validation, all gated on the
+  interleaved repeated-run harness because the box's floor is +-10%.
 - **Decision rule recorded so the next lever dies the same way**: ceiling (what a perfect fix removes from the step)
   vs this box's +-10% floor (~7 ms at a 70 ms step). Under ~5 ms ceiling = no engineering time, because it can never
   be shown. All-reduce, Mamba2 and MoE tiles all fail it.
