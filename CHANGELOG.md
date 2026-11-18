@@ -159,6 +159,19 @@ MTP draft path reads that file rather than `config.json`'s `quantization_config`
   service should therefore run `MM=0` on purpose, and a mixed one should reckon with 4 x 3,328 = ~13.3k tokens of
   injected prefill per prompt.
 
+* **asked how far the context can actually go, and the answer is latency, not memory.** The KV pool is not the limit --
+  and raising `MAXLEN` makes it *bigger*: 1,099,694 tokens at 32,768, **2,846,376 at 262,144** (10.86x concurrency at
+  the full window), **3,482,333 at 1,048,576** with `NSEQ=1 MM=0` (the checkpoint declares
+  `max_position_embeddings = 1,048,576`, four times Flash-Next's). **With images ON, 1M does not boot**: the multimodal
+  encoder-cache budget tracks the window rather than the mm limits (`a budget of 1,046,529 tokens`) and a worker is
+  killed; vLLM 0.32 has no flag for it, so the image-enabled ceiling lies between 262,144 (fine) and 1M (not). What
+  caps depth is time: cold needle runs hit at every tier -- 30k 5.72 s TTFT / 5,256 tok/s prefill / 18.3 tok/s decode at
+  depth, 150k 59.8 s / 2,509 / 4.1, 250k 144.0 s / 1,737 / 2.4, 300k 198.3 s / 1,513 / 2.2, **600k 713 s / 842 /
+  1.2** -- while per-card VRAM never moved off 29.5-29.8 GiB. So 600k is served correctly today, 1M holds but is
+  unverified and image-less, and **262,144 is the value that costs nothing**; making it standing is a service decision
+  (one client could then occupy the box for ~2 minutes, and `MAX_INPUT_TOKENS` is currently off) that would also need
+  the launcher family block, the store file and the two tests moved together.
+
 ## The admission gate is now observe-only: the door could not re-open, its hold bought nothing, and it was charging the traffic that was not the problem
 
 The complaint was availability -- "long requests are being blocked, and the box feels less usable than before the

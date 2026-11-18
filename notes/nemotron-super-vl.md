@@ -418,6 +418,49 @@ Still unmeasured on the image path: MTP acceptance on image turns (the boot warn
 support external multimodal embeddings" is about *externally supplied* embeddings -- our image requests went through
 at normal speed), and video, which this launch refuses.
 
+## How far can the context go (2026-11-18) -- 600k retrieves, 1M boots with images off, and latency is the only wall
+
+Asked "what is the maximum", measured rather than reasoned. Three separate limits turned out to be three different things.
+
+**The KV pool is not the wall, and raising MAXLEN makes it bigger.** At `MAXLEN=262,144` the pool grew from
+**1,099,694 to 2,846,376 tokens** (10.86x concurrency at the full window); at `MAXLEN=1,048,576` with `NSEQ=1 MM=0` it
+was **3,482,333 tokens** (3.32x). Same effect `notes/qwen-32k-vs-262k.md` records for Flash-Next: the sizing run is
+bounded by `NBT=8192`, not by `max_model_len`. (For reference the checkpoint itself declares
+`max_position_embeddings = 1,048,576` -- a 1M window, four times Flash-Next's.)
+
+**With images ON, 1M does not start.** The worker dies during init (signal-killed, not a clean OOM), and the line that
+names it is `Encoder cache will be initialized with a budget of 1,046,529 tokens`: the multimodal **encoder cache budget
+tracks the window**, not the mm limits, for this checkpoint (at 32,768 it reads 32,761; at 262,144 it reads 261,121).
+vLLM 0.32 exposes no flag for that budget, so with `MM=1` the ceiling sits somewhere between 262,144 (boots fine) and
+1,048,576 (does not). Turning images off removes the encoder entirely and 1M comes up.
+
+**Retrieval is correct all the way out -- cold haystacks, randomised nonces, the MXFP4-converted experts doing the
+work.** `bench/needle_long.py`, `WARM=0`, one tier each:
+
+| tier | measured prompt | needle depth | TTFT | prefill | decode at depth | VRAM hi/card | result |
+|---|---:|---:|---:|---:|---:|---|---|
+| 30k | 30,073 | 16,371 | 5.72 s | 5,256/s | 18.3/s | 29.7 / 29.4 | **hit** |
+| 150k | 150,060 | 101,556 | 59.8 s | 2,509/s | 4.1/s | 29.7 / 29.4 | **hit** |
+| 250k | 250,081 | 105,748 | 144.0 s | 1,737/s | 2.4/s | 29.7 / 29.5 | **hit** |
+| 300k | 300,079 | 166,636 | 198.3 s | 1,513/s | 2.2/s | 29.8 / 29.5 | **hit** |
+| 600k | 600,068 | 202,814 | **713 s** | 842/s | 1.2/s | 29.8 / 29.5 | **hit** |
+
+Two things that table says, and they are the answer: **VRAM never moves** (29.5-29.8 GiB/card at every tier, so memory
+is not what caps us), and **per-token prefill cost grows roughly linearly with context** (5,256 -> 842 tok/s across a
+20x longer prompt -- the quadratic term in the 8 attention layers), which is why a 600k token prompt needs **11.9
+minutes to the first token and then decodes at 1.2 tok/s**. A 1M tier was not run because that extrapolation puts it
+near half an hour of single-stream occupation for one request.
+
+(The 30k / 150k / 250k rows come from the `NSEQ=16 MAXLEN=262,144` launch; the 300k and 600k rows from
+`NSEQ=1 MM=0 MAXLEN=1,048,576`. All cold, all with the MXFP4-converted experts and native dense serving.)
+
+**So**: mechanically this box can hold and serve a 600k token context today (1M holds but is unverified end to end and
+only without images). Practically, `MAXLEN=262,144` is the number that costs nothing -- bigger KV pool, 10.9x
+concurrency at the full window, images still on, 250k verified at 144 s -- and `32,768` is still the standing default
+purely because it was the bring-up caution value. Making 262,144 standing is a service decision (it lets a single client
+send a 250k prompt and occupy the box for two minutes, and `MAX_INPUT_TOKENS` is currently 0/off), and it would need the
+launcher family block, the store file and `tests/test_setup.py` / `tests/test_webui.py` moved together.
+
 ## Gotchas that cost time
 
 1. **`hf_quant_config.json` must be in the checkpoint dir.** The MTP draft path (`nemotron_h_mtp.py` ->

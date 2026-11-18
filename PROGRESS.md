@@ -3393,8 +3393,19 @@ What is owed after this:
   of four because `compat/mm_last_turn.py` defaults on. **8 text streams: 753.7 tok/s alone, 487.1 with four image
   requests injected (-35.4%), 542.2 with the same prefill volume in text (-28.1%)** -- ~28 points is prefill, ~7 is the
   encoder; two runs agreed, outside the +-10% band.
-- **`MAXLEN=32768` on this checkpoint is caution, not a ceiling**: the pool is 1,102,970 tokens at the current
-  `NSEQ=16` launch (1,450,583 at `NSEQ=8`), so 33 requests deep at 32,768. Raising it has never been measured here.
+- **Context depth is now measured** (see `notes/nemotron-super-vl.md`, "How far can the context go"): cold needle hits
+  at 30k/150k/250k/300k/**600k** with per-card VRAM flat at 29.5-29.8 GiB the whole way, so memory is not the cap.
+  Raising `MAXLEN` makes the KV pool **bigger** (1,099,694 at 32,768 -> 2,846,376 at 262,144 -> 3,482,333 at
+  1,048,576 with `NSEQ=1 MM=0`), and **1M with images ON does not boot** because the encoder-cache budget tracks the
+  window (1,046,529 tokens) with no vLLM flag to cap it. What caps depth is time: 250k costs 144 s to first token, 600k
+  costs 713 s and decodes at 1.2 tok/s.
+- **Decision owed**: should `MAXLEN=262,144` become the standing value? It costs nothing measurable (bigger pool, 10.9x
+  concurrency at the full window, images still on, 250k verified), but it also lets a single client occupy the box for
+  ~2 minutes, and `MAX_INPUT_TOKENS` is currently **0/off** -- so if 262,144 goes standing, an input-token guard should
+  go with it. Doing it properly means moving the launcher family block, the store file, `tests/test_setup.py` and
+  `tests/test_webui.py` together (they pin 32,768 today).
+- **Unmeasured on the depth line**: whether `MAXLEN` between 262,144 and 1,048,576 boots **with images on** (the
+  encoder-cache wall is somewhere in there), and whether a 1M tier would retrieve correctly (never run).
 - **Decision left open by that number**: is this box a text-only service or a mixed one? `MM=0`
   (`--language-model-only`) is a restart-level switch that hands back ~a third of the wave under image load plus the
   ViT's memory; if mixed traffic is intended, the worst case to plan for is 4 x 3,328 = ~13.3k tokens of injected
