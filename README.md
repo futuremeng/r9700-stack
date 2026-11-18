@@ -33,14 +33,14 @@ underneath it.
 ![r9700-stack v0.4.3: what runs on it, the weight formats, the speed](docs/r9700-stack-v0.4.3.png)
 
 <p align="center">
-  <a href="docs/r9700-stack-page.png"><img src="docs/r9700-stack-page.svg" alt="r9700-stack v0.4.3: what runs on it, the weight formats, the speed"></a>
-  <br><sub>The release on one page: what the stack is, the four model configurations it runs, and how fast they run --
+  <a href="docs/r9700-stack-page.png"><img src="docs/r9700-stack-page.svg" alt="r9700-stack main: what runs on it, the weight formats, the speed"></a>
+  <br><sub>The release on one page: what the stack is, the five model configurations main runs, and how fast they run --
 drawn by <code>docs/summary-page.py</code> from the same numbers the tables below carry, so a figure nobody can
 re-draw cannot drift from them. Its canvas is 1000 px against github.com's ~980 px column, so the smallest type on
 it lands at 14 px; the tag's own hand-drawn <code>docs/r9700-stack-v0.4.3.svg</code> carries the same claims at
 11 px on a 1200-unit canvas, which measures out at 9.0 px in that column -- clicked-to-read, so the generated page
 is what this README carries. The picture links to <code>docs/r9700-stack-page.png</code>, the same drawing at
-2000 × 2764, for zooming. Rows tagged "210 W gate" are the release configuration, "the native box" is one uncapped
+2000 × 3804, for zooming. Rows tagged "210 W gate" are the release configuration, "the native box" is one uncapped
 4x R9700 box, and "-500 MHz" is upstream's eight-card gate; the three are not comparable across.</sub>
 </p>
 
@@ -737,18 +737,22 @@ with `tools/litellm-spy.py` to re-measure it when the proxy version moves.
 </p>
 
 <p align="center">
-  <img src="docs/r9700-stack-monitor-cards.svg" alt="The Monitor's five headline cards, drawn from one kept GET /api/status: model Qwen3.8 at a 262,144-token context, TP4 MAXLEN 262,144 NSEQ 32 NBT 8,192 prefix cache off; KV pool 10.1% of 540,644 tokens; 2 running, 6 waiting, 6 for scheduling capacity, 0 deferred, 0 finished in the poll window; generation 2.0 tok/s, 14,915 prompt tok/s, 0.0 req/min, 14,999 tokens per iteration record prompt whole decode per step over the last 2 s; speculation 100.0% accepted, 20 requests finished since the engine started, 2.00 accepted tokens per draft over the last 2 s">
+  <img src="docs/r9700-stack-monitor-cards.svg" alt="The Monitor's five headline cards, drawn from one kept GET /api/status poll on the Super VL launch: 2 running, 6 waiting for scheduling capacity, 4.3% of a 1,099,694-token pool">
   <br><sub>The same five cards drawn rather than screenshotted: `docs/monitor-cards.py`, stdlib, drawing one
   recorded `GET /api/status` (the poll itself is committed next to it as `docs/r9700-stack-monitor-cards.json`, so
-  the figure can be re-drawn and checked without a serve). `bench/capture-cards.py` caught it 4 seconds into eight
-  concurrent ~30,000-token prompts on the standing 262k launch: two prefills run, six wait **for scheduling
-  capacity**, none deferred, and the pool is only 10.1% full -- a queue, not a memory wall, and the reason the
-  Requests card prints the split. Every rate on the figure says what it was averaged over: the Generation card's
-  2.0 tok/s and 14,999-token iteration record are both means of the last 2 s, and that pair is the engine crediting
-  whole prefills while its two running streams crawl. (That number is `vllm:iteration_tokens_total`, which calls
-  itself "tokens per engine step" and is not one on this build -- a chunked prefill is credited in a single record,
-  measured at 29,969 tokens in one record against NBT 8,192. The card says "iteration record" for that reason.)
-  Drawn because the screenshot above lands at 0.58 scale inside this
+  the figure can be re-drawn and checked without a serve). `bench/capture-cards.py` caught it 3 seconds into eight
+  concurrent ~12,000-token prompts on this box's standing Super VL launch, window 32,768: two run, six wait **for
+  scheduling capacity**, none deferred, and the pool is only 4.3% full -- a queue, not a memory wall, and the reason
+  the Requests card prints the split. The Model card's context line now comes from the serve's own window rather than
+  from a launch record that never carried one. Every rate on the figure says what it was averaged over: the Generation
+  card's 5.9 tok/s and its 3,802-token iteration record are both means of the last 1 s, and that pair is the engine
+  crediting whole prefills while its two running streams sit behind a backlog -- 11,701 prompt tok/s went in during
+  that window. (That number is `vllm:iteration_tokens_total`, which calls itself "tokens per engine step" and is not
+  one on this build -- a chunked prefill is credited in a single record, measured at 29,969 tokens in one record
+  against NBT 8,192. The card says "iteration record" for that reason.) The Speculation card reads 100.0% accepted at
+  4.00 accepted tokens per draft: that is a one-second window over a handful of drafts, not a measurement of the
+  drafter, which on long runs of this launch accepts about 4.0 tokens a draft at MTP-4. Drawn because the screenshot
+  above lands at 0.58 scale inside this
   column and its text is unreadable, and a cropped wide strip would be smaller per panel, not larger: the column
   width is the limit for the whole strip.</sub>
 </p>

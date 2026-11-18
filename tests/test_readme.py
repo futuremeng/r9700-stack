@@ -154,7 +154,8 @@ if fig:
     ck("the caption names the poll and where it is kept",
        "api/status" in caption and "monitor-cards.json" in caption)
     ck("the caption says the rates are window means, not steady-state rates",
-       "last 2 s" in caption and "averaged" in caption)
+       re.search(r"last \d+ s", caption) is not None and "averaged" in caption,
+       "no 'last N s' basis in the caption")
 
 # --- the title lockup and the release page ----------------------------------------------------------------
 ck("the README opens on the centred lockup, not on a markdown heading", README.lstrip().startswith('<p align="center">\n  <picture>'))
@@ -228,13 +229,21 @@ ck("and nothing on it is smaller than 14 px, so the small print is not 9.8 px ag
 pn = [t.strip() for t in re.findall(r">([^<>]+)</text>", PAGE) if re.fullmatch(r"[\d,\.]+", t.strip())]
 ck("every number on the release page is a number the README also carries",
    all(n in README for n in pn), f"{len(pn)} numbers, missing: {[n for n in pn if n not in README][:6]}")
-ck("and the claims the page exists to make are on it: four models' single-stream decode and the native box's pool",
-   all(n in PAGE for n in ("225", "222", "100", "202", "1,009,899", "250,078")))
+ck("and the claims the page exists to make are on it: five models' single-stream decode, the native box's pool and "
+   "the longest prompt it read cold",
+   all(n in PAGE for n in ("225", "222", "100", "202", "1,009,899", "250,078", "94", "600,068", "712-752")))
 nbars = len(re.findall(r'fill="#7b93ff"', PAGE))
+# Model-count-blind version of the old "4 bars" count: the rule is that a decode row without its gate is a number
+# without a machine, so take the row labels themselves and require a gate in each. Adding a model used to break this
+# check by changing a literal, which is the wrong reason for a figure guard to fail.
+bar_subs = [t.strip() for t in re.findall(r">([^<>]+)</text>", PAGE)
+            if re.match(r"^TP\d", t.strip()) and not re.search(r"· \d+ cards$", t.strip())]
 ck("and every decode row carries the gate its number came from, and the fact column names its own",
-   nbars == 4 and PAGE.count("210 W gate") >= 3 and PAGE.count("-500 MHz") >= 1
-   and PAGE.count("the native box, uncapped") >= 1,
-   f"{nbars} bars, {PAGE.count('210 W gate')} x 210 W, {PAGE.count('-500 MHz')} x -500 MHz")
+   len(bar_subs) == nbars and all(any(g in s for g in ("210 W gate", "-500 MHz", "the native box, uncapped"))
+                                  for s in bar_subs)
+   and PAGE.count("210 W gate") >= 3 and PAGE.count("-500 MHz") >= 1
+   and PAGE.count("the native box, uncapped") >= 2,
+   f"{nbars} bars, {len(bar_subs)} row labels: {bar_subs[:5]}")
 
 # the tag's own graphics: kept, measured, and not the README's figure. Every hand-authored page the tags ship is
 # measured, not just the newest, so the claim ("11 px on a 1200-unit canvas lands at 9 px in github's column")

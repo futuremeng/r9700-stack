@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Put the Monitor's cards under a long-prefill backlog and keep the poll that shows it.
 
-    python3 bench/capture-cards.py [N=8] [TOKENS=30000] [BASE=http://127.0.0.1:8080] [OUT=docs/r9700-stack-monitor-cards.svg]
+    python3 bench/capture-cards.py [N=8] [TOKENS=30000] [BASE=http://127.0.0.1:8080] [OUT=docs/r9700-stack-monitor-cards.svg] [SAMPLE=docs/r9700-stack-monitor-cards.json]
 
 Why this exists: docs/monitor-cards.py draws the five headline cards from one GET /api/status, and the values worth
 drawing only exist under load. Polling by hand picks a sample by eye and cannot be repeated; the run that produced
@@ -32,8 +32,9 @@ N = int(sys.argv[1]) if len(sys.argv) > 1 else 8
 TOKENS = int(sys.argv[2]) if len(sys.argv) > 2 else 30000
 BASE = (sys.argv[3] if len(sys.argv) > 3 else "http://127.0.0.1:8080").rstrip("/")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from served_model import resolve          # the model name comes from the serve, never from this file
+from served_model import resolve, window_of   # the model name comes from the serve, never from this file
 MODEL = resolve(BASE)
+WINDOW = window_of(BASE)     # and so does its context window; prompts get sized against that, not against a guess
 OUT = sys.argv[4] if len(sys.argv) > 4 else "docs/r9700-stack-monitor-cards.svg"
 # The kept poll lives next to the figure it produced, in the repo: "drawn from a live poll" is only checkable if
 # the poll itself is checkable. Re-running the figure is then `python3 docs/monitor-cards.py
@@ -41,6 +42,12 @@ OUT = sys.argv[4] if len(sys.argv) > 4 else "docs/r9700-stack-monitor-cards.svg"
 SAMPLE = sys.argv[5] if len(sys.argv) > 5 else "docs/r9700-stack-monitor-cards.json"
 MAXOUT = 16                                   # the load is prefill; keep decode out of the way
 CALIB_FILLERS = 1500                          # one short prompt, to measure this filler on this tokenizer
+if WINDOW:
+    # 1,500 repeats of the filler is 36,429 prompt_tokens: a reasonable calibration prompt on a 262,144-token launch,
+    # and a 400 on a 32,768-token one. The calibration prompt is a prompt too, so it gets sized to the window -- a
+    # quarter of it, which is long enough to divide stably and short enough to fit any launch this box runs. The
+    # silent fallback to a guessed tokens-per-repeat is what let the failure look like a request-shape bug for a while.
+    CALIB_FILLERS = max(60, min(CALIB_FILLERS, int(0.25 * WINDOW / 24.5)))
 FILLER = ("The grass is green. The sky is blue. The sun is yellow. Here we go. There and back again. ")
 
 
@@ -108,6 +115,14 @@ else:
     print(f"calibration: {CALIB_FILLERS} repeats of the filler = {calib[-1][0]} prompt_tokens "
           f"({tpf:.2f} tokens/repeat) -> {int(TOKENS / tpf):,} repeats for ~{TOKENS:,} tokens")
 fillers = max(1, int(TOKENS / tpf))
+if WINDOW and fillers * tpf + MAXOUT + 256 > WINDOW:
+    # Asking for more than the serve can hold is not a load, it is a rejection: every request comes back 400 and the
+    # figure records an idle engine. Clamp, and say so -- a figure drawn from a smaller prompt than it was asked for
+    # has to be readable as that.
+    room = max(1, int((WINDOW - MAXOUT - 256) / tpf))
+    print(f"sizing clamped to the serve's own {WINDOW:,}-token window: {fillers:,} repeats would be "
+          f"~{int(fillers * tpf):,} tokens; running {room:,} repeats (~{int(room * tpf):,}) instead", file=sys.stderr)
+    fillers = room
 
 results = {i: None for i in range(N)}          # keyed up front: an unfinished request is a None, not a missing key
 thr = threading.Thread(target=spy, daemon=True)

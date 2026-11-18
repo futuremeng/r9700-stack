@@ -114,11 +114,19 @@ per_draft, pd_lbl = pick("accepted_per_draft")
 # the same span and one basis line covers the pair. If they ever disagree, both get said.
 spec_lbl = acc_lbl if acc_lbl == pd_lbl else f"{acc_lbl}{pd_lbl}"
 
+# The Model card's context line. The launch record's MAXLEN is the preferred source because it says what this launch
+# was started with; when the record does not carry one, the serve's own window (payload lengths.window, read from its
+# ModelCard) answers instead, labelled as what it is. Only "neither source knows" gets the old silence line -- the
+# figure used to say "max context not in the recipe file" for a serve that had stated 32,768 on /v1/models all along.
+_len = s.get("lengths") or {}
+_ctx = (f"context {num(int(meta['maxlen']))} tokens" if meta.get("maxlen")
+        else (f"context {num(int(_len['window']))} tokens, as the serve reports" if _len.get("window")
+              else "max context not in the recipe file"))
+
 # (label, big value, [(line, kind)]) -- kind picks the size: soft is a card's own sub line, faint is the
 # small print under it (the recipe, the basis a number was computed on).
 cards = [
-    ("Model", s.get("model_name") or "—", [(f"context {num(int(meta['maxlen']))} tokens" if meta.get("maxlen")
-                                           else "max context not in the recipe file", "soft"),
+    ("Model", s.get("model_name") or "—", [(_ctx, "soft"),
                                            (recipe, "faint")]),
     ("KV pool", pct(live.get("kv_used_pct")), [(f"pool {num(live.get('kv_tokens'))} tokens", "soft"),
                                                ("used now, not reserved", "faint")]),

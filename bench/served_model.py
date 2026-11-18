@@ -63,6 +63,27 @@ def resolve(base: str, timeout: int = 10) -> str:
     return ids[0]
 
 
+def window_of(base: str, timeout: int = 10):
+    """The context window the serve itself reports, or None if its ModelCard does not carry one.
+
+    Anything that sizes a prompt has to size it against the window the serve is actually running, not the window the
+    launch was imagined with: a 36,429-token calibration prompt is ordinary on a 262,144-token launch and a 400 on
+    the 32,768-token one, which is what bench/capture-cards.py hit on the Super VL launch on 2026-11-18. None is a
+    legitimate answer -- an older vLLM puts no max_model_len on the card -- so this returns it instead of exiting;
+    the caller decides whether it can work without one.
+    """
+    root = root_of(base)
+    try:
+        with urllib.request.urlopen(root + "/v1/models", timeout=timeout) as r:
+            data = json.loads(r.read()).get("data", [])
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    for d in data:
+        if isinstance(d, dict) and isinstance(d.get("max_model_len"), int):
+            return int(d["max_model_len"])
+    return None
+
+
 def served_card(base: str, timeout: int = 10):
     """(id, checkpoint path) of the first model the serve advertises.
 

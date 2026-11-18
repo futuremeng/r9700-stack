@@ -198,6 +198,30 @@ MTP draft path reads that file rather than `config.json`'s `quantization_config`
   now forbids a literal name in `bench/`/`tools/`, asserts `/v1/models` answers exactly one id equal to the launcher's
   `SERVED_NAME`, and proves the stale name is refused.
 
+
+### The two figure surfaces the model was missing from, and the tool bugs that came with them
+
+- `docs/summary-page.py` keeps the README's one-page release figure as data. It had no Super VL row at all; it now
+  carries the model card, a decode bar at **94** ("94-112 across launches; stock: 27 eager, 73 graphs") and two fact
+  rows (**712-752 tok/s** at 16 streams, **600,068 tokens** read cold). Its version pill still claimed `v0.4.2 ·
+  2026-11-04` -- the tree has no tag past v0.4.4 -- so it reads `main · 2026-11-18`; canvas 1000 x 1382 → 1000 x
+  1902, PNG re-rendered at 2000 x 3804. `tests/test_readme.py` failed on a literal `nbars == 4`, the wrong reason for
+  a figure guard to fail, and now reads the row labels off the SVG and requires a gate label in each one.
+- The Monitor-card figure is drawn from one kept `/api/status` poll, committed beside it -- and the committed poll was
+  the Qwen-era 262k one. Re-captured on this launch (`bench/capture-cards.py 8 12000`): **2 running, 6 waiting, all 6
+  for scheduling capacity, 0 deferred, KV 4.3% of a 1,099,694-token pool**, generation card 5.9 tok/s against 11,701
+  prompt tok/s credited at request end, 3,802 tokens per iteration record, means of the last 1 s. The Speculation
+  card's 100.0% accepted / 4.00 tokens a draft is a one-second window over a handful of drafts, and the caption says
+  so instead of letting it read as a drafter result.
+- **`bench/capture-cards.py`'s calibration prompt did not fit the launch it was calibrating**: `CALIB_FILLERS = 1500`
+  is 36,429 prompt_tokens, a 400 on a 32,768-token window. It failed to stderr, fell back to a guessed tokens-per-
+  repeat, every load request 400'd too, and the sampler kept a poll of an **idle** engine that would have been
+  committed as the figure. It now reads the window from the serve (`served_model.window_of()`, the ModelCard's
+  `max_model_len`), sizes the calibration prompt to a quarter of it and clamps the load to fit, printing the clamp.
+- **The card drawer said "max context not in the recipe file"** about a serve that had stated 32,768 on `/v1/models`
+  all along: it read only the launch record's `MAXLEN`. It now falls back to the payload's `lengths.window`, labelled
+  as what it is.
+
 ## The admission gate is now observe-only: the door could not re-open, its hold bought nothing, and it was charging the traffic that was not the problem
 
 The complaint was availability -- "long requests are being blocked, and the box feels less usable than before the

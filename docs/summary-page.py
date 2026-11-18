@@ -38,7 +38,7 @@ W, PAD = 1000, 16
 CHAR = 0.60                                              # em per glyph, as in docs/monitor-cards.py
 HEAD, BODY, SMALL = 19, 15, 14                           # SMALL is the floor: 14 px at the column's width
 
-VERSION, RELEASED, LINE_OF = "v0.4.2", "2026-11-04", "vLLM 0.32 line, nightly 2026-10-25"
+VERSION, RELEASED, LINE_OF = "main", "2026-11-18", "vLLM 0.32 line, nightly 2026-10-25"
 TAGLINE = "LLM inference on 2 to 8 AMD Radeon AI PRO R9700"
 WHAT = "a vLLM plugin plus HIP and Triton kernels for gfx1201 (RDNA4)"
 BADGES = [("stock vLLM 0.32", 1), ("stock ROCm 10", 1), ("no fork", 0),
@@ -46,6 +46,12 @@ BADGES = [("stock vLLM 0.32", 1), ("stock ROCm 10", 1), ("no fork", 0),
 
 # model, the one line under it, what it brings, how many cards, and the note under the card count
 MODELS = [
+    ("Nemotron-3.5-Super-VL", "120B MoE, 512 experts, vision", [
+        "NVFP4 modelopt_mixed in, MXFP4 at load",
+        "40 Mamba-2 + 40 MoE + 8 attention",
+        "ungated relu-squared MLP: own quant kernel",
+        "dense NVFP4 kept on its exact bits"], 4,
+     "the native box's standing launch"),
     ("Qwen3.8-Flash-Next", "MoE, 288 experts", [
         "MXFP4 experts, fp8 dense",
         "MTP-2/3 speculative decoding",
@@ -75,6 +81,8 @@ GATE, UNCAP = "210 W gate", "the native box, uncapped"
 DSGATE = "8 cards, -500 MHz"                      # upstream's eight-card gate: a clock offset, not a power cap
 BARMAX, BARLEN = 250.0, 300
 BARS = [
+    ("Nemotron-3.5-Super-VL", "TP4", 94,
+     "94-112 across launches; stock: 27 eager, 73 graphs", UNCAP),
     ("Qwen3.8-Flash-Next", "TP4, four cards", 225, "14.3-14.4 ms a step; best sample 228", GATE),
     ("Qwen3.8-27B-NVFP4", "TP2, two cards", 222, "4.5 tokens a step with the DFlash2 drafter", GATE),
     ("GLM-5.3-Flash", "TP8, eight cards", 100, "75-80 before v0.3.8's host-memory collective", GATE),
@@ -84,6 +92,10 @@ BARS = [
 # the column beside the bars: what the same four cards do in aggregate, and what the context costs.
 # One gate label for the whole column, in its header -- every row in it is the uncapped native box.
 FACTS = [
+    ("712-752 tok/s", "Super VL launch: aggregate decode, 16 in flight, 300-token waves (440-460 at 8 streams; "
+     "262-272 on vLLM's own MoE emulation)"),
+    ("600,068 tokens", "the longest prompt read cold on that launch with the needle found - 713 s to the first "
+     "token, VRAM flat at 29.5-29.8 GiB a card, so the wall is time"),
     ("1,792 tok/s", "aggregate decode, 32 in flight, 1,200-token waves, fp8 main KV"),
     ("9,702 tok/s", "reading a 7,792-token prompt on that same fp8 launch"),
     ("935,216 tokens", "KV pool on this box's standing launch (MAXLEN 262,144, fp8 e4m3 main KV, image inputs "
@@ -94,6 +106,10 @@ FACTS = [
 
 FOOT = ["Each number names its machine: \"210 W gate\" is the release configuration (210 W a card, -42 mV, 32k); "
         "\"the native box\" is one 4x R9700 box, uncapped. They are not comparable across.",
+        "The Super VL row is the native box's standing launch since 2026-11-18 and is not in a tag: 41,152 of the "
+        "checkpoint's quantized tensors are routed experts, converted NVFP4 -> MXFP4 at load on the checkpoint's own "
+        "scales, with a new relu-squared activation kernel because its MLP is ungated. Same weights, same cards, "
+        "stock kernels: 27 tok/s eager, 73 with graphs.",
         "The Flash-Next column is the fp8 e4m3 main-KV launch this box runs by default: the pool doubles (1,009,899 "
         "against 540,202 tokens; with image inputs on, as today's launch runs, 935,216) and GSM8K 800 reads 96.0 "
         "against 95.6 %, HumanEval 164 98.17 against 96.95.",

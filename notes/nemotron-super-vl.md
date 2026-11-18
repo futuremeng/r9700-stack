@@ -515,3 +515,39 @@ decision -- not a silent mapping.
 3. **`--mm-processor-kwargs {}`** — the recipe's Qwen `{"size": ...}` default crashes the processor constructor.
 4. The GGUF route is a dead end on this venv: `QuantizationMethods` in 0.32 has no `gguf`, and the local llama.cpp
    build is CPU-only.
+
+## The figure surfaces, and the capture tool that feeds one of them (2026-11-18)
+
+The model had landed in the launcher, the plugin, the README and the notes, and was still absent from the two places
+where this repo keeps model data as *data*: `docs/summary-page.py` (the README's one-page release figure) and the kept
+`/api/status` poll behind the Monitor-card figure.
+
+**`docs/summary-page.py`** gained the model card (512 experts, NVFP4 → MXFP4 at load, the ungated MLP), a decode bar
+at **94** labelled "94-112 across launches; stock: 27 eager, 73 graphs", and two fact rows -- **712-752 tok/s** at 16
+streams and **600,068 tokens** read cold. Its version pill said `v0.4.2 · 2026-11-04`, which was its own stale claim
+(the tree has no tag past v0.4.4): now `main · 2026-11-18`. Canvas 1000 x 1382 → 1000 x 1902, PNG re-rendered at
+2000 x 3804 for the README caption. `tests/test_readme.py` broke on `nbars == 4` -- a literal model count, the wrong
+reason for a figure guard to fail -- and now takes the row labels from the SVG and requires a gate label in each,
+while the named-claims list gained "94", "600,068" and "712-752".
+
+**The card figure's poll** was still the Qwen-era 262k capture. Re-captured here: `bench/capture-cards.py 8 12000`,
+kept poll 11:23:37 UTC, **2 running / 6 waiting / all 6 for scheduling capacity / 0 deferred, KV 4.3% of 1,099,694
+tokens**, the Generation card at 5.9 tok/s with 11,701 prompt tok/s credited at request end and 3,802 tokens per
+iteration record, means of the last 1 s. Same shape the old capture showed: a queue, not a memory wall. The
+Speculation card reads 100.0% accepted at 4.00 tokens a draft, which over a one-second window is a handful of drafts,
+and the README caption says that rather than letting it stand as a drafter result (long runs on this launch accept
+about 4.0 a draft at MTP-4).
+
+Two bugs the re-capture surfaced, both worth the noise they made:
+
+- **The calibration prompt did not fit the launch it was calibrating.** `CALIB_FILLERS = 1500` is 36,429
+  prompt_tokens: ordinary on a 262,144-token launch, a 400 on a 32,768-token one. The tool wrote "calibration failed"
+  to stderr, fell back to a guessed 24.3 tokens/repeat, and then every load request 400'd as well -- so the sampler
+  kept a poll of an **idle** engine (`running 0, waiting 0, kv 0.0%`) and would have committed that as the figure. It
+  now reads the window off the serve (`served_model.window_of()`, the ModelCard's `max_model_len`), sizes the
+  calibration prompt to a quarter of it and clamps the load prompts to fit, printing the clamp. A degenerate poll is
+  still possible -- the tool keeps the longest queue, and a queue needs prompts the window can hold -- but the reason
+  is no longer silent.
+- **The Model card said "max context not in the recipe file" about a serve that had stated 32,768 on `/v1/models` the
+  whole time.** The drawer looked only at the launch record's `MAXLEN`; it now falls back to the payload's
+  `lengths.window` and labels it as what it is.
