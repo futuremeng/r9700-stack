@@ -40,6 +40,11 @@ def register() -> None:
     if not _disabled("quant"):
         from .quant import ct  # noqa: F401  (registers "compressed-tensors")
         done.append("quant:compressed-tensors")
+        try:
+            from .quant import modelopt  # noqa: F401  (registers "modelopt_mixed")
+            done.append("quant:modelopt_mixed")
+        except Exception as e:
+            log.warning("r9700_vllm: modelopt_mixed not registered: %r", e)
     if not _disabled("models"):
         from vllm import ModelRegistry
         from .models.qwen4_exp import ARCHS

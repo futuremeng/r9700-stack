@@ -1065,6 +1065,7 @@ nightly are in [notes/picking-up.md](notes/picking-up.md).
 | [`PROGRESS.md`](PROGRESS.md), [`PLAN.md`](PLAN.md) | The running log of what was measured, tried and rejected; where the program is going. |
 | [`notes/exl3-plan.md`](notes/exl3-plan.md), [`notes/exl3-ledger.md`](notes/exl3-ledger.md) | DeepSeek-V4.1-Flash from the EXL3 pack: architecture, bring-up, the step ledger, the Phase 4 kernel packages and their results. |
 | [`notes/glm53.md`](notes/glm53.md) | GLM-5.3-Flash: the sparse-MLA path, the eight-rank collective, the 32k and long-context recipes. |
+| [`notes/nemotron-super-vl.md`](notes/nemotron-super-vl.md) | Nemotron-3.5-Super-VL-120B: `modelopt_mixed` NVFP4 experts converted to MXFP4 at load, the ungated-MLP activation kernel, and the flag that was hiding 3x. |
 | [`notes/kernel-inventory.md`](notes/kernel-inventory.md), [`notes/decode-step.md`](notes/decode-step.md) | Every kernel, what it replaces, and the anatomy of a decode step. |
 | [`notes/picking-up.md`](notes/picking-up.md) | The release checklist and the upgrade recipe for a new vLLM nightly. |
 | [`notes/native-4xr9700.md`](notes/native-4xr9700.md), [`notes/context-262k.md`](notes/context-262k.md), [`notes/kv-fp8-qsa.md`](notes/kv-fp8-qsa.md) | The second machine: the docker-free 4x R9700 box, the 262,144-token context measured end to end, and the fp8 main KV cache that box now runs by default. |

@@ -554,6 +554,48 @@ extern "C" int r9k_silu_mul_quant_fp8(long gu, long q, long s, int M, int I, lon
   return hipGetLastError() == hipSuccess ? 0 : -6;
 }
 
+// relu^2 without a gate half + per-row dynamic fp8 quant, fused: x [M][I] bf16 -> q [M][I] e4m3 + s [M].
+// Nemotron-H's MoE is `activation_without_mul` (mlp_hidden_act=relu2, vLLM's RELU2_NO_MUL): w13 carries one `up`
+// matrix (Super VL 120B per rank: 672x1024 packed, around the 1024-wide MoE latent), so there is no second half
+// to multiply and vLLM's own reference is relu(x) in place then square. Same per-row scale rule as
+// r9k_silu_mul_quant_fp8 (amax/448, e4m3 output), one workgroup per row, activation recomputed on the store pass.
+__global__ void r9k_relu2_quant_fp8_kernel(const __hip_bfloat16* __restrict__ x, unsigned char* __restrict__ q,
+                                           float* __restrict__ s, int I) {
+  const int row = blockIdx.x;
+  const __hip_bfloat16* xr = x + (size_t)row * I;
+  __shared__ float wmax[32];
+  float m = 0.f;
+  for (int k = threadIdx.x; k < I; k += blockDim.x) {
+    const float a = (float)xr[k];
+    m = fmaxf(m, a > 0.f ? a * a : 0.f);        // relu^2 >= 0: no fabsf, no second branch
+  }
+  for (int o = 16; o > 0; o >>= 1) m = fmaxf(m, __shfl_xor(m, o, 32));
+  if ((threadIdx.x & 31) == 0) wmax[threadIdx.x >> 5] = m;
+  __syncthreads();
+  if (threadIdx.x < 32) {
+    float v = threadIdx.x < (blockDim.x >> 5) ? wmax[threadIdx.x] : 0.f;
+    for (int o = 16; o > 0; o >>= 1) v = fmaxf(v, __shfl_xor(v, o, 32));
+    if (threadIdx.x == 0) wmax[0] = v;
+  }
+  __syncthreads();
+  const float amax = fmaxf(wmax[0], 1e-12f);
+  const float inv = 448.f / amax;
+  if (threadIdx.x == 0) s[row] = amax / 448.f;
+  unsigned char* qr = q + (size_t)row * I;
+  for (int k = threadIdx.x; k < I; k += blockDim.x) {
+    const float a = (float)xr[k];
+    __hip_fp8_e4m3 f((a > 0.f ? a * a : 0.f) * inv);
+    qr[k] = *reinterpret_cast<unsigned char*>(&f);
+  }
+}
+
+extern "C" int r9k_relu2_quant_fp8(long x, long q, long s, int M, int I, long stream) {
+  if (M <= 0) return 0;
+  hipLaunchKernelGGL(r9k_relu2_quant_fp8_kernel, dim3(M), dim3(128), 0, (hipStream_t)stream,
+                     (const __hip_bfloat16*)x, (unsigned char*)q, (float*)s, I);
+  return hipGetLastError() == hipSuccess ? 0 : -6;
+}
+
 extern "C" int r9k_moe_block(void) { return MOE_BLOCK; }   // rows per M tile; routing block = 16*MT
 extern "C" int r9k_fold_supported(void) { return 1; }       // folded-exponent MXFP4 (prefill nv=2, decode MT|16)
 

@@ -3306,3 +3306,27 @@ written down instead of being remembered:
   0.32@0.96 spread is 914,748 / 891,919 / 902,153 -- 2.5% on identical settings); a rerun of the `+rocm100` arm
   outside a PCIe BadTLP episode; the `r9k_router_gemm_kernel<8, 2, true>` root cause (cap 4 is a mitigation); and
   `tests/test_dsv4_glue.py`'s `top-k given identical logits` failure, which is independent of the vLLM version.
+
+## 2026-11-18 03:0x - Super VL 120B came up on four cards: the NVFP4 experts convert to MXFP4 at load, the MoE learned relu^2, and the flag that mattered most was `--enforce-eager`
+
+The user asked what this box could do with `NVIDIA-Nemotron-3.5-Super-VL-120B-A12B`; the Qwen stack was stood down
+for the afternoon and the official NVFP4 checkpoint (70 GB) went to `~/models/Nemotron-Super-VL-120B-NVFP4`. The full
+record, including the four flags the model demands and the `hf_quant_config.json` trap, is
+[notes/nemotron-super-vl.md](notes/nemotron-super-vl.md); the numbers are in CHANGELOG. Short version of the ladder,
+single stream, 300 tokens, temp 0: 24.5-26.0 (eager, stock MoE) -> 27.4-27.8 (eager, libr9k) -> 71.2-72.8 (graphs,
+stock) -> 94.2-102.3 (graphs, libr9k, MTP=4). Eight streams: 458 tok/s aggregate.
+
+What is owed after this:
+
+- **The dense NVFP4 linears are still emulated.** 83 entries, mostly `mixer.shared_experts.{up,down}_proj`, every one
+  on `EmulationNvFp4LinearKernel`, running on every token. They are the next conversion, and the dense MXFP4 path is
+  already proven on this box by the Qwen config's `R9K_TARGET_LMHEAD=mxfp4`.
+- **No quality ladder for the requantization.** The experts go block-16 e4m3 -> block-32 e8m0, which is ~11% off an
+  exact NVFP4 dequant per weight; the five-question battery and the reasoning traces look identical on both paths,
+  which is a spot check, not a measurement. GSM8K + needles + a probe32-shaped aggregate, run twice
+  (`R9K_DISABLE=nvfp4` against the libr9k path), is what would say whether the conversion is free.
+- **Images are untested on this model**, and `MAXLEN=32768` is caution, not a ceiling (the pool is 1.45M tokens).
+- **The box's standing state is undecided.** The watcher is still disarmed (its pid was killed before the experiment
+  so a failed experimental load could not be read as a crash fault) and `launches/262k.json` still describes Qwen, so
+  `./setup.sh` would bring Qwen back. Whichever model is meant to be production needs its launch config stored and
+  `WATCH_RESTART` decided on purpose.

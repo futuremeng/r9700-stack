@@ -100,7 +100,7 @@ class R9700Mxfp4Experts(mk.FusedMoEExpertsModular):
 
     @staticmethod
     def _supports_no_act_and_mul() -> bool:
-        return False
+        return True
 
     @staticmethod
     def _supports_quant_scheme(weight_key, activation_key) -> bool:
@@ -108,7 +108,12 @@ class R9700Mxfp4Experts(mk.FusedMoEExpertsModular):
 
     @staticmethod
     def _supports_activation(activation: MoEActivation) -> bool:
-        return activation == MoEActivation.SILU and apply_moe_activation_supported(activation)
+        if activation == MoEActivation.SILU:
+            return apply_moe_activation_supported(activation)
+        if activation == MoEActivation.RELU2_NO_MUL:
+            # an ungated MLP: w13 is one matrix and the epilogue is relu^2 -- needs this build's act+quant kernel
+            return K.relu2_quant_supported()
+        return False
 
     @staticmethod
     def _supports_parallel_config(moe_parallel_config: FusedMoEParallelConfig) -> bool:
@@ -138,7 +143,9 @@ class R9700Mxfp4Experts(mk.FusedMoEExpertsModular):
 
     def moe_problem_size(self, a1, w1, w2, topk_ids):
         N1, _ = self._dims(self.w1_scale)
-        return w1.size(0), a1.size(0), N1 // 2, a1.size(-1), topk_ids.size(1)
+        # the gated contract stores gate|up in one w13, so the problem's intermediate is half its rows; an
+        # ungated MLP (Nemotron-H) keeps them equal
+        return w1.size(0), a1.size(0), N1 // 2 if self.moe_config.is_act_and_mul else N1, a1.size(-1), topk_ids.size(1)
 
     def workspace_shapes(self, M, N, K_, topk, global_num_experts, local_num_experts,
                          expert_tokens_meta, activation):
@@ -199,7 +206,8 @@ class R9700Mxfp4Experts(mk.FusedMoEExpertsModular):
                     passes.append((c1, c2, cold_al))
 
         xq, xs = K.quant_rows_fp8(hidden_states)
-        fused = MOE_FUSE and MT == 1 and pf_gate is None and pf_down is None \
+        mul = activation.is_gated                      # gated: w13 rows are the gate | up halves (N1 = 2I)
+        fused = MOE_FUSE and mul and MT == 1 and pf_gate is None and pf_down is None \
             and all(isinstance(W1, K.Mxfp4Experts) and isinstance(W2, K.Mxfp4Experts) for W1, W2, _ in passes)
         if fused:
             act = torch.empty((numel, N1 // 2), dtype=torch.float32, device=dev)
@@ -215,10 +223,12 @@ class R9700Mxfp4Experts(mk.FusedMoEExpertsModular):
 
         if fused:
             pass
-        elif FUSED_ACT:
+        elif FUSED_ACT and mul:
             aq, as_ = K.silu_mul_quant_fp8(gate_up)           # one launch: silu*mul + per-row fp8 quant
+        elif FUSED_ACT and K.relu2_quant_supported():
+            aq, as_ = K.relu2_quant_fp8(gate_up)              # one launch: relu^2 + per-row fp8 quant (ungated)
         else:
-            act = torch.empty((numel, N1 // 2), dtype=torch.bfloat16, device=dev)
+            act = torch.empty((numel, N1 // 2 if mul else N1), dtype=torch.bfloat16, device=dev)
             self.activation(activation, act, gate_up)
             aq, as_ = K.quant_rows_fp8(act)
 

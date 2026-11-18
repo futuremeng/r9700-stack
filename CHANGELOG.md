@@ -1,5 +1,36 @@
 # Changelog
 
+## Nemotron-3.5-Super-VL-120B-A12B serves on four R9700s: its NVFP4 experts convert to MXFP4 while loading, the MoE grew an ungated-MLP activation kernel, and the largest win was deleting a flag
+
+The checkpoint is `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4` (70 GB, `modelopt_mixed`, 512 routed experts,
+top-22, a 1024-wide MoE latent, 40 Mamba2 + 40 MoE + 8 attention layers). ROCm has no NVFP4 MoE backend, so stock
+serves its 41,042 expert matrices through a dequantizing emulation. `quant/modelopt.py` now registers
+`modelopt_mixed` and hands those experts to the libr9k grouped MXFP4 x FP8 GEMMs, converting each expert in the load
+path with the `nvfp4_to_mxfp4` helper `quant/nvfp4.py` already carried: no offline repack, no extra disk, 17.72 GiB a
+card instead of 18.52, and **+18-22% on short / +12-17% on long generation** at identical settings (73 -> 86 tok/s at
+MTP=2 with graphs on).
+
+* **the blocker was the MLP shape, not the quantization.** Nemotron-H's MoE is `activation_without_mul` with
+  `mlp_hidden_act=relu2` (vLLM `MoEActivation.RELU2_NO_MUL`): one matrix per side, no gate half, so libr9k's fused
+  epilogue — `silu(g) * u` at `g = row*2I`, `u = g + I` — correctly refuses the layer. `r9k_relu2_quant_fp8` does
+  relu^2 plus the per-row e4m3 quant over a single half, and its output bytes are **identical to vLLM's own reference**
+  at I = 255/672/1024/2688. The wrapper advertises `RELU2_NO_MUL` only when the loaded `libr9k.so` carries the
+  symbol, so an older .so falls back to stock instead of failing at the first decoded token.
+* **`--enforce-eager` was costing 3x** — 27 -> 73 tok/s on the same weights and the same MTP, because 88 backbone
+  layers of small GEMMs at one stream is a launch-overhead problem before it is a kernel problem. Single stream now
+  runs **94-102 tok/s** at a 300-token generation and **458 tok/s aggregate at eight streams** (57 each). The MTP knee
+  is 4-6 drafts (acceptance 2.62 at 2, 3.02 at 3, 4.73 at 10); `MTP=4` ships. The ladder is in
+  [notes/nemotron-super-vl.md](notes/nemotron-super-vl.md).
+* **the conversion is a requantization and is labelled as such**: block-16 e4m3 scales become block-32 e8m0, leaving
+  the weights ~11% off an exact NVFP4 dequantization. The five-question battery reads the same on both paths and the
+  reasoning traces are indistinguishable, but this is not bit-exact serving of the checkpoint, and
+  `R9K_DISABLE=nvfp4` puts the layer back on stock in one flag.
+
+Two things the checkpoint demands that cost an hour each: `hf_quant_config.json` must be present in the model dir (the
+MTP draft path reads that file rather than `config.json`'s `quantization_config`, and without it the launch dies on
+`Cannot find the config file for modelopt_mixed`), and the launch needs `REASONING=nemotron_v3` plus
+`--mm-processor-kwargs {}` — the Qwen parser and the Qwen `size` kwarg are both wrong for this processor.
+
 ## The admission gate is now observe-only: the door could not re-open, its hold bought nothing, and it was charging the traffic that was not the problem
 
 The complaint was availability -- "long requests are being blocked, and the box feels less usable than before the

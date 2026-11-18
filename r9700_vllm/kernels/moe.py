@@ -44,6 +44,9 @@ def lib() -> ctypes.CDLL:
         L.r9k_quant_rows_fp8.argtypes = [ctypes.c_long] * 3 + [ctypes.c_int] * 3 + [ctypes.c_long]
         L.r9k_silu_mul_quant_fp8.restype = ctypes.c_int
         L.r9k_silu_mul_quant_fp8.argtypes = [ctypes.c_long] * 3 + [ctypes.c_int] * 2 + [ctypes.c_long]
+        if hasattr(L, "r9k_relu2_quant_fp8"):        # ... or no relu^2 (ungated MLP) activation kernel
+            L.r9k_relu2_quant_fp8.restype = ctypes.c_int
+            L.r9k_relu2_quant_fp8.argtypes = [ctypes.c_long] * 3 + [ctypes.c_int] * 2 + [ctypes.c_long]
         L.r9k_quant_rows_fp8_gate.restype = ctypes.c_int
         L.r9k_quant_rows_fp8_gate.argtypes = [ctypes.c_long] * 5 + [ctypes.c_int] * 4 + [ctypes.c_long]
         assert L.r9k_moe_block() == MOE_BLOCK
@@ -67,6 +70,12 @@ def fold_supported() -> bool:
 
 def atiled_supported() -> bool:
     return hasattr(lib(), "r9k_moe_4bit_prefill_at")
+
+
+def relu2_quant_supported() -> bool:
+    """Whether this libr9k.so carries the ungated-MLP activation kernel (relu^2 + per-row fp8 quant): the MoE of
+    a `activation_without_mul` checkpoint (Nemotron-H) can only be served when it does."""
+    return hasattr(lib(), "r9k_relu2_quant_fp8")
 
 
 def _stream() -> int:
@@ -445,6 +454,22 @@ def silu_mul_quant_fp8(gu: torch.Tensor):
     rc = lib().r9k_silu_mul_quant_fp8(gu.data_ptr(), q.data_ptr(), s.data_ptr(), M, I2 // 2, _stream())
     if rc:
         raise RuntimeError(f"r9k_silu_mul_quant_fp8 failed ({rc})")
+    return q, s
+
+
+def relu2_quant_fp8(x: torch.Tensor):
+    """bf16 [M, I] -> (e4m3fn [M, I], fp32 [M]): relu^2 with a per-row dynamic scale, one launch.
+
+    The `activation_without_mul` twin of silu_mul_quant_fp8: the GEMM1 output IS the intermediate (no gate half),
+    and vLLM's reference for MoEActivation.RELU2_NO_MUL is relu(x) then square -- same values, one kernel instead
+    of an act pass plus quant_rows_fp8."""
+    assert x.dtype == torch.bfloat16 and x.is_contiguous()
+    M, I = x.shape
+    q = torch.empty((M, I), dtype=torch.float8_e4m3fn, device=x.device)
+    s = torch.empty((M,), dtype=torch.float32, device=x.device)
+    rc = lib().r9k_relu2_quant_fp8(x.data_ptr(), q.data_ptr(), s.data_ptr(), M, I, _stream())
+    if rc:
+        raise RuntimeError(f"r9k_relu2_quant_fp8 failed ({rc})")
     return q, s
 
 
