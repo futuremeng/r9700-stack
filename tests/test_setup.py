@@ -374,7 +374,7 @@ ck("the watcher is a flag on setup.py, so a reader who finds a stray python is p
 # this box has actually seen in its own logs, never into leftover ranks, and never more than a few times an hour.
 # Each rule below names the loop or the outage it exists to prevent.
 NOW = 1_000_000
-REC = {"recipe": "native-flashnext.sh", "webui": "same", "config": "262k", "session": "r9700-x"}
+REC = {"recipe": "native-flashnext.sh", "webui": "same", "config": "256k", "session": "r9700-x"}
 ck("off unless told: the default stays \u00a74's rule, seen not resurrected",
    S.restart_ok(REC, "illegal memory access", 0, NOW, [], False)[0] is False
    and "off" in S.restart_ok(REC, "illegal memory access", 0, NOW, [], False)[1])
@@ -432,7 +432,7 @@ with tempfile.TemporaryDirectory() as td:
        "choice and the flags THIS launch was given (a restart that drops them is a restart into another launch)",
        got and got[0][:5] == [sys.executable, str(ROOTP / "setup.py"), "--yes", "--launch",
                               "native-flashnext.sh"]
-       and ["--config", "262k"] <= got[0] and "--no-tmux" in got[0]
+       and ["--config", "256k"] <= got[0] and "--no-tmux" in got[0]
        and ["--max-model-len", "262144"] <= got[0], str(got[:1])[:240])
 _wsrc = (ROOTP / "setup.py").read_text().split("def watch_loop(")[1].split("def arm_watch(")[0]
 ck("and the watcher's own loop asks the breaker before it exits (a decision nothing calls is a decision nobody "
@@ -515,8 +515,8 @@ with tempfile.TemporaryDirectory() as _td:
                 setattr(c, f, dflt)
         return c
 
-    S.conf_save("262k", {"recipe": "native-flashnext.sh", "docker": "no", "webui": "same", "tmux": True,
-                         "env": {"MAXLEN": "262144"}, "rest": []}, "the standing 262k launch")
+    S.conf_save("256k", {"recipe": "native-flashnext.sh", "docker": "no", "webui": "same", "tmux": True,
+                         "env": {"MAXLEN": "262144"}, "rest": []}, "the standing 256k launch")
     os.environ["MAXLEN"] = "32768"                      # inherited from some earlier hand-typed command
     c = _cfg2()
     S.conf_stage(c)
@@ -527,13 +527,13 @@ with tempfile.TemporaryDirectory() as _td:
     ck("flags typed this run still beat the file for that run, and do not rewrite it",
        (_c := _cfg2(webui="off", docker="yes")) or (S.conf_stage(_c) is True)
        and (_c.webui, _c.docker) == ("off", "yes")
-       and json.loads((S.CONF / "262k.json").read_text())["webui"] == "same")
+       and json.loads((S.CONF / "256k.json").read_text())["webui"] == "same")
     os.environ.pop("MAXLEN", None)
     S.conf_save("32k", {"recipe": "native-flashnext.sh", "docker": "no", "webui": "side", "tmux": True,
                         "env": {"MAXLEN": "32768"}, "rest": []})
     ck("two files and no keyboard: it stops and names --config NAME rather than picking one",
        S.conf_stage(_cfg2()) is False and S.conf_stage(_cfg2(config="32k")).__class__ is not None
-       and S.conf_all()[0][0] == "262k")
+       and S.conf_all()[0][0] == "256k")
     for _n, _d in S.conf_all():
         for _k in (_d.get("env") or {}):
             os.environ.pop(_k, None)
@@ -617,14 +617,51 @@ ck("no ${MAXLEN:-32768} is left anywhere in the launcher (the old default could 
 # nothing, which makes it safe to run while the box is serving.
 ck("the family block carries all three context profiles with the measured windows",
    _famblock is not None and all(s in _famblock.group(1) for s in
-                                 ("32k)", "262k)", "1m)", "32768", "262144", "1048576")),
+                                 ("32k)", "256k)", "1m)", "32768", "262144", "1048576")),
    "family block missing or a profile gone")
 ck("CTX=1m turns images off and narrows to NSEQ=1 in the launcher itself, not only in the prose",
    _famblock is not None and "MM=0" in _famblock.group(1) and ": ${NSEQ:=1}" in _famblock.group(1))
 ck("an unknown CTX is refused rather than falling through to the standing 32k",
    "is not a context profile" in _nativetxt)
+# 2026-11-18: the profile was renamed 262k -> 256k, because 262,144 is 256 x 1024 and the old label rounded the count
+# in decimal while wearing a suffix that means x1024 here. The rename is guarded three ways: the new name is what the
+# block and the README carry, the old name still resolves and says so out loud (muscle memory and dated notes should
+# get a correction, not a refusal), and no live file keeps calling the profile 262k.
+ck("CTX=256k is the profile name and its comment states the window it stands for",
+   _famblock is not None and "256k)" in _famblock.group(1) and "256 x 1024" in _famblock.group(1))
+ck("the retired name still resolves, and prints that it was renamed",
+   '262k)' in _nativetxt and "was renamed" in _nativetxt)
+def _unexplained_262k(txt):
+    """Every 262k in this text whose surrounding sentences never say the name was retired. Line-based checks miss a
+    wrapped sentence, which is how this guard first failed: the README's parenthetical spans three lines."""
+    bad = []
+    for m in re.finditer("262k", txt):
+        w = txt[max(0, m.start() - 240): m.end() + 240]
+        if "renam" not in w:
+            bad.append(txt[max(0, m.start() - 40): m.start() + 40].replace("\n", " "))
+    return bad
+
+
+ck("and nothing a user reads today calls the profile 262k -- the only allowed mentions sit next to the rename note",
+   not _unexplained_262k(_readme) and not _unexplained_262k(_nativetxt),
+   f"{(_unexplained_262k(_readme) + _unexplained_262k(_nativetxt))[:3]}")
+# A regex that looked right and matched nothing turned out to carry a literal backspace where \b should be: an edit
+# had written the escape as one control byte. Nothing else about that file was wrong, so no assertion but this one
+# would have caught it. Source files are text; a control byte in one is a tool bug that lands as a silent logic bug.
+_ctrl = []
+for _d in ("serve", "tests", "bench", "tools", "r9700_vllm", "tuning", "kernels", "docs"):
+    for _f in Path(ROOTP, _d).rglob("*"):
+        if _f.suffix not in (".py", ".sh", ".js", ".mjs") or not _f.is_file():
+            continue
+        _b = _f.read_bytes()
+        _c = sorted({x for x in _b if x < 9 or 11 <= x <= 12 or 14 <= x <= 31})
+        if _c:
+            _ctrl.append(f"{_f.relative_to(ROOTP)}: {['%02x' % x for x in _c]}")
+ck("no source file in the tree carries a control byte (an escaped \\b that arrived as 0x08 silenced a guard)",
+   not _ctrl, "; ".join(_ctrl[:4]))
+
 ck("README.md names the two optional profiles, so the standing launch is not the only one anyone can find",
-   "CTX=262k bash serve/native-flashnext.sh" in _readme and "CTX=1m bash serve/native-flashnext.sh" in _readme)
+   "CTX=256k bash serve/native-flashnext.sh" in _readme and "CTX=1m bash serve/native-flashnext.sh" in _readme)
 
 _nativeenv = Path.home() / ".config" / "r9700-stack" / "native.env"
 _ckpt_dir = None
@@ -653,8 +690,8 @@ else:
        _d1m[-220:])
     ck("...and it says out loud that images went off, because that is forced and not a default",
        "turning images OFF" in _d1m)
-    _d262, _rc262 = _dry("262k")
-    ck("CTX=262k resolves to 262,144 and keeps images on at 16 streams",
+    _d262, _rc262 = _dry("256k")
+    ck("CTX=256k resolves to 262,144 and keeps images on at 16 streams",
        "--max-model-len 262144" in _d262 and "--language-model-only" not in _d262 and "--max-num-seqs 16" in _d262,
        _d262[-220:])
     _dbg, _rcbg = _dry("bogus")
@@ -862,7 +899,7 @@ ck("a stamp that cannot be parsed goes to unattributed rather than into the wind
                             _ev("t3", "c3:00.0", _now - 70)]}, now=_now)["unattributed"] == 1)
 ck("an unreadable journal cannot produce an alert -- 'cannot look' must not be rendered as 'nothing wrong'",
    S.hw_verdict({"total": None, "by_card": {}, "error": "journalctl exited 2"}, now=_now) is None)
-_row = S.fault_row({"session": "s", "recipe": "r.sh", "config": "262k", "log": "/l.log"},
+_row = S.fault_row({"session": "s", "recipe": "r.sh", "config": "256k", "log": "/l.log"},
                    {"died_at": 111, "reason": "crashed and wedged"}, "illegal memory access", 3,
                    {"ranks_before": 3, "ranks_after": 0}, False, "off (WATCH_RESTART unset)",
                    _fev, {"admitted": 90, "held": 4, "expired": 1, "closed": True}, _v, 512, now=_now)

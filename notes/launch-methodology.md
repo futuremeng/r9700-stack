@@ -258,11 +258,11 @@ The 8.6x on wall and 38x on TTFT are the **best case**: the corpus is six copies
 346,754 prompt tokens were cache hits (block-quantized to the 880-token hybrid block, which the engine's own
 `prompt_tokens_cached_total` reported and the Monitor subtracted). Real traffic pays in proportion to how much of
 its prompt is actually shared. That A/B ran while `PREFIX_CACHE=0` was still the recipe, and the whole 262k
-measurement series (notes/context-262k.md, notes/kv-fp8-qsa.md) was measured with the cache off -- those tables now
+measurement series (notes/context-256k.md, notes/kv-fp8-qsa.md) was measured with the cache off -- those tables now
 carry that label. Extending the series means measuring on the recipe that runs, not keeping the old default so the
 tables stay comparable. The number worth remembering is the shape: for identical-prefix traffic the cache
 does not redistribute prompt work, it **removes** it -- which is the one lever the step census in
-notes/context-262k.md says the scheduler's fairness knobs cannot reach.
+notes/context-256k.md says the scheduler's fairness knobs cannot reach.
 
 That filler corpus is fine for pricing a mechanism and useless for deciding whether to run the cache always on.
 For the decision, replay the box's own conversations instead: `tools/prefix-replay.py`, and

@@ -51,7 +51,7 @@ MODELS = [
         "40 Mamba-2 + 40 MoE + 8 attention",
         "ungated relu-squared MLP: own quant kernel",
         "dense NVFP4 kept on its exact bits"], 4,
-     "the native box's standing launch"),
+     "measured on the native box, 2026-11-18"),
     ("Qwen3.8-Flash-Next", "MoE, 288 experts", [
         "MXFP4 experts, fp8 dense",
         "MTP-2/3 speculative decoding",
@@ -106,7 +106,7 @@ FACTS = [
 
 FOOT = ["Each number names its machine: \"210 W gate\" is the release configuration (210 W a card, -42 mV, 32k); "
         "\"the native box\" is one 4x R9700 box, uncapped. They are not comparable across.",
-        "The Super VL row is the native box's standing launch since 2026-11-18 and is not in a tag: 40,960 of the "
+        "The Super VL row is a day on the native box, 2026-11-18, and is not in a tag: 40,960 of the "
         "41,156 layer entries its hf_quant_config.json declares are routed experts, converted NVFP4 -> MXFP4 at load "
         "on the checkpoint's own scales, with a new relu-squared activation kernel because its MLP is ungated. Same "
         "weights, same cards, stock kernels: 27 tok/s eager, 73 with graphs.",

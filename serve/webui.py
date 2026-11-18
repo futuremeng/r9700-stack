@@ -76,7 +76,7 @@ LBL = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)="([^"]*)"')
 # blocked status). Sum of all reasons equals vllm:num_requests_waiting"; what the code assigns
 # (v1/metrics/loggers.py:1150-1159, v1/core/sched/scheduler.py:2947-2948) is capacity = num_waiting_reqs (the
 # ordinary queue) and deferred = num_skipped_waiting_reqs. "capacity" is therefore a name for the queue, not a
-# claim about KV blocks -- measured on the live 262k launch: 8 x 30k prompts held running 2 / waiting 6 /
+# claim about KV blocks -- measured on the live 256k launch: 8 x 30k prompts held running 2 / waiting 6 /
 # capacity 6 / deferred 0 with the pool 8.8-10.2% full, because long prefills take the 8,192-token step one at
 # a time. Showing the split is what makes that readable without reading the source.
 REASON = re.compile(r'reason="([^"]*)"')
@@ -329,7 +329,7 @@ def since(s, g):
             "generation_tokens_mean": ac("request_generation_tokens"),
             # Cumulative counts, not means: the Monitor's decode total card shows these, because a count cannot be
             # misread as an average. This launch is at ~124 million prompt tokens against ~1 million generated,
-            # which is the single most useful fact about its decode rate (notes/context-262k.md).
+            # which is the single most useful fact about its decode rate (notes/context-256k.md).
             "generation_tokens_total": g("generation_tokens_total"),
             "prompt_tokens_total": g("prompt_tokens_total"),
             "iterations": g("iteration_tokens_total_count"),
@@ -735,7 +735,7 @@ def derive(cur, prev, dt, cap, info, mode, kept, hist):
             # generated tokens per iteration RECORD in this window -- a total across streams, deliberately not a
             # per-stream mean: on a prefill-heavy launch this is ~2-4 while a lone stream reaches ~2.3 tokens a
             # step of its own, and the difference is fan-out and step time, not a per-stream average (the census
-            # is in notes/context-262k.md). Records, not steps, at 0.32: a whole chunked prefill lands in one.
+            # is in notes/context-256k.md). Records, not steps, at 0.32: a whole chunked prefill lands in one.
             "gen_per_step": (d("generation_tokens_total") / d("iteration_tokens_total_count"))
                             if d("iteration_tokens_total_count") > 0 else None,
             "iters_per_req": (d("iteration_tokens_total_count") / nrec) if nrec else None,
@@ -1869,7 +1869,7 @@ def shared_decode(rows):
     running gauge is the one that counts a prefilling request as a producer (see derive()'s stream_tok_s_live).
 
     Why this rides the payload: measured off 1,400 real requests, a stream's decode rate is 158 tok/s
-    alone, 119 at two in flight and 23 at three or four ([notes/context-262k.md](../notes/context-262k.md)). A
+    alone, 119 at two in flight and 23 at three or four ([notes/context-256k.md](../notes/context-256k.md)). A
     decode number with no concurrency beside it is therefore unreadable -- the reader cannot tell a slow
     request from a busy box. It is derived, so it is computed at read time and never journalled: ROW_KEYS
     decides what reaches disk, and this is not in them.
@@ -1977,7 +1977,7 @@ def length_stats(rows, window=None):
     The seconds estimate is measured, not a constant: `rate_tok_s` is the rows' own uncached tokens divided by
     their own `timings.prefill_s`, taken over the rows big enough to be throughput-bound (uncached >= 8192, one
     step at this recipe's --max-num-batched-tokens). It lands at 7.2-8.3k tok/s on this box, matching
-    notes/context-262k.md's independently measured 7,238 tok/s above 160k. If the rows carry no prefill_s, the
+    notes/context-256k.md's independently measured 7,238 tok/s above 160k. If the rows carry no prefill_s, the
     seconds line is dropped rather than computed from a remembered constant.
 
     What is refused rather than guessed:
@@ -2032,7 +2032,7 @@ def length_stats(rows, window=None):
                 # every row the same arithmetic reads 1,600-3,050 tok/s on this journal, because a 300-token
                 # prompt's prefill_s is dominated by scheduling, not by computing prompt tokens; over the rows
                 # at or above one step (8192 = --max-num-batched-tokens, the same edge as the "8k" band) it reads
-                # 7,220-8,314 tok/s, which is the same number notes/context-262k.md measured independently
+                # 7,220-8,314 tok/s, which is the same number notes/context-256k.md measured independently
                 # (7,238 tok/s above 160k). A seconds estimate built on the all-rows number would overstate the
                 # cost of a cold context by 2-5x.
                 pre_tok += un                      # the tokens that row actually had to compute, against the

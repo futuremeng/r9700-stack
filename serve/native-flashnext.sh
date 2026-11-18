@@ -28,24 +28,28 @@ if [ "$FAM" = nemotronh ]; then
   : ${TOOLCALL:=pythonic}
   # Context depth is a named profile, because the three depths worth having here differ in more than MAXLEN and two of
   # them were measured end to end (notes/nemotron-super-vl.md, "How far can the context go"). 32k is this box's standing
-  # launch; the others are one flag away -- CTX=262k or CTX=1m. MAXLEN= still overrides a profile directly.
+  # launch; the others are one flag away -- CTX=256k or CTX=1m. MAXLEN= still overrides a profile directly.
   #   32k  standing. KV pool 1,099,694 tokens = 33.6 requests deep at the window.
-  #   262k the pool grows to 2,846,376 tokens (10.86x at the full window) because the sizing run is bounded by NBT, not
-  #        by MAXLEN; images stay on; a cold needle at 250,081 tokens hits, with 144 s to the first token.
+  #   256k = 262,144 tokens (256 x 1024, which is why the profile was renamed from "262k" to 256k -- the old label
+  #        rounded the token count in decimal and called the result k). The pool grows to 2,846,376 tokens (10.86x
+  #        at the full window) because the sizing run is bounded by NBT, not by MAXLEN; images stay on; a cold needle
+  #        at 250,081 tokens hits, with 144 s to the first token.
   #   1m   the checkpoint's own max_position_embeddings. Needs images OFF -- the multimodal encoder-cache budget tracks
   #        the window ("a budget of 1,046,529 tokens") and a launch with images on loses a worker during init -- and it
   #        has only ever been brought up at NSEQ=1 (pool 3,482,333 tokens, 3.32x). A 600k prompt there takes 713 s to
   #        its first token and decodes at 1.2 tok/s: a depth for one request at a time, not a service width.
   case "${CTX:-32k}" in
     32k)  : ${MAXLEN:=32768} ;;
-    262k) : ${MAXLEN:=262144} ;;
+    256k) : ${MAXLEN:=262144} ;;
+    262k) echo "r9700: CTX=262k was renamed -- 262,144 is 256 x 1024, so the profile is CTX=256k. Running that."
+          : ${MAXLEN:=262144} ;;
     1m)   : ${MAXLEN:=1048576}
           : ${NSEQ:=1}
           if [ "${MM:-${MM_DEFAULT:-1}}" = 1 ]; then
             echo "r9700: CTX=1m is turning images OFF -- the encoder-cache budget follows the window, and a 1,046,529-token one kills a worker at init (measured)"
             MM=0
           fi ;;
-    *) echo "r9700: CTX=$CTX is not a context profile for this family (32k, 262k, 1m)" >&2; exit 2 ;;
+    *) echo "r9700: CTX=$CTX is not a context profile for this family (32k, 256k, 1m)" >&2; exit 2 ;;
   esac
   # NSEQ=16 measured 2026-11-18: 16 streams give 712-752 tok/s aggregate at ~48 a stream (8 streams unchanged, single
   # stream unchanged), against 487-559 at NSEQ=8. The price is KV pool 1,450,583 -> 1,102,970 tokens from the larger

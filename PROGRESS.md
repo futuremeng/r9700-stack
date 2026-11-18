@@ -3421,6 +3421,22 @@ What is owed after this:
   fault ledger behind it). `tools/recipe-check.py` passes; the stored-config launch measured 99.1 tok/s at one stream
   and 709 aggregate at 16. Tests updated with it: `test_setup.py`'s launcher/README MAXLEN check is now per-family, and
   `test_webui.py`'s multimodal fixtures pin the Flash-Next family instead of inheriting whatever this box serves.
+- **2026-11-18 evening: the box is back on Qwen3.8-Flash-Next, and the label "262k" is retired in favour of `256k`.**
+  The switch is a checkpoint swap and nothing else: Super VL's config sits in `launches-available/supervl-32k.json`,
+  `native.env` names the Qwen directory again, and `quant/modelopt.py`, the `relu2` kernel, the native dense NVFP4
+  path, the family block and `notes/nemotron-super-vl.md` all stay. `bench/gate.sh` PASS before relaunch; health after
+  240 s; 1,136 tok/s aggregate at 16 streams and 9,513 tok/s reading an 8k prompt on the same cards. The rename is the
+  part with a lesson in it: 262,144 tokens is 256 x 1024, so calling the profile "262k" rounded a count in decimal and
+  then attached a suffix that means x1024 everywhere else here -- and the wrong label had already spread to the launch
+  config, the README, a note filename, page comments and test guards. `CTX=262k` still resolves and prints that it was
+  renamed; the note keeps a stub at its old name so the dated references in CHANGELOG and PROGRESS still resolve; the
+  dated prose itself is untouched. Two guards were written wrong while fixing this and are worth remembering: the
+  "no live file says 262k" check failed on the README's **wrapped** parenthetical (it reads a text window now, not
+  lines), and `tests/test_served_names.py` pinned whichever family was standing the day it was written, so it failed
+  the evening Qwen came back -- a true failure but not the one it is for; it now reads the launcher's per-family
+  defaults and posts the *other* family's name to prove the refusal. A `` I typed into that test arrived in the file
+  as a literal backspace byte, which is why a regex that looked correct matched nothing: `tests/` now has a scan for
+  control bytes in its own source (it found exactly that one file).
 - **Caught tonight about my own process: the model swap landed in the README's launch section and not in its front
   matter.** The headline table, the Features count, "What it does" step 2 and the Quick start checkpoint list still
   described a box serving Qwen3.8-Flash-Next, a day after this box started serving a 120B NVIDIA MoE as its standing

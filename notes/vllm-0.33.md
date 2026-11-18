@@ -388,7 +388,7 @@ venvs run it through.
 
 #### Serving, same recipe both sides: `MAXLEN=262144 NSEQ=32 NBT=8192 PREFIX_CACHE=0 WEBUI=same`, uncapped
 
-The 0.32 column is the record [context-262k.md](context-262k.md) measured **the same morning** (05:27-05:45 UTC) on
+The 0.32 column is the record [context-256k.md](context-256k.md) measured **the same morning** (05:27-05:45 UTC) on
 the same box and the same recipe; the 0.33 column is a fresh launch at 09:17 (log
 `~/logs/ctx262k-033-091658.log.out`, KV line) and a second at 09:46 (`ctx262k-033b-094629.log.out`).
 
@@ -412,7 +412,7 @@ the same box and the same recipe; the 0.33 column is a fresh launch at 09:17 (lo
 
 **What `#60084` (32-bit buffer addressing on the `TRITON_ATTN` KV views) is worth on our path: nothing measurable,
 and it broke nothing.** 1,562-1,578 against 1,576 aggregate at 32x300 (-0.4%), 7,988 / 7,391 against 8,062 / 7,436
-prefill at 120k / 180k (-0.9% / -0.6%), which is inside the spread [context-262k.md](context-262k.md) already
+prefill at 120k / 180k (-0.9% / -0.6%), which is inside the spread [context-256k.md](context-256k.md) already
 records between instances of the same recipe. The check that would have caught a kernel reading past the end of the
 region it now bounds is the ladder (needles found at 60k / 120k / 180k, 30.5 GiB/card high-water) and the
 long-prefill sanity run (0 bad of 330) — both clean. The KV-pool figure needs the same treatment the 0.32 note

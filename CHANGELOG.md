@@ -1,5 +1,26 @@
 # Changelog
 
+## This box serves Qwen3.8-Flash-Next again, and the 262,144-token profile finally has its honest name
+
+Super VL 120B is parked, not reverted: its config sits in `~/.config/r9700-stack/launches-available/supervl-32k.json`,
+`native.env`'s `MODEL=` names the Qwen directory again, and everything the model needed -- `quant/modelopt.py`, the
+`r9k_relu2_quant_fp8` kernel, the native dense NVFP4 path, the Nemotron-H family block, `notes/nemotron-super-vl.md`
+-- stays in the tree. Swap cost: `bench/gate.sh` PASS (procs 0, MemAvail 86.5 GiB, VRAM hi 0.06 GiB), boot to health in
+240 s, then 1,136 tok/s aggregate at 16 streams and 9,513 tok/s reading an 8k prompt on the same four cards.
+
+**The rename: `262k` -> `256k`.** 262,144 tokens is 256 x 1024; the old label rounded the token count in decimal and
+then attached a `k` that means x1024 everywhere else in this repo. No value moved -- the window was always
+`--max-model-len 262144` and every measurement in `notes/context-256k.md` was taken there. What changed: the
+launcher's profile (`CTX=256k`, with `CTX=262k` still resolving and printing that it was renamed, so muscle memory and
+dated notes get a correction rather than a refusal), this box's launch config (`launches/256k.json`, `name` field
+updated, note records why), the note file (`notes/context-256k.md`, with a stub left at the old name so the dated
+references in CHANGELOG and PROGRESS still resolve), and every label in README, `serve/webui.py`,
+`tests/test_setup.py` and `tests/test_webui.py`. The dated prose in CHANGELOG and PROGRESS is left exactly as it was
+written: rewriting a record to fix a label makes the record wrong instead of the label right. Three new guards in
+`tests/test_setup.py`: the profile name and its stated window, the retired name resolving with the rename printed, and
+no live file calling the profile `262k` unless the nearby text says it was renamed (a line-based version of that guard
+failed on the README's wrapped parenthetical, so it reads a window of text now).
+
 ## Nemotron-3.5-Super-VL-120B-A12B serves on four R9700s: its NVFP4 experts convert to MXFP4 while loading, the MoE grew an ungated-MLP activation kernel, and the largest win was deleting a flag
 
 The checkpoint is `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4` (70 GB, `modelopt_mixed`, 512 routed experts,

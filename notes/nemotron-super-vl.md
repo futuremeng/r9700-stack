@@ -113,7 +113,7 @@ holds a 1M-token context that this box's four pools do not.
   `NanoNemotronVLProcessor.__init__() got an unexpected keyword argument 'size'`), patch 16, 1024-13312 patches.
 - `MAXLEN=32768` is deliberate caution, not a limit: the pool holds 1.45M tokens.
 - The watcher is **not** armed (its pid was killed before this work so an experimental load could not be treated as a
-  production crash fault), and the box's stored launch config (`262k.json`) still describes the Qwen stack.
+  production crash fault), and the box's stored launch config (`256k.json`) still describes the Qwen stack.
 
 ## A/B: what the conversion buys, and what it costs in answers
 
@@ -330,7 +330,7 @@ config-level (MTP depth, NSEQ, graph sizes) and need the repeated-run harness, n
 ## Standing state, decided 2026-11-18: this box serves Super VL, and a bare launch says so
 
 Before this, the checkpoint came from whatever a hand-typed command carried: the launcher's default `MODEL` was the
-Qwen directory and `launches/262k.json` still described Qwen, so a restart or a bare `./setup.sh` would have quietly
+Qwen directory and `launches/256k.json` still described Qwen, so a restart or a bare `./setup.sh` would have quietly
 brought back a different model while everyone believed this was a Super VL box. Now:
 
 | what | where it lives | why there |
@@ -338,7 +338,7 @@ brought back a different model while everyone believed this was a Super VL box. 
 | the checkpoint (`MODEL=`) | `~/.config/r9700-stack/native.env` | a fact about the box; that file is the one place box facts go (`serve/lib/localenv.sh` sources it for all five launchers) |
 | MTP=4, NSEQ=16, MAXLEN=32768, capture sizes through 160, `nemotron_v3`, `pythonic`, `--mm-processor-kwargs {}`, `--trust-remote-code` | `serve/native-flashnext.sh`, inside a `FAM=nemotronh` block chosen by grepping the checkpoint's `config.json` | these are measured numbers, and this file's own rule is that nothing measurement-bearing goes in native.env -- `tools/recipe-check.py` holds the running engine to them |
 | the launch shape (recipe, webui=same, tmux, `WATCH_RESTART=1`) | `~/.config/r9700-stack/launches/supervl-32k.json` | one file in the store means a bare `./setup.sh` asks nothing and launches; two files means it *asks*, and with no keyboard it refuses |
-| the Qwen launch | parked in `~/.config/r9700-stack/launches-available/262k.json` | kept, not deleted, and out of the store so the store stays single-valued |
+| the Qwen launch | parked in `~/.config/r9700-stack/launches-available/256k.json` | kept, not deleted, and out of the store so the store stays single-valued |
 
 The watcher is armed on purpose (pid recorded in `.r9700-state/launch.json`, `restart_on_crash: true`, up to 3 per
 hour, never into a short PCIe link). It probes **:8180**, the engine, not the :8080 front door -- a dead door must not
@@ -349,7 +349,7 @@ flag in the live argv matches this tree's") -- it passes on this launch.
 
 **Going back to Qwen** is one command, not a reconfiguration: `MODEL=$HOME/models/Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ
 MAXLEN=262144 NSEQ=32 NBT=8192 bash serve/native-flashnext.sh` for a single launch, or move
-`launches-available/262k.json` back into `launches/` and edit `native.env`'s `MODEL` to make it the box's standing
+`launches-available/256k.json` back into `launches/` and edit `native.env`'s `MODEL` to make it the box's standing
 launch again.
 
 **One thing still broken for clients**: the gateway has no model-alias mechanism (`serve/gateway.py` is a byte pipe),
@@ -427,7 +427,7 @@ Asked "what is the maximum", measured rather than reasoned. Three separate limit
 
 **The KV pool is not the wall, and raising MAXLEN makes it bigger.** At `MAXLEN=262,144` the pool grew from
 **1,099,694 to 2,846,376 tokens** (10.86x concurrency at the full window); at `MAXLEN=1,048,576` with `NSEQ=1 MM=0` it
-was **3,482,333 tokens** (3.32x). Same effect `notes/qwen-32k-vs-262k.md` records for Flash-Next: the sizing run is
+was **3,482,333 tokens** (3.32x). Same effect `notes/qwen-32k-vs-256k.md` records for Flash-Next: the sizing run is
 bounded by `NBT=8192`, not by `max_model_len`. (For reference the checkpoint itself declares
 `max_position_embeddings = 1,048,576` -- a 1M window, four times Flash-Next's.)
 
@@ -465,13 +465,13 @@ concurrency at the full window, images still on, 250k verified at 144 s.
 family block rather than prose in a note:
 
 ```bash
-CTX=262k bash serve/native-flashnext.sh     # 262,144 window, images on, NSEQ=16, pool 2,846,376 tokens
+CTX=256k bash serve/native-flashnext.sh     # 262,144 window, images on, NSEQ=16, pool 2,846,376 tokens
 CTX=1m   bash serve/native-flashnext.sh     # 1,048,576 window: forces MM=0, NSEQ=1, pool 3,482,333 tokens
 ```
 
 `CTX=1m` turns images off **by itself** and prints why, because that is forced by the encoder-cache measurement and not
 a preference; an unknown `CTX` exits 2 instead of falling through to the standing window; `MAXLEN=` still overrides a
-profile directly (measured with `CTX=262k MAXLEN=131072`). `tests/test_setup.py` guards all of it -- including resolving
+profile directly (measured with `CTX=256k MAXLEN=131072`). `tests/test_setup.py` guards all of it -- including resolving
 the profiles with `DRY=1`, which is safe because the launcher guards every write on DRY, so the test can run while the
 box is serving. One thing that is *not* guarded: `MAX_INPUT_TOKENS` is still 0/off, so whichever of these profiles gets
 used, a single client can send a prompt that occupies the box for minutes.
@@ -533,7 +533,7 @@ streams and **600,068 tokens** read cold. Its version pill said `v0.4.2 · 2026-
 reason for a figure guard to fail -- and now takes the row labels from the SVG and requires a gate label in each,
 while the named-claims list gained "94", "600,068" and "712-752".
 
-**The card figure's poll** was still the Qwen-era 262k capture. Re-captured here: `bench/capture-cards.py 8 12000`,
+**The card figure's poll** was still the Qwen-era 256k capture. Re-captured here: `bench/capture-cards.py 8 12000`,
 kept poll 11:23:37 UTC, **2 running / 6 waiting / all 6 for scheduling capacity / 0 deferred, KV 4.3% of 1,099,694
 tokens**, the Generation card at 5.9 tok/s with 11,701 prompt tok/s credited at request end and 3,802 tokens per
 iteration record, means of the last 1 s. Same shape the old capture showed: a queue, not a memory wall. The

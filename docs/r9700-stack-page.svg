@@ -40,7 +40,7 @@
 <rect x="172.0" y="403" width="11" height="13" rx="2" fill="#f5b53d" stroke="none"/>
 <rect x="188.0" y="403" width="11" height="13" rx="2" fill="#f5b53d" stroke="none"/>
 <text x="210.0" y="416" font-size="15" font-weight="700" fill="#eef1f3">TP4 · 4 cards</text>
-<text x="140.0" y="436" font-size="14" fill="#8e979f">the native box's standing launch</text>
+<text x="140.0" y="436" font-size="14" fill="#8e979f">measured on the native box, 2026-11-18</text>
 <rect x="563.0" y="240" width="421.0" height="222" rx="10" fill="#1d2226" stroke="#2a3036"/>
 <text x="575.0" y="266" font-size="19" font-weight="700" fill="#eef1f3">Qwen3.8-Flash-Next</text>
 <text x="575.0" y="286" font-size="14" fill="#f5b53d">MoE, 288 experts</text>
@@ -158,10 +158,10 @@
 <text x="644" y="1600" font-size="14" fill="#c7cdd3">itself)</text>
 <text x="16" y="1670" font-size="14" fill="#8e979f">Each number names its machine: "210 W gate" is the release configuration (210 W a card, -42 mV, 32k); "the native</text>
 <text x="16" y="1688" font-size="14" fill="#8e979f">box" is one 4x R9700 box, uncapped. They are not comparable across.</text>
-<text x="16" y="1706" font-size="14" fill="#8e979f">The Super VL row is the native box's standing launch since 2026-11-18 and is not in a tag: 40,960 of the 41,156</text>
-<text x="16" y="1724" font-size="14" fill="#8e979f">layer entries its hf_quant_config.json declares are routed experts, converted NVFP4 -&gt; MXFP4 at load on the</text>
-<text x="16" y="1742" font-size="14" fill="#8e979f">checkpoint's own scales, with a new relu-squared activation kernel because its MLP is ungated. Same weights, same</text>
-<text x="16" y="1760" font-size="14" fill="#8e979f">cards, stock kernels: 27 tok/s eager, 73 with graphs.</text>
+<text x="16" y="1706" font-size="14" fill="#8e979f">The Super VL row is a day on the native box, 2026-11-18, and is not in a tag: 40,960 of the 41,156 layer entries</text>
+<text x="16" y="1724" font-size="14" fill="#8e979f">its hf_quant_config.json declares are routed experts, converted NVFP4 -&gt; MXFP4 at load on the checkpoint's own</text>
+<text x="16" y="1742" font-size="14" fill="#8e979f">scales, with a new relu-squared activation kernel because its MLP is ungated. Same weights, same cards, stock</text>
+<text x="16" y="1760" font-size="14" fill="#8e979f">kernels: 27 tok/s eager, 73 with graphs.</text>
 <text x="16" y="1778" font-size="14" fill="#8e979f">The Flash-Next column is the fp8 e4m3 main-KV launch this box runs by default: the pool doubles (1,009,899 against</text>
 <text x="16" y="1796" font-size="14" fill="#8e979f">540,202 tokens; with image inputs on, as today's launch runs, 935,216) and GSM8K 800 reads 96.0 against 95.6 %,</text>
 <text x="16" y="1814" font-size="14" fill="#8e979f">HumanEval 164 98.17 against 96.95.</text>

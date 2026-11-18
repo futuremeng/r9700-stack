@@ -67,10 +67,16 @@ ck("no bench/ or tools/ file carries a model name in its own source",
 # 2. The resolver and the launcher must agree about the box's one name, or a green bench run is measuring something
 #    the launcher did not start.
 _ltxt = Path(ROOT, "serve", "native-flashnext.sh").read_text()
-_names = re.findall(r":\s*\$\{SERVED_NAME:=([^}]*)\}", _ltxt)
-ck("the launcher's family default names the one served name",
-   bool(_names), f"SERVED_NAME defaults: {_names}")
-_first = (_names[0].split() or [""])[0] if _names else ""
+# The launcher names the served model per family: the Nemotron-H block sets one, everything else falls back to the
+# ${SERVED_NAME:-...} in the argv. Both are read, so this guard follows the box across a checkpoint swap instead of
+# pinning whichever family happened to be standing the day it was written (it was written the day Super VL took the
+# cards, and failed the evening Qwen came back -- a true failure, but not the one the guard is for).
+_svl = re.search('FAM"\\s*=\\s*nemotronh[^A-Za-z0-9_].*?:\\s*\\$\\{SERVED_NAME:=([^}]*)\\}', _ltxt, re.S)
+_oth = re.search(r'\$\{SERVED_NAME:-([A-Za-z0-9._-]+)\}', _ltxt)
+_name_svl = _svl.group(1).split()[0] if _svl else ""
+_name_oth = _oth.group(1) if _oth else ""
+ck("the launcher names a served model for each family it knows",
+   bool(_name_svl) and bool(_name_oth), f"nemotronh={_name_svl!r} other={_name_oth!r}")
 
 _base = os.environ.get("BASE", "http://127.0.0.1:8080")
 try:
@@ -81,17 +87,21 @@ except (urllib.error.URLError, OSError, ValueError) as e:
     ck("live-serve name checks skipped: nothing answering on " + _base, True, str(e))
 if _ids:
     import served_model as SM
+    _card = SM.served_card(_base)
+    _fam = "nemotronh" if bool(_card[1]) and Path(_card[1], "config.json").exists() and \
+        "NemotronH_Omni_Reasoning_V3" in Path(_card[1], "config.json").read_text() else "other"
+    _want, _stale = (_name_svl, _name_oth) if _fam == "nemotronh" else (_name_oth, _name_svl)
     ck("/v1/models answers exactly ONE name for this box -- no alias was quietly added",
        len(_ids) == 1, f"names: {_ids}")
-    ck("the name the bench resolves is the name the launcher's family default sets",
-       SM.resolve(_base) == _first == _ids[0], f"serve {_ids[0]!r}, launcher {_first!r}, resolver {SM.resolve(_base)!r}")
-    ck("...and a stale name really is refused rather than served under the rug",
+    ck(f"the name the bench resolves is the launcher's default for the family it runs ({_fam})",
+       SM.resolve(_base) == _want == _ids[0], f"serve {_ids[0]!r}, launcher {_want!r}, resolver {SM.resolve(_base)!r}")
+    ck("...and the other family's name is refused rather than served under the rug",
        b"does not exist" in subprocess.run(["curl", "-s", "-X", "POST", _base + "/v1/chat/completions",
                                             "-H", "Content-Type: application/json",
-                                            "-d", '{"model":"Qwen3.8","messages":[{"role":"user","content":"hi"}],'
-                                                  '"max_tokens":1}'],
-                                           capture_output=True, timeout=60).stdout)
-    _card = SM.served_card(_base)
+                                            "-d", json.dumps({"model": _stale,
+                                                              "messages": [{"role": "user", "content": "hi"}],
+                                                              "max_tokens": 1})],
+                                           capture_output=True, timeout=60).stdout, f"posted {_stale!r}")
     ck("needle_long counts haystacks against the checkpoint the serve itself reports",
        bool(_card[1]) and Path(_card[1], "config.json").exists(), f"card root: {_card[1]!r}")
 

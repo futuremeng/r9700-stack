@@ -13,7 +13,7 @@ reason) only mean something as a set.
 
 Which poll gets kept: the one with the longest waiting queue, tie-broken by requests actually running. That is the
 shape the card exists to show -- on this launch the queue is long while the KV pool is nearly empty, so "waiting"
-without the reason split would read as a memory wall that is not there (notes/context-262k.md).
+without the reason split would read as a memory wall that is not there (notes/context-256k.md).
 
 Prompt length is measured, not assumed: one cheap calibration prompt decides the word count, and what each request
 actually cost is printed from the serve's own usage.prompt_tokens. A ~0 token prompt would show a queue too, but
@@ -173,7 +173,7 @@ print(f"the kept poll is the one with the longest waiting queue (tie: more runni
       f"engine clock {time.strftime('%H:%M:%S UTC', time.gmtime(best_at))} -- cross-check the serve's own log line")
 
 subprocess.run([sys.executable, "docs/monitor-cards.py", path, OUT, BASE], check=True)
-print("\npaste into notes/context-262k.md:")
+print("\npaste into notes/context-256k.md:")
 print(f"  {N} x ~{TOKENS:,}-token prompts through {BASE} (mode {best['mode']}, "
       f"{time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(best_at))}): "
       f"running {l['running']:.0f} / waiting {l['waiting']:.0f} / capacity {l.get('waiting_capacity'):.0f} / "

@@ -60,28 +60,30 @@ checkpoint, and a launch that is already running is left alone. Both paths, imag
 
 ## Four cards, the numbers worth knowing
 
-**Since 2026-11-18 this box serves Nemotron-3.5-Super-VL-120B-A12B** (NVIDIA NVFP4: **512 experts, 22 active per
-token**, 40 Mamba-2 + 40 MoE + 8 attention, vision) on the same four R9700, TP4, MTP-4, 18.5 GiB a card:
+**Measured on this box on 2026-11-18: Nemotron-3.5-Super-VL-120B-A12B** (NVIDIA NVFP4: **512 experts, 22 active per
+token**, 40 Mamba-2 + 40 MoE + 8 attention, vision) on the same four R9700, TP4, MTP-4, 18.5 GiB a card. It held the
+cards for a day as the standing launch and is now parked again - the work to get it there stands, and
+`launches-available/supervl-32k.json` brings it back with one flag:
 
 | | measured | against what |
 |---|---:|---|
 | **decoding, one stream** | **94-112 tok/s** | stock vLLM, same weights and cards: **27** eager, **73** with graphs - the gap is the load-time conversion |
 | **decoding, 8 and 16 streams** | **440-460 / 712-752 tok/s** | same launch on vLLM's own MoE emulation: **262-272** at 8 streams |
 | **quality, converted vs stock** | GSM8K **191/200** vs **190/200** | needles found at 30k, 150k and 250k in both arms |
-| **context** | **600,068 tokens** read cold | 144 s to the first token at 250k, 713 s at 600k, VRAM flat - the wall is time. `CTX=32k \| 262k \| 1m` |
+| **context** | **600,068 tokens** read cold | 144 s to the first token at 250k, 713 s at 600k, VRAM flat - the wall is time. `CTX=32k \| 256k \| 1m` |
 | **images** | **256-3,328 tokens each** | the checkpoint's patch budget, not a knob; ~1/3 of a mixed wave; send crops |
 
 Full record: [notes/nemotron-super-vl.md](notes/nemotron-super-vl.md).
 
 Qwen3.8-Flash-Next (MoE, MXFP4 experts plus fp8 dense) on four Radeon AI PRO R9700, TP4, MTP-3, 31.9 GiB a card -
-the launch this fork's kernels were built for, parked rather than deleted, and still the fastest thing these cards run:
+the launch this fork's kernels were built for, and the one these cards serve again since 2026-11-18 evening:
 
 | | measured | where it came from |
 |---|---:|---|
 | **decoding, one stream** | **225 tok/s** (best sample 228) | 14.3-14.4 ms a step; release configuration, 210 W cap, 32k |
 | **decoding, 32 streams** | **1,823 tok/s** aggregate (best sample 1,836.3) | 1,200-token waves, `bench/probe32.sh`; the native box, uncapped. The fp8 main-KV launch this box now defaults to reads **1,792** (1,789 / 1,796) at the same protocol, and the 2026-11-08 standing launch (vLLM 0.32, router cap 4, util 0.96, `PREFIX_CACHE=0`) read **1,767 / 1,780** — inside that spread, so the router cap costs nothing measurable here (notes/bug-router-gemm-oob.md) |
 | **reading a prompt** | **9,633 tok/s** | 7,789-token prompt, the native box uncapped (7,141 at the 210 W gate); **9,702** on the fp8 launch, 7,792 tokens |
-| **context** | **262,144 tokens**, needle found at 250,078 | the checkpoint's own ceiling, which this box ran at until the Super VL launch took the cards; KV pool **902,153 tokens** (`Maximum concurrency for 262,144 tokens per request: 3.44x`) on the standing launch — fp8 e4m3 main KV, image inputs on, `--gpu-memory-utilization 0.96`. At 0.97 the same launch read 935,216 with the vision knobs and 1,009,899 without them; 540,202 at bf16 main KV |
+| **context** | **262,144 tokens**, needle found at 250,078 | the checkpoint's own ceiling, and the window this box serves at today; KV pool **902,153 tokens** (`Maximum concurrency for 262,144 tokens per request: 3.44x`) on the standing launch — fp8 e4m3 main KV, image inputs on, `--gpu-memory-utilization 0.96`. At 0.97 the same launch read 935,216 with the vision knobs and 1,009,899 without them; 540,202 at bf16 main KV |
 | **decoding, in real work** (not a benchmark) | **162 tok/s** with the box to yourself, **115 tok/s** as a request actually finishes | 1,568 real requests off the fp8 launch's journal over 10.25 h, prompts p50 52,083; the benchmark rows above describe a machine nobody sits on |
 
 <sub>These tables are not comparable with each other, and the second one is not even comparable within itself: its
@@ -92,7 +94,7 @@ other people's requests, and it is the row to
 believe when asking what a request will feel like. Full protocols,
 sample lists and the measurements that were tried and rejected: <a href="#speed">Speed</a>,
 <a href="notes/native-4xr9700.md">notes/native-4xr9700.md</a>,
-<a href="notes/context-262k.md">notes/context-262k.md</a>.</sub>
+<a href="notes/context-256k.md">notes/context-256k.md</a>.</sub>
 
 ## What it does
 
@@ -118,7 +120,7 @@ You run the stock vLLM ROCm image with this plugin installed. From there:
    (McNemar) and HumanEval on the numerics.
 
 Current release: **v0.4.5** (2026-11-15), [release notes](notes/release-v0.4.5.md), [CHANGELOG.md](CHANGELOG.md).
-On the four-card native box this fork runs, the main KV cache is fp8 e4m3 by default - see the 262k table below.
+On the four-card native box this fork runs, the main KV cache is fp8 e4m3 by default - see the 256k table below.
 
 ## Features
 
@@ -161,7 +163,8 @@ one for what a user gets.
 
 ### Nemotron-3.5-Super-VL-120B-A12B: a 120B MoE with 512 experts, on four cards
 
-The box's standing launch, and not a launch-config change. The pack is `modelopt_mixed` MIXED_PRECISION and **40,960 of
+What this box ran for a day in 2026-11-18 - parked now, and none of it reverted. The pack is `modelopt_mixed`
+MIXED_PRECISION and **40,960 of
 the 41,156 layer entries its `hf_quant_config.json` declares are routed experts**; the plugin had never seen that
 quantization, and stock on ROCm **dequantizes expert by expert**. Same weights, same cards, wave noise ±10%:
 
@@ -190,7 +193,9 @@ first. Standalone graph-timed probes are the only instrument that works here: th
 Images arrive as **256-3,328 tokens** whatever the pixels (the checkpoint's patch budget), fine print dies at the cap,
 and four of them cost ~35% of a decode wave against a ~28% prefill-only control. Context reads to **600,068 tokens**
 cold with VRAM flat at 29.5-29.8 GiB; 1M boots only with images off, because the encoder-cache budget follows the
-window. `CTX=32k | 262k | 1m` are launch profiles and 32k stands. The gotchas that cost hours (`hf_quant_config.json`
+window. `CTX=32k | 256k | 1m` are launch profiles and 32k stands (256k = 262,144 tokens; the label used to read
+"262k", which rounded the count in decimal, and `CTX=262k` still works, printing the rename). The gotchas that cost
+hours (`hf_quant_config.json`
 is not optional; the plugin registers `modelopt_mixed` inside `register()`, so a broken import quietly serves stock):
 [notes/nemotron-super-vl.md](notes/nemotron-super-vl.md).
 
@@ -298,13 +303,13 @@ regression. 0.96 costs about 4-5% of the pool and buys 0.3 GiB of margin over th
 | VRAM per card | 30.3-30.5 of 31.86 GiB at every tier up to 180k, ~1.35 GiB spare |
 
 The limit is not the KV cache. Only 12 of 48 layers do full attention (24 KiB a token, 6.00 GiB per full-length
-sequence), so a 262k request needs 586 of 1,230 blocks and the pool holds **2.06** of them -- a residency
+sequence), so a 256k request needs 586 of 1,230 blocks and the pool holds **2.06** of them -- a residency
 ceiling, not the concurrency the box serves: long prefills serialize, so above roughly 30k tokens a prompt
 "more than 2 in flight" already means queueing while the pool sits a tenth full. `--long-prefill-token-threshold`
 (+ `_adaptive`) measured as a fairness knob, not a speed one: six 30k requests behind a 250k one go 40.3-55.8 s
 -> **7.8-27.7 s** at an unchanged wall clock (55.9 vs 56.8 s), while three 250k prefills in parallel push the pool
 to 99.1% and cost 22% (109.2 -> 133.6 s), so it stays off. Method, the queue measurements and the metric-reading
-traps: [notes/context-262k.md](notes/context-262k.md).
+traps: [notes/context-256k.md](notes/context-256k.md).
 
 ### The same launch with real work on it, not a benchmark
 
@@ -381,7 +386,7 @@ prompt this launch served, **198,073 tokens**, took 27.0 s to its first token at
 generated 1,242 tokens. Aggregating the counters the other way — `prompt_tokens_total / request_prefill_time_sum`
 — gives **7,949 tok/s per prefill-second**: the request's own scheduled→first-token span summed over requests, so
 it carries decode interference as well as prefill work (the step census in
-[notes/context-262k.md](notes/context-262k.md) prices a whole-prefill record at 8,079, ~3% higher; long prefills
+[notes/context-256k.md](notes/context-256k.md) prices a whole-prefill record at 8,079, ~3% higher; long prefills
 take the 8,192-token step one at a time, which is why they serialize). The decode side needed a different
 denominator than the one first printed in this paragraph: `generation_tokens_total / request_decode_time_sum` is
 per **stream**-second — that family accrues one observation per stream-step, so a step two streams share is
@@ -410,7 +415,7 @@ stream-second**, `×2.47 streams decoding`, and the two multiply exactly. `reque
 `inter_token_latency_seconds` are both stream-seconds — one observation per stream-step — so a rate built on them
 is per stream, whatever the word "aggregate" next to it suggests; and their step interval *contains* the chunked
 prefill computed in that step, so it excludes queue and prefill-before-first-token, not prompt chewing
-([notes/context-262k.md](notes/context-262k.md) has the census and the arithmetic).
+([notes/context-256k.md](notes/context-256k.md) has the census and the arithmetic).
 
 The Monitor's decode card leads with the **summed** figure — generated tokens ÷ wall seconds, the throughput reading
 of the box, and the same basis the trend card beside it plots — and keeps the other reading labelled on the note
@@ -518,16 +523,16 @@ spans, `waiting_by_reason` capacity 0 and deferred 0 — the queue is never a me
 1,792 against 1,823 aggregate, 1.55 against 1.60 accepted per draft), acceptance length (1.33 per draft here against
 1.55–1.62 in the bench arms, worth a few percent) and context depth (162 alone at 20–80k against 186.7 at 32k uncapped, ~13%). The full census, the arithmetic that
 closes it against measurements it was not fitted to, and the trap that makes a 5-second version of this fit wrong:
-[notes/context-262k.md](notes/context-262k.md).
+[notes/context-256k.md](notes/context-256k.md).
 
 - **The cliff is between two and three streams, and it is scheduling, not kernels.** Two to three in flight drops a
   stream from 115 to 41 tok/s, and the step census above is the reason: with `NBT=8192`, a third long prompt
   injects 6–7 one-second steps per arrival (measured on the earlier launch: step p50 951 ms), and every stream is
   credited its accepted tokens once per step however long that step ran. The knob that addresses it is
-  `--long-prefill-token-threshold`, not anything in the decode path — see [notes/context-262k.md](notes/context-262k.md).
+  `--long-prefill-token-threshold`, not anything in the decode path — see [notes/context-256k.md](notes/context-256k.md).
 - **Single-stream decode barely cares about context on this model.** Alone (nothing else sharing the box during its
   decode), generating ≥200 tokens: **182.6 tok/s** under 20k prompt, **164.6** at 20–80k, **150.0** at 80–160k,
-  **156.5** above 160k — a 262k context costs one stream ~13%, because decode here streams MoE weights and
+  **156.5** above 160k — a 256k context costs one stream ~13%, because decode here streams MoE weights and
   attention's KV read is not the dominant term. (n = 10 / 258 / 99 / 30; the above-160k bucket is the thinnest.)
 - **Prefill from real traffic matches the benchmark**, which is the useful cross-check: the ladder measures
   8,672–8,742 tok/s at 60k and 8,062 at 120k on purpose-sent prompts, and real traffic medians are 8,937 at 20–80k
@@ -547,7 +552,7 @@ the cliff is made of. The controlled fp8 comparison is the paired one in
 ±0.5%, acceptance 1.55 against 1.60 per draft.
 
 Method, the preemption rows this window produced, and the trap that made the first version of this table wrong
-(midpoint concurrency sampled 361 requests as "alone" and reported 137 tok/s): [notes/context-262k.md](notes/context-262k.md).
+(midpoint concurrency sampled 361 requests as "alone" and reported 137 tok/s): [notes/context-256k.md](notes/context-256k.md).
 
 How each number above was produced, and what was tried and rejected: [PROGRESS.md](PROGRESS.md) and `notes/`.
 
@@ -626,11 +631,12 @@ MODEL=/models/GLM-5.3-Flash-NVFP4-RedHat GPUS=0,1,2,3,4,5,6,7 TP=8 OFFLOAD_GB=0 
   'SPEC_EXTRA="use_local_argmax_reduction": true' 'R9K_FP8_LINEARS=self_attn\.(in_proj_qkvbfg_a|o_proj|f_b_proj|g_b_proj)$' \
   bash serve/serve.sh                                               # GLM-5.3-Flash, eight cards (notes/glm53.md)
 bash serve/ds41-exl3.sh                                            # DeepSeek-V4.1-Flash EXL3, eight cards (notes/exl3-plan.md)
-bash serve/native-flashnext.sh                                     # this box, no docker: Nemotron-3.5-Super-VL-120B, four cards (Deploying it)
+bash serve/native-flashnext.sh                                     # this box, no docker: Qwen3.8-Flash-Next at 262,144ds (Deploying it)
 ```
 
 An OpenAI-compatible API answers on port 8080 (`PORT=`), model name `Qwen3.8` (`DeepSeek-V4.1` for the DeepSeek
-launcher). This box's native launch answers one name, **`SuperVL`**, with no aliases by decision - the tools in `bench/`
+launcher). This box's native launch answers **one name at a time** - `Qwen3.8` today, `SuperVL` for the day the other
+checkpoint held the cards - with no aliases by decision: the tools in `bench/`
 and `tools/` ask `/v1/models` instead of remembering one (`bench/served_model.py`, `tests/test_served_names.py`). `MAXLEN=131072 KVMEM=0.8` is DeepSeek's 128k recipe.
 
 On a box that sets `GATEWAY_PORT` in its machine-local file, 8080 belongs to `serve/gateway.py` instead: it routes
@@ -712,7 +718,7 @@ tok/s) and the short requests beside them waited **0.8 s, 23 s, 45 s** — all o
 and zero preemptions. What that says about a cap: the launch boots printing `GPU KV cache size: 902,153 tokens,
 Maximum concurrency for 262,144 tokens per request: 3.44x`; a client capped at 128k turns the same memory into
 6.88x and halves the worst-case per-request commitment, and the cold-prefill tax per task drops from ~23 s to
-~17-18 s. Changing the engine's `--max-model-len` buys no memory (497,588 tokens at 32k, 902,153 at 262k — the pool
+~17-18 s. Changing the engine's `--max-model-len` buys no memory (497,588 tokens at 32k, 902,153 at 256k — the pool
 is free HBM and `--max-num-batched-tokens`, not MAXLEN), so the cap belongs on the client. A missing `cached_tokens`
 is counted apart rather than read as a miss, and the seconds estimate is measured from the rows' own `prefill_s`
 over only the rows big enough to be throughput-bound (7,220-8,314 tok/s — over all rows the same division reads
@@ -851,7 +857,7 @@ changes — the same subtraction Strata's run average makes with `prompt_tokens 
 decode phase, is printed beside it so the pair reads as a ratio instead of a contradiction. What used to sit in that first slot was the aggregate divided by the running gauge, and it was the most misread
 number on the page: the gauge counts a request in the middle of a chunked prefill as running, so the divisor includes
 streams that cannot produce a token yet, and readers reasonably asked why "all streams" came out below what one stream
-gets alone. It comes out below for reasons the step census in [notes/context-262k.md](notes/context-262k.md) measures
+gets alone. It comes out below for reasons the step census in [notes/context-256k.md](notes/context-256k.md) measures
 (47.6% of wall seconds hold no request, 5.9% of records carry a ~1 s prefill chunk, 1.62 streams decode per record), and
 a count cannot be misread that way. The per-stream rate is still in the payload — the request rows use it, and
 `webui.py` documents which of the two histogram families is the honest one — it just no longer gets a headline.
@@ -920,7 +926,7 @@ these numbers runs.
    ./setup.sh --config                         # answer the launch questions ONCE, and write down the answers
    ```
    ```bash
-   ./setup.sh --config 262k                    # from now on: start that stored configuration
+   ./setup.sh --config 256k                    # from now on: start that stored configuration
    ```
    **The launch choices are a file, so a bare `./setup.sh` asks nothing.** The choices (which recipe, the pages,
    container or native, tmux or not, and the launcher's environment) are stored under
@@ -1005,7 +1011,7 @@ these numbers runs.
    `~/opt/openmpi` (no root; the deb list is in the note), and the launcher's `OPENMPI=` line puts it on
    `LD_LIBRARY_PATH`. Every serve knob then works exactly as in the container: step 2's block with
    `serve/native-flashnext.sh` in place of `serve/serve.sh`. What this path does not need: dockerd/containerd, an
-   image, or the second build checkout `serve.sh` mounts at `/opt/r9700`. Measured on this box with the 262k
+   image, or the second build checkout `serve.sh` mounts at `/opt/r9700`. Measured on this box with the 256k
    launch up: four `VLLM::Worker_TP*` at 12.5 GiB RSS each, `VLLM::EngineCore` 1.22, API server 1.51, and
    `Mlocked` **0**, because on four cards the experts live in VRAM and nothing is pinned; `MemAvailable` 37.2 of
    93.8 GiB, 39.5 GiB of it reclaimable page cache from reading the checkpoint. The pinned host RAM the two-card
@@ -1054,32 +1060,34 @@ these numbers runs.
    bash serve/native-flashnext.sh                          # Super VL 120B: native.env MODEL + family defaults
    ```
    Context depth is a named profile, because the depths differ in more than the number - **32k standing**, full record
-   in `notes/nemotron-super-vl.md`. `CTX=262k` keeps images on and, counter-intuitively, makes the KV pool *bigger*
+   in `notes/nemotron-super-vl.md`. `CTX=256k` keeps images on and, counter-intuitively, makes the KV pool *bigger*
    (2,846,376 tokens against 1,099,694: sizing is bounded by `NBT`, not `MAXLEN`). `CTX=1m` is the checkpoint's own
    `max_position_embeddings`; it **turns images off by itself** - the encoder-cache budget follows the window, and
    1,046,529 of it loses a worker at init - coming up at `NSEQ=1` with a 3,482,333-token pool. Neither is memory-limited: a cold needle hits from
    30k to 600k with VRAM flat at 29.5-29.8 GiB, so the wall is time (144 s to the first token at 250k, 713 s at 600k).
    An unknown `CTX` exits 2 rather than quietly falling through to 32k.
    ```bash
-   CTX=262k bash serve/native-flashnext.sh                 # 262,144 window, images on, 16 streams
+   CTX=256k bash serve/native-flashnext.sh                 # 262,144 window, images on, 16 streams
    ```
    And the checkpoint's own 1,048,576 - images off, one request at a time:
    ```bash
    CTX=1m bash serve/native-flashnext.sh                   # 1,048,576: images off, NSEQ=1
    ```
-   The serve answers exactly one name -- **`SuperVL`** -- and there is deliberately no `Qwen3.8` alias: a client still
-   sending the old string believes it is wired to a model this box does not run, and vLLM's refusal (`The model \`X\` does
+   The serve answers **one name at a time** -- `Qwen3.8` today, `SuperVL` for the day the 120B held the cards -- and
+   there is deliberately no alias from one to the other: a client still sending a name for a model this box does not
+   run believes it is wired to something it is not, and vLLM's refusal (`The model \`X\` does
    not exist.`, with no list of what it does serve) is the honest end of that. Every bench and tool asks by reading
    `/v1/models` (`bench/served_model.py`), with `MODEL=<name>` as the override for an A/B against a second engine; the
    name is never remembered in a source file (`tests/test_served_names.py`).
    ```bash
    curl -s localhost:8080/v1/models | jq -r '.data[].id'   # what to ask for, straight from the serve
    ```
-   The Qwen3.8-Flash-Next launch -- four cards, the checkpoint's full 262k context, and the fp8 main KV the launcher
-   now defaults, with Monitor and About on the serve's own port -- is one `MODEL=` away; its stored launch config is
-   parked in `~/.config/r9700-stack/launches-available/262k.json` so the store holds exactly one standing launch.
+   The Qwen3.8-Flash-Next launch -- four cards, the checkpoint's full 256k context, and the fp8 main KV the launcher
+   now defaults, with Monitor and About on the serve's own port -- is the standing launch again (`256k.json`, renamed
+   from `262k` because 262,144 is 256 x 1024). The Super VL config sits parked in
+   `~/.config/r9700-stack/launches-available/supervl-32k.json`, so the store still holds exactly one standing launch.
    ```bash
-   MODEL=$HOME/models/Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ MAXLEN=262144 NSEQ=32 NBT=8192 WEBUI=same bash serve/native-flashnext.sh
+   MODEL=$HOME/models/Nemotron-Super-VL-120B-NVFP4 bash serve/native-flashnext.sh   # the 120B back: family block sets its knobs
    ```
    One box fact is not in that line: the bind address. The launcher's `HOST` default is `127.0.0.1` — upstream's own
    default — and this machine's `0.0.0.0` comes from `~/.config/r9700-stack/native.env`, which the launcher sources (as a default: a value you export beats it, and `serve/lib/localenv.sh` is the one place that sources it, for all five launchers)
@@ -1119,7 +1127,7 @@ these numbers runs.
    ~/venv-r9700/bin/python3 bench/humaneval.py      # HumanEval
    ```
    ```bash
-   ~/venv-r9700/bin/python3 bench/needle_long.py    # retrieval to the checkpoint's own 262k
+   ~/venv-r9700/bin/python3 bench/needle_long.py    # retrieval to the checkpoint's own 256k
    ```
    ```bash
    ~/venv-r9700/bin/python3 bench/webui_ab.py       # what the Monitor's relay costs a request (2-3 ms, measured)
@@ -1162,7 +1170,7 @@ nightly are in [notes/picking-up.md](notes/picking-up.md).
 | [`notes/nemotron-super-vl.md`](notes/nemotron-super-vl.md) | Nemotron-3.5-Super-VL-120B: `modelopt_mixed` NVFP4 experts converted to MXFP4 at load, the ungated-MLP activation kernel, and the flag that was hiding 3x. |
 | [`notes/kernel-inventory.md`](notes/kernel-inventory.md), [`notes/decode-step.md`](notes/decode-step.md) | Every kernel, what it replaces, and the anatomy of a decode step. |
 | [`notes/picking-up.md`](notes/picking-up.md) | The release checklist and the upgrade recipe for a new vLLM nightly. |
-| [`notes/native-4xr9700.md`](notes/native-4xr9700.md), [`notes/context-262k.md`](notes/context-262k.md), [`notes/kv-fp8-qsa.md`](notes/kv-fp8-qsa.md) | The second machine: the docker-free 4x R9700 box, the 262,144-token context measured end to end, and the fp8 main KV cache that box now runs by default. |
+| [`notes/native-4xr9700.md`](notes/native-4xr9700.md), [`notes/context-256k.md`](notes/context-256k.md), [`notes/kv-fp8-qsa.md`](notes/kv-fp8-qsa.md) | The second machine: the docker-free 4x R9700 box, the 262,144-token context measured end to end, and the fp8 main KV cache that box now runs by default. |
 | [`notes/webui.md`](notes/webui.md) | The Monitor and About pages: where each number comes from, what the pages refuse to invent, and how a page with no browser gets tested. |
 | [`CREDITS.md`](CREDITS.md), [`notes/independence.md`](notes/independence.md) | Provenance of the kernel structures and the libraries this grew out of. |
 | [`docs/`](docs/) | The release graphics and the script that draws them. |

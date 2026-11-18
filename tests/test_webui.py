@@ -306,7 +306,7 @@ ck("labels the newer build carries are harvested", info32.get("cache_dtype") == 
 # The waiting queue arrives twice on 0.32: once whole, once by reason. Its own HELP text: "'capacity' = waiting for
 # scheduling capacity; 'deferred' = deferred by transient constraints (LoRA budget, KV transfer, blocked status).
 # Sum of all reasons equals vllm:num_requests_waiting." The split matters because the total alone misleads: measured
-# on the live 262k launch, 8 x 30k queued with the KV pool 11.7% full -- scheduling capacity, not blocks.
+# on the live 256k launch, 8 x 30k queued with the KV pool 11.7% full -- scheduling capacity, not blocks.
 ck("a labelled gauge is kept per label value too", cur32["num_requests_waiting_by_reason;capacity"][1] == 1.0
    and cur32["num_requests_waiting_by_reason;deferred"][1] == 0.0, str(sorted(cur32)))
 ck("the queue split reaches the page, and a real 0 stays a 0",
@@ -530,7 +530,7 @@ ck("the launch and the plugin agree on the journal's env var name",
 
 # ------------------------------------------------------- (2c) shared_decode: what a decode rate means --
 # Measured off 1,400 real requests: a stream runs 158 tok/s alone, 119 at two in flight, 23 at three or four
-# (notes/context-262k.md). A decode number printed without the concurrency beside it is unreadable -- the reader
+# (notes/context-256k.md). A decode number printed without the concurrency beside it is unreadable -- the reader
 # cannot tell a slow request from a busy box -- so the listing carries the concurrency, computed rather than
 # guessed. These are the windows that computation has to get right.
 def _rq(s, w, dec=None, first=None, q=None):
@@ -638,7 +638,7 @@ ck("a row still in flight (no usage) is counted in no_usage and kept out of both
 # The seconds estimate has to be MEASURED, and measured over the rows that are throughput-bound. Over every row
 # the same division reads 1,600-3,050 tok/s on this box's journals (a 300-token prompt's prefill_s is scheduling,
 # not computing); over the rows at or above one step it reads 7,220-8,314 tok/s, which matches the 7,238 tok/s
-# notes/context-262k.md measured independently above 160k. Estimate on the all-rows number and the card overstates
+# notes/context-256k.md measured independently above 160k. Estimate on the all-rows number and the card overstates
 # what a cold context costs by 2-5x.
 _rate = W.length_stats([_sz(500, 0, prefill=0.5), _sz(40000, 0, prefill=0.4), _sz(3000, 0, prefill=0.02)])
 ck("the prefill rate is taken over the rows big enough to be throughput-bound, and says how many rows that was",
@@ -1980,7 +1980,7 @@ ck("all four rate slots exist and are written",
 # The per-stream mean used to be the first headline on this page. It is not any more, and the reason is on the
 # record rather than in a design note: it divides the summed rate by the running gauge, which counts a request
 # in the middle of a chunked prefill as running, and it invited the comparison "why is the aggregate smaller
-# than one stream" that the step census in notes/context-262k.md answers (47.6% of wall seconds hold no request,
+# than one stream" that the step census in notes/context-256k.md answers (47.6% of wall seconds hold no request,
 # 5.9% of records carry a ~1 s prefill chunk, 1.62 streams decode per record). A count cannot be misread that way.
 ck("the decode headline row shows COUNTS, not a per-stream average",
    'big("rate-gentot", sn.generation_tokens_total, "tok out")' in monjs
@@ -2317,7 +2317,7 @@ ck("the decision note answers the measurement that turned the cache off instead 
    all(k in _nd for k in ("5056943", "285 ms", "ITEMS=0,66,152", "How it landed")),
    [k for k in ("5056943", "285 ms", "ITEMS=0,66,152", "How it landed") if k not in _nd])
 ck("the measurement series says which recipe its numbers were taken on",
-   "cache-off numbers" in open(os.path.join(ROOT, "notes/context-262k.md")).read()
+   "cache-off numbers" in open(os.path.join(ROOT, "notes/context-256k.md")).read()
    and "cache-off number" in open(os.path.join(ROOT, "README.md")).read())
 ck("the local-env rule is written down, including the preview rule it came out of",
    all(k in open(os.path.join(ROOT, "notes/launch-methodology.md")).read()
@@ -3262,7 +3262,7 @@ ck("a per-stream average over a span divides by the MEAN concurrency of the span
    f"running_mean {_avg['running_mean']} stream (gauge-divided) {_avg['stream_tok_s']}")
 # Two per-stream means live in the payload and only one of them is right. `stream_tok_s(_live)` divides the summed
 # rate by the RUNNING gauge, which counts a request sitting in the middle of a chunked prefill as a producer; the
-# 1,284 s step census (notes/context-262k.md: 5.9% of records carry a prefill chunk, 47.6% of wall seconds hold no
+# 1,284 s step census (notes/context-256k.md: 5.9% of records carry a prefill chunk, 47.6% of wall seconds hold no
 # request at all) is what makes that wrong. `decode_stream_tok_s` divides by STREAM-SECONDS, which only a request
 # that actually got a token in a step accrues. Same payload, 33.3 (200 tok/s over a 6-request gauge) against 100.
 ck("the running-gauge mean and the stream-seconds mean are different numbers, and the second is the one with a "

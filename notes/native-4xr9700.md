@@ -620,7 +620,7 @@ The launch that is running now runs the same recipe at **`MAXLEN=262144`**, the 
 above, and a needle at 250,078 tokens retrieves (36.5 s cold TTFT). What changes is where the limit is -- long
 prefills serialize, so 8 concurrent 30k prompts queue one after another while the pool sits 11.7% full, and the
 2.06× is a residency ceiling rather than a concurrency one. Ladder, queue measurements, the
-`--long-prefill-token-threshold` A/B, and the metric-reading traps: [context-262k.md](context-262k.md).
+`--long-prefill-token-threshold` A/B, and the metric-reading traps: [context-256k.md](context-256k.md).
 
 One env name is part of the recipe now rather than something an operator has to remember: the launcher exports
 `R9K_ROUTER_MAX_M=4`, which keeps the MoE gate off the `MT=8` instantiation that has faulted four times on this box

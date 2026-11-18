@@ -102,7 +102,7 @@ requests on 0.32.0 (delta of `_sum` and `_count` across one request, plus which 
 against `--max-num-batched-tokens 8192`. So `loggers.py:1273`, which observes
 `prompt_token_stats.computed + num_generation_tokens`, credits a whole chunked prefill in **one** record while a
 decode step gets a record of its own. Two consequences: the sum/count ratio tracks prompt size rather than the
-step budget and can sit far above NBT (9,621 since launch, 14,999 in a 2 s window on the 262k launch), and
+step budget and can sit far above NBT (9,621 since launch, 14,999 in a 2 s window on the 256k launch), and
 `iteration_tokens_total_count / requests` is records per request, not steps. The card says "tokens per iteration
 record (prompt whole, decode per step)"; the tooltip carries this measurement. Anyone who wants a real step rate
 has to count steps themselves — nothing in `/metrics` gives one.
@@ -818,7 +818,7 @@ tooltip) and `hit max_tokens` (ended on the client's limit, not on the model sto
 where it is still greppable against the server log.
 
 **`shared ×N` is the field that makes a decode rate readable, and it is derived, not measured.** The journal
-analysis in [context-262k.md](context-262k.md) says a stream runs **158 tok/s alone, 119 at two in flight and 23
+analysis in [context-256k.md](context-256k.md) says a stream runs **158 tok/s alone, 119 at two in flight and 23
 at three or four**, so a decode number printed without its concurrency is not a speed at all — it is a speed and a
 guess about the box welded together. `shared_decode(rows)` in `serve/webui.py` computes, for each row, the **mean
 number of requests in their decode phase across that row's own decode span, itself counted**, and the tooltip carries both the
@@ -1340,7 +1340,7 @@ axis range went to the title with it.
 
 Asked in Chinese, and the question was the one the page kept inviting: **why does the Monitor's aggregate decode come
 out below one stream?** 24 tok/s summed against 162 tok/s for a stream alone. The answer is arithmetic, and it is in
-notes/context-262k.md: the summed number is per **wall** second (47.6% of this launch's wall seconds hold no request
+notes/context-256k.md: the summed number is per **wall** second (47.6% of this launch's wall seconds hold no request
 at all), the engine runs 1.62 streams per record at 2.33 tokens a step, and 5.9% of its records carry a ~1 s prefill
 chunk against 20 ms for the rest. 0.476 x 0.191 x 1.615 = 0.147, and 0.147 x 162 = 23.8 -- the number on the screen.
 
@@ -1378,7 +1378,7 @@ which histogram family is the honest one is still true -- they simply do not get
 - *A record is not a step.* `iteration_tokens_total_count` counts one record per decode step and one record per
   chunked **prefill**, however many chunks that prompt ran over (measured on 0.32.0: a 29,969-token prompt produced
   records 29,969, 4 and 1). So `gen_per_step` is really "per record", the waveforms' title says so, and the census in
-  notes/context-262k.md now carries the resulting error bar (~5% on the record count, nothing on the 75% of seconds).
+  notes/context-256k.md now carries the resulting error bar (~5% on the record count, nothing on the 75% of seconds).
 - *The slot budget cut a number, and that is a decision.* Three spans of counts is `1m +4.1k · 15m +31k · 1h +89k` =
   29 characters, and the tightest 4-up slot holds 24 at 12 px, so the visible line shows the two widest spans and the
   title carries all three. The alternative -- letting the line wrap -- is exactly the bug the previous section was
@@ -1919,7 +1919,7 @@ from whether the page happens to be moving. It is the same rule the page already
 ### The journal's NAME is part of the wiring: a restart moved the file, and the page froze without an error (2026-11-16)
 
 Following the attached file is necessary and not sufficient: the two sides also have to **agree on its name**. At
-02:15 the engine was relaunched (`./setup.sh --config 262k`), and the new launch journalled
+02:15 the engine was relaunched (`./setup.sh --config 256k`), and the new launch journalled
 `~/logs/requests-8181.jsonl` while the standalone page was still attaching `~/logs/requests-8180.jsonl`. Gauges,
 the GPU grid and the watchdog stayed live; the request list stopped at 02:11 and every card derived from it —
  crowding, context size — began describing a launch that had already ended. Nothing anywhere reported an error:
@@ -1987,7 +1987,7 @@ Three refusals, each of which changes an answer someone might act on:
   only over rows at or above one step, because over *all* rows the division reads **1,600-3,050 tok/s** on this
   box's journals (a 300-token prompt's `prefill_s` is scheduling, not computing) against **7,220-8,314 tok/s** over
   the throughput-bound ones. The first number overstates what a cold context costs by 2-5x. It also independently
-  agrees with the 7,238 tok/s that [context-262k.md](context-262k.md) measured by a different route.
+  agrees with the 7,238 tok/s that [context-256k.md](context-256k.md) measured by a different route.
 
 The card also says what its sample is — the rows in the list, over a stated span — because `p99` over 100 rows is
 one request, and a card that implies an afternoon sells a smoother story than the sample gives. `--sizes` in
