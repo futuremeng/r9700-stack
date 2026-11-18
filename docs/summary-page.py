@@ -38,10 +38,10 @@ W, PAD = 1000, 16
 CHAR = 0.60                                              # em per glyph, as in docs/monitor-cards.py
 HEAD, BODY, SMALL = 19, 15, 14                           # SMALL is the floor: 14 px at the column's width
 
-VERSION, RELEASED, LINE_OF = "main", "2026-11-18", "vLLM 0.32 line, nightly 2026-10-25"
+VERSION, RELEASED, LINE_OF = "main", "2026-11-18", "image vLLM 0.33.0 · native venv 0.32.0"
 TAGLINE = "LLM inference on 2 to 8 AMD Radeon AI PRO R9700"
 WHAT = "a vLLM plugin plus HIP and Triton kernels for gfx1201 (RDNA4)"
-BADGES = [("stock vLLM 0.32", 1), ("stock ROCm 10", 1), ("no fork", 0),
+BADGES = [("stock vLLM 0.33 / 0.32", 1), ("stock ROCm 10", 1), ("no fork", 0),
           ("unmodified checkpoints", 0), ("loaded at runtime", 0)]
 
 # model, the one line under it, what it brings, how many cards, and the note under the card count
@@ -52,17 +52,17 @@ MODELS = [
         "ungated relu-squared MLP: own quant kernel",
         "dense NVFP4 kept on its exact bits"], 4,
      "measured on the native box, 2026-11-18"),
-    ("Qwen3.8-Flash-Next", "MoE, 288 experts", [
+    ("Qwen3.8-Flash-Next", "MoE, 512 experts", [
         "MXFP4 experts, fp8 dense",
         "MTP-2/3 speculative decoding",
         "int6 embeddings in host RAM",
-        "262k context, fp8 e4m3 main KV"], 4,
+        "256k context (262,144), fp8 KV"], 4,
      "or two cards, experts in RAM"),
     ("Qwen3.8-27B-NVFP4", "dense + DFlash2 drafter", [
         "NVFP4 in, MXFP4 at load",
         "fp8 KV cache, fp8 drafter",
         "DFlash2 shares the MTP kernels"], 2, None),
-    ("GLM-5.3-Flash", "sparse MLA + indexer", [
+    ("GLM-5.3-Flash", "288-expert MoE + sparse MLA", [
         "NVFP4 checkpoint + MTP layer",
         "NVFP4 in, MXFP4 at load",
         "fp8 KV cache, MTP-3"], 8,
@@ -78,15 +78,17 @@ MODELS = [
 # single-stream decode. Every row names its gate: the 210 W figures and the uncapped ones come from
 # different machines and have never been measured on both, so they do not share a banner.
 GATE, UNCAP = "210 W gate", "the native box, uncapped"
-DSGATE = "8 cards, -500 MHz"                      # upstream's eight-card gate: a clock offset, not a power cap
+# the eight-card rows take the gate box's clock offset on top of its power cap: its 120 V feed holds
+# eight-card runs to -500 MHz SCLK, so their numbers carry both facts and never share a banner with TP4.
+GATE8 = "210 W gate, -500 MHz"
 BARMAX, BARLEN = 250.0, 300
 BARS = [
     ("Nemotron-3.5-Super-VL", "TP4", 94,
      "94-112 across launches; stock: 27 eager, 73 graphs", UNCAP),
     ("Qwen3.8-Flash-Next", "TP4, four cards", 225, "14.3-14.4 ms a step; best sample 228", GATE),
     ("Qwen3.8-27B-NVFP4", "TP2, two cards", 222, "4.5 tokens a step with the DFlash2 drafter", GATE),
-    ("GLM-5.3-Flash", "TP8, eight cards", 100, "75-80 before v0.3.8's host-memory collective", GATE),
-    ("DeepSeek-V4.1-Flash", "TP8+EP, EXL3", 215, "on code; 104 prose (v0.4.1: 202, 87-97)", DSGATE),
+    ("GLM-5.3-Flash", "TP8", 100, "75-80 before v0.3.8's host-memory collective", GATE8),
+    ("DeepSeek-V4.1-Flash", "TP8+EP", 215, "on code; 104 prose (v0.4.1: 202, 87-97)", GATE8),
 ]
 
 # the column beside the bars: what the same four cards do in aggregate, and what the context costs.
@@ -104,8 +106,9 @@ FACTS = [
      "(162 tok/s with the box to itself)"),
 ]
 
-FOOT = ["Each number names its machine: \"210 W gate\" is the release configuration (210 W a card, -42 mV, 32k); "
-        "\"the native box\" is one 4x R9700 box, uncapped. They are not comparable across.",
+FOOT = ["Each number names its machine: \"210 W gate\" is the gate box (210 W a card, -42 mV, 32k); \"210 W gate, "
+        "-500 MHz\" is that box's eight-card runs, which also sit at the clock offset its 120 V feed forces; \"the "
+        "native box, uncapped\" is four R9700 at ~299 W a card in practice. None of the three crosses.",
         "The Super VL row is a day on the native box, 2026-11-18, and is not in a tag: 40,960 of the "
         "41,156 layer entries its hf_quant_config.json declares are routed experts, converted NVFP4 -> MXFP4 at load "
         "on the checkpoint's own scales, with a new relu-squared activation kernel because its MLP is ungated. Same "

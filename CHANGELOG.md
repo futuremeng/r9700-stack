@@ -1,5 +1,48 @@
 # Changelog
 
+## The README says which machine every number came from, and it lost a sixth of its length doing it
+
+Documentation and measurement-provenance pass; no kernel, launcher or plugin code changed.
+
+**Two machines, one legend.** The file had been accumulating numbers from three hosts -- the release-gate box
+(VM100: eight R9700, 210 W a card, -42 mV, a KVM guest with emulated PCIe switches whose 120 V feed holds eight-card
+runs to a -500 MHz SCLK offset), the older Gen3 test box, and this repo's own four-card native box (Gen5, no docker,
+**no power cap**, ~299 W a card at `gpu_busy_percent` 100) -- without ever printing the difference in one place. There
+is now a legend table at the top of `Speed`, the front-matter note points at it, and every Speed subsection carries
+its box and its power in the heading ("the 210 W gate box", "the native box, uncapped"). Card count is now stated as a
+deployment shape rather than a machine: the same 4-card launch was gated on the first box at 210 W and run on the
+second uncapped, and the 225-against-186.7 disagreement between them is recorded with the reason rather than averaged.
+
+**The gate table names the tag each number came from.** The old rows were undated ranges: `216-222` for the 27B and
+`210-225` for Flash-Next whose low ends exist in no release note, and GLM's KV cell still said 176-210k four releases
+after `KVMEM 2.65` took the pool to **284,829**. Each row now names the tags its range spans, quotes the newest gate's
+number, and says what the range moves with (`KVMEM`/`UTIL` for the pool; for GLM also an instrument change -- the
+"single stream" column is the gate probe's mean over its four prompt types for the Qwen rows and a **decode-only
+median** for GLM from v0.4.0 on, which is why v0.3.8 reads 100.0 and v0.4.0 reads 88.1 with no regression between
+them). The 27B's last gate is v0.4.3 (217.1 into the same 367,494-token pool), not v0.4.2.
+
+**The release figure says the same thing.** `docs/summary-page.py` now labels every decode bar with its machine and
+clock condition (`210 W gate`, `210 W gate, -500 MHz`, `the native box, uncapped`) instead of tagging only DeepSeek
+with the clock offset -- GLM's 100 tok/s sits at the offset too, and both eight-card rows are the capped box. Its
+header said "vLLM 0.32 line, nightly 2026-10-25" two releases after the pin moved: it now says `image vLLM 0.33.0 ·
+native venv 0.32.0`, which is also what the badges say. Its two model descriptions were wrong about the expert counts
+(Qwen3.8-Flash-Next is a 512-expert MoE; GLM-5.3-Flash is the 288-expert one), and the SVG/PNG were re-drawn from the
+corrected script.
+
+**Cut, not deleted.** 1,204 lines -> 997, and the lines it kept carry their machine. The long real-traffic, native-262k, Monitor-forensics and deployment
+sections are summarised here and kept in full in `notes/`: before any paragraph went out of the README, every number
+in it was checked against `notes/`, and the two that lived nowhere else (the 15-minute 51.7 / 7,893 tok/s trailing
+reading, and the `2.0 -> 8,481` stream-card jump that motivated the fixed-height note slots) went into
+`notes/webui.md` first. `tests/test_readme.py` now fails on the shape failures this pass found rather than only the
+links: unbalanced fences (one stray ``` had been swallowing 13 lines of prose and a note link), markdown links inside
+a fenced block, in-page anchors that resolve to nothing, a superseded tag's figure embedded as the release image, and
+backticked repo paths that do not exist.
+
+**Prose.** The file mixed ` -- ` and `--`; body prose is em dashes now, with `--` kept only inside code and flags.
+`v0.4.5` is tagged (annotated, on the release-notes commit) with a message that says what it is not: no eight-card
+gate was re-run for it, and the live serve still answers `plugin 0.4.4`.
+
+
 ## This box serves Qwen3.8-Flash-Next again, and the 262,144-token profile finally has its honest name
 
 Super VL 120B is parked, not reverted: its config sits in `~/.config/r9700-stack/launches-available/supervl-32k.json`,
@@ -391,8 +434,6 @@ whitelisted names set)` and `render-about` failed `facts-env` — correctly, bec
 *process* holds and a hand-typed start holds none of what `serve/webui.sh` sources from `serve/lib/localenv.sh`.
 `bash serve/webui.sh` (it stops the old one itself) fills the block again: 6 names. Static files are read at
 startup, so the restart is required; the launcher is what makes the restart not lose the box's own facts.
-
-## The Monitor prints what a context costs — prompt sent and the part the cache did NOT have — and the front door's request list stopped being 8.9 hours old
 
 ## The Monitor prints what a context costs — prompt sent and the part the cache did NOT have — and the front door's request list stopped being 8.9 hours old
 

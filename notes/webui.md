@@ -142,7 +142,10 @@ second of this traffic produces -- and keeps the other reading labelled on the n
 i.e. per-stream-second × fan-out, which multiplies back to the headline exactly (`decode_streams` = stream-seconds ÷
 wall seconds, a COUNT with no 100% ceiling: 0.15 serialized, 2.60 loaded). The per-stream figure is the same quantity
 a request row prints (152 tok/s on a live burst whose rows ran 160-200), which is why it stays on the card instead of
-disappearing into the payload. Its waveform is on the same summed-wall basis as the headline -- the card is labelled
+disappearing into the payload. That burst is a live 716 s one, and its composition is on record: **18,118 generated
+tokens over 119.1 stream-seconds** = 152 tok per stream-second, against **25 summed** over the same window's wall
+seconds, with the request rows at 160-200 tok/s and `shared x1.0` -- serialized traffic, which is why the
+stream-seconds and the union of the decoding seconds are the same 119.1 s there. Its waveform is on the same summed-wall basis as the headline -- the card is labelled
 `Decode · summed, trend` -- because the per-stream denominator does not exist in a window that was all prefill or
 idle, and a line of gaps reads as an idle box. The identities the sidecar publishes and `tests/test_webui.py` pins:
 
@@ -1062,6 +1065,7 @@ wanted, are not the same number:
 | one 1 s poll, six streams running | 9.9 tok/s | 0 (counter credits at request end) | 890 ms a step |
 | another 1 s poll a minute later, drained | 0 tok/s, running 1, KV 3% | 0 | - |
 | the ten minutes around them (journal) | 41-43 tok/s across the span | 6,967 tok/s across the span; 7,306 per request | 20.2 tok/s median |
+| the quarter hour around a later pair of polls (the reading the README quotes) | **51.7 tok/s** | **7,893 tok/s** | - |
 | the whole launch (523 min, 1,189 requests) | 21.6 tok/s | 2,232 tok/s | - |
 
 So the window answers "right now" and the since-launch block answers "since the engine started", and the question
@@ -1168,8 +1172,9 @@ The user's report: **数字长度变化时可能造成换行变化** - when a nu
 the page moves. It is real, and these pages have three places where it happens on every poll.
 
 1. **The note line under a headline.** It carries an explanation plus one or two numbers, and the numbers change
-   width every poll: the stream card's number was `2.0` for four polls and `95.7` on the fifth. A note line that
-   wraps turns one line into two and the card's height changes.
+   width every poll: the stream card's number was `2.0` for four polls and `95.7` on the fifth, and on another launch
+   it went `2.0` -> `8,481` between polls -- four characters of growth to two, which is exactly the jump that re-flows
+   a card. A note line that wraps turns one line into two and the card's height changes.
 2. **A long prose note under a card** (`exact, from prompt_tokens_total; the other number is estimated from KV
    growth`). These were built to be long, so they were guaranteed two lines at narrow widths and their exact
    break point depends on the digits in the sentence.

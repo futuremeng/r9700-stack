@@ -24,6 +24,18 @@ What can actually go wrong here, and did:
       lockup rendered, its letters and bars counted -- are tests/test_lockup.py, which needs an SVG renderer and
       skips, saying so, where there is none.
 
+  (6) A stray ``` -- one unbalanced fence turns the paragraph under it into a code block: its links stop rendering
+      and the next list item loses its number. Found by rendering the README rather than reading it (2026-11-18).
+      A fenced block that contains a markdown link is that same bug seen from the other side.
+
+  (7) In-page anchors that go nowhere (the nav is HTML `href="#..."`, not markdown links, so a check that reads only
+      `[text](#anchor)` sees an empty file), and a superseded tag's hand-drawn figure embedded as an image. The nav
+      labelled "What it does" and pointed at #features while the file has a `## What it does`; the front matter still
+      carried a v0.4.3 hero PNG three releases after it stopped being the release figure, under a caption claiming
+      the generated page was the only one the README carried.
+
+  (8) Paths the prose names in backticks are claims about the tree, and they are cheap to check.
+
 Run: python3 tests/test_readme.py        (no GPU, no serve, no network -- stdlib plus the repo's own scripts)
 """
 import re
@@ -310,6 +322,47 @@ ck(f"all {len(blocks)} deployment command blocks hold exactly one command each",
 solo = [ln.strip() for b in blocks for ln in b.split("\n") if ln.strip().startswith("#")]
 ck("and no label or note sits inside a block, where the copy button would take it with the command",
    len(blocks) >= 5 and not solo, str(solo[:3]))
+
+# --- fences, in-page anchors, and the paths the prose names ------------------------------------------------
+# A stray fence is the quietest way to break this file: it turns the paragraph under it into a code block, which
+# stops every link in that paragraph from rendering and swallows the next list item's number. Found once, by
+# rendering the README rather than reading it (2026-11-18: one ``` before "serve/native-flashnext.sh is the
+# container-free launcher", 13 lines of prose and one note link lost).
+FL = [i for i, ln in enumerate(README.split("\n")) if ln.strip().startswith("```")]
+ck("fences balance: an even number of ``` lines", len(FL) % 2 == 0, f"{len(FL)} fence lines")
+swallowed = [(a + 1, b + 1) for a, b in zip(FL[::2], FL[1::2])
+             if re.search(r"\[[^\]]*\]\([^)]+\)", "\n".join(README.split("\n")[a + 1:b]))]
+ck("and no fenced block holds a markdown link, which is prose that got swallowed", not swallowed, str(swallowed))
+
+# A nav link to an anchor the file does not have scrolls to nothing, silently -- and this README's nav is HTML
+# `<a href="#...">`, not markdown links, so a check that reads only `[text](#anchor)` sees an empty file.
+def unfenced(text):
+    out, inblock = [], False
+    for ln in text.split("\n"):
+        if ln.strip().startswith("```"):
+            inblock = not inblock
+            continue
+        out.append("" if inblock else ln)
+    return "\n".join(out)
+
+
+HEAD = {re.sub(r"[^a-z0-9 \-]", "", h.lower()).replace(" ", "-") for h in re.findall(r"^#{1,6} +(.+)$", README, re.M)}
+MD = [u for u in re.findall(r"\]\((#[^)]+)\)", unfenced(README))]
+HREF = [u for u in re.findall(r'href="(#[^"]+)"', README)]
+broken = sorted({u for u in MD + HREF if u[1:] not in HEAD})
+ck(f"and every in-page anchor resolves to a heading ({len(set(MD + HREF))} checked)", not broken, str(broken))
+
+# The release figure carries no version in its name on purpose, so the README cannot point at a superseded tag's
+# hand-drawn page (it did: a docs/r9700-stack-v0.4.3.png hero left over from v0.4.3, under a caption claiming the
+# generated page was the only figure the README carried).
+OLD = re.findall(r'(?:<img src="|!\[[^\]]*\]\()(docs/r9700-stack-v[\d.]+\.(?:svg|png))', README)
+ck("and no superseded tag's figure is embedded as an image", not OLD, str(OLD))
+
+# Paths named in backticks are claims about the tree. (Globs like notes/release-*.md are claims about a family.)
+NAMES = [p for p in set(re.findall(r"`((?:serve|bench|tools|tests|kernels|notes|docs|host|overlay|patches|r9700_vllm)/[A-Za-z0-9_./-]+)`", README))
+         if "*" not in p]
+ck(f"all {len(NAMES)} repo paths the README names in backticks exist", all((ROOT / p).exists() for p in NAMES),
+   str(sorted(p for p in NAMES if not (ROOT / p).exists())))
 
 print("FAIL" if fail else "PASS", f"({fail} failing)")
 sys.exit(1 if fail else 0)

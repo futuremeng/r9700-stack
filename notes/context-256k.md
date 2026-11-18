@@ -363,6 +363,12 @@ prompt bucket.
 **24.52 s**, max **56.1 s**. Longest single prompt served: 198,073 tokens, TTFT 27.0 s at 7,330 tok/s of prefill,
 then 1,242 tokens generated.
 
+The same buckets with their tails, which the README carried as a table until 2026-11-18 and moved here:
+<20k p10 **1,102** / p90 **9,909**; 20–80k **6,891** / **9,382**; 80–160k **7,216** / **8,470**; >160k **7,048** /
+**7,690**. The falloff with prompt size lives in the medians (8,937 → 7,542, −16% from 20–80k to >160k); the tails
+are where the caching and the short-credit noise sit, which is why the >160k band is the tightest one (642 tok/s
+wide) and the <20k band the widest by a factor of fifteen.
+
 **Speculation over the whole launch** (counters): 376,433 drafts, 752,866 draft tokens (depth 2, MTP=2 is the
 launcher default at TP4), 501,271 accepted → **1.33 accepted per draft**, mean acceptance length **2.33**, 66.6%
 of drafted tokens accepted. Compare the paired benchmark arms in notes/kv-fp8-qsa.md: 1.549 (fp8) against
@@ -375,9 +381,11 @@ generation, 4,214 prefill, 17.2 per stream, 4.7 req/min, 90.7 ms a step, 1.29 ac
 23.7, 7,713, 12.8, 2.7, 100.6 ms, 1.45, 18.5%; 1 h 26.4, 7,737, 17.9, 3.5, 65.4 ms, 1.48, 12.6%. The 1 min
 prefill number is a metric artefact — `prompt_tokens_total` credits at request END, so a 60 s span misses long
 prefills still in flight — which is the bias notes/webui.md documents and the Monitor's second line exists to
-show; over spans longer than a request's wall time it converges on the counters' 7,949.
+show; over spans longer than a request's wall time it sits at **7,700**, and over the whole launch the counters say
+**7,949**.
 
-**Not a controlled fp8 comparison.** The bf16 window above (1,400 requests, prompts p50 74,381, p90 concurrency
+**Not a controlled fp8 comparison.** The bf16 window above (1,400 requests, prompts p50 74,381, p95 **173,099**,
+max 240,067, p90 concurrency
 6, bands 157.7 / 119.1 / 22.8 / 15.6 / 17.3, overall median 60.8) and this one differ in traffic mix as well as
 in KV dtype, and the mix is the dominant term. Saying "real traffic got faster" from these two windows would be
 wrong. The controlled comparison is the paired arms: pool 540,202 → 1,009,899 tokens, 32-stream aggregate 1,823 →
