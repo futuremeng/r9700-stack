@@ -1134,7 +1134,9 @@ const bar = t("error");
     console.log(`  window    ${t("len-window-note")}`);
     if (L.prompt.p90 === undefined) {
       console.log("BAD  the payload's prompt distribution carries no p90, so the headline prints a dash for the "
-                  + "tail -- the page reads p50/p90/max as its headline");
+                  + "tail -- this page and payload pair predates that field: the serve (or the sidecar) has not "
+                  + "been restarted since it was added. The page is not inventing a percentile to cover for it, "
+                  + "which is the behaviour being asserted here as well as the gap.");
       process.exitCode = 1;
     }
     for (const [id, want] of [["len-p50", L.prompt.median], ["len-p90", L.prompt.p90], ["len-max", L.prompt.max]]) {

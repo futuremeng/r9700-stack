@@ -2026,4 +2026,7 @@ or more. 2 row(s) report a prompt at or past the window the engine reports". Aga
 when this shipped: `median 332 | p90 380 | max 575 | cached 0%`, fill at 2% of the window.
 
 Deployment note: the merged page runs inside the serve, so it picks the payload change up at the next engine restart;
-the standalone sidecar picks it up when it restarts, which is cheaper and is what this box did.
+the standalone sidecar picks it up when it restarts, which is cheaper and is what this box did. Until that restart,
+`node tests/render-monitor.mjs http://127.0.0.1:8180` fails with "the payload's prompt distribution carries no p90"
+-- that claim is the harness naming a stale payload, not a broken page: the merged card shows `p90 —` and no window
+bar rather than inventing either.
