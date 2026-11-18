@@ -60,6 +60,16 @@ MTP draft path reads that file rather than `config.json`'s `quantization_config`
   check -- `register()` then `get_quantization_config("modelopt_mixed").__module__` must print
   `r9700_vllm.quant.modelopt` (a bare import registers nothing) -- caught it.
 
+* **the wave width, and one knob that went backwards.** Super VL came up at `NSEQ=8` because that is the Qwen
+  recipe's number. At `NSEQ=16` -- capture list extended to cover 80 rows, the decode shape there -- 16 streams move
+  the aggregate to **712-752 tok/s at ~48 tok/s a stream** (the Spark reference for 16 users is ~146 aggregate), 8
+  streams stay where they were, and a 30k-token context still decodes at 18 tok/s with 16 in flight; the price is a
+  smaller KV pool from the bigger graph pool (1,450,583 -> 1,102,970 tokens, still 33 requests deep at 32k).
+  **`NBT=16384` is the opposite of what it sounds like**: cold prefill 6,787 -> 5,310 tok/s, TTFT 4.43 -> 5.66 s, and
+  276k tokens of KV eaten by the higher activation peak. 8192 stays. And the measurement floor got pinned down: the
+  single-stream column spans **93.9-112.3 tok/s** across launches that differ by nothing which should touch it --
+  which is why the interleaved repeated-run harness moved from footnote to owed list.
+
 ## The admission gate is now observe-only: the door could not re-open, its hold bought nothing, and it was charging the traffic that was not the problem
 
 The complaint was availability -- "long requests are being blocked, and the box feels less usable than before the

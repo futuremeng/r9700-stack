@@ -16,10 +16,16 @@ Arch `NemotronH_Omni_Reasoning_V3` — vLLM 0.32 registers it as `nano_nemotron_
 
 ```bash
 MODEL=$HOME/models/Nemotron-Super-VL-120B-NVFP4 SERVED_NAME=SuperVL MTP=4 \
-TP=4 MAXLEN=32768 NSEQ=8 EAGER=0 REASONING=nemotron_v3 TOOLCALL=pythonic WEBUI=same \
+NSEQ=16 CGSIZES=1,2,4,8,16,24,32,40,48,64,80,96,128,160,192,256 \
+TP=4 MAXLEN=32768 EAGER=0 REASONING=nemotron_v3 TOOLCALL=pythonic WEBUI=same \
 EXTRA="--trust-remote-code --mm-processor-kwargs {}" \
 bash serve/native-flashnext.sh
 ```
+
+The `CGSIZES` list has to cover `NSEQ x (MTP+1)` -- 80 rows at NSEQ=16/MTP=4 -- or the decode step runs padded; the
+launcher's default list carries 40 now but not 80/160, because those sizes cost graph pool (a few hundred MB of KV)
+for launches that never reach them. `NBT` stays at its default 8192: 16384 measured worse (see the concurrency
+section).
 
 `R9K_MODELOPT_DENSE=native|mxfp4|stock` picks how the dense NVFP4 linears are served (default `native`, see the
 levers section); the MoE side has `R9K_NVFP4_MOE=mxfp4|native` and `R9K_DISABLE=nvfp4` puts the whole model back on
@@ -147,6 +153,30 @@ Two things that cost more time than they should have:
 
 1. **A plugin module that fails to import is a WARNING, not a failure.** A `NameError` from a missing `import os` in `quant/modelopt.py` came out as `r9700_vllm: modelopt_mixed not registered: NameError(...)`; `/health` answered 200, the engine served, and an entire measurement arm ran on stock kernels while I thought it was the plugin arm. The check that takes ten seconds: `python -c "import r9700_vllm; r9700_vllm.register(); from vllm.model_executor.layers.quantization import get_quantization_config as g; print(g('modelopt_mixed').__module__)"` -> must print `r9700_vllm.quant.modelopt` (a bare `import r9700_vllm` does not register anything: registration is `register()`, which vLLM calls as the plugin entry point).
 2. **ModelOpt's FP4 block scales: measured, not assumed.** The dense hook reads `layer.weight_scale` either row major or as the CUTLASS 128x4 interleave (`nvfp4_utils.swizzle_blockscale`; `_unswizzle_scale` is its inverse). Rather than reading the loader, the probe runs the stock emulation (authoritative) and the libr9k path on the same rows for each candidate layout and keeps the one that agrees -- 0.1014 for row major at `1344x4096`, and the unswizzled candidate is not even constructible there (1344 is not a multiple of 128, so the swizzle buffer would be larger than the tensor). A wrong layout costs >1.0, so the reject threshold at 0.25 is not a coin flip. Note the direction of the precision change: native runs fp8 activations, the emulation it replaces runs bf16 activations under a W4A16 reading, and the checkpoint's own recipe is W4A4 -- so this is more precise than the recipe and slightly less than the emulation.
+
+## Concurrency width, and a knob that went the wrong way (2026-11-18, same day)
+
+The engine shipped at `NSEQ=8` because that is what the Qwen recipe uses; Super VL's wave is a different shape, so
+`NSEQ=16` was tried, with the graph list extended to cover it (`NSEQ x (MTP+1)` = 80 rows, then 160 for 32 streams):
+
+| launch | @1 | @8 x300 | @16 x300 | @16 x1200 | cold prefill 30k | TTFT 30k | KV pool |
+|---|---|---|---|---|---|---|---|
+| NSEQ=8, NBT=8192, list to 256 (shipped earlier) | 93.9 | 487-559 | — | — | 6,390/s | 4.71 s | 1,450,583 tok |
+| NSEQ=16, **NBT=16384**, list to 256 +80 +160 | 112.3 | 477-510 | 742-752 (49 each) | 813 (53 each) | **5,310/s** | **5.66 s** | 825,753 tok |
+| **NSEQ=16, NBT=8192**, list +80 +160 (this arm) | 97.0 | 505 | **712-752 (47-50 each)** | **813** | **6,787/s** | **4.43 s** | 1,102,970 tok |
+
+* **`NBT=16384` is a regression, not a win**: cold prefill 6,787 -> 5,310 tok/s, TTFT 4.43 -> 5.66 s, and it ate
+  276k tokens of KV pool (1.10M -> 0.83M) by raising the activation peak the sizing run sees. The recipe's 8192 stays.
+  (The intuition that a bigger prefill chunk must make GEMMs more efficient is wrong here; it is already MoE-bound
+  at 8192.)
+* **`NSEQ=16` is a real capacity win and costs nothing at one stream**: 8 streams stay where they were, 16 streams
+  move the aggregate to 712-752 tok/s at ~48 tok/s a stream (against Spark's 16-user ~146 tok/s), and a 30k-token
+  context still decodes at 18 tok/s with 16 in flight. The cost is KV pool (1.45M -> 1.10M tokens) from the larger
+  graph pool, which is still 33 requests deep at 32,768 tokens.
+* **The single-stream column is now seen spanning 93.9-112.3 tok/s across launches that differ by nothing that
+  should touch it.** That is a +-10% measurement floor, and it is the reason the repeated-run harness is on the owed
+  list rather than in the footnote: without interleaved A/A runs, half of what this section says about the small
+  knobs is luck.
 
 ## Gotchas that cost time
 
