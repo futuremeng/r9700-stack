@@ -3383,8 +3383,22 @@ What is owed after this:
 - **Bench scripts now take the model from the environment** (`bench/bench.py`, `bench/gsm8k.py`): both hardcoded
   `Qwen3.8`, which silently 404s against any other served name. `bench/needle_long.py` takes it positionally and its
   default tokenizer path is the Qwen directory, so a Super VL run has to pass the checkpoint dir explicitly.
-- **Images are untested on this model**, and `MAXLEN=32768` is caution, not a ceiling (the pool is 1,102,970 tokens at
-  the current `NSEQ=16` launch, 1,450,583 at `NSEQ=8`).
+- **Done 2026-11-18: the image path was measured** (`bench/mmvl.py`, generates its own images and prices them as a
+  `prompt_tokens` difference). Every image arrives as **256-3,328 tokens** (patch 16 / merge 2 / min_patches 1024 /
+  max_patches 13,312 -- the checkpoint's own bound; `MM_MAX_PIX` is inert for this family), measured at +287 / +502 /
+  +800 / +3,313 for 200x160 / 800x640 / 1200x654 / 2560x1440 and +4,973 for four pictures. Codes printed in the pixels
+  are read correctly at 800x640 and 1200x654 and **misread at 3.7 MP** (CHARLIE-9915 -> "CIARLE") -- fine print does
+  not survive the cap, so clients should send crops. Image turns need a real budget (`max_tokens=900` ->
+  `finish=length`, chain of thought only). TTFT with an image: 0.92 s / 2.06 s. Five images answer 200 with the cost
+  of four because `compat/mm_last_turn.py` defaults on. **8 text streams: 753.7 tok/s alone, 487.1 with four image
+  requests injected (-35.4%), 542.2 with the same prefill volume in text (-28.1%)** -- ~28 points is prefill, ~7 is the
+  encoder; two runs agreed, outside the +-10% band.
+- **`MAXLEN=32768` on this checkpoint is caution, not a ceiling**: the pool is 1,102,970 tokens at the current
+  `NSEQ=16` launch (1,450,583 at `NSEQ=8`), so 33 requests deep at 32,768. Raising it has never been measured here.
+- **Decision left open by that number**: is this box a text-only service or a mixed one? `MM=0`
+  (`--language-model-only`) is a restart-level switch that hands back ~a third of the wave under image load plus the
+  ViT's memory; if mixed traffic is intended, the worst case to plan for is 4 x 3,328 = ~13.3k tokens of injected
+  prefill per prompt. Currently images are ON.
 - **Done 2026-11-18: the box's standing state is decided -- it serves Super VL, and a bare launch says so.** The
   checkpoint is `MODEL=` in `~/.config/r9700-stack/native.env`; the measured shape (MTP=4, NSEQ=16, MAXLEN=32768,
   capture sizes through 160, `nemotron_v3`, `pythonic`, `--mm-processor-kwargs {}`, `--trust-remote-code`) is a

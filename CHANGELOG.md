@@ -140,6 +140,25 @@ MTP draft path reads that file rather than `config.json`'s `quantization_config`
   real. Still open on this box: one `test_webui.py` failure (About page, mm-ON payload) that predates all of this, and
   the fact that **the gateway has no model alias** -- a client asking for `Qwen3.8` gets an error, not Super VL.
 
+* **the vision path got exercised, and it is bounded, readable, and expensive.** `bench/mmvl.py` generates its own
+  test images (codes printed in the pixels to read back) and prices an image as a difference in `prompt_tokens`
+  against the same text with no picture. The bound is the checkpoint's own -- patch 16, merge 2, `min_patches 1024`,
+  `max_patches 13,312` -- so **every image arrives as 256 to 3,328 tokens**: +287 (200x160, floored and upscaled),
+  +502 (800x640), +800 (1200x654), +3,313 (2560x1440, i.e. exactly on the cap), +4,973 for four pictures.
+  Comprehension follows that bound: **ECHO-5150 and BRAVO-2288 read correctly** at 800x640 and 1200x654, while the
+  3.7 MP page misreads CHARLIE-9915 as "CIARLE" and the upscaled 200x160 page reads the headline but not its 24 px
+  code line -- the rule for clients is a crop, not a screenshot. Two more facts worth having: image turns need a real
+  token budget (`max_tokens=900` gave `finish=length` with only the chain of thought emitted), and TTFT carries the
+  encoder (0.92 s for the 0.8k-token page, **2.06 s** for the 3.3k one). Five images answer 200 rather than the stock
+  400 and cost exactly the same four as a four-image prompt, because `compat/mm_last_turn.py` defaults on
+  (`R9K_MM_LAST_TURN=1`) -- transcript replay does not re-pay for old pictures, and the stock refusal is unreachable
+  while it runs. Video is refused as configured. And **the number a mixed service needs: 8 text streams alone are
+  753.7 tok/s; inject four image requests and the text aggregate falls to 487.1 (-35.4%); inject four long-*text*
+  requests with the same prefill volume and it falls to 542.2 (-28.1%)** -- so ~28 points of the hit is extra prefill
+  and ~7 points is the encoder, repeated across two runs (-36.6%, -35.4%), outside the box's +-10% band. A text-only
+  service should therefore run `MM=0` on purpose, and a mixed one should reckon with 4 x 3,328 = ~13.3k tokens of
+  injected prefill per prompt.
+
 ## The admission gate is now observe-only: the door could not re-open, its hold bought nothing, and it was charging the traffic that was not the problem
 
 The complaint was availability -- "long requests are being blocked, and the box feels less usable than before the

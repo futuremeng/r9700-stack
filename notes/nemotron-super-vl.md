@@ -371,6 +371,53 @@ refusal is not stupid (launching into someone else's live serve is worse); the m
 own stale ranks are distinguishable from a live serve (the record's /health already answered dead), and the restart path
 does not use that distinction. Recording it as owed rather than quietly changing the guard.
 
+## The vision path, measured (2026-11-18) -- it works, an image is bounded, and it costs a third of the wave
+
+New tool `bench/mmvl.py`: it generates its own images (so the run cannot drift against a stale fixture), prints a code
+into the pixels that the model has to read back, and prices each image as a **difference** in `usage.prompt_tokens`
+against the same text with no image.
+
+| the image | prompt-token delta | what came back |
+|---|---:|---|
+| 200x160 (below `min_patches 1024`, upscaled) | **+287** | read the headline "R9700", missed the 24 px code line |
+| 800x640 | +502 | **ECHO-5150 correct** |
+| 1200x654 (documentation-sized) | **+800** | **BRAVO-2288 correct** |
+| 2560x1440 (3.7 MP screenshot) | **+3,313** | "CIARLE" -- misread CHARLIE-9915 |
+
+* **The bound is the checkpoint's own, not the launcher's**: patch 16, merge 2, `min_patches 1024`, `max_patches
+  13,312` -> every image arrives as **256 to 3,328 tokens**, and 2560x1440 lands exactly on that cap. `MM_MAX_PIX`
+  does nothing for this family (the launcher passes `--mm-processor-kwargs {}`), so the only knob is **how many
+  images** a prompt carries (4); an image cannot be made cheaper. A 4-image prompt measured +4,973 tokens.
+* **Fine print does not survive the cap**: the same code is read correctly at 800x640 and 1200x654 and misread at
+  3.7 MP. Practical rule for clients: send a crop of the region, not the whole screenshot.
+* **Image turns need a real token budget.** At `max_tokens=900` several image answers ended `finish=length` with only
+  the chain of thought emitted -- the picture can be understood inside the reasoning and the answer still never
+  arrives. Re-run the same request at 1,500 and it finishes properly.
+* **TTFT carries the encoder**: 0.92 s idle for the 0.8k-token page, **2.06 s** for the 3.3k-token page.
+* **Five images answer 200, not the stock 400, and cost the same four as a four-image prompt** (+4,973 identical).
+  That is `r9700_vllm/compat/mm_last_turn.py`, which defaults **on** (`R9K_MM_LAST_TURN=1`): a client replaying its
+  transcript does not re-pay for old pictures, and the stock "at most 4 image(s)" refusal is unreachable while the
+  filter is on. Video is refused as configured (`At most 0 video(s)`).
+* **Concurrency -- the number a mixed service needs.** 8 text streams x 600 tokens, measured alone, with four image
+  requests injected, and with four *long-text* requests carrying the same prefill volume:
+
+  | arm | aggregate | per-stream median |
+  |---|---:|---:|
+  | 8 text streams alone | **753.7 tok/s** | 96.7 |
+  | + 4 image requests (3.3k tokens each) | **487.1** (-35.4%) | 61.6 |
+  | + 4 long-text requests (same prefill, no encoder) | **542.2** (-28.1%) | 70.2 |
+
+  So images cost about **a third of the wave**, and the control says why: ~28 points of that is simply the extra
+  prefill volume, ~7 points is the encoder path itself. Two independent runs agreed (-36.6%, then -35.4%), which is
+  outside the box's +-10% band -- unlike most numbers in this note. Consequences worth deciding on purpose: a
+  text-only service should run `MM=0` (`--language-model-only`, a restart-level switch that also hands back the ViT's
+  memory), and a mixed service should think about the worst case this launch allows -- 4 images x 3,328 tokens =
+  ~13.3k tokens of injected prefill per prompt.
+
+Still unmeasured on the image path: MTP acceptance on image turns (the boot warning "Draft model NemotronHMTP does not
+support external multimodal embeddings" is about *externally supplied* embeddings -- our image requests went through
+at normal speed), and video, which this launch refuses.
+
 ## Gotchas that cost time
 
 1. **`hf_quant_config.json` must be in the checkpoint dir.** The MTP draft path (`nemotron_h_mtp.py` ->
