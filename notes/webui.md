@@ -1994,3 +1994,36 @@ one request, and a card that implies an afternoon sells a smoother story than th
 `tools/monitor-fixture.py` exists because the newest rows on this box are 24-token pings: a fixture built from them
 fills one band and lets the tail rot unchecked. `--no-lengths` renders the older-payload arm, where the card must be
 **hidden** rather than zero-filled — an empty-looking context card reads as "this traffic is all short".
+
+### The same card, made readable (2026-11-18)
+
+The complaint was fair: the card had the right numbers and the wrong shape. It sat at the bottom of the Requests
+screen, under the waveforms and above a 100-row list, and everything a reader would act on -- the cache's share, the
+biggest context in view -- was small print under a row of chips. Three changes, same quantities:
+
+* **It opens the Recent screen now.** "What came in, and how much of it had to be computed" is the question the
+  Recent band exists to answer. `tests/test_webui.py` pins the placement (it used to pin the old one, which is how
+  the card got moved once already without anyone noticing).
+* **Four numerals as the headline: median, p90, biggest, and the cache's share.** `_dist` grew a `p90` because the
+  headline reads p50/p90/max and a missing percentile would print a dash where a tail should be. The cache share was
+  a clause at the end of a note ("the cache already had 79.2%"); it is now a number.
+* **One bar against the window the ENGINE reports.** The right edge is `max_model_len` read off the serve's own
+  `/v1/models` card, the fill is the biggest context in view, ticks mark p50/p90 and one step of prefill. A client
+  comparing its own cap to this box needs thresholds, and the two that change what a request costs are "more than
+  one step" and "most of the window". `length_stats` takes `window=` from `models[0].max_model_len` and reports
+  `near_window` (rows at >=90% of the window) and `over_window` (rows at or past it) -- `over_window` should be zero,
+  and when it is not, the card says so in words: the rows and the window disagree, which is what a page holding a
+  journal that outlived its launch looks like from the inside.
+
+Honesty rules that came with the bar: no window in the payload means **no bar** and no percentage anywhere on the
+card (`len-max-note` says the serve gave nothing to compare against), and the step tick is labelled as coming from
+the launch record because that is where `NBT` lives. `tests/render-monitor.mjs` now runs both arms: with a window it
+checks the fill width against `max/window`, that the note states the window it is drawn against, and that the
+near/over counts exist; without one it fails if the bar is drawn or if a percentage of a window nobody read appears.
+A fixture arm worth keeping in mind when reading the card (6 rows, window 32,768): headline
+`median 31,000 | p90 250,081 | max 250,081 | cached 34%`, bar pinned at 100% with "4 row(s) sit at 90% of the window
+or more. 2 row(s) report a prompt at or past the window the engine reports". Against the traffic actually on the box
+when this shipped: `median 332 | p90 380 | max 575 | cached 0%`, fill at 2% of the window.
+
+Deployment note: the merged page runs inside the serve, so it picks the payload change up at the next engine restart;
+the standalone sidecar picks it up when it restarts, which is cheaper and is what this box did.

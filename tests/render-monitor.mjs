@@ -1125,6 +1125,70 @@ const bar = t("error");
     console.log(`  prompt  ${labels.map((l) => `${l}:${cp[l] === undefined ? "?" : cp[l]}`).join(" ")}`);
     console.log(`  uncached ${labels.map((l) => `${l}:${cu[l] === undefined ? "?" : cu[l]}`).join(" ")}`);
     console.log(`  cold ${t("len-read")} at ${t("len-rate")} = ${t("len-cost")} | biggest ${t("len-big")}`);
+    // The headline strip and the one bar. Both arms are checked, because the bar's honesty is the whole design:
+    // the scale is the window the ENGINE reports on its own card, and with no window there is no bar and no
+    // invented percentage -- a bar drawn to a remembered window is a precise-looking lie about a launch that may
+    // already be gone (the request list survives its launch by design).
+    const head = { p50: t("len-p50"), p90: t("len-p90"), max: t("len-max"), cache: t("len-cache") };
+    console.log(`  headline  median ${head.p50} | p90 ${head.p90} | max ${head.max} | cached ${head.cache}`);
+    console.log(`  window    ${t("len-window-note")}`);
+    if (L.prompt.p90 === undefined) {
+      console.log("BAD  the payload's prompt distribution carries no p90, so the headline prints a dash for the "
+                  + "tail -- the page reads p50/p90/max as its headline");
+      process.exitCode = 1;
+    }
+    for (const [id, want] of [["len-p50", L.prompt.median], ["len-p90", L.prompt.p90], ["len-max", L.prompt.max]]) {
+      if (want === null || want === undefined) continue;
+      if (t(id) !== nf(want)) {
+        console.log(`BAD  #${id} prints "${t(id)}" while the payload says ${want} -- these three are the numbers a `
+                    + "client changes its own cap over, so they must be the payload's own values");
+        process.exitCode = 1;
+      }
+    }
+    if (L.prompt.sum) {
+      const wantCache = Math.round(100 * (1 - (L.uncached.sum || 0) / L.prompt.sum));
+      if (!/^\d/.test(head.cache || "") || parseInt(head.cache, 10) !== wantCache) {
+        console.log(`BAD  "Already cached" prints "${head.cache || "(empty)"}" and the payload's sums say `
+                    + `${wantCache}% -- the cache's share is what decides whether a long context is cheap, and it `
+                    + "was buried in a note until it was made a headline number");
+        process.exitCode = 1;
+      }
+    }
+    const wsec = byId.get("len-window") || new El();
+    if (L.window) {
+      if (wsec.hidden) {
+        console.log("BAD  the payload reports a context window and the window bar is hidden anyway");
+        process.exitCode = 1;
+      }
+      const wfill = byId.get("len-window-fill") || new El();
+      const wantW = Math.min(100, 100 * L.prompt.max / L.window);
+      const gotW = parseFloat(wfill.style.width || "");
+      if (!Number.isFinite(gotW) || Math.abs(gotW - wantW) > 0.2) {
+        console.log(`BAD  the window bar's fill is ${wfill.style.width || "(unset)"}; the biggest context in view `+
+                    `(${L.prompt.max}) against the window ${L.window} is ${wantW.toFixed(1)}%`);
+        process.exitCode = 1;
+      }
+      if (!t("len-window-note").includes(nf(L.window))) {
+        console.log("BAD  the window note never states the window the bar is drawn against -- a bar with no "
+                    + "printed scale is decoration, not a measurement");
+        process.exitCode = 1;
+      }
+      if (L.near_window === undefined || L.over_window === undefined) {
+        console.log("BAD  the payload has a window but no near_window/over_window counts -- those counts are what "
+                    + "turn the bar into a statement about the tail rather than about one lucky request");
+        process.exitCode = 1;
+      }
+    } else {
+      if (!wsec.hidden) {
+        console.log("BAD  the window bar is drawn with no window in the payload -- it would be scaled to a number "
+                    + "nobody read");
+        process.exitCode = 1;
+      }
+      if (/% of this serve/.test(t("len-max-note"))) {
+        console.log("BAD  the card quotes a percentage of a window it does not have");
+        process.exitCode = 1;
+      }
+    }
     if (labels.length !== EDGES.length + 1) {
       console.log(`BAD  the payload names ${labels.length} bands and the harness knows ${EDGES.length + 1}`
                   + " -- the band edges are the claim (GDN bound, one step, the old 32k recipe, the 128k client "

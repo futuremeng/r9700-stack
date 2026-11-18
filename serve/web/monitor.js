@@ -964,14 +964,65 @@ function paintLengths(s) {
   const p = L.prompt || {}, u = L.uncached || {}, bands = L.bands || [];
   text("len-scope", `${fmt(L.rows)} request${L.rows === 1 ? "" : "s"} in this list`
        + (L.span_s ? ` · ${seconds(L.span_s)} from oldest arrival to newest` : ""));
+
+  // The headline numbers, because "30,073 tokens" and "79% cached" are the two things a client of this box can act
+  // on, and in the old layout both were buried in small print under a chip row. The chips stay for SHAPE: a p90 of
+  // 12k says nothing about the three requests at 250k that are the actual problem.
+  const cachePct = p.sum ? (100 * (1 - (u.sum || 0) / p.sum)) : null;
+  text("len-p50", p.median == null ? "\u2014" : fmt(p.median));
+  text("len-p50-note", "half the requests in view are shorter");
+  text("len-p90", p.p90 == null ? "\u2014" : fmt(p.p90));
+  text("len-p90-note", u.p90 == null ? "one row in ten is longer"
+       : `one row in ten is longer; ${fmt(u.p90)} of it had to be computed`);
+  const win = L.window;
+  text("len-max", p.max == null ? "\u2014" : fmt(p.max));
+  const maxEl = $("len-max");
+  if (maxEl) maxEl.dataset.warn = (win && p.max != null && p.max >= 0.9 * win) ? "1" : "0";
+  text("len-max-note", (win && p.max != null)
+       ? `${(100 * p.max / win).toFixed(0)}% of this serve's ${fmt(win)}-token window`
+       : "this serve gave no window to compare it against");
+  text("len-cache", cachePct === null ? "\u2014" : `${cachePct.toFixed(0)}%`);
+  text("len-cache-note", `${fmt(u.sum)} of ${fmt(p.sum)} prompt tokens the engine had to compute itself`);
+
+  // One bar, one honest scale: the right edge is the window the ENGINE reports on its own /v1/models card, never the
+  // number the launch record claims -- a page can be holding rows from a launch that is gone, and a bar drawn
+  // against a dead launch's window is a precise-looking lie. No window means no bar.
+  const wsec = $("len-window");
+  if (wsec) {
+    if (!win || p.max == null) {
+      wsec.hidden = true;
+      text("len-window-note", "");
+    } else {
+      wsec.hidden = false;
+      const pctw = Math.min(100, 100 * p.max / win);
+      const fill = $("len-window-fill");
+      if (fill) {
+        fill.style.width = pctw.toFixed(1) + "%";
+        fill.dataset.over = (p.max >= 0.9 * win) ? "1" : "0";
+      }
+      const step = parseInt((s.meta || {}).nbt || "", 10);
+      lenTick("len-window-step", (Number.isFinite(step) && step > 0 && step <= win) ? 100 * step / win : null);
+      lenTick("len-window-p50", p.median == null ? null : 100 * p.median / win);
+      lenTick("len-window-p90", p.p90 == null ? null : 100 * p.p90 / win);
+      text("len-window-note",
+           `right edge = the window this serve reports on its own card (${fmt(win)} tokens); fill = the biggest `
+           + `context in view (${fmt(p.max)} = ${pctw.toFixed(0)}% of it). `
+           + (L.near_window ? `${fmt(L.near_window)} row(s) sit at 90% of the window or more. `
+              : `nothing in view comes within 10% of the window. `)
+           + (L.over_window ? `${fmt(L.over_window)} row(s) report a prompt at or past the window the engine `
+              + "reports, which means these rows and this window disagree -- the list can outlive the launch it came from. "
+              : "")
+           + ((Number.isFinite(step) && step > 0) ? `The amber tick is one step of prefill (${fmt(step)} tokens, `
+              + "from the launch record): above it a prefill cannot hide inside a single step." : ""));
+    }
+  }
+
   lenBars("len-bars-p", bands, p.bands || []);
   lenBars("len-bars-u", bands, u.bands || []);
   qualText("len-prompt", `${fmt(p.p95)} p95 · ${fmt(p.max)} max tok`, `median ${fmt(p.median)}`);
   text("len-prompt-note", `${fmt(p.sum)} prompt tokens sent in all`);
   qualText("len-uncached", `${fmt(u.p95)} p95 · ${fmt(u.max)} max tok`, `median ${fmt(u.median)}`);
-  const cachePct = p.sum ? (100 * (1 - (u.sum || 0) / p.sum)) : null;
   text("len-uncached-note", `${fmt(u.sum)} of ${fmt(p.sum)} tokens had to be computed`
-       + (cachePct === null ? "" : ` — the cache already had ${cachePct.toFixed(1)}%`)
        + `; ${fmt(u.over_step)} cost more than one step (8,192 tok or more)`
        + (u.n !== L.rows ? ` · ${fmt(L.rows - u.n)} row(s) carry no cached count and are excluded, `
                             + "not counted as misses" : ""));
@@ -1016,6 +1067,20 @@ function lenBars(id, bands, counts) {
          + `<span>${b.label}</span><i style="width:${w}px"></i><b>${c.toLocaleString("en-US")}</b></div>`;
   }).join("");
   if (el.innerHTML !== html) el.innerHTML = html;
+}
+
+// A tick on the window bar. Hidden when there is nothing to place (no median in view, or a step larger than the
+// window): a tick drawn at a guessed position is worse than no tick, which is the same rule the card applies to
+// the prefill rate.
+function lenTick(id, pct) {
+  const el = $(id);
+  if (!el) return;
+  if (pct === null || pct === undefined || !Number.isFinite(pct)) {
+    el.style.display = "none";
+    return;
+  }
+  el.style.display = "";
+  el.style.left = Math.max(0, Math.min(99.4, pct)).toFixed(1) + "%";
 }
 
 function paintLiveState(s) {

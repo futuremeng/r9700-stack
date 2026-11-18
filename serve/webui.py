@@ -1932,8 +1932,31 @@ def shared_decode(rows):
 LEN_BANDS = ((1024, "1k"), (8192, "8k"), (32768, "32k"), (65536, "64k"), (131072, "128k"), (262144, "256k"))
 
 
-def length_stats(rows):
+def _window_from_models(models):
+    """The context window the ENGINE reports, from its own /v1/models card (None if there is no card).
+
+    Read from the process rather than from the launch record on purpose: the record says what a launch meant to
+    open, and a page can be holding rows from a launch that is gone. A window bar drawn against the wrong window is
+    a percentage that looks precise and means nothing."""
+    for m in models or []:
+        if isinstance(m, dict):
+            v = m.get("max_model_len")
+            if isinstance(v, int) and v > 0:
+                return v
+    return None
+
+
+def length_stats(rows, window=None):
     """How big the requests were, and -- the part that costs anyone anything -- how much of that was NOT cached.
+
+    `window` is the engine's own `max_model_len`, read from its `/v1/models` card at the call site (not from the
+    launch record, which is a claim about a launch rather than an answer from the process). It exists so the card can
+    say the one thing a client can act on -- how much of THIS window the requests in view reach -- and it stays None
+    when the engine did not answer, in which case the page hides the window bar instead of drawing it to an invented
+    scale. `near_window` counts rows at 90% of the window or more, which is where a client's own cap starts to bite;
+    `over_window` counts rows at or past it, which should be zero on a healthy serve and is reported rather than
+    hidden when it is not (it means the window the engine reports and the rows in view disagree -- e.g. a page
+    following a journal that outlived its launch).
 
     Why this is a card and not a limit. This serve deliberately imposes no length policy: one port, one pool,
     every request may declare up to --max-model-len, and the front door's only length-adjacent rule is a header
@@ -2030,6 +2053,12 @@ def length_stats(rows):
            "uncached": _dist(uncached, counts_u, sum_u)}
     out["uncached"]["cached_tokens"] = sum_c
     out["uncached"]["over_step"] = sum(1 for v in uncached if v >= 8192)   # >= NBT: more than one step of prefill
+    out["window"] = window if isinstance(window, int) and window > 0 else None
+    if out["window"]:
+        out["near_window"] = sum(1 for v in prompt if v >= 0.9 * out["window"])
+        out["over_window"] = sum(1 for v in prompt if v >= out["window"])
+    else:
+        out["near_window"] = out["over_window"] = None
     out["rate_tok_s"] = round(pre_tok / pre_s, 1) if pre_n and pre_s > 0 else None
     out["rate_rows"] = pre_n
     out["read_s"] = round(sum_u / out["rate_tok_s"], 1) if out["rate_tok_s"] and sum_u else None
@@ -2059,7 +2088,8 @@ def _dist(vals, counts, total):
         s = sorted(vals)
         return s[min(len(s) - 1, int(len(s) * f))]
     return {"n": len(vals), "bands": counts, "sum": total, "mean": round(total / len(vals)) if vals else None,
-            "median": pct(0.5), "p95": pct(0.95), "p99": pct(0.99), "max": (max(vals) if vals else None)}
+            "median": pct(0.5), "p90": pct(0.90), "p95": pct(0.95), "p99": pct(0.99),
+            "max": (max(vals) if vals else None)}
 
 
 class Journal:
@@ -2891,7 +2921,7 @@ class Hub:
                     # rather than only /api/requests because it is a derived summary of the same rows, and the
                     # reader needs it beside the rates: the measured fact on this box is that cold prefill -- not
                     # pool pressure -- is what puts seconds in front of everyone else's first token.
-                    payload["lengths"] = length_stats(self.rows())
+                    payload["lengths"] = length_stats(self.rows(), window=_window_from_models(self.models))
                     # The last thing the firmware recorded about the death that precedes this launch.
                     payload["last_death"] = self.death
                     payload["deaths"] = self.deaths

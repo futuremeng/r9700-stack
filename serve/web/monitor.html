@@ -233,6 +233,53 @@ sidecar has only been up a few minutes - the label says what was averaged.">1 h<
     <h2>Recent</h2><span class="small">the last hour of this launch — waveforms, the last request, and the means the engine only reports as averages</span>
   </div>
 
+  <!-- Context size: how big the contexts in view are, and how much of them the engine had to COMPUTE. This card
+       used to sit in the Requests band, under the trends and the request list, where nobody met it; the question it
+       answers is a Recent-band question, so it now opens the band. The headline is four numbers and ONE bar, and the
+       bar is drawn against the two thresholds a request actually crosses on this box: one step of prefill
+       (--max-num-batched-tokens, 8,192 here -- above it the prefill cannot hide inside a single step) and the window
+       this launch opened (--max-model-len). Both ticks come from the launch's own record, never from a remembered
+       constant, and when the record cannot be read the bar is hidden rather than drawn to an invented scale. -->
+  <section class="card panel scr-recent" id="lengths" hidden>
+    <div class="panel-bar"><h2>Context size</h2><span class="small" id="len-scope"></span></div>
+    <div class="len-headline">
+      <div><span class="label">Median prompt</span><b class="len-figure" id="len-p50">—</b>
+        <span class="small" id="len-p50-note"></span></div>
+      <div><span class="label">p90 prompt</span><b class="len-figure" id="len-p90">—</b>
+        <span class="small" id="len-p90-note"></span></div>
+      <div><span class="label">Biggest in view</span><b class="len-figure" id="len-max">—</b>
+        <span class="small" id="len-max-note"></span></div>
+      <div><span class="label">Already cached</span><b class="len-figure" id="len-cache">—</b>
+        <span class="small" id="len-cache-note"></span></div>
+    </div>
+    <div class="len-window" id="len-window" hidden>
+      <div class="len-window-bar" id="len-window-bar">
+        <i id="len-window-fill"></i>
+        <u id="len-window-step" data-what="step"></u><u id="len-window-p50" data-what="p50"></u><u id="len-window-p90" data-what="p90"></u>
+      </div>
+      <div class="small" id="len-window-note"></div>
+    </div>
+    <div class="len-block">
+      <div class="len-head"><span class="label">Prompt sent</span>
+        <span class="value value--sm" id="len-prompt"></span>
+        <span class="small" id="len-prompt-note"></span></div>
+      <div class="len-bars" id="len-bars-p"></div>
+    </div>
+    <div class="len-block">
+      <div class="len-head"><span class="label">Not cached — what the engine had to compute</span>
+        <span class="value value--sm" id="len-uncached"></span>
+        <span class="small" id="len-uncached-note"></span></div>
+      <div class="len-bars" id="len-bars-u"></div>
+    </div>
+    <div class="len-cost" id="len-cost-line">
+      <div><span>Cold context computed here</span><b class="slot" id="len-read">—</b></div>
+      <div><span>Prefill rate, from these rows</span><b class="slot" id="len-rate">—</b></div>
+      <div><span>What that cost in step budget</span><b class="slot" id="len-cost">—</b></div>
+      <div><span>Biggest single cold context</span><b class="slot" id="len-big">—</b></div>
+    </div>
+    <div class="small" id="len-note"></div>
+  </section>
+
   <!-- the trends: every series the sidecar keeps a history for, in one row, over the same span. Each caption
        carries last / peak / average so the shape has numbers attached. Two rings: one point per poll (the last
        90 points) and one point per 15 s over an hour, whose rates are taken OVER the interval rather than
@@ -384,28 +431,6 @@ gate's own state.">—</div>
        "not cached" is the prefix cache doing its job, and the second one is the quantity that puts seconds in
        front of everybody else's first token (measured 2026-11-16: the same 186,739-token context cost 26.3 s
        cold, 0.69 s warm). -->
-  <section class="card panel scr-requests" id="lengths" hidden>
-    <div class="panel-bar"><h2>Context size</h2><span class="small" id="len-scope"></span></div>
-    <div class="len-block">
-      <div class="len-head"><span class="label">Prompt sent</span>
-        <span class="value value--sm" id="len-prompt"></span>
-        <span class="small" id="len-prompt-note"></span></div>
-      <div class="len-bars" id="len-bars-p"></div>
-    </div>
-    <div class="len-block">
-      <div class="len-head"><span class="label">Not cached — what the engine had to compute</span>
-        <span class="value value--sm" id="len-uncached"></span>
-        <span class="small" id="len-uncached-note"></span></div>
-      <div class="len-bars" id="len-bars-u"></div>
-    </div>
-    <div class="len-cost" id="len-cost-line">
-      <div><span>Cold context computed here</span><b class="slot" id="len-read">—</b></div>
-      <div><span>Prefill rate, from these rows</span><b class="slot" id="len-rate">—</b></div>
-      <div><span>What that cost in step budget</span><b class="slot" id="len-cost">—</b></div>
-      <div><span>Biggest single cold context</span><b class="slot" id="len-big">—</b></div>
-    </div>
-    <div class="small" id="len-note"></div>
-  </section>
   <!-- the request list: only filled while the client is pointed at this page (--proxy) -->
   <section class="card panel scr-requests">
     <div class="panel-bar"><h2>Requests</h2>

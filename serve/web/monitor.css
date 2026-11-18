@@ -198,6 +198,28 @@ main>.down-line{margin:10px 0 4px}
 .len-bar b{font-variant-numeric:tabular-nums;font-weight:600}
 .len-bar[data-tail="1"]{border-color:#e0a13c}
 .len-bar[data-tail="1"] i{background:#e0a13c}
+/* The headline: four numbers, big enough to read from across the room, because they are the four a client can act
+   on -- what a normal request costs, what the tail costs, what the worst one in view cost, and how much of it the
+   cache spared. Band chips stay below for SHAPE (the tail is three requests, and a percentile hides that). */
+.len-headline{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:10px;margin:10px 0 0}
+.len-headline>div{border:1px solid var(--st-line-soft);border-radius:5px;padding:6px 10px}
+.len-headline .label{display:block;font-size:11px;letter-spacing:.06em;text-transform:uppercase;opacity:.62}
+.len-figure{display:block;font-size:26px;line-height:1.12;font-weight:600;font-variant-numeric:tabular-nums}
+.len-headline .small{display:block;margin-top:1px;opacity:.66}
+.len-figure[data-warn="1"]{color:#b8791f}
+/* One bar against the engine's own window, because "30,073 tokens" means nothing until it is placed: the fill is
+   the biggest context in view, the amber tick is one step of prefill (--max-num-batched-tokens -- cross it and the
+   prefill no longer hides inside a single step), and the right edge IS the window. A fill that reaches the edge
+   turns amber for the same reason the tail bands do: that request used the whole window. */
+.len-window{margin:12px 0 0}
+.len-window-bar{position:relative;height:22px;border:1px solid var(--st-line);border-radius:4px;overflow:hidden;
+                background:var(--st-line-soft)}
+.len-window-bar i{position:absolute;left:0;top:0;bottom:0;background:var(--st-accent);opacity:.42}
+.len-window-bar i[data-over="1"]{background:#e0a13c;opacity:.55}
+.len-window-bar u{position:absolute;top:0;bottom:0;width:2px;background:#9a9a9a;opacity:.9}
+.len-window-bar u[data-what="step"]{background:#e0a13c;width:3px}
+.len-window-bar u[data-what="p50"]{background:var(--st-line)}
+.len-window-note{margin-top:5px;line-height:1.5}
 .len-cost{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px;margin:12px 0 0}
 .len-cost>div{border:1px solid var(--st-line-soft);border-radius:4px;padding:5px 8px}
 .len-cost span{display:block;font-size:11px;opacity:.7}

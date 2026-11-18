@@ -596,6 +596,24 @@ ck("sums carry both, so the gap between them (the cache) is aritable on the page
    and _szst["uncached"]["cached_tokens"] == 6000, str(_szst["prompt"]["sum"]) + " " + str(_szst["uncached"]))
 ck("over_step names the rows whose prefill cannot hide inside one 8192-token step",
    _szst["uncached"]["over_step"] == 2, str(_szst["uncached"]["over_step"]))
+ck("the distributions carry p90 beside p95/p99, because the card's HEADLINE reads p50/p90/max and a missing "
+   "percentile there prints a dash",
+   _szst["prompt"].get("p90") is not None and _szst["uncached"].get("p90") is not None,
+   str({k: _szst["prompt"].get(k) for k in ("median", "p90", "p95", "max")}))
+ck("no window in means no window claimed: window/near_window/over_window stay None, so the page hides its bar "
+   "rather than drawing it to a remembered scale",
+   _szst["window"] is None and _szst["near_window"] is None and _szst["over_window"] is None,
+   str({k: _szst.get(k) for k in ("window", "near_window", "over_window")}))
+_szwin = W.length_stats(_szrows, window=32768)
+ck("given the engine's window, the card can say what the traffic reaches: two of these four rows sit at 90% of "
+   "32,768 or more and two are past it entirely",
+   _szwin["window"] == 32768 and _szwin["near_window"] == 2 and _szwin["over_window"] == 2,
+   str({k: _szwin.get(k) for k in ("window", "near_window", "over_window")}))
+ck("the window is read from the engine's own /v1/models card, and a missing card says None rather than borrowing "
+   "the launch record's number (a page can be holding rows from a launch that is gone)",
+   W._window_from_models([{"id": "m", "max_model_len": 32768}]) == 32768
+   and W._window_from_models([]) is None and W._window_from_models(None) is None
+   and W._window_from_models([{"id": "m"}]) is None and W._window_from_models([{}]) is None)
 ck("the sample's span is stated, because "
    "100 rows over six hours is not 100 rows over six minutes",
    _szst["span_s"] == 610.0, str(_szst["span_s"]))
@@ -3458,13 +3476,21 @@ ck("no id appears twice in the markup (getElementById answers the first, so a du
 ck("the serve's identity sits beside the request list it describes, not on the first screen",
    _wh.index('id="model-state"') > _wh.index('id="band-requests"')
    and _wh.count('id="model-state"') == 1 and "panel-model" in _wh, str(_wh.index('id="model-state"')))
-# Context size sits at the TOP of the requests screen, above the list it summarizes: the reading order is "what
-# came in and what it cost", then the rows that make that up. And it must be a REQUESTS-screen card, not a
-# hardware or first-screen one -- the quantity it prints (uncached prompt tokens) is a property of the traffic.
-ck("the context-size card is on the requests screen, above the list it is a summary of",
-   _wh.index('id="band-requests"') < _wh.index('id="lengths"') < _wh.index('id="requests"')
-   and "scr-requests" in _wh.split('id="lengths"')[0].rsplit("<section", 1)[-1],
+# Context size moved on 2026-11-18 to OPEN the Recent screen. It used to sit at the bottom of the Requests screen,
+# under the waveforms and above a 100-row list, and the complaint about it was the right one: the card answers
+# "what came in and how much of it had to be computed", which is the question the Recent band exists to answer, and
+# its numbers were being read as small print under chip rows. It still prints the same honest quantities; what
+# changed is that p50 / p90 / max / cache-share are now numerals and the worst context in view is drawn against the
+# window the ENGINE reports.
+ck("the context-size card opens the Recent screen, above the trends it belongs with",
+   _wh.index('id="band-recent"') < _wh.index('id="lengths"') < _wh.index('id="band-requests"')
+   and "scr-recent" in _wh.split('id="lengths"')[0].rsplit("<section", 1)[-1],
    str(_wh.index('id="lengths"')))
+ck("the headline is four numerals and the window bar, and the page paints them from the payload's own fields",
+   all(f'id="{i}"' in _wh for i in ("len-p50", "len-p90", "len-max", "len-cache", "len-window",
+                                    "len-window-fill", "len-window-step"))
+   and all(f'text("{i}"' in _mjs2 for i in ("len-p50", "len-p90", "len-max", "len-cache"))
+   and 'len-window-fill' in _mjs2 and 'lenTick(' in _mjs2)
 ck("it prints prompt sent AND uncached, with the two sharing their bands -- prompt_tokens is traffic and the "
    "difference is what the engine had to compute (same 186,739-token context: 26.3 s cold, 0.69 s warm)",
    'id="len-bars-p"' in _wh and 'id="len-bars-u"' in _wh and 'lenBars("len-bars-p"' in _mjs2
