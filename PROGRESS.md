@@ -3330,10 +3330,29 @@ What is owed after this:
   (in_proj fp8 26.5 + conv1d update 4.9 + selective_state_update 98.6 + out_proj fp8 22.1) -> 6.08 ms over 40 layers
   against a ~70 ms step: **mamba is 9% of the step, the replaceable part (conv + state update) 6%**, a 2x scan kernel
   worth 2-3% -- under the box's +-10% floor. Dropped, not deferred.
-- **The unaccounted ~45 ms is the next thing to size.** Same subtraction at 16 streams: MoE GEMM 16.5 ms (26%), mamba
-  6.1 ms (9%), step ~70 ms. What is left is all-reduce (~640 KB messages, 2-3 a layer), MoE glue, the drafter's 4
-  draft passes, 8 attention layers, lm_head and the sampler. `tuning/ar_push_bench.py` / `ar_profile.py` already
-  exist, so all-reduce can be sized without writing anything.
+- **Done 2026-11-18: the communication half of that 45 ms is measured -- it is not the lever.** The engine calibrates
+  its own collectives at launch: on this box (bf16, us a call, RCCL/one-shot/two-shot) 5K 23/7/10, 20K 37/8/9,
+  40K 37/13/10, 80K 37/17/12, 160K 41/--/18, 320K 47/--/28, 480K 52/--/32 -> one-shot <= 20 KiB, two-shot <= 480 KiB,
+  RCCL above, compressed (ar4) from 512 KiB. Super VL's message is `NSEQ x (MTP+1) x 4096 x 2 B` (40 KB at one stream,
+  320 KB at eight, 640 KB at sixteen), and a step issues **88** all-reduces (40 mamba out_proj + 40 MoE + 8 attention
+  o_proj; shared experts are `reduce_results=False`). AR is therefore 2.7% of the step at one stream, 3.6% at eight,
+  <= 7.5% at sixteen (upper bound: the 640 KB compressed point is unmeasured, exact there is ~55-60 us). RCCL is
+  1.7-3x worse at every size we use, so the big win is already taken and the remaining knobs are 2-3% each.
+  Tool gaps to fix when it pays: `R9K_AR_HIST=1` only instruments the TP=2 `R9kAllReduce` (the TP4 N-rank/ar4 path we
+  run is silent), and `R9K_ARN_CAL_SIZES_KB` drops probes above the scratch pool (~480 KiB), so our exact 640 KB size
+  is never probed.
+- **So the next measurement is the MoE glue, not the fabric.** topk / align / sort at top-22 of 512 experts, the
+  drafter's 4 draft passes, attention, lm_head, sampler and the launch gaps between ~1,700 kernels a step are what is
+  left of the 45 ms. `tuning/decode_mamba_probe.py` is the pattern for a standalone graph-timed probe of the glue at
+  this checkpoint's shapes (rows=80, topk=22, E=512); write that before touching any kernel.
+- **Decision rule recorded so the next lever dies the same way**: ceiling (what a perfect fix removes from the step)
+  vs this box's +-10% floor (~7 ms at a 70 ms step). Under ~5 ms ceiling = no engineering time, because it can never
+  be shown. All-reduce, Mamba2 and MoE tiles all fail it.
+- **The torch profiler is unusable for this model on this box** (two attempts; the second was CUDA activity only,
+  `record_shapes:false`, one 40-token request: 500 after 300 s, EngineCore dead, empty trace dir). Any engine-level
+  kernel ledger for Super VL is off the table; subtraction and standalone probes only. A side effect of a profiler
+  crash: the launcher then refuses to start until the stale ranks are cleared (`STOP=1`), and the GPUs may look free
+  while it does.
 - **Done 2026-11-18: the wave width.** `NSEQ=16` (with 80/160 added to `CGSIZES`, since the decode batch is
   `NSEQ x (MTP+1)` rows) moves 16 streams to **712-752 tok/s at ~48 tok/s each** and costs nothing at one stream; the
   cost is KV pool 1,450,583 -> 1,102,970 tokens from the bigger graph pool. `NBT=16384` measured *backwards* (cold

@@ -222,6 +222,60 @@ One operator gotcha found on the way: a standalone script against this stack can
 libraries (`OSError: libmpi_cxx.so.40`); `serve/native-flashnext.sh` puts `$OPENMPI` on `LD_LIBRARY_PATH` and a bare
 shell does not.
 
+## How much of the step is communication (measured, 2026-11-18)
+
+The engine already measures this at every launch (`comm/calibrate.py`). This box, bf16, us a call, `RCCL / one-shot /
+two-shot`:
+
+| message | RCCL | one-shot | two-shot |
+|---|---:|---:|---:|
+| 5 K | 23 | 7 | 10 |
+| 20 K | 37 | 8 | 9 |
+| 40 K | 37 | 13 | 10 |
+| 80 K | 37 | 17 | 12 |
+| 160 K | 41 | -- | 18 |
+| 320 K | 47 | -- | 28 |
+| 480 K | 52 | -- | 32 |
+
+Chosen policy at boot: `one-shot <= 20 KiB, two-shot <= 480 KiB, RCCL above, compressed (ar4, 4-bit) from 512 KiB`.
+
+Super VL's message size is `NSEQ x (MTP+1) x hidden 4096 x 2 B`: **40 KB at one stream, 320 KB at eight, 640 KB at
+sixteen** (so 16 streams is the only arm that reaches the compressed path). The count a step is **88**: mamba
+`out_proj` 40 + MoE 40 + attention `o_proj` 8 (`shared_experts` are built with `reduce_results=False`, so they fold
+into the MoE's single reduce rather than adding one), plus up to ~8 from the drafter. Therefore:
+
+| arm | us a call | x88 | step | AR share |
+|---|---:|---:|---:|---:|
+| 1 stream | 10 (two-shot) | 0.9 ms | ~32 ms | **2.7%** |
+| 8 streams | 28 (two-shot) | 2.5 ms | ~68 ms | **3.6%** |
+| 16 streams | 640 KB compressed -- unmeasured point; exact at that size extrapolates to ~55-60 us | <= 5.3 ms | ~70 ms | **<= 7.5%, upper bound** |
+
+RCCL is 1.7-3x worse than what runs here at every size we use (47 vs 28 us at 320 KB, 23 vs 7 at 5 KB), so the big
+communication win was already taken; what is left (quant threshold, pair topology, block counts) is worth 2-3% a knob.
+
+**Two holes in the tooling found while doing this**, both cheap to fix and neither worth a restart budget today:
+`R9K_AR_HIST=1` instruments only the TP=2 `R9kAllReduce` -- the TP4 N-rank/ar4 path we actually run has no
+histogram, so it logs nothing (the sizes above are derived from shapes, not observed); and `R9K_ARN_CAL_SIZES_KB`
+silently drops probes above the scratch pool (~480 KiB), so the compressed point at our exact 640 KB message is
+unmeasured on this box.
+
+**And the profiler is unusable here, not merely noisy.** Second attempt, deliberately tiny: CUDA activity only,
+`record_shapes:false`, one 40-token request inside the window. The request returned 500 after 300 s, EngineCore died,
+the trace directory stayed empty. So there will be no per-kernel ledger for this model; sizing has to come from
+standalone graph-timed probes and subtraction (`tuning/decode_mamba_probe.py` is the pattern).
+
+## The rule used to kill levers (so the next one is killed the same way)
+
+For each candidate: compute the **ceiling** -- what a *perfect* fix removes from the step -- and compare it with this
+box's measurement floor, +-10% of launch-to-launch throughput (~7 ms on a 70 ms step). A ceiling under ~5 ms does not
+get engineering time, because it can never be shown. Applied today: all-reduce ceiling <= 5.3 ms and most of it already
+captured (no); Mamba2 conv+scan 4.1 ms measured (no); MoE GEMMs are 16.5 ms = 26% of the step but near HBM bandwidth
+for the experts touched and the legal tile configs are 1-2.5% off, so the realistic ceiling is 2-4 ms (no).
+What is left with a possible >10% ceiling is the *unaccounted mass* -- MoE glue (topk / align / sort at top-22 of 512
+experts), the drafter's 4 draft passes, attention, lm_head, sampler, and the launch-gap time between ~1,700 kernels a
+step. The next measurement, not the next line of kernel code, is a standalone probe of the MoE glue at this
+checkpoint's shapes.
+
 ## Gotchas that cost time
 
 1. **`hf_quant_config.json` must be in the checkpoint dir.** The MTP draft path (`nemotron_h_mtp.py` ->

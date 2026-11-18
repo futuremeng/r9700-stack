@@ -86,6 +86,24 @@ MTP draft path reads that file rather than `config.json`'s `quantization_config`
   all-reduce at ~640 KB messages, MoE glue, the drafter's 4 draft passes, attention, lm_head. All-reduce has existing
   tooling, so it is next.
 
+* **the communication ledger, and the rule that kills levers.** The engine calibrates its own collectives at every
+  launch, and on this box (bf16, us a call, `RCCL / one-shot / two-shot`) it reads: 5K 23/7/10, 20K 37/8/9,
+  40K 37/13/10, 80K 37/17/12, 160K 41/--/18, 320K 47/--/28, 480K 52/--/32, choosing `one-shot <= 20 KiB, two-shot
+  <= 480 KiB, RCCL above, compressed (ar4, 4-bit) from 512 KiB`. Super VL's message is `NSEQ x (MTP+1) x 4096 x 2 B`:
+  40 KB at one stream, 320 KB at eight, 640 KB at sixteen; the count a step is **88** (40 mamba `out_proj` + 40 MoE + 8
+  attention `o_proj`; `shared_experts` are `reduce_results=False` and fold into the MoE's reduce) plus ~8 from the
+  drafter. So all-reduce is **2.7% of the step at one stream, 3.6% at eight, and <= 7.5% at sixteen** (the 640 KB
+  compressed point is unmeasured; exact at that size extrapolates to 55-60 us, and we run the compressed path, so that
+  is an upper bound). RCCL is 1.7-3x worse at every size we use, i.e. the big win is already taken. Rule recorded with
+  it: ceiling (what a perfect fix removes) vs this box's +-10% floor (~7 ms at a 70 ms step) -- under ~5 ms does not
+  get engineering time, because it can never be shown. All-reduce, Mamba2 and MoE tiles all fail that test; the only
+  remaining candidate with a possible >10% ceiling is the unaccounted mass (MoE glue at top-22 of 512 experts, the
+  drafter's 4 passes, launch gaps), which wants a probe, not a kernel.
+  Two tool gaps surfaced: `R9K_AR_HIST=1` instruments only the TP=2 `R9kAllReduce` (the TP4 N-rank/ar4 path we run logs
+  nothing), and `R9K_ARN_CAL_SIZES_KB` silently drops probes above the scratch pool, so our exact 640 KB size is never
+  probed. And the profiler verdict is final now: CUDA-activity-only, `record_shapes:false`, one 40-token request in the
+  window -> request 500 after 300 s, EngineCore dead, empty trace directory. No per-kernel ledger for this model.
+
 ## The admission gate is now observe-only: the door could not re-open, its hold bought nothing, and it was charging the traffic that was not the problem
 
 The complaint was availability -- "long requests are being blocked, and the box feels less usable than before the
