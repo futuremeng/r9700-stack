@@ -3399,11 +3399,12 @@ What is owed after this:
   1,048,576 with `NSEQ=1 MM=0`), and **1M with images ON does not boot** because the encoder-cache budget tracks the
   window (1,046,529 tokens) with no vLLM flag to cap it. What caps depth is time: 250k costs 144 s to first token, 600k
   costs 713 s and decodes at 1.2 tok/s.
-- **Decision owed**: should `MAXLEN=262,144` become the standing value? It costs nothing measurable (bigger pool, 10.9x
-  concurrency at the full window, images still on, 250k verified), but it also lets a single client occupy the box for
-  ~2 minutes, and `MAX_INPUT_TOKENS` is currently **0/off** -- so if 262,144 goes standing, an input-token guard should
-  go with it. Doing it properly means moving the launcher family block, the store file, `tests/test_setup.py` and
-  `tests/test_webui.py` together (they pin 32,768 today).
+- **Decided 2026-11-18: 32k stays standing, the other two depths became launch options.** The family block now carries
+  `CTX=32k` (default) / `CTX=262k` / `CTX=1m`; `1m` forces `MM=0` and prints the reason, drops to `NSEQ=1`, and an
+  unknown `CTX` exits 2 instead of falling through. `tests/test_setup.py` guards the block, the README lines, and the
+  resolved argv via `DRY=1` runs (safe: the launcher writes nothing under DRY). What is still open, and is now the only
+  sharp edge on this: **`MAX_INPUT_TOKENS` is 0/off**, so anyone who starts a 262k or 1m launch lets one client occupy
+  the box for minutes -- the guard belongs with whichever profile gets used in anger.
 - **Unmeasured on the depth line**: whether `MAXLEN` between 262,144 and 1,048,576 boots **with images on** (the
   encoder-cache wall is somewhere in there), and whether a 1M tier would retrieve correctly (never run).
 - **Decision left open by that number**: is this box a text-only service or a mixed one? `MM=0`

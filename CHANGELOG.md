@@ -172,6 +172,16 @@ MTP draft path reads that file rather than `config.json`'s `quantization_config`
   (one client could then occupy the box for ~2 minutes, and `MAX_INPUT_TOKENS` is currently off) that would also need
   the launcher family block, the store file and the two tests moved together.
 
+* **32k stays standing; 262k and 1m became launch options rather than folklore.** The Nemotron-H family block now takes
+  `CTX=32k|262k|1m`: `262k` is the window whose KV pool *grows* (2,846,376 tokens, images on, NSEQ=16), `1m` is the
+  checkpoint's own 1,048,576 and **turns images off by itself** with a printed reason (the encoder-cache budget follows
+  the window -- that is a measurement, not a preference) at `NSEQ=1`; an unknown `CTX` exits 2 instead of quietly
+  falling through, and `MAXLEN=` still overrides a profile. `tests/test_setup.py` now guards the block, the README
+  lines and the **resolved argv**, resolving the profiles with `DRY=1` -- which is safe to do while the box is serving
+  because the launcher guards every write on DRY. All 7 new checks pass and the live serve shows no recipe drift. Still
+  open and now the only sharp edge: `MAX_INPUT_TOKENS` is off, so whoever runs one of the deep profiles is letting a
+  single client occupy the box for minutes.
+
 ## The admission gate is now observe-only: the door could not re-open, its hold bought nothing, and it was charging the traffic that was not the problem
 
 The complaint was availability -- "long requests are being blocked, and the box feels less usable than before the

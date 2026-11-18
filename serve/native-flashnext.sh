@@ -26,10 +26,27 @@ if [ "$FAM" = nemotronh ]; then
   : ${SERVED_NAME:=SuperVL}
   : ${REASONING:=nemotron_v3}
   : ${TOOLCALL:=pythonic}
-  # MAXLEN here is caution, not a refusal: the pool holds 1,102,970 tokens at NSEQ=16 (33 requests deep at 32,768),
-  # and 262,144 has never been measured on this checkpoint. Raise it with MAXLEN= and repeat the wave; do not copy the
-  # Qwen number over.
-  : ${MAXLEN:=32768}
+  # Context depth is a named profile, because the three depths worth having here differ in more than MAXLEN and two of
+  # them were measured end to end (notes/nemotron-super-vl.md, "How far can the context go"). 32k is this box's standing
+  # launch; the others are one flag away -- CTX=262k or CTX=1m. MAXLEN= still overrides a profile directly.
+  #   32k  standing. KV pool 1,099,694 tokens = 33.6 requests deep at the window.
+  #   262k the pool grows to 2,846,376 tokens (10.86x at the full window) because the sizing run is bounded by NBT, not
+  #        by MAXLEN; images stay on; a cold needle at 250,081 tokens hits, with 144 s to the first token.
+  #   1m   the checkpoint's own max_position_embeddings. Needs images OFF -- the multimodal encoder-cache budget tracks
+  #        the window ("a budget of 1,046,529 tokens") and a launch with images on loses a worker during init -- and it
+  #        has only ever been brought up at NSEQ=1 (pool 3,482,333 tokens, 3.32x). A 600k prompt there takes 713 s to
+  #        its first token and decodes at 1.2 tok/s: a depth for one request at a time, not a service width.
+  case "${CTX:-32k}" in
+    32k)  : ${MAXLEN:=32768} ;;
+    262k) : ${MAXLEN:=262144} ;;
+    1m)   : ${MAXLEN:=1048576}
+          : ${NSEQ:=1}
+          if [ "${MM:-${MM_DEFAULT:-1}}" = 1 ]; then
+            echo "r9700: CTX=1m is turning images OFF -- the encoder-cache budget follows the window, and a 1,046,529-token one kills a worker at init (measured)"
+            MM=0
+          fi ;;
+    *) echo "r9700: CTX=$CTX is not a context profile for this family (32k, 262k, 1m)" >&2; exit 2 ;;
+  esac
   # NSEQ=16 measured 2026-11-18: 16 streams give 712-752 tok/s aggregate at ~48 a stream (8 streams unchanged, single
   # stream unchanged), against 487-559 at NSEQ=8. The price is KV pool 1,450,583 -> 1,102,970 tokens from the larger
   # graph pool. NBT stays at 8192: 16384 measured BACKWARDS (cold prefill 6,787 -> 5,310 tok/s, TTFT 4.43 -> 5.66 s,

@@ -609,6 +609,59 @@ ck("no ${MAXLEN:-32768} is left anywhere in the launcher (the old default could 
    "${MAXLEN:-" not in _nativetxt)
 
 
+# Context depth became a named profile (CTX) in the Nemotron-H family on 2026-11-18, after measuring that the three
+# depths differ in more than the number: 262,144 grows the KV pool instead of shrinking it, and 1,048,576 only boots
+# with images off because the multimodal encoder-cache budget follows the window. Text checks alone would miss a
+# profile that resolves to the wrong argv, so the profiles are also resolved with DRY=1 against the real checkpoint:
+# the launcher guards every write on DRY (it bit before -- see its own note), so a preview writes nothing and starts
+# nothing, which makes it safe to run while the box is serving.
+ck("the family block carries all three context profiles with the measured windows",
+   _famblock is not None and all(s in _famblock.group(1) for s in
+                                 ("32k)", "262k)", "1m)", "32768", "262144", "1048576")),
+   "family block missing or a profile gone")
+ck("CTX=1m turns images off and narrows to NSEQ=1 in the launcher itself, not only in the prose",
+   _famblock is not None and "MM=0" in _famblock.group(1) and ": ${NSEQ:=1}" in _famblock.group(1))
+ck("an unknown CTX is refused rather than falling through to the standing 32k",
+   "is not a context profile" in _nativetxt)
+ck("README.md names the two optional profiles, so the standing launch is not the only one anyone can find",
+   "CTX=262k bash serve/native-flashnext.sh" in _readme and "CTX=1m bash serve/native-flashnext.sh" in _readme)
+
+_nativeenv = Path.home() / ".config" / "r9700-stack" / "native.env"
+_ckpt_dir = None
+if _nativeenv.exists():
+    for _ln in _nativeenv.read_text().splitlines():
+        if _ln.startswith("MODEL="):
+            _ckpt_dir = _ln.split("=", 1)[1].strip().strip('"')
+_fam_here = bool(_ckpt_dir) and Path(_ckpt_dir, "config.json").exists() and \
+    "NemotronH_Omni_Reasoning_V3" in Path(_ckpt_dir, "config.json").read_text()
+
+
+def _dry(ctx):
+    e = dict(os.environ, DRY="1", FORCE="1", CTX=ctx)
+    r = subprocess.run(["bash", str(ROOTP / "serve" / "native-flashnext.sh")],
+                       env=e, capture_output=True, text=True, timeout=180)
+    return r.stdout + r.stderr, r.returncode
+
+
+if not _fam_here:
+    ck("profile resolution skipped: this machine's launch model is not the Nemotron-H family", True,
+       "the text checks above still ran")
+else:
+    _d1m, _rc1m = _dry("1m")
+    ck("CTX=1m really resolves to the 1M window at one sequence with --language-model-only",
+       "--max-model-len 1048576" in _d1m and "--max-num-seqs 1 " in _d1m and "--language-model-only" in _d1m,
+       _d1m[-220:])
+    ck("...and it says out loud that images went off, because that is forced and not a default",
+       "turning images OFF" in _d1m)
+    _d262, _rc262 = _dry("262k")
+    ck("CTX=262k resolves to 262,144 and keeps images on at 16 streams",
+       "--max-model-len 262144" in _d262 and "--language-model-only" not in _d262 and "--max-num-seqs 16" in _d262,
+       _d262[-220:])
+    _dbg, _rcbg = _dry("bogus")
+    ck("CTX=bogus exits 2 instead of quietly serving the standing window", _rcbg == 2 and "not a context profile" in _dbg,
+       f"rc={_rcbg}")
+
+
 # The plugin answers kv_cache_size_tokens as a STRING. {pool:,} on a str raised on 2026-11-03 inside the ok
 # line of a launch that had come up healthy -- the report of a good launch must not be able to crash.
 ck("a string KV pool from /api/status is coerced to an int, not passed through to a format specifier",

@@ -456,10 +456,22 @@ near half an hour of single-stream occupation for one request.
 
 **So**: mechanically this box can hold and serve a 600k token context today (1M holds but is unverified end to end and
 only without images). Practically, `MAXLEN=262,144` is the number that costs nothing -- bigger KV pool, 10.9x
-concurrency at the full window, images still on, 250k verified at 144 s -- and `32,768` is still the standing default
-purely because it was the bring-up caution value. Making 262,144 standing is a service decision (it lets a single client
-send a 250k prompt and occupy the box for two minutes, and `MAX_INPUT_TOKENS` is currently 0/off), and it would need the
-launcher family block, the store file and `tests/test_setup.py` / `tests/test_webui.py` moved together.
+concurrency at the full window, images still on, 250k verified at 144 s.
+
+**What shipped (2026-11-18, same day)**: **32k stays standing**, and the other two depths became named profiles in the
+family block rather than prose in a note:
+
+```bash
+CTX=262k bash serve/native-flashnext.sh     # 262,144 window, images on, NSEQ=16, pool 2,846,376 tokens
+CTX=1m   bash serve/native-flashnext.sh     # 1,048,576 window: forces MM=0, NSEQ=1, pool 3,482,333 tokens
+```
+
+`CTX=1m` turns images off **by itself** and prints why, because that is forced by the encoder-cache measurement and not
+a preference; an unknown `CTX` exits 2 instead of falling through to the standing window; `MAXLEN=` still overrides a
+profile directly (measured with `CTX=262k MAXLEN=131072`). `tests/test_setup.py` guards all of it -- including resolving
+the profiles with `DRY=1`, which is safe because the launcher guards every write on DRY, so the test can run while the
+box is serving. One thing that is *not* guarded: `MAX_INPUT_TOKENS` is still 0/off, so whichever of these profiles gets
+used, a single client can send a prompt that occupies the box for minutes.
 
 ## Gotchas that cost time
 

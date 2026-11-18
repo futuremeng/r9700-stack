@@ -991,6 +991,20 @@ these numbers runs.
    ```bash
    bash serve/native-flashnext.sh                          # Super VL 120B: native.env MODEL + family defaults
    ```
+   Context depth is a named profile in that same block, because the depths here differ in more than the number. **32k is
+   standing**; the two others were measured and sit one flag away (`notes/nemotron-super-vl.md`, "How far can the
+   context go"): `CTX=262k` raises the window to 262,144 and, counter-intuitively, makes the KV pool *bigger* --
+   2,846,376 tokens against 1,099,694, because the sizing run is bounded by `NBT`, not by `MAXLEN` -- with images still
+   on and a cold 250k needle hitting in 144 s to the first token. `CTX=1m` is the checkpoint's own
+   `max_position_embeddings`: it **turns images off by itself** (the multimodal encoder-cache budget follows the window,
+   and a 1,046,529-token one loses a worker during init) and comes up at `NSEQ=1` with a 3,482,333-token pool. Neither
+   is limited by memory -- a cold needle hits at 30k, 150k, 250k, 300k and 600k with per-card VRAM flat at 29.5-29.8
+   GiB -- the wall is time: 250k costs 144 s to its first token, 600k costs 713 s and then decodes at 1.2 tok/s. An
+   unknown `CTX` is refused with exit 2 rather than quietly falling through to 32k.
+   ```bash
+   CTX=262k bash serve/native-flashnext.sh                 # 262,144 window, images on, 16 streams
+   CTX=1m bash serve/native-flashnext.sh                   # 1,048,576: images off, NSEQ=1, one request at a time
+   ```
    The Qwen3.8-Flash-Next launch -- four cards, the checkpoint's full 262k context, and the fp8 main KV the launcher
    now defaults, with Monitor and About on the serve's own port -- is one `MODEL=` away; its stored launch config is
    parked in `~/.config/r9700-stack/launches-available/262k.json` so the store holds exactly one standing launch.
