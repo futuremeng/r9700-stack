@@ -33,12 +33,15 @@ libr9k.so carries that symbol. Tile configs (R9K_MOE_CFG1/2) are still keyed on 
 """
 from __future__ import annotations
 
+import os
+
 import torch
 from torch.nn.parameter import Parameter
 
 from vllm.logger import init_logger
 from vllm.model_executor.layers.fused_moe import RoutedExperts
 from vllm.model_executor.layers.fused_moe.activation import MoEActivation
+from vllm.model_executor.layers.linear import LinearBase
 from vllm.model_executor.layers.quantization import register_quantization_config
 from vllm.model_executor.layers.quantization.modelopt import (
     ModelOptMixedPrecisionConfig,
@@ -46,6 +49,7 @@ from vllm.model_executor.layers.quantization.modelopt import (
 )
 
 from ..kernels import moe as K
+from .. import ops
 from ..moe import cache as C
 from ..moe import prep
 from ..moe.experts import r9k_available
@@ -133,9 +137,112 @@ def make_moe_method_cls(mxfp4_method_cls):
     return R9kModelOptNvfp4MoEMethod
 
 
+_DENSE = {"mode": None, "n": 0, "off": False}
+# R9K_MODELOPT_DENSE: how the checkpoint's dense NVFP4 linears (Super VL: `mixer.shared_experts.{up,down}_proj`,
+# 83 of them) are served. `native` = libr9k's native NVFP4 kernel, exact checkpoint bits, fp8 activations; `mxfp4`
+# = converted to MXFP4 at load (the requantization the experts already pay) and served by the dense MXFP4 kernel;
+# `stock` = vLLM's dequantize-then-bf16 emulation (W4A16: more precise activations, and at M=5 rows it is faster
+# than either kernel -- measured 2026-11-18: 102 tok/s single stream against native's 94, but 442-462 tok/s on an
+# 8-stream wave against 523-559, so the kernels win where there is a wave and lose where there is not).
+DENSE_MODE = (os.environ.get("R9K_MODELOPT_DENSE", "native") or "native").lower()
+
+
+def _unswizzle_scale(s: torch.Tensor, n: int, k: int) -> torch.Tensor:
+    """Undo `nvfp4_utils.swizzle_blockscale` (the CUTLASS/FlashInfer 128x4 block interleave): after the permute the
+    buffer is (M/128, K/4, 32, 4, 4) flattened into (M_pad, K_pad), so the inverse is that reshape plus the
+    opposite permute. ModelOpt checkpoints write their FP4 block scales swizzled; CT writes them row major, which
+    is why the compressed-tensors side of this plugin never has to ask."""
+    mp, kp = -(-n // 128) * 128, -(-k // 4) * 4
+    if s.numel() != mp * kp:
+        raise ValueError(f"scale has {s.numel()} elements, swizzle of ({n}, {k}) needs {mp * kp}")
+    t = s.reshape(mp // 128, kp // 4, 32, 4, 4).permute(0, 3, 2, 1, 4).reshape(mp, kp)
+    return t[:n, :k].contiguous()
+
+
+def _dense_native(m, prefix: str) -> None:
+    """Serve a stock ModelOpt NVFP4 linear from libr9k (`R9K_MODELOPT_DENSE`, see above); native NVFP4 fragments here: the checkpoint's e2m1 codes and
+    e4m3 per-16 scales are kept bit-exact (only the fragment order and the scale transpose change), and the
+    per-tensor global scale becomes a per-row fp32 multiplier. `quant/nvfp4.py`'s `make_native_dense_scheme_cls`
+    does the same for compressed-tensors checkpoints; the ModelOpt side needs its own because the names and the
+    sign of the global scale differ -- ModelOpt dequantizes `e2m1 * s16 * scale_2` (multiplied) where the CT helper
+    divides, so the multiplier here is `scale_2` itself and `dequant_nvfp4` wants its reciprocal.
+
+    Bound on the instance rather than subclassed: stock builds these through `build_linear_method`, whose arguments
+    vary with the algo, and a Super VL backbone has 83 of them (`mixer.shared_experts.{up,down}_proj` mostly).
+
+    Whether the loaded scales are row major or swizzled is answered by measurement, not by reading the loader: the
+    probe runs the stock kernel (the authoritative semantics) and this one on the same rows, for each candidate
+    layout, and keeps the one that agrees. It runs once per process."""
+    base_process, base_apply = m.process_weights_after_loading, m.apply
+
+    def process(layer):
+        base_process(layer)
+        w, s16 = getattr(layer, "weight", None), getattr(layer, "weight_scale", None)
+        gs = getattr(layer, "weight_global_scale", None)
+        if w is None or s16 is None or w.dtype != torch.uint8 or gs is None:
+            return                                    # stock pre-processed it (dequantized): leave it alone
+        n, kh = w.shape
+        kd = 2 * kh
+        if n % 16 or kd % 16 or tuple(s16.shape) != (n, kd // 16):
+            logger.info_once("r9700: modelopt NVFP4 linear %s left on stock: unsupported weight %s / scales %s",
+                             prefix, tuple(w.shape), tuple(s16.shape))
+            return
+        mult = torch.full((n,), float(gs.reshape(-1)[0]), dtype=torch.float32, device=w.device)
+        cands = [("row major", s16)]
+        try:
+            cands.append(("unswizzled", _unswizzle_scale(s16.view(torch.uint8), n, kd // 16).view(s16.dtype)))
+        except ValueError as e:
+            logger.info_once("r9700: modelopt NVFP4 dense: no swizzle candidate for %s (%s)", prefix, e)
+        if _DENSE["mode"] is None:
+            x = torch.randn(16, kd, dtype=torch.bfloat16, device=w.device)
+            ref = base_apply(layer, x)                # stock: dequantized weights, bf16 activations
+            ref = x.float() if ref is None else ref.float()
+            best = None
+            for mode, s in cands:
+                w8 = K.prepare_nvfp4_weights(w[None], s[None], mult[None])
+                got = ops.nvfp4_linear(x, w8.wq, w8.ws, w8.wg, n, kd).float()
+                err = (got - ref).norm().item() / max(ref.norm().item(), 1e-9)
+                logger.info("r9700: modelopt native NVFP4 dense probe %s (%dx%d, %s): %.4f against stock",
+                            prefix, n, kd, mode, err)
+                if best is None or err < best[2]:
+                    best = (mode, s, err)
+            if best[2] > 0.25:                        # fp8 activations alone cost ~5%; a wrong layout costs >1
+                logger.warning("r9700: modelopt native NVFP4 dense rejected: the best of %d layouts is %.3f off "
+                               "stock (%s %dx%d) -- these layers stay on the emulation kernel",
+                               len(cands), best[2], prefix, n, kd)
+                _DENSE["off"] = True
+                return
+            _DENSE["mode"] = best[0]
+        mode = next(s for mode_name, s in cands if mode_name == _DENSE["mode"])
+        if _DENSE["off"]:
+            return
+        w8 = K.prepare_nvfp4_weights(w[None], mode[None], mult[None])
+        layer.weight = Parameter(w8.wq, requires_grad=False)
+        layer.weight_scale = Parameter(w8.ws, requires_grad=False)
+        layer.weight_row_mult = Parameter(w8.wg, requires_grad=False)
+        layer._r9k_nk = (n, kd)
+        _DENSE["n"] += 1
+        if _DENSE["n"] % 40 == 0:      # one line per MoE block, so the count is in the log without 83 of them
+            logger.info("r9700: %d modelopt NVFP4 dense linears converted to libr9k native fragments", _DENSE["n"])
+        logger.info_once("r9700: modelopt NVFP4 linears on libr9k native NVFP4 (exact checkpoint bits, fp8 "
+                         "activations, scales read as %s); stock stays on the dequantizing emulation", _DENSE["mode"])
+
+    def apply(layer, x, bias=None):
+        nk = getattr(layer, "_r9k_nk", None)
+        if nk is None:
+            return base_apply(layer, x, bias)
+        n, kd = nk
+        out = ops.nvfp4_linear(x, layer.weight, layer.weight_scale, layer.weight_row_mult, n, kd).to(x.dtype)
+        return out + bias if bias is not None else out
+
+    m.process_weights_after_loading = process
+    m.apply = apply
+
+
 @register_quantization_config("modelopt_mixed")
 class R9kModelOptMixedConfig(ModelOptMixedPrecisionConfig):
-    """Stock modelopt_mixed, except NVFP4 routed experts -> libr9k (converted to MXFP4 at load)."""
+    """Stock modelopt_mixed, except NVFP4 routed experts -> libr9k (converted to MXFP4 at load) and NVFP4 dense
+    linears -> libr9k's native NVFP4 kernel (exact bits)."""
 
     def get_quant_method(self, layer, prefix):
         if r9k_available() and not _off("nvfp4") and isinstance(layer, RoutedExperts) \
@@ -154,4 +261,9 @@ class R9kModelOptMixedConfig(ModelOptMixedPrecisionConfig):
                                  layer.moe_config.is_act_and_mul, getattr(act, "value", act), K.relu2_quant_supported())
                 return super().get_quant_method(layer, prefix)
             return _cached(make_moe_method_cls, R9kMxfp4MoEMethod)(layer.moe_config, self.nvfp4_config)
+        if r9k_available() and not _off("nvfp4") and DENSE_MODE != "stock" and isinstance(layer, LinearBase) \
+                and self._resolve_quant_algo(prefix) == "NVFP4":
+            m = super().get_quant_method(layer, prefix)
+            _dense_native(m, prefix)
+            return m
         return super().get_quant_method(layer, prefix)

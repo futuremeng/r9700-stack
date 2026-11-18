@@ -309,7 +309,12 @@ MTP=${MTP:-2}
 [ -n "$MTP" ] && ARGS+=(--speculative-config "{\"method\": \"mtp\", \"num_speculative_tokens\": $MTP${SPEC_EXTRA:+, $SPEC_EXTRA}}")
 [ -n "${ATTN:-}" ] && ARGS+=(--attention-backend "$ATTN")
 CC=()
-: ${CGSIZES:=1,2,4,8,16,24,32,48,64,96,128,192,256}   # graphs for prefill chunks <= 256 (serve/flashnext.sh)
+: ${CGSIZES:=1,2,4,8,16,24,32,40,48,64,96,128,192,256}   # graphs for prefill chunks <= 256 (serve/flashnext.sh)
+# The decode batch is NSEQ x (MTP+1) rows, and a shape that is not captured runs padded to the next size: at NSEQ=8
+# MTP=4 that is 40 rows padded to 48, 20% of every GEMM in the step thrown away. Measured on Super VL 120B
+# (notes/nemotron-super-vl.md): adding 40 to the list moved an 8-stream wave from 262-272 to 306-328 tok/s on stock
+# kernels, and 475-479 -> 523-559 with the plugin's. Keep the list covering streams x (MTP+1) for whatever this box
+# actually serves; the cost is one more captured graph (~0.15 GiB of graph pool a card).
 [ -n "${CGSIZES:-}" ] && CC+=("\"cudagraph_capture_sizes\": [$CGSIZES], \"max_cudagraph_capture_size\": ${CGSIZES##*,}")
 [ ${#CC[@]} -gt 0 ] && ARGS+=(--compilation-config "{$(IFS=,; echo "${CC[*]}")}")
 

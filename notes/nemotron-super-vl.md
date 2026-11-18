@@ -21,6 +21,10 @@ EXTRA="--trust-remote-code --mm-processor-kwargs {}" \
 bash serve/native-flashnext.sh
 ```
 
+`R9K_MODELOPT_DENSE=native|mxfp4|stock` picks how the dense NVFP4 linears are served (default `native`, see the
+levers section); the MoE side has `R9K_NVFP4_MOE=mxfp4|native` and `R9K_DISABLE=nvfp4` puts the whole model back on
+stock emulation.
+
 ## What the plugin adds for this model
 
 | piece | where | why |
@@ -84,13 +88,18 @@ holds a 1M-token context that this box's four pools do not.
 
 ## Still stock, and the caveats
 
-- The **83 dense NVFP4 linears** (`shared_experts.{up,down}_proj` and three others) are still on stock
-  `EmulationNvFp4LinearKernel`. They are 0.2% of the quantized entries but they run every token; routing them through
-  the dense MXFP4 path is the next lever, and the 262k Qwen config's `R9K_TARGET_LMHEAD=mxfp4` shows that path works.
+- **What is still stock now**: the Mamba2 state path (conv1d + the selective-scan chunk/recurrence kernels, 40 layers,
+  stock Triton under torch.compile) and the vision tower (bf16, only touched when a request carries pictures). The
+  backbone's projections are all on kernels now: FP8 scaled-mm for the 113 FP8 entries, libr9k native NVFP4 for the
+  83 dense NVFP4 entries, libr9k grouped MXFP4 x FP8 for the 41,042 expert matrices.
+- The **image path is untested.** The processor is enabled (`--mm-processor-kwargs {}`; anything Qwen-shaped is
+  rejected: `NanoNemotronVLProcessor.__init__() got an unexpected keyword argument 'size'`), patch 16,
+  1024-13312 patches.
 - The NVFP4 -> MXFP4 conversion is a **requantization**, not a format change: block-16 e4m3 scales become block-32
   e8m0. Against an exact NVFP4 dequantization the weights are ~11% off in relative L2 (`up_proj` 11.2%,
   `down_proj` 11.0%). What that costs at the answer level is in the A/B below: nothing measurable at n = 200, which is
-  a bound and not a proof. The flashnext MXFP4 checkpoint — MXFP4 at rest — does not pay it even in principle.
+  a bound and not a proof. The flashnext MXFP4 checkpoint — MXFP4 at rest — does not pay it even in principle, and
+  the dense NVFP4 linears do not pay it either (the native kernel keeps their bits).
 - **Images are untested.** The processor is enabled (`--mm-processor-kwargs {}`; anything Qwen-shaped is rejected:
   `NanoNemotronVLProcessor.__init__() got an unexpected keyword argument 'size'`), patch 16, 1024-13312 patches.
 - `MAXLEN=32768` is deliberate caution, not a limit: the pool holds 1.45M tokens.
@@ -121,6 +130,23 @@ full wave gains 70%.
 On quality: 1.5 points on 200 questions is three questions, well inside the +-3 point sampling width, so the honest
 sentence is **no measurable cost at this sample size**, not "equal". The full 1,319-question set (n=1319, +-1.4
 points) is what would bound it properly; it costs ~17 min a arm at this speed rather than ~4.
+
+## Next levers, measured rather than assumed (2026-11-18, later the same day)
+
+| idea | what the measurement said | verdict |
+|---|---|---|
+| retune the MoE tile configs for this checkpoint's shapes | `tuning/decode_moe_sweep.py --w13 672,1024 --w2 1024,672 --E 512 --topk 22`: at the 8-stream width (40 tokens -> 880 rows) gate_up 174.5 us against the best of every legal config at 170.1, down 173.1 against 171.8 | **1-2.5%, not worth a config change.** The Flash-Next defaults carry this checkpoint nearly as well as it can be carried |
+| the Mamba2 projections are bf16 and dominate the weight stream | **wrong assumption, and the checkpoint says so**: the `hf_quant_config.json` FP8 list *is* the backbone -- 80 entries are `mixer.in_proj` / `mixer.out_proj` (40 Mamba2 layers x 2) and ~32 are the attention `q/k/v/o`. They come up on `ROCmFP8ScaledMMLinearKernel` | nothing to do; written down so the assumption is not re-bought |
+| TP4 all-reduce is plain RCCL | the launch's `Using ['PYNCCL'] all-reduce backends` line is vLLM listing the sub-backends *inside* `CudaCommunicator`; the plugin's communicator comes from `R9700Platform.get_device_communicator_cls` and installs the r9k N-rank one-shot for `ws > 2` by default (`comm/r4d_ar.py`) | already on libr9k ar4 for decode-sized messages |
+| the 83 dense NVFP4 linears (`mixer.shared_experts.{up,down}_proj`) run on the dequantizing emulation | served them from libr9k's **native NVFP4** kernel instead (`quant/modelopt.py:_dense_native`, the ModelOpt twin of `nvfp4.py:make_native_dense_scheme_cls`): exact e2m1 codes and e4m3 per-16 scales, the per-tensor global scale becomes a per-row fp32 multiplier, activations fp8 per row | **kept** (`R9K_MODELOPT_DENSE=native`, `stock` and `mxfp4` also available): wave +5-12%, single stream unchanged, GSM8K unchanged |
+| `cudagraph_capture_sizes` misses the decode shape | the decode batch is `NSEQ x (MTP+1)` rows = **40** at NSEQ=8 / MTP=4, and the shipped list had 32 then 48: every GEMM in the step ran 20% padded. 40 is now in the launcher's default list | **kept**: the same all-stock arm measured 262-272 -> 306-328 tok/s on an 8-stream wave (+17%) |
+
+Speed after both, single stream / 8 x 300 / 8 x 1200: **93.9 / 487-559 / 516-580 tok/s** (the wave columns move +-10% run to run on this box, which is the same caveat PROGRESS 2026-10-24 records for the Qwen stack: *"need a repeated-run harness before trusting <15% differences"* -- the native-dense gain is inside that band, the CGSIZES fix is outside it). GSM8K-200 across the three arms: 190/200 stock, 193/200 plugin MoE, 191/200 plugin MoE + native dense.
+
+Two things that cost more time than they should have:
+
+1. **A plugin module that fails to import is a WARNING, not a failure.** A `NameError` from a missing `import os` in `quant/modelopt.py` came out as `r9700_vllm: modelopt_mixed not registered: NameError(...)`; `/health` answered 200, the engine served, and an entire measurement arm ran on stock kernels while I thought it was the plugin arm. The check that takes ten seconds: `python -c "import r9700_vllm; r9700_vllm.register(); from vllm.model_executor.layers.quantization import get_quantization_config as g; print(g('modelopt_mixed').__module__)"` -> must print `r9700_vllm.quant.modelopt` (a bare `import r9700_vllm` does not register anything: registration is `register()`, which vLLM calls as the plugin entry point).
+2. **ModelOpt's FP4 block scales: measured, not assumed.** The dense hook reads `layer.weight_scale` either row major or as the CUTLASS 128x4 interleave (`nvfp4_utils.swizzle_blockscale`; `_unswizzle_scale` is its inverse). Rather than reading the loader, the probe runs the stock emulation (authoritative) and the libr9k path on the same rows for each candidate layout and keeps the one that agrees -- 0.1014 for row major at `1344x4096`, and the unswizzled candidate is not even constructible there (1344 is not a multiple of 128, so the swizzle buffer would be larger than the tensor). A wrong layout costs >1.0, so the reject threshold at 0.25 is not a coin flip. Note the direction of the precision change: native runs fp8 activations, the emulation it replaces runs bf16 activations under a W4A16 reading, and the checkpoint's own recipe is W4A4 -- so this is more precise than the recipe and slightly less than the emulation.
 
 ## Gotchas that cost time
 

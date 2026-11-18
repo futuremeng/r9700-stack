@@ -36,6 +36,30 @@ MTP draft path reads that file rather than `config.json`'s `quantization_config`
 `Cannot find the config file for modelopt_mixed`), and the launch needs `REASONING=nemotron_v3` plus
 `--mm-processor-kwargs {}` — the Qwen parser and the Qwen `size` kwarg are both wrong for this processor.
 
+* **the 83 dense NVFP4 linears came off the emulation as well, and the cudagraph size list was 20% short.**
+  `quant/modelopt.py:_dense_native` serves `mixer.shared_experts.{up,down}_proj` from libr9k's native NVFP4 kernel —
+  the ModelOpt twin of the path `nvfp4.py` already had for compressed-tensors: exact e2m1 codes, the per-tensor
+  global scale as a per-row fp32 multiplier, fp8 activations, `R9K_MODELOPT_DENSE=stock|mxfp4|native`. Whether
+  ModelOpt writes its block scales row major or in the CUTLASS 128x4 interleave is answered by a probe rather than
+  by reading the loader: it runs the stock kernel and ours on the same rows for each candidate layout and keeps the
+  one that agrees (0.1014 for row major at 1344x4096; the swizzled candidate is not even constructible there,
+  because 1344 is not a multiple of 128). Separately, the decode batch is `NSEQ x (MTP+1)` rows -- 40 at NSEQ=8 and
+  MTP=4 -- and the shipped capture list jumped from 32 to 48, padding 20% of every GEMM in the step. Adding 40 to
+  `serve/native-flashnext.sh`'s default took an all-stock 8-stream wave from 262-272 to 306-328 tok/s. Net on this
+  model: 93.9 tok/s a stream, 487-559 aggregate at eight streams, GSM8K-200 191/200 -- and said plainly: the dense
+  kernel's gain sits inside this box's +-10% wave-to-wave spread, the size-list fix sits outside it.
+* **three plausible assumptions about this model died in the measuring.** The Mamba2 projections are not bf16 -- the
+  checkpoint's 113 FP8 entries *are* the backbone (`mixer.in_proj` / `mixer.out_proj` across 40 layers, plus the
+  attention `q/k/v/o`), already served by `ROCmFP8ScaledMMLinearKernel`. TP4 is not on plain RCCL: the launch's
+  `Using ['PYNCCL'] all-reduce backends` line names the sub-backends inside `CudaCommunicator`, while the plugin's
+  one-shot N-rank all-reduce installs by default for `ws > 2`. And retuning the MoE tile configs for these shapes is
+  worth 1-2.5%, not more -- `tuning/decode_moe_sweep.py` now takes `--w13 N,K --w2 N,K` so a checkpoint that is not
+  Flash-Next can be swept at its own shapes. The trap worth recording: a plugin module that fails to import is only a
+  WARNING (`r9700_vllm: modelopt_mixed not registered: NameError(...)`), the engine still answers `/health` and
+  serves quietly on stock kernels, and one full measurement arm ran that way before the ten-second registration
+  check -- `register()` then `get_quantization_config("modelopt_mixed").__module__` must print
+  `r9700_vllm.quant.modelopt` (a bare import registers nothing) -- caught it.
+
 ## The admission gate is now observe-only: the door could not re-open, its hold bought nothing, and it was charging the traffic that was not the problem
 
 The complaint was availability -- "long requests are being blocked, and the box feels less usable than before the

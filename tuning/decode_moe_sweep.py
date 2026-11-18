@@ -8,6 +8,7 @@ back to pick_cfg. This sweeps every legal config at decode row counts and prints
 next to what the served path currently uses, so the winners can go into R9K_MOE_CFG1 / R9K_MOE_CFG2 or the defaults.
 
 usage: decode_moe_sweep.py [--tp 4] [--tokens 1,4,16,64] [--E 512] [--topk 10] [--iters 5] [--rounds 2]
+                            [--w13 N,K --w2 N,K]      (a checkpoint that is not Flash-Next names its own shapes)
        (inside the ROCm image, one GPU; ~3 min)
 """
 import argparse
@@ -49,10 +50,17 @@ def main():
     ap.add_argument("--topk", type=int, default=10)
     ap.add_argument("--iters", type=int, default=5)
     ap.add_argument("--rounds", type=int, default=2)
+    ap.add_argument("--w13", default="", help="first GEMM as N,K (default: the Flash-Next shape at --tp). An "
+                                              "ungated MLP -- Nemotron-H -- passes its own N, not 2*intermediate")
+    ap.add_argument("--w2", default="", help="second GEMM as N,K (default: the Flash-Next shape at --tp)")
     a = ap.parse_args()
     E, topk = a.E, a.topk
-    inter = 640 // a.tp                                  # moe_intermediate_size per rank
-    N1, K1, N2, K2 = 2 * inter, 2560, 2560, inter
+    if a.w13 and a.w2:
+        N1, K1 = (int(v) for v in a.w13.split(","))
+        N2, K2 = (int(v) for v in a.w2.split(","))
+    else:
+        inter = 640 // a.tp                                  # moe_intermediate_size per rank
+        N1, K1, N2, K2 = 2 * inter, 2560, 2560, inter
     g = torch.Generator(device="cuda").manual_seed(0)
     p1 = torch.randint(0, 256, (E, N1, K1 // 2), dtype=torch.uint8, device="cuda", generator=g)
     s1 = torch.randint(118, 128, (E, N1, K1 // 32), dtype=torch.uint8, device="cuda", generator=g)

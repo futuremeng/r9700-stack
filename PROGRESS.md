@@ -3318,10 +3318,20 @@ stock) -> 94.2-102.3 (graphs, libr9k, MTP=4). Eight streams: 458 tok/s aggregate
 
 What is owed after this:
 
-- **The dense NVFP4 linears are still emulated.** 83 entries, mostly `mixer.shared_experts.{up,down}_proj`, every one
-  on `EmulationNvFp4LinearKernel`, running on every token. They are the next conversion, and the dense MXFP4 path is
-  already proven on this box by the Qwen config's `R9K_TARGET_LMHEAD=mxfp4`. The A/B below says how much a routed- MoE
-  conversion is worth; a dense one lands on the prefill and single-stream columns rather than the wave column.
+- **Done 2026-11-18 (later): the dense NVFP4 linears are on libr9k's native kernel now** (`R9K_MODELOPT_DENSE`,
+  default `native`), and `serve/native-flashnext.sh`'s `CGSIZES` default grew a 40 because the decode batch is
+  `NSEQ x (MTP+1)` rows and a shape it doesn't have is padded to the next one (40 -> 48 = 20% of every GEMM wasted).
+  Single stream 93.9, eight streams 487-559 aggregate, GSM8K-200 191/200. The dense kernel's share is inside this
+  box's wave-to-wave spread of +-10%; the size-list fix is not.
+- **What this model still has on stock code**: the Mamba2 state path -- conv1d and the chunked selective-scan
+  recurrence, 40 of the 88 layers, stock Triton under torch.compile. Every projection in the backbone is on a kernel
+  now (FP8 scaled-mm for 113 entries, native NVFP4 dense for 83, grouped MXFP4 x FP8 for 41,042 experts), so the next
+  real win for this model is a scan kernel, not another weight format.
+- **Repeated-run harness before trusting <15%.** Carried from PROGRESS 2026-10-24 and earned again today: the
+  8-stream wave on this model reads 442-462, 475-479, 487-559 and 523-559 across launches that differ by one knob.
+  Any claim smaller than that band needs N launches interleaved, not one after another.
+- **Full GSM8K (1,319, +-1.4 points, ~17 min an arm at this speed) would tighten the requantization bound** from
+  "no measurable cost at n=200" to something that could be quoted. Nobody has asked for that tightness yet.
 - **Done 2026-11-18: the A/B the requantization owed.** Same launch, `R9K_DISABLE=nvfp4` against the libr9k path:
   single stream 78.9 -> 102.3 tok/s, an 8-stream wave 262-272 -> 442-462 tok/s (+68-72%), 30k prefill 3,762 -> 6,390
   tok/s, GSM8K-200 190/200 -> 193/200 with the run taking 7.1 -> 3.6 min. Needle at 30k hits on both. The accuracy
