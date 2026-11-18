@@ -3320,11 +3320,16 @@ What is owed after this:
 
 - **The dense NVFP4 linears are still emulated.** 83 entries, mostly `mixer.shared_experts.{up,down}_proj`, every one
   on `EmulationNvFp4LinearKernel`, running on every token. They are the next conversion, and the dense MXFP4 path is
-  already proven on this box by the Qwen config's `R9K_TARGET_LMHEAD=mxfp4`.
-- **No quality ladder for the requantization.** The experts go block-16 e4m3 -> block-32 e8m0, which is ~11% off an
-  exact NVFP4 dequant per weight; the five-question battery and the reasoning traces look identical on both paths,
-  which is a spot check, not a measurement. GSM8K + needles + a probe32-shaped aggregate, run twice
-  (`R9K_DISABLE=nvfp4` against the libr9k path), is what would say whether the conversion is free.
+  already proven on this box by the Qwen config's `R9K_TARGET_LMHEAD=mxfp4`. The A/B below says how much a routed- MoE
+  conversion is worth; a dense one lands on the prefill and single-stream columns rather than the wave column.
+- **Done 2026-11-18: the A/B the requantization owed.** Same launch, `R9K_DISABLE=nvfp4` against the libr9k path:
+  single stream 78.9 -> 102.3 tok/s, an 8-stream wave 262-272 -> 442-462 tok/s (+68-72%), 30k prefill 3,762 -> 6,390
+  tok/s, GSM8K-200 190/200 -> 193/200 with the run taking 7.1 -> 3.6 min. Needle at 30k hits on both. The accuracy
+  difference is three questions out of 200, so the claim is "no measurable cost at n = 200"; the full 1,319 ( +- 1.4
+  points, ~17 min a arm) is what would tighten it, and nobody has asked for that tightness yet.
+- **Bench scripts now take the model from the environment** (`bench/bench.py`, `bench/gsm8k.py`): both hardcoded
+  `Qwen3.8`, which silently 404s against any other served name. `bench/needle_long.py` takes it positionally and its
+  default tokenizer path is the Qwen directory, so a Super VL run has to pass the checkpoint dir explicitly.
 - **Images are untested on this model**, and `MAXLEN=32768` is caution, not a ceiling (the pool is 1.45M tokens).
 - **The box's standing state is undecided.** The watcher is still disarmed (its pid was killed before the experiment
   so a failed experimental load could not be read as a crash fault) and `launches/262k.json` still describes Qwen, so

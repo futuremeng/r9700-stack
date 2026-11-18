@@ -89,14 +89,38 @@ holds a 1M-token context that this box's four pools do not.
   the dense MXFP4 path is the next lever, and the 262k Qwen config's `R9K_TARGET_LMHEAD=mxfp4` shows that path works.
 - The NVFP4 -> MXFP4 conversion is a **requantization**, not a format change: block-16 e4m3 scales become block-32
   e8m0. Against an exact NVFP4 dequantization the weights are ~11% off in relative L2 (`up_proj` 11.2%,
-  `down_proj` 11.0%). The five-question battery (arithmetic, facts, translation, code, comparison) reads the same on
-  both paths and the reasoning traces are indistinguishable, but this is not a bit-exact serving of the checkpoint,
-  and the flashnext MXFP4 checkpoint — which is MXFP4 at rest — does not pay it.
+  `down_proj` 11.0%). What that costs at the answer level is in the A/B below: nothing measurable at n = 200, which is
+  a bound and not a proof. The flashnext MXFP4 checkpoint — MXFP4 at rest — does not pay it even in principle.
 - **Images are untested.** The processor is enabled (`--mm-processor-kwargs {}`; anything Qwen-shaped is rejected:
   `NanoNemotronVLProcessor.__init__() got an unexpected keyword argument 'size'`), patch 16, 1024-13312 patches.
 - `MAXLEN=32768` is deliberate caution, not a limit: the pool holds 1.45M tokens.
 - The watcher is **not** armed (its pid was killed before this work so an experimental load could not be treated as a
   production crash fault), and the box's stored launch config (`262k.json`) still describes the Qwen stack.
+
+## A/B: what the conversion buys, and what it costs in answers
+
+Two arms, identical launches (graphs, `MTP=4`, `MAXLEN=32768`, `NSEQ=8`), the only difference `R9K_DISABLE=nvfp4`.
+Speed waves use `enable_thinking: false` so they measure the decode path rather than the reasoning length; GSM8K runs
+with thinking on, as the script ships. The wave wrapper retries a transient gateway failure instead of losing the wave
+— the first pass of the arm lost exactly one wave to one 502, and an empty wave reads as a regression.
+
+| measure | stock NVFP4 emulation | libr9k MXFP4 conversion | delta |
+|---|---|---|---|
+| single stream, 300 tokens | 78.9 | 102.3 | +30% |
+| 8 streams x 300 tokens, aggregate | 262-272 (35-38 a stream) | 442-462 (57-62) | **+68-72%** |
+| 8 streams x 1200 tokens, aggregate | 289-299 (37-38) | 495-505 (64-65) | **+66-71%** |
+| prefill, 30k prompt, cold | 3,762 tok/s | 6,390 tok/s | +70% |
+| decode inside a 30k context | 16.2 | 17.8-18.2 | +10% |
+| needle at 30,073 tokens, 3 depths | hit | hit | — |
+| GSM8K 200 questions, conc 8 | 190/200 = **95.0%** (9 truncated), 7.1 min | 193/200 = **96.5%** (6 truncated), 3.6 min | 2x faster, accuracy indistinguishable |
+
+The concurrency column is where the win lives: at one token a step the expert weights are a latency problem, at eight
+they are a bandwidth problem, and the emulation reads the same bytes twice over. Single-stream decode gains 30%, a
+full wave gains 70%.
+
+On quality: 1.5 points on 200 questions is three questions, well inside the +-3 point sampling width, so the honest
+sentence is **no measurable cost at this sample size**, not "equal". The full 1,319-question set (n=1319, +-1.4
+points) is what would bound it properly; it costs ~17 min a arm at this speed rather than ~4.
 
 ## Gotchas that cost time
 

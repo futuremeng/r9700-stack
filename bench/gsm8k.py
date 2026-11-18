@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-import json, re, sys, time, urllib.request, concurrent.futures as cf
-BASE="http://localhost:8080/v1/chat/completions"; MODEL="Qwen3.8"
+import json, os, re, sys, time, urllib.request, concurrent.futures as cf
+BASE="http://localhost:8080/v1/chat/completions"; MODEL=os.environ.get("MODEL","Qwen3.8")
 N=int(sys.argv[1]) if len(sys.argv)>1 else 200
 CONC=int(sys.argv[2]) if len(sys.argv)>2 else 8
 def load_gsm8k():

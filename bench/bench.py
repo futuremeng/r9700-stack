@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-import sys, time, json, urllib.request, threading, statistics
-BASE="http://localhost:8080/v1/chat/completions"; MODEL="Qwen3.8"
+import os, sys, time, json, urllib.request, threading, statistics
+BASE="http://localhost:8080/v1/chat/completions"; MODEL=os.environ.get("MODEL","Qwen3.8")
 def call(prompt, max_tokens, no_think=False):
     body={"model":MODEL,"messages":[{"role":"user","content":prompt}],"max_tokens":max_tokens,"temperature":0.0,"stream":False}
     if no_think: body["chat_template_kwargs"]={"enable_thinking":False}

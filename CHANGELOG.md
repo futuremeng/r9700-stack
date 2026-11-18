@@ -18,13 +18,18 @@ MTP=2 with graphs on).
   symbol, so an older .so falls back to stock instead of failing at the first decoded token.
 * **`--enforce-eager` was costing 3x** — 27 -> 73 tok/s on the same weights and the same MTP, because 88 backbone
   layers of small GEMMs at one stream is a launch-overhead problem before it is a kernel problem. Single stream now
-  runs **94-102 tok/s** at a 300-token generation and **458 tok/s aggregate at eight streams** (57 each). The MTP knee
+  runs **94-102 tok/s** at a 300-token generation and **442-462 tok/s aggregate at eight streams** (57-62 a stream),
+  against **262-272** for the same model on stock experts: the conversion is worth +30% single stream and +68-72% on a
+  full wave, because at one token a step the expert weights are a latency problem and at eight they are a bandwidth
+  one. The MTP knee
   is 4-6 drafts (acceptance 2.62 at 2, 3.02 at 3, 4.73 at 10); `MTP=4` ships. The ladder is in
   [notes/nemotron-super-vl.md](notes/nemotron-super-vl.md).
 * **the conversion is a requantization and is labelled as such**: block-16 e4m3 scales become block-32 e8m0, leaving
-  the weights ~11% off an exact NVFP4 dequantization. The five-question battery reads the same on both paths and the
-  reasoning traces are indistinguishable, but this is not bit-exact serving of the checkpoint, and
-  `R9K_DISABLE=nvfp4` puts the layer back on stock in one flag.
+  the weights ~11% off an exact NVFP4 dequantization. A two-arm A/B on identical launches says the answer cost is zero
+  at the resolution available: **GSM8K-200** (thinking on, conc 8) reads **193/200 = 96.5%** through the converted
+  experts against **190/200 = 95.0%** on stock -- three questions out of 200, inside the sampling width -- and the
+  needle at 30,073 tokens hits on both arms. What is not free is stated rather than hidden: this is not bit-exact
+  serving of the checkpoint, and `R9K_DISABLE=nvfp4` puts the layer back on stock in one flag.
 
 Two things the checkpoint demands that cost an hour each: `hf_quant_config.json` must be present in the model dir (the
 MTP draft path reads that file rather than `config.json`'s `quantization_config`, and without it the launch dies on
