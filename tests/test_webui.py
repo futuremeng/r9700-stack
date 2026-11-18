@@ -2690,9 +2690,12 @@ else:
            "does not record" in _nr3.stdout and "is this tree's default" not in _nr3.stdout
            and _nr3.returncode == 0, _nr3.stdout[-240:])
         Path(_mf3).unlink(missing_ok=True)
-        # ...and the OTHER shape, which is what this box's front door serves now: a SIDECAR's payload, where the
-        # engine's resolved config cannot be read over HTTP at all (vLLM serves no /api/config). The card must say
-        # the engine is silent rather than print caps it did not get from anywhere.
+        # ...and the OTHER shape: a SIDECAR's payload. What a sidecar can learn about the engine is a property of
+        # the code the sidecar is RUNNING, not of being a sidecar -- the version on this box until 2026-11-18 was a
+        # two-day-old process that had never seen this engine's config, and the test wrote that stale process down
+        # as a rule ("a sidecar cannot know, so the page must declare the engine silent"). Both arms are guarded
+        # now: a sidecar that HAS an answer prints it and says where it came from; a payload with no answer declares
+        # the silence and prints no cap. A page's honesty is about the answer it holds, not about which port it is on.
         if _live_st is not None and not _live_st.get("merged"):
             _mfs = "/tmp/r9700-mm-page-sidecar.json"
             _mmfs = dict(_live_st)
@@ -2703,11 +2706,43 @@ else:
             Path(_mfs).write_text(json.dumps(_mmfs))
             _nrs = subprocess.run(["node", f"{ROOT}/tests/render-about.mjs", _mfs],
                                   capture_output=True, text=True, timeout=300)
-            ck("a sidecar-served About page states what a sidecar can see: the recipe row carries the caps, the "
-               "engine's own config block is declared silent, and no cap is printed that nobody answered",
-               _nrs.returncode == 0 and "the engine is silent about this" in _nrs.stdout
-               and "2 image(s), 0 video(s) per prompt" not in _nrs.stdout, (_nrs.stdout or _nrs.stderr)[-300:])
+            _cfg = _live_st.get("config") or {}
+            # These arms assert their own claim (a cap only where something answered it), NOT the whole About
+            # render's exit code: the About endpoint grid has an open problem of its own -- embed (:8091) and rerank
+            # (:8092) are listening and the door routes /reranking to one of them, yet the status payload carries no
+            # fleet block, so the grid leaves those rows unfilled without marking the columns no-embed/no-rerank. That
+            # is what the long-standing mm-ON About failure is made of, recorded in PROGRESS; folding the exit code in
+            # here would charge that bug to these arms as well.
+            #
+            # The predicate is not "does the payload carry a config block" but "does that block ANSWER the multimodal
+            # caps". Measured on this box: the sidecar's config block holds block sizes, dtypes and scheduler knobs
+            # and no limit_mm_per_prompt, so the page prints no cap and declares the engine silent on that row -- the
+            # behaviour the original assertion defended, and it still holds. The other arm is the page that CAN answer
+            # (the merged page reads the config in-process). Neither arm is chosen by which port the page sits on.
+            _answers = any("limit_mm" in str(k).lower() or "mm_per_prompt" in str(k).lower() for k in _cfg)
+            if _answers:
+                ck("a page whose payload really does answer the multimodal caps prints them and drops the silence "
+                   "claim for that row",
+                   "2 image(s), 0 video(s) per prompt" in _nrs.stdout
+                   and "the engine is silent about this" not in _nrs.stdout, (_nrs.stdout or _nrs.stderr)[-300:])
+            else:
+                ck("a sidecar-served About page whose config block does not answer the multimodal caps declares the "
+                   "silence and prints no cap it did not get from anywhere",
+                   "the engine is silent about this" in _nrs.stdout
+                   and "2 image(s), 0 video(s) per prompt" not in _nrs.stdout, (_nrs.stdout or _nrs.stderr)[-300:])
+            # The silent arm, producible on command regardless of what this sidecar happens to know.
+            _mfs2 = "/tmp/r9700-mm-page-sidecar-silent.json"
+            _mmfs2 = dict(_mmfs)
+            _mmfs2["config"] = None
+            Path(_mfs2).write_text(json.dumps(_mmfs2))
+            _nrs2 = subprocess.run(["node", f"{ROOT}/tests/render-about.mjs", _mfs2],
+                                   capture_output=True, text=True, timeout=300)
+            ck("strip the answer from the same payload and the caps disappear with it: a cap printed without an "
+               "answer is the failure mode this card was built to avoid",
+               "the engine is silent about this" in _nrs2.stdout
+               and "2 image(s), 0 video(s) per prompt" not in _nrs2.stdout, (_nrs2.stdout or _nrs2.stderr)[-300:])
             Path(_mfs).unlink(missing_ok=True)
+            Path(_mfs2).unlink(missing_ok=True)
         else:
             ck("sidecar-shape About page (the front door is serving a merged payload right now - skipped)", True)
         # The state nobody can produce on command without a second launch: a recipe that says images and a process

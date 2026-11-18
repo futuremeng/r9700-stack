@@ -3424,6 +3424,16 @@ What is owed after this:
 - **Owed, pre-existing and unrelated to the family work: one `tests/test_webui.py` failure** -- "the About page run for
   real against an mm-ON payload says both caps". It failed the same way before any of today's changes (verified by
   stashing them) and `node` is installed, so it is a real assertion failure in the mm-ON About payload path.
+  **Located 2026-11-18 while moving the context-size card**: the failure's detail is a set of ids -- `ep-embed-*`,
+  `ep-rerank-*`, `curl-embed`, `curl-rerank` -- which is `render-about.mjs`'s "the Copy for X has no payload in this
+  render" list. Embed (`:8091`, python3) and rerank (`:8092`, llama-server) are both listening and the door routes
+  `/reranking` to one of them, but the status payload carries **no fleet block at all** (`/api/status` has no
+  `sidecars` key, and the current launch record has none either), so the About grid leaves those rows unfilled while
+  also not marking the columns `no-embed`/`no-rerank` -- the state the harness reads as "answered but empty". Two
+  claims follow and neither is done: the payload has to carry what this port actually answers (or the grid has to say
+  it does not know), and the record of the fleet should belong to the launch, not to whichever sidecar process happens
+  to be old enough to remember the previous one. My own new About arms therefore assert their specific strings rather
+  than the whole render's exit code, so this bug stays charged to this bullet and not to three.
 - **Owed: the auto-restart cannot answer the crash shape we actually hit.** `restart_launch()` re-runs
   `setup.py --yes --launch ...` with no `FORCE`, and both setup.py and the launcher refuse to start while ranks
   still hold the GPUs -- which is what a hung-worker death leaves behind (seen twice today:
