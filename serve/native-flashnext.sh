@@ -10,6 +10,41 @@
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/lib/localenv.sh"
 
 MODEL=${MODEL:-$HOME/models/Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ}
+
+# Which checkpoint this is decides several defaults further down, and the differences are not cosmetic. The
+# Nemotron-H omni arch routes its MoE through grouped top-k with a score-correction bias (vLLM's `grouped_topk`,
+# measured 42-51 us a layer here -- nearly batch-independent, the 512-expert scan dominates), activates it with relu^2
+# and no gate, names its reasoning parser `nemotron_v3` (`none` and `qwen3` both fail at boot), needs the checkpoint's
+# own remote code, and its processor refuses Qwen's `size` kwarg (`NanoNemotronVLProcessor.__init__() got an
+# unexpected keyword argument 'size'`). Detecting the family here is what keeps a bare launch honest instead of
+# inheriting whatever a hand-typed command happened to carry. The numbers below are this box's, from
+# notes/nemotron-super-vl.md; the Flash-Next fallbacks stay where they already are, because those are the measured
+# Qwen values. A third family should be measured before its numbers become this file's.
+FAM=flashnext
+grep -qm1 NemotronH_Omni_Reasoning_V3 "$MODEL/config.json" 2>/dev/null && FAM=nemotronh
+if [ "$FAM" = nemotronh ]; then
+  : ${SERVED_NAME:=SuperVL}
+  : ${REASONING:=nemotron_v3}
+  : ${TOOLCALL:=pythonic}
+  # MAXLEN here is caution, not a refusal: the pool holds 1,102,970 tokens at NSEQ=16 (33 requests deep at 32,768),
+  # and 262,144 has never been measured on this checkpoint. Raise it with MAXLEN= and repeat the wave; do not copy the
+  # Qwen number over.
+  : ${MAXLEN:=32768}
+  # NSEQ=16 measured 2026-11-18: 16 streams give 712-752 tok/s aggregate at ~48 a stream (8 streams unchanged, single
+  # stream unchanged), against 487-559 at NSEQ=8. The price is KV pool 1,450,583 -> 1,102,970 tokens from the larger
+  # graph pool. NBT stays at 8192: 16384 measured BACKWARDS (cold prefill 6,787 -> 5,310 tok/s, TTFT 4.43 -> 5.66 s,
+  # 276k KV tokens eaten by the activation peak the sizing run sees).
+  : ${NSEQ:=16}
+  # MTP=4 is the knee: acceptance 2.62 at MTP=2, 3.02 at 3, and 94-102 tok/s a stream at 4; MTP=10 accepts 4.73 but
+  # long-generation throughput falls back (85-89). Without graphs and without the libr9k experts this checkpoint ran
+  # 26.9-27.5 -- see the graphs and quant/modelopt entries in the note.
+  : ${MTP:=4}
+  # The decode batch is NSEQ x (MTP+1) rows -- 80 here -- and a shape with no captured graph runs padded to the next
+  # one (40 -> 48 threw away 20% of every GEMM in the step, measured). The Flash-Next list below deliberately does
+  # not carry 80/160, because each extra size costs graph pool (KV tokens) for launches that never reach it; the
+  # family that needs them asks for them.
+  : ${CGSIZES:=1,2,4,8,16,24,32,40,48,64,80,96,128,160,192,256}
+fi
 VENV=${VENV:-$HOME/venv-r9700}
 REPO=${REPO:-$(dirname "$(realpath "$0")")/..}
 PY=$VENV/bin/python3
@@ -283,9 +318,20 @@ ARGS=(--served-model-name "${SERVED_NAME:-Qwen3.8}" --host "$HOST" --port "${POR
       --max-num-seqs "$NSEQ" --max-num-batched-tokens "$NBT"
       --gpu-memory-utilization "${UTIL:-$([ "${TP:-4}" = 4 ] && echo 0.96 || echo 0.94)}"
       --reasoning-parser "${REASONING:-qwen3}" --tool-call-parser "${TOOLCALL:-qwen3_coder}" --enable-auto-tool-choice)
+# The Nemotron-H omni checkpoint ships its own config/processor classes (configuration_nemotron_h_omni.py and the
+# RADIO vision tower behind them), so its config.json carries auto_map entries and vLLM cannot even build the model
+# config without this. It belongs to the family, not to the multimodal branch: MM=0 still needs it.
+[ "$FAM" = nemotronh ] && ARGS+=(--trust-remote-code)
 if [ "$MM" = 1 ]; then
-  ARGS+=(--limit-mm-per-prompt "{\"image\": ${MM_IMAGE}, \"video\": ${MM_VIDEO}}"
-         --mm-processor-kwargs "{\"size\": {\"longest_edge\": ${MM_MAX_PIX}, \"shortest_edge\": ${MM_MIN_PIX}}}")
+  ARGS+=(--limit-mm-per-prompt "{\"image\": ${MM_IMAGE}, \"video\": ${MM_VIDEO}}")
+  if [ "$FAM" = nemotronh ]; then
+    # Its processor takes no `size` kwarg: the pixel budget is the checkpoint's own (preprocessor_config.json says
+    # patch 16 with min_patches 1,024 and max_patches 13,312, so an image arrives as at most 3,328 merged tokens),
+    # and passing Qwen's kwargs aborts the launch with a TypeError. MM_MAX_PIX therefore has nothing to set here.
+    ARGS+=(--mm-processor-kwargs "{}")
+  else
+    ARGS+=(--mm-processor-kwargs "{\"size\": {\"longest_edge\": ${MM_MAX_PIX}, \"shortest_edge\": ${MM_MIN_PIX}}}")
+  fi
 else
   ARGS+=(--language-model-only)
 fi

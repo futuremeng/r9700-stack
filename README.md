@@ -982,10 +982,20 @@ these numbers runs.
    ```bash
    bash serve/ds41-exl3.sh                          # DeepSeek-V4.1-Flash EXL3, eight cards (notes/exl3-plan.md)
    ```
-   Native, no container -- what this box runs today: four cards, the checkpoint's full 262k context, and the
-   fp8 main KV the launcher now defaults, with Monitor and About on the serve's own port.
+   Native, no container. What this box runs today is **Nemotron-3.5-Super-VL-120B NVFP4**, and a bare launch is the
+   whole command: the checkpoint comes from `~/.config/r9700-stack/native.env`'s `MODEL=`, and the launcher's
+   Nemotron-H family block carries the measured shape -- `MAXLEN=32768 NSEQ=16 NBT=8192 MTP=4`, cudagraph sizes
+   through 160, `nemotron_v3` reasoning, `pythonic` tool calls, `--mm-processor-kwargs {}` because that processor
+   refuses Qwen's `size` kwarg. What it buys, measured on this box (notes/nemotron-super-vl.md): 94-112 tok/s a
+   stream, 712-752 aggregate at 16 streams, and a step that is 26% MoE GEMM / 9% mamba / <=7.5% all-reduce.
    ```bash
-   MAXLEN=262144 NSEQ=32 NBT=8192 WEBUI=same bash serve/native-flashnext.sh
+   bash serve/native-flashnext.sh                          # Super VL 120B: native.env MODEL + family defaults
+   ```
+   The Qwen3.8-Flash-Next launch -- four cards, the checkpoint's full 262k context, and the fp8 main KV the launcher
+   now defaults, with Monitor and About on the serve's own port -- is one `MODEL=` away; its stored launch config is
+   parked in `~/.config/r9700-stack/launches-available/262k.json` so the store holds exactly one standing launch.
+   ```bash
+   MODEL=$HOME/models/Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ MAXLEN=262144 NSEQ=32 NBT=8192 WEBUI=same bash serve/native-flashnext.sh
    ```
    One box fact is not in that line: the bind address. The launcher's `HOST` default is `127.0.0.1` — upstream's own
    default — and this machine's `0.0.0.0` comes from `~/.config/r9700-stack/native.env`, which the launcher sources (as a default: a value you export beats it, and `serve/lib/localenv.sh` is the one place that sources it, for all five launchers)

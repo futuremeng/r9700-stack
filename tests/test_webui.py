@@ -2426,26 +2426,36 @@ Path(_mj).unlink(missing_ok=True)
 # because the fixture predates the mm flag and a substring replace on a string that lacks the flag is a no-op that
 # would have made the "caught in both directions" check pass on equality.
 _REAL_CMD = rc.production_args()
-ck("images are ON by default in this tree (2026-11-05), with a count cap and a size cap both in the line",
-   '--limit-mm-per-prompt {"image": 4, "video": 0}' in _REAL_CMD
-   and '--mm-processor-kwargs {"size": {"longest_edge": 4194304, "shortest_edge": 65536}}' in _REAL_CMD
-   and "--language-model-only" not in _REAL_CMD, _REAL_CMD[-200:])
+# These mm numbers belong to the Flash-Next family: `--mm-processor-kwargs {"size": ...}` with a 4,194,304 px cap
+# (~4,096 tokens an image) is what that checkpoint's processor accepts, while the Nemotron-H omni processor refuses
+# the `size` kwarg (its budget is min/max patches in its own preprocessor_config.json). The launcher picks the family
+# by grepping the checkpoint's config.json, so the family-dependent runs below pin a MODEL whose config.json is not
+# there -- missing means the Flash-Next defaults -- and whichever checkpoint this box currently serves cannot change
+# what these assertions see.
+_FAM = {"MODEL": "/nonexistent/flashnext-checkpoint"}
+ck("images are ON by default in this tree (2026-11-05): the live launch carries a per-prompt count cap and no "
+   "--language-model-only, whatever family this box is serving",
+   '--limit-mm-per-prompt {"image": 4, "video": 0}' in _REAL_CMD and "--language-model-only" not in _REAL_CMD,
+   _REAL_CMD[-200:])
 # MM=0 has to be a real state, not a comment: the default flipped, and the way back must be as checkable as the way
 # in -- one env name and a restart.
-_mmoff = subprocess.run(["bash", _LAU], env=rc.clean_env({"MM": "0", "DRY": "1", "FORCE": "1", "PORT": "18099"}),
+_mmoff = subprocess.run(["bash", _LAU], env=rc.clean_env({"MM": "0", "DRY": "1", "FORCE": "1", "PORT": "18099",
+                                                          **_FAM}),
                         capture_output=True, text=True, timeout=120).stdout
 _mmoffcmd = next((l for l in _mmoff.splitlines() if l.startswith("launch:")), "")[len("launch:"):]
 ck("MM=0 puts --language-model-only back and passes no mm flags at all (an unused size cap would be a knob that silently does nothing)",
    "--language-model-only" in _mmoff and "--limit-mm-per-prompt" not in _mmoff
    and "--mm-processor-kwargs" not in _mmoff, _mmoff[-160:])
-_mml = subprocess.run(["bash", _LAU], env=rc.clean_env({"MM": "1", "DRY": "1", "FORCE": "1", "PORT": "18099"}),
+_mml = subprocess.run(["bash", _LAU],
+                      env=rc.clean_env({"MM": "1", "DRY": "1", "FORCE": "1", "PORT": "18099", **_FAM}),
                       capture_output=True, text=True, timeout=120).stdout
 _mml2 = subprocess.run(["bash", _LAU],
-                       env=rc.clean_env({"MM": "1", "MM_IMAGE": "2", "DRY": "1", "FORCE": "1", "PORT": "18099"}),
+                       env=rc.clean_env({"MM": "1", "MM_IMAGE": "2", "DRY": "1", "FORCE": "1", "PORT": "18099",
+                                         **_FAM}),
                        capture_output=True, text=True, timeout=120).stdout
 _mml3 = subprocess.run(["bash", _LAU],
                        env=rc.clean_env({"MM": "1", "MM_MAX_PIX": "1048576", "DRY": "1", "FORCE": "1",
-                                         "PORT": "18099"}),
+                                         "PORT": "18099", **_FAM}),
                        capture_output=True, text=True, timeout=120).stdout
 _mmcmd = next((l for l in _mml.splitlines() if l.startswith("launch:")), "")[len("launch:"):]
 _mmcmd3 = next((l for l in _mml3.splitlines() if l.startswith("launch:")), "")[len("launch:"):]
@@ -2478,7 +2488,7 @@ ck("the launcher gives MM a NAMED default, because the About page quotes this tr
 
 def _dryline(extra):
     return next((l for l in subprocess.run(["bash", _LAU], env=rc.clean_env({"DRY": "1", "FORCE": "1", "PORT": "18098",
-                                                                            **extra}),
+                                                                            **_FAM, **extra}),
                                             capture_output=True, text=True, timeout=120).stdout.splitlines()
                  if l.startswith("launch:")), "")
 
@@ -2537,12 +2547,15 @@ def _mm_set(line, on, n_img=4, pix=4194304):
     return f"{line} {_mm_line(n_img, pix)}" if on else f"{line} --language-model-only"
 
 
-_mm_live = "--language-model-only" not in _REAL_CMD
-_flipped = _mm_set(_REAL_CMD, not _mm_live)
+# The flip fixtures speak the Flash-Next family's mm form (`_mm_line` emits a `size` kwarg), so the base line here is
+# the family-pinned DRY line, not whatever checkpoint this box happens to serve: an omni checkpoint's mm form is
+# `--mm-processor-kwargs {}`, which the regex above does not strip, and the flip would then look like a no-op.
+_mm_live = "--language-model-only" not in _mmcmd
+_flipped = _mm_set(_mmcmd, not _mm_live)
 ck("flipping the multimodal default really changes the line (a no-op flip would make the next checks vacuous)",
-   _flipped != _REAL_CMD and ("--language-model-only" in _flipped) != ("--language-model-only" in _REAL_CMD),
+   _flipped != _mmcmd and ("--language-model-only" in _flipped) != ("--language-model-only" in _mmcmd),
    _flipped[-160:])
-_fg = {f: (x, y) for f, x, y in rc.compare_flags(_REAL_CMD, _flipped)}
+_fg = {f: (x, y) for f, x, y in rc.compare_flags(_mmcmd, _flipped)}
 ck("a multimodal flip is caught in BOTH directions: the flag removed and the flags added",
    {"--language-model-only", "--limit-mm-per-prompt", "--mm-processor-kwargs"} <= set(_fg), sorted(_fg))
 ck("a bare flag that is absent is not 'the same as' a bare flag whose value is None -- presence is the comparison "

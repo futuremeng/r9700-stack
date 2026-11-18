@@ -3385,7 +3385,19 @@ What is owed after this:
   default tokenizer path is the Qwen directory, so a Super VL run has to pass the checkpoint dir explicitly.
 - **Images are untested on this model**, and `MAXLEN=32768` is caution, not a ceiling (the pool is 1,102,970 tokens at
   the current `NSEQ=16` launch, 1,450,583 at `NSEQ=8`).
-- **The box's standing state is undecided.** The watcher is still disarmed (its pid was killed before the experiment
-  so a failed experimental load could not be read as a crash fault) and `launches/262k.json` still describes Qwen, so
-  `./setup.sh` would bring Qwen back. Whichever model is meant to be production needs its launch config stored and
-  `WATCH_RESTART` decided on purpose.
+- **Done 2026-11-18: the box's standing state is decided -- it serves Super VL, and a bare launch says so.** The
+  checkpoint is `MODEL=` in `~/.config/r9700-stack/native.env`; the measured shape (MTP=4, NSEQ=16, MAXLEN=32768,
+  capture sizes through 160, `nemotron_v3`, `pythonic`, `--mm-processor-kwargs {}`, `--trust-remote-code`) is a
+  `FAM=nemotronh` block in `serve/native-flashnext.sh` selected by grepping the checkpoint's `config.json` (no measured
+  number goes in native.env, where `tools/recipe-check.py` could not hold the engine to it); the launch shape is the
+  single file `launches/supervl-32k.json`; the Qwen launch is parked in `launches-available/262k.json` and is one
+  `MODEL=` away. The watcher is armed on purpose (`restart_on_crash: true`, 3/hour, probing :8180 not the :8080 door,
+  fault ledger behind it). `tools/recipe-check.py` passes; the stored-config launch measured 99.1 tok/s at one stream
+  and 709 aggregate at 16. Tests updated with it: `test_setup.py`'s launcher/README MAXLEN check is now per-family, and
+  `test_webui.py`'s multimodal fixtures pin the Flash-Next family instead of inheriting whatever this box serves.
+- **Owed, pre-existing and unrelated to the family work: one `tests/test_webui.py` failure** -- "the About page run for
+  real against an mm-ON payload says both caps". It failed the same way before any of today's changes (verified by
+  stashing them) and `node` is installed, so it is a real assertion failure in the mm-ON About payload path.
+- **Owed for clients: the gateway has no model alias.** `serve/gateway.py` is a byte pipe, so a client still asking for
+  `Qwen3.8` gets an error rather than `SuperVL`. Either the clients change, or an alias layer gets written, or the box
+  serves Qwen.

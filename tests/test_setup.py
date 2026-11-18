@@ -590,13 +590,21 @@ ck("unknown on either side returns None rather than a made-up number",
    S.serve_context({}, "no args here", {}) == (None, None, None), str(S.serve_context({}, "no args here", {})))
 
 # Cross-file: the launcher default and the README's "what this box runs" line must not drift apart again.
+# Since 2026-11-18 the launcher carries per-family MAXLEN defaults -- the Nemotron-H one inside its `FAM=nemotronh`
+# block, the Flash-Next one as the global line -- so "whichever match the regex meets first" would let a family
+# default answer for the global one. Both are located in their own place and checked against their own README line.
 _nativetxt = (ROOTP / "serve" / "native-flashnext.sh").read_text()
 _readme = (ROOTP / "README.md").read_text()
-_default = re.search(r": \$\{MAXLEN:=([^}]*)\}", _nativetxt)
-ck("the native launcher's own MAXLEN default is the value README.md says this box runs (262144)",
-   _default and _default.group(1) == "262144", _default.group(1) if _default else "no ${MAXLEN:=...} default")
+_famblock = re.search(r'if \[ "\$FAM" = nemotronh \]; then(.*?)\nfi', _nativetxt, re.S)
+_fam_maxlen = re.search(r": \$\{MAXLEN:=([^}]*)\}", _famblock.group(1)).group(1) if _famblock else None
+_global = re.search(r": \$\{MAXLEN:=([^}]*)\}",
+                    _nativetxt.replace(_famblock.group(0), "", 1) if _famblock else _nativetxt)
+ck("the launcher's Flash-Next MAXLEN default is the value README.md says this box runs (262144)",
+   _global and _global.group(1) == "262144", _global.group(1) if _global else "no ${MAXLEN:=...} default")
 ck("...and the README launch line still spells it, so the two agree rather than one going stale",
    "MAXLEN=262144 NSEQ=32 NBT=8192" in _readme)
+ck("...while the Nemotron-H family's 32768 lives inside the family block and README says NSEQ=16 for it",
+   _fam_maxlen == "32768" and "MAXLEN=32768 NSEQ=16 NBT=8192" in _readme, f"family MAXLEN={_fam_maxlen}")
 ck("no ${MAXLEN:-32768} is left anywhere in the launcher (the old default could not survive by shadowing)",
    "${MAXLEN:-" not in _nativetxt)
 

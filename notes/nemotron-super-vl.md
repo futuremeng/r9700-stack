@@ -324,6 +324,44 @@ non-MoE norms/residuals, and the launch gaps between ~1,700 kernels a step. No s
 which is the signature of a step that is already close to what this box can do for this model. Further gains are
 config-level (MTP depth, NSEQ, graph sizes) and need the repeated-run harness, not kernels.
 
+## Standing state, decided 2026-11-18: this box serves Super VL, and a bare launch says so
+
+Before this, the checkpoint came from whatever a hand-typed command carried: the launcher's default `MODEL` was the
+Qwen directory and `launches/262k.json` still described Qwen, so a restart or a bare `./setup.sh` would have quietly
+brought back a different model while everyone believed this was a Super VL box. Now:
+
+| what | where it lives | why there |
+|---|---|---|
+| the checkpoint (`MODEL=`) | `~/.config/r9700-stack/native.env` | a fact about the box; that file is the one place box facts go (`serve/lib/localenv.sh` sources it for all five launchers) |
+| MTP=4, NSEQ=16, MAXLEN=32768, capture sizes through 160, `nemotron_v3`, `pythonic`, `--mm-processor-kwargs {}`, `--trust-remote-code` | `serve/native-flashnext.sh`, inside a `FAM=nemotronh` block chosen by grepping the checkpoint's `config.json` | these are measured numbers, and this file's own rule is that nothing measurement-bearing goes in native.env -- `tools/recipe-check.py` holds the running engine to them |
+| the launch shape (recipe, webui=same, tmux, `WATCH_RESTART=1`) | `~/.config/r9700-stack/launches/supervl-32k.json` | one file in the store means a bare `./setup.sh` asks nothing and launches; two files means it *asks*, and with no keyboard it refuses |
+| the Qwen launch | parked in `~/.config/r9700-stack/launches-available/262k.json` | kept, not deleted, and out of the store so the store stays single-valued |
+
+The watcher is armed on purpose (pid recorded in `.r9700-state/launch.json`, `restart_on_crash: true`, up to 3 per
+hour, never into a short PCIe link). It probes **:8180**, the engine, not the :8080 front door -- a dead door must not
+look like a dead engine, and an alive door must not hide one. What keeps an auto-restart from hiding a fault is the
+record: a line per death in `faults.jsonl`, and the hardware alert path. The verification that the standing config and
+the running engine agree is `tools/recipe-check.py` ("every measured knob, every R9K_/R9700_ env name and every launch
+flag in the live argv matches this tree's") -- it passes on this launch.
+
+**Going back to Qwen** is one command, not a reconfiguration: `MODEL=$HOME/models/Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ
+MAXLEN=262144 NSEQ=32 NBT=8192 bash serve/native-flashnext.sh` for a single launch, or move
+`launches-available/262k.json` back into `launches/` and edit `native.env`'s `MODEL` to make it the box's standing
+launch again.
+
+**One thing still broken for clients**: the gateway has no model-alias mechanism (`serve/gateway.py` is a byte pipe),
+so a client that still asks for `Qwen3.8` gets an error rather than Super VL. Either the clients say `SuperVL` or the
+box serves Qwen; there is no third option in the current code.
+
+Two test files had to become family-aware, which is worth knowing before someone reads the diff and thinks the tests
+were decoration: `tests/test_setup.py` grepped the launcher for *the* `: ${MAXLEN:=...}` and asserted it equals
+README's 262144 -- with two families it now locates each default in its own place and checks each against its own
+README line; `tests/test_webui.py`'s multimodal fixtures assert Flash-Next's `--mm-processor-kwargs {"size": ...}`
+form, so they now pin the family (`MODEL=` to a path with no `config.json` means the Flash-Next defaults) instead of
+inheriting whatever this box happens to serve. Neither test caught the change being wrong; both caught it being real.
+(A pre-existing `tests/test_webui.py` failure -- the About page mm-ON payload check -- was there before this change and
+is still there: it is unrelated to the family work and unchased.)
+
 ## Gotchas that cost time
 
 1. **`hf_quant_config.json` must be in the checkpoint dir.** The MTP draft path (`nemotron_h_mtp.py` ->

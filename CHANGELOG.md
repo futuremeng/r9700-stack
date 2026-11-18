@@ -119,6 +119,27 @@ MTP draft path reads that file rather than `config.json`'s `quantization_config`
   **Nothing on this model has a 5 ms ceiling left** -- which is what "close to the box's limit for this checkpoint"
   looks like in numbers. Remaining gains are config-level and gated on the repeated-run harness.
 
+* **the box's standing state is now a decision instead of a coincidence.** Until now the checkpoint came from whatever
+  a hand-typed command carried: the launcher's default `MODEL` was the Qwen directory and `launches/262k.json`
+  described Qwen, so a reboot or a bare `./setup.sh` would have brought back a different model on a box everyone
+  believed was running Super VL. Now: the checkpoint is `MODEL=` in `~/.config/r9700-stack/native.env` (a box fact);
+  the measured shape (MTP=4, NSEQ=16, MAXLEN=32768, capture sizes through 160, `nemotron_v3`, `pythonic`,
+  `--mm-processor-kwargs {}`, `--trust-remote-code`) is a **`FAM=nemotronh` block in `serve/native-flashnext.sh`,
+  chosen by grepping the checkpoint's `config.json`** -- because the launcher's own rule is that no measured number
+  lives in native.env where `tools/recipe-check.py` cannot hold the engine to it; and `launches/supervl-32k.json` is
+  the single file in the store (two files means a bare run *asks*, and with no keyboard it refuses). The Qwen launch
+  is parked in `launches-available/262k.json`, one command from coming back. The watcher is armed on purpose:
+  `restart_on_crash: true`, 3 per hour, probing :8180 rather than the :8080 door, with the fault ledger keeping an
+  auto-restart from hiding a fault. `tools/recipe-check.py` passes on the live launch, and the launch through the
+  stored config measured 99.1 tok/s at one stream / 709 aggregate at 16.
+  Two test files became family-aware because the launcher did: `test_setup.py` grepped *the* `: ${MAXLEN:=...}` and
+  asserted it equals README's 262144 (now each family's default is located in its own place and checked against its
+  own README line), and `test_webui.py`'s multimodal fixtures assert the Flash-Next `size`-kwarg form (now they pin
+  the family instead of inheriting the box's checkpoint -- an omni line is `--mm-processor-kwargs {}`, which the strip
+  regex does not match, so a flip looked like a no-op). Neither was the change being wrong; both were the change being
+  real. Still open on this box: one `test_webui.py` failure (About page, mm-ON payload) that predates all of this, and
+  the fact that **the gateway has no model alias** -- a client asking for `Qwen3.8` gets an error, not Super VL.
+
 ## The admission gate is now observe-only: the door could not re-open, its hold bought nothing, and it was charging the traffic that was not the problem
 
 The complaint was availability -- "long requests are being blocked, and the box feels less usable than before the
