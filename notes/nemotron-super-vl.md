@@ -8,9 +8,12 @@ Arch `NemotronH_Omni_Reasoning_V3` — vLLM 0.32 registers it as `nano_nemotron_
 `language_model.backbone -> language_model.model` and reuses `nemotron_h.py` plus `nemotron_h_mtp.py`). Quant is
 `modelopt_mixed` (`MIXED_PRECISION`, fp8 KV). Layer mix 40 Mamba2 + 40 MoE + 8 attention, hidden 4096, vocab 131072,
 **512 routed experts, top-22, MoE latent 1024**: `up_proj` [2688,1024] and `down_proj` [1024,2688] per expert, i.e. an
-*ungated* MLP — one matrix per side, not the gate|up halves every other MoE here has. `hf_quant_config.json` lists
-41,156 quantized entries: 41,042 routed-expert NVFP4 (`up_proj`/`down_proj`), 113 FP8, 83 dense NVFP4 (mostly
-`mixer.shared_experts.{up,down}_proj`).
+*ungated* MLP — one matrix per side, not the gate|up halves every other MoE here has. `hf_quant_config.json` declares
+**41,156** quantized layer entries: **40,960 routed-expert matrices** (`up_proj`/`down_proj` × 512 experts × the 40
+backbone MoE layers), **83** dense NVFP4 linears (mostly `mixer.shared_experts.{up,down}_proj`) and **113** FP8. The
+on-disk count is higher — **41,984** expert `weight` tensors, the extra 1,024 being the MTP block's, which the config
+leaves to the default recipe rather than listing. Anything quoted elsewhere as "41,042" or "41,152 experts" is a
+miscount of those two populations; the numbers here are read out of the file and cross-checked against the index.
 
 ## Launch that works
 
@@ -97,7 +100,7 @@ holds a 1M-token context that this box's four pools do not.
 - **What is still stock now**: the Mamba2 state path (conv1d + the selective-scan chunk/recurrence kernels, 40 layers,
   stock Triton under torch.compile) and the vision tower (bf16, only touched when a request carries pictures). The
   backbone's projections are all on kernels now: FP8 scaled-mm for the 113 FP8 entries, libr9k native NVFP4 for the
-  83 dense NVFP4 entries, libr9k grouped MXFP4 x FP8 for the 41,042 expert matrices.
+  83 dense NVFP4 entries, libr9k grouped MXFP4 x FP8 for the 40,960 declared expert matrices.
 - The **image path is untested.** The processor is enabled (`--mm-processor-kwargs {}`; anything Qwen-shaped is
   rejected: `NanoNemotronVLProcessor.__init__() got an unexpected keyword argument 'size'`), patch 16,
   1024-13312 patches.

@@ -4,7 +4,8 @@
 
 The checkpoint is `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4` (70 GB, `modelopt_mixed`, 512 routed experts,
 top-22, a 1024-wide MoE latent, 40 Mamba2 + 40 MoE + 8 attention layers). ROCm has no NVFP4 MoE backend, so stock
-serves its 41,042 expert matrices through a dequantizing emulation. `quant/modelopt.py` now registers
+serves its 40,960 declared routed-expert matrices (41,984 expert tensors on disk, the MTP block's 1,024 not listed in
+the config) through a dequantizing emulation. `quant/modelopt.py` now registers
 `modelopt_mixed` and hands those experts to the libr9k grouped MXFP4 x FP8 GEMMs, converting each expert in the load
 path with the `nvfp4_to_mxfp4` helper `quant/nvfp4.py` already carried: no offline repack, no extra disk, 17.72 GiB a
 card instead of 18.52, and **+18-22% on short / +12-17% on long generation** at identical settings (73 -> 86 tok/s at

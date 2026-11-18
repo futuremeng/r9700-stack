@@ -1,7 +1,8 @@
 """modelopt_mixed checkpoints (NVIDIA's own container for the same NVFP4 bits) on gfx1201.
 
 Nemotron-H MoE checkpoints from nvidia/ carry `quant_method: modelopt_mixed`: a per-layer algorithm map
-(`hf_quant_config.json`, 41,156 entries on Super VL 120B: 41,043 NVFP4 routed-expert matrices + 113 FP8), so
+(`hf_quant_config.json`, 41,156 entries on Super VL 120B: 40,960 NVFP4 routed-expert matrices + 83 NVFP4 dense + 113
+FP8; the MTP block's 1,024 expert tensors are on disk but not listed, so they take the default recipe), so
 `ModelOptMixedPrecisionConfig` resolves each layer to its own recipe. The NVFP4 bits are exactly the ones
 quant/nvfp4.py already converts to MXFP4 for libr9k -- stock ROCm has only a per-call dequant emulation for
 NVFP4 linears and no NVFP4 MoE backend at all, which is what Super VL decodes at on 4xR9700 (8.9 tok/s).

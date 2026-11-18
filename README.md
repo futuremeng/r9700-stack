@@ -101,7 +101,8 @@ You run the stock vLLM ROCm image with this plugin installed. From there:
 1. **Load.** The plugin registers through vLLM's platform, quantization, model and attention-backend entry points and
    brings its own kernel library (`libr9k`, HIP and Triton). The checkpoints are the published ones, unmodified.
 2. **Convert at load.** NVFP4 weights become MXFP4 with MSE-searched block exponents, or on the checkpoint's own
-   scales where it declares them (`modelopt_mixed`, 41,152 expert matrices); fp8 dense, drafter and lm-head GEMMs take
+   scales where it declares them (`modelopt_mixed`: 41,156 declared layer entries, of which 40,960 are routed-expert
+   matrices); fp8 dense, drafter and lm-head GEMMs take
    per-token fp8 activations; the KV cache is fp8; large tables (Flash-Next's per-layer embedding as int6,
    DeepSeek's Engram tables) go to pinned host memory; EXL3 trellis weights (2-6 bits) serve through exllamav3's gfx1201
    extension and our own batched expert kernel.
@@ -160,9 +161,9 @@ one for what a user gets.
 
 ### Nemotron-3.5-Super-VL-120B-A12B: a 120B MoE with 512 experts, on four cards
 
-The box's standing launch, and not a launch-config change. The pack is `modelopt_mixed` MIXED_PRECISION and **41,152 of
-its 41,239 quantized tensors are routed experts**; the plugin had never seen that quantization, and stock on ROCm
-**dequantizes expert by expert**. Same weights, same cards, wave noise ±10%:
+The box's standing launch, and not a launch-config change. The pack is `modelopt_mixed` MIXED_PRECISION and **40,960 of
+the 41,156 layer entries its `hf_quant_config.json` declares are routed experts**; the plugin had never seen that
+quantization, and stock on ROCm **dequantizes expert by expert**. Same weights, same cards, wave noise ±10%:
 
 | what changed | one stream | 8-stream wave |
 |---|---:|---:|

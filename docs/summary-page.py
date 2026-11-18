@@ -106,10 +106,10 @@ FACTS = [
 
 FOOT = ["Each number names its machine: \"210 W gate\" is the release configuration (210 W a card, -42 mV, 32k); "
         "\"the native box\" is one 4x R9700 box, uncapped. They are not comparable across.",
-        "The Super VL row is the native box's standing launch since 2026-11-18 and is not in a tag: 41,152 of the "
-        "checkpoint's quantized tensors are routed experts, converted NVFP4 -> MXFP4 at load on the checkpoint's own "
-        "scales, with a new relu-squared activation kernel because its MLP is ungated. Same weights, same cards, "
-        "stock kernels: 27 tok/s eager, 73 with graphs.",
+        "The Super VL row is the native box's standing launch since 2026-11-18 and is not in a tag: 40,960 of the "
+        "41,156 layer entries its hf_quant_config.json declares are routed experts, converted NVFP4 -> MXFP4 at load "
+        "on the checkpoint's own scales, with a new relu-squared activation kernel because its MLP is ungated. Same "
+        "weights, same cards, stock kernels: 27 tok/s eager, 73 with graphs.",
         "The Flash-Next column is the fp8 e4m3 main-KV launch this box runs by default: the pool doubles (1,009,899 "
         "against 540,202 tokens; with image inputs on, as today's launch runs, 935,216) and GSM8K 800 reads 96.0 "
         "against 95.6 %, HumanEval 164 98.17 against 96.95.",
