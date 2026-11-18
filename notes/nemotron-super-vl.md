@@ -178,6 +178,50 @@ The engine shipped at `NSEQ=8` because that is what the Qwen recipe uses; Super 
   list rather than in the footnote: without interleaved A/A runs, half of what this section says about the small
   knobs is luck.
 
+## What is left in the step (sizing, 2026-11-18) -- the Mamba2 hypothesis died
+
+The plan was to profile the decode step, find the Mamba2 conv/scan share, and decide whether a hand kernel was worth
+days. Engine-level tracing is not available for this model on this box: `--profiler-config
+{"profiler":"torch","torch_profiler_activities":["CUDA"]}` starts (`Profiler started.`) and then the workers stop
+making progress -- five minutes later EngineCore dies with `RPC call to sample_tokens timed out` and the trace
+directory stays empty. Same family as the old rocprofv3/`PROF=1 PROFACT=CUDA` complaints in `notes/decode-step.md`,
+just harsher here (4 ranks + graphs).
+
+So sizing goes the way the rest of `tuning/` does it: graph-timed standalone probes at the checkpoint's real shapes,
+plus subtraction. New tool `tuning/decode_mamba_probe.py` (shapes read from a safetensors header rather than guessed:
+`in_proj [18560,4096]` FP8 *with an `input_scale`, i.e. static W8A8*, `conv1d [10240,1,4]` = 8192 inner + 1024 B +
+1024 C from 8 groups x 128 state, `out_proj [4096,8192]` FP8; per card at TP4 that is heads 32 x 64, groups 2, conv
+2560). Microseconds a layer, 40 mamba layers in the model:
+
+| decode batch | in_proj fp8 | conv1d update | selective_state_update | out_proj fp8 | a layer | x40 = ms/step |
+|---|---:|---:|---:|---:|---:|---:|
+| S=8, MTP=4 | 17.3 | 4.6 | 52.4 | 15.3 | 89.6 | 3.58 |
+| **S=16, MTP=4 (shipped)** | 26.5 | 4.9 | **98.6** | 22.1 | 152.0 | **6.08** |
+| S=32, MTP=4 | 39.6 | 5.8 | 183.3 | 27.8 | 256.5 | 10.26 |
+| S=16, no MTP | 16.8 | 4.0 | 30.2 | 15.0 | 66.0 | 2.64 |
+
+At 16 streams the step is ~70 ms (48 tok/s a stream divided by ~3.4 accepted tokens per step). So:
+
+* all 40 mamba layers together: **~9% of the step**;
+* the part a hand kernel could replace -- conv1d update + selective state update -- **4.1 ms, ~6%**;
+* the two projections (1.9 ms) are already on library scaled-mm kernels.
+
+A 2x scan kernel is therefore worth ~2-3% of the step, which is *inside* the +-10% launch-to-launch floor this box
+measures. The conclusion holds even if the engine's real path costs twice what the probe sees (the probe takes the
+plain Triton SSU path with an fp32 state cache, no ReplaySSM, so it is a plausible overestimate of bandwidth rather
+than an underestimate). **Mamba2 scan is dropped as a lever.** That is the value of sizing before building: the last
+remaining "big unknown" of the backbone turned out to be small, for the cost of one probe.
+
+What the same subtraction says *is* big at 16 streams: the MoE GEMMs are 16.5 ms (40 layers x 412 us at 1760 rows,
+from `tuning/decode_moe_sweep.py`) = 26% of the step, mamba 9%, and **~45 ms is still unaccounted** -- all-reduce at
+~640 KB messages 2-3 times a layer, MoE glue (topk / align / quant), the drafter's 4 draft passes, 8 attention
+layers, lm_head, sampler. `tuning/ar_push_bench.py` and `tuning/ar_profile.py` already exist, so all-reduce is the
+next cheap thing to size.
+
+One operator gotcha found on the way: a standalone script against this stack cannot import torch without the OpenMPI
+libraries (`OSError: libmpi_cxx.so.40`); `serve/native-flashnext.sh` puts `$OPENMPI` on `LD_LIBRARY_PATH` and a bare
+shell does not.
+
 ## Gotchas that cost time
 
 1. **`hf_quant_config.json` must be in the checkpoint dir.** The MTP draft path (`nemotron_h_mtp.py` ->

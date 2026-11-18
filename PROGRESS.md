@@ -3323,10 +3323,22 @@ What is owed after this:
   `NSEQ x (MTP+1)` rows and a shape it doesn't have is padded to the next one (40 -> 48 = 20% of every GEMM wasted).
   Single stream 93.9, eight streams 487-559 aggregate, GSM8K-200 191/200. The dense kernel's share is inside this
   box's wave-to-wave spread of +-10%; the size-list fix is not.
-- **What this model still has on stock code**: the Mamba2 state path -- conv1d and the chunked selective-scan
-  recurrence, 40 of the 88 layers, stock Triton under torch.compile. Every projection in the backbone is on a kernel
-  now (FP8 scaled-mm for 113 entries, native NVFP4 dense for 83, grouped MXFP4 x FP8 for 41,042 experts), so the next
-  real win for this model is a scan kernel, not another weight format.
+- **Done 2026-11-18: the Mamba2 scan lever was sized and dropped.** Engine-level tracing is unavailable for this
+  model here (`--profiler-config {"profiler":"torch",activities:["CUDA"]}` hangs the workers; EngineCore dies on
+  `RPC call to sample_tokens timed out`, empty trace dir), so `tuning/decode_mamba_probe.py` measures the pieces
+  directly at the checkpoint's shapes, graph-timed. At the shipped 16-stream/MTP=4 batch a mamba layer is 152 us
+  (in_proj fp8 26.5 + conv1d update 4.9 + selective_state_update 98.6 + out_proj fp8 22.1) -> 6.08 ms over 40 layers
+  against a ~70 ms step: **mamba is 9% of the step, the replaceable part (conv + state update) 6%**, a 2x scan kernel
+  worth 2-3% -- under the box's +-10% floor. Dropped, not deferred.
+- **The unaccounted ~45 ms is the next thing to size.** Same subtraction at 16 streams: MoE GEMM 16.5 ms (26%), mamba
+  6.1 ms (9%), step ~70 ms. What is left is all-reduce (~640 KB messages, 2-3 a layer), MoE glue, the drafter's 4
+  draft passes, 8 attention layers, lm_head and the sampler. `tuning/ar_push_bench.py` / `ar_profile.py` already
+  exist, so all-reduce can be sized without writing anything.
+- **Done 2026-11-18: the wave width.** `NSEQ=16` (with 80/160 added to `CGSIZES`, since the decode batch is
+  `NSEQ x (MTP+1)` rows) moves 16 streams to **712-752 tok/s at ~48 tok/s each** and costs nothing at one stream; the
+  cost is KV pool 1,450,583 -> 1,102,970 tokens from the bigger graph pool. `NBT=16384` measured *backwards* (cold
+  prefill 6,787 -> 5,310 tok/s, TTFT 4.43 -> 5.66 s, 276k tokens of KV gone to the activation peak) and the 8192
+  default stands. Running this box now: `NSEQ=16`, `MTP=4`, graphs, native dense NVFP4, libr9k MXFP4 experts.
 - **Repeated-run harness before trusting <15%.** Carried from PROGRESS 2026-10-24 and earned again today: the
   8-stream wave on this model reads 442-462, 475-479, 487-559 and 523-559 across launches that differ by one knob.
   Any claim smaller than that band needs N launches interleaved, not one after another.
@@ -3340,7 +3352,8 @@ What is owed after this:
 - **Bench scripts now take the model from the environment** (`bench/bench.py`, `bench/gsm8k.py`): both hardcoded
   `Qwen3.8`, which silently 404s against any other served name. `bench/needle_long.py` takes it positionally and its
   default tokenizer path is the Qwen directory, so a Super VL run has to pass the checkpoint dir explicitly.
-- **Images are untested on this model**, and `MAXLEN=32768` is caution, not a ceiling (the pool is 1.45M tokens).
+- **Images are untested on this model**, and `MAXLEN=32768` is caution, not a ceiling (the pool is 1,102,970 tokens at
+  the current `NSEQ=16` launch, 1,450,583 at `NSEQ=8`).
 - **The box's standing state is undecided.** The watcher is still disarmed (its pid was killed before the experiment
   so a failed experimental load could not be read as a crash fault) and `launches/262k.json` still describes Qwen, so
   `./setup.sh` would bring Qwen back. Whichever model is meant to be production needs its launch config stored and

@@ -70,6 +70,22 @@ MTP draft path reads that file rather than `config.json`'s `quantization_config`
   single-stream column spans **93.9-112.3 tok/s** across launches that differ by nothing which should touch it --
   which is why the interleaved repeated-run harness moved from footnote to owed list.
 
+* **the last big kernel lever got sized, and it is not big.** The plan was to profile the decode step, read the Mamba2
+  conv/scan share, and decide whether a hand kernel deserved days. Engine-level tracing does not survive this model
+  on this box: `--profiler-config {"profiler":"torch","torch_profiler_activities":["CUDA"]}` starts, the workers then
+  stop progressing, and five minutes later EngineCore dies with `RPC call to sample_tokens timed out` leaving an empty
+  trace directory (the same family as the old rocprofv3 complaint in `notes/decode-step.md`, harsher at 4 ranks with
+  graphs). So the sizing went through a graph-timed standalone probe at the checkpoint's real shapes instead --
+  `tuning/decode_mamba_probe.py`, shapes read from a safetensors header: `in_proj [18560,4096]` FP8 *with an
+  `input_scale`, so static W8A8*, `conv1d [10240,1,4]`, `out_proj [4096,8192]`.
+  At the shipped 16-stream/MTP=4 batch a mamba layer is **152 us** (in_proj 26.5 + conv1d update 4.9 +
+  selective_state_update 98.6 + out_proj 22.1) -> **6.08 ms over 40 layers**, and the step there is ~70 ms. So mamba
+  is **9% of the step**, the piece a hand kernel could replace (conv + state update) is **4.1 ms = 6%**, and a 2x scan
+  would be worth 2-3% -- under this box's +-10% floor. **Dropped.** The subtraction does pin where the mass is: MoE
+  GEMMs 16.5 ms (26%, from `tuning/decode_moe_sweep.py` at 1760 rows), mamba 9%, and ~45 ms still unaccounted --
+  all-reduce at ~640 KB messages, MoE glue, the drafter's 4 draft passes, attention, lm_head. All-reduce has existing
+  tooling, so it is next.
+
 ## The admission gate is now observe-only: the door could not re-open, its hold bought nothing, and it was charging the traffic that was not the problem
 
 The complaint was availability -- "long requests are being blocked, and the box feels less usable than before the
