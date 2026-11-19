@@ -23,6 +23,15 @@ not notice this exists):
     /api/gate                              -> this file: the admission gate's own state (see "the gate" below)
     everything else (/v1/chat/completions, /health, /metrics, /tokenize, ...) -> ENGINE
 
+What it does NOT forward: the engine's own control plane. --api-key in the pinned vLLM guards FOUR prefixes
+(0.32's GUARDED_PREFIX = /v1 /v2 /inference /cohere), and the engine registers sleep / wake_up / pause / resume /
+abort_requests / reset_{prefix,mm,encoder}_cache / release_kv_cache_memory / start_profile / stop_profile /
+update_weights / weight_* / collective_rpc OUTSIDE them -- enumerated from the installed wheel, not from the
+docs. A door whose rule is "everything else -> ENGINE" therefore hands anything that can reach the door the
+switch that puts the model to sleep and the switch that wipes the KV cache, with no key in the way. Those paths
+answer 404 here, with a body that says so and names the knob; GATEWAY_ADMIN=1 forwards them, and then to a
+loopback peer only -- the operator's way in is an ssh tunnel, not an open route.
+
 /Metrics is the ENGINE's: the Monitor's parser speaks vLLM's Prometheus, and llama.cpp's dialect has its own
 watcher (serve/embed-watch.py). Each sidecar's /health stays internal; the gateway's /health answers for the
 engine, which is what setup.py's watcher and every client already poll.
@@ -183,6 +192,22 @@ EXACT = {"/v1/embeddings": EMBED, "/v1/embeddings/": EMBED, "/v1/rerank": RERANK
          "/reranking": RERANK, "/monitor": PAGES, "/about": PAGES, "/favicon.svg": PAGES}
 PREFIX = (("/web/", PAGES), ("/api/", PAGES))
 
+# The engine's control plane, spelled as the installed wheel spells it. These change engine state or run code
+# on it, and vLLM's --api-key does NOT guard any of them (prefix list above), so the door is the one that
+# decides.
+ADMIN = frozenset("""/sleep /wake_up /pause /resume /abort_requests /reset_prefix_cache /reset_mm_cache
+    /reset_encoder_cache /release_kv_cache_memory /start_profile /stop_profile /update_weights
+    /start_weight_update /start_draft_weight_update /finish_weight_update /update_weight_version
+    /init_weight_transfer_engine /shutdown_weight_transfer_engine /weight_checker /weight_info
+    /collective_rpc /get_world_size /is_scaling_elastic_ep""".split())
+ADMIN_ON = os.environ.get("GATEWAY_ADMIN", "") == "1"
+LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+
+def admin_denied(path, peer):
+    """True when this path is engine control plane and this door is not allowed to answer it for this peer."""
+    return path in ADMIN and not (ADMIN_ON and peer in LOOPBACK)
+
 # ---- the gate -------------------------------------------------------------------------------------------
 # Policy v2, rewritten on 2026-11-15 after a day of production data said v1 was wrong in a specific way: with a
 # batch of ~100k-token data-processing requests resident, the pool parks at 0.87-0.90 for the whole batch, the
@@ -236,6 +261,7 @@ G = {"kv": None, "run": None, "wait": None, "at": 0.0, "err": None, "closed": Fa
      # sees "770,000 of 902,153 tokens" rather than 0.854. The decision itself never reads it -- the fraction
      # is what the engine measures, and this box's pool is 902,153 tokens (6.65 GiB, from its own boot log).
      "pool_tokens": int(os.environ.get("GATE_POOL_TOKENS", "902153")),
+     "admin_denied": 0,      # control-plane paths this door refused to hand to the engine
      "inflight": 0, "held": 0, "held_now": 0, "released": 0, "expired": 0, "refused": 0, "admitted": 0,
      "small_passed": 0, "held_over": 0, "polls": 0,
      # Counted because observing is now the job: who came, of which declared-size class, and how many arrived while
@@ -469,6 +495,8 @@ def gate_blob():
                        "hist": G["hist"], "hist_n": G["hist_n"],
                        "hist_span_s": int(round(G["hist_n"] * GATE_POLL_S)),
                        "gated": list(GATED),
+                       "admin": {"paths": len(ADMIN), "GATEWAY_ADMIN": ADMIN_ON,
+                                 "denied": G["admin_denied"]},
                        "counters": {k: G[k] for k in ("held", "held_now", "released", "expired", "refused",
                                                       "admitted", "small_passed", "held_over", "gated_seen",
                                                       "declared_small", "declared_big", "arrived_shut",
@@ -663,6 +691,9 @@ async def sidecars(writer):
 
 
 async def handle(reader, writer):
+    # Read once, at connection time: no header can change which socket this came in on, so "loopback" is a fact
+    # about the connection and not something a request gets to assert.
+    peer = (writer.get_extra_info("peername") or ("", 0))[0]
     while True:
         line = await reader.readline()
         if not line or line in (b"\r\n", b"\n"):
@@ -678,6 +709,24 @@ async def handle(reader, writer):
         except (asyncio.IncompleteReadError, ValueError):
             return
         keep = version != b"HTTP/1.0" and b"connection: close" not in headers.lower()
+        if admin_denied(path, peer):
+            # 404 rather than 401: to anything on the network that route does not exist, and the body still says
+            # what it would have been and which knob answers it -- a door that refuses without naming a reason is
+            # indistinguishable from a door that is down. Counted apart from the admission gate on purpose: the
+            # gate's holds are a KV-pressure story, and an auth-shaped refusal mixed into them would make the
+            # Monitor row lie about both.
+            G["admin_denied"] += 1
+            msg = json.dumps({"error": {"message": f"gateway does not forward {path!r} to the engine",
+                                        "type": "gateway_admin",
+                                        "hint": "engine control plane is not exposed through the door; "
+                                                "GATEWAY_ADMIN=1 forwards it to a loopback peer only",
+                                        "admin_denied": G["admin_denied"]}}).encode()
+            writer.write(b"HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: "
+                         + str(len(msg)).encode() + b"\r\n\r\n" + msg)
+            await writer.drain()
+            if not keep:
+                return
+            continue
         if path == "/api/gate":
             await gate_page(writer)
             if not keep:
@@ -778,7 +827,8 @@ async def main():
     # front door is actually configured to do stayed invisible in the log while its tracebacks (stderr, line
     # buffered) filled the file. The gate's thresholds belong in the log for the same reason the launch line does.
     print(f"gateway: http://{BIND}:{PORT}/  engine={ENGINE} embed={EMBED} rerank={RERANK} pages={PAGES} "
-          f"sidecars={len(SIDECAR_STATE)}", flush=True)
+          f"sidecars={len(SIDECAR_STATE)}  control-plane={'loopback only' if ADMIN_ON else 'not forwarded'} "
+          f"({len(ADMIN)} paths)", flush=True)
     if GATE_ON and GATE_POLICY != "hold":
         G["task"] = asyncio.create_task(gate_poll())
         # The MODE goes in the log next to the thresholds: someone comparing two gateway logs has to be able to tell

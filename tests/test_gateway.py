@@ -8,7 +8,10 @@ risk: every bug in it is an HTTP framing bug, which a client sees as a hang or a
 nonzero exit. So this file tests framing, not features:
 
   (1) routing, including the /api/sidecars the gateway answers itself, and a path that merely STARTS with a
-      routed prefix (/v1/embeddings-x) taking the default instead.
+      routed prefix (/v1/embeddings-x) taking the default instead -- plus the paths it refuses to route at all:
+      the engine's control plane (/sleep, /reset_prefix_cache, /collective_rpc, /update_weights, ...), which
+      vLLM's --api-key does not guard and which therefore may not be reachable through a door that answers on
+      a LAN interface. GATEWAY_ADMIN=1 forwards them, loopback only.
   (2) a large body arriving byte-identical. A 60 KB chat request through the gateway: the upstream's copy must
       match by length and digest.
   (3) `Expect: 100-continue`. read_headers() used to loop until the bytes it had collected ended in \\r\\n\\r\\n,
@@ -316,6 +319,48 @@ try:
         t.join()
     ck("three slow /api/sidecars polls in flight do not hold up another request (the fetches leave the loop)",
        hop < 0.2, f"/v1/models took {hop*1000:.0f} ms behind three 0.45 s watcher fetches")
+
+    # (1b) what the door REFUSES to forward. vLLM's --api-key guards /v1 /v2 /inference /cohere and nothing else,
+    # so the engine's control plane sits outside it: a door whose rule is "everything else -> ENGINE" hands any
+    # client that can reach the door POST /sleep (the model stops), /reset_prefix_cache (the cache anyone is
+    # hitting goes away) and /collective_rpc (run code on the ranks). The list is the installed wheel's route
+    # table, not the docs' (serve/gateway.py:ADMIN).
+    before = len(LOG["engine"])
+    for p in ("/sleep", "/wake_up", "/reset_prefix_cache", "/abort_requests", "/collective_rpc",
+              "/update_weights", "/release_kv_cache_memory", "/start_profile"):
+        st, b = http(GW, p, "POST", "{}")
+        ck(f"{p} is not forwarded to the engine",
+           st.startswith("HTTP/1.1 404") and json.loads(b)["error"]["type"] == "gateway_admin", f"{st} {b[:70]}")
+    ck("and none of them reached the engine: the refusal happens before an upstream connection exists",
+       len(LOG["engine"]) == before, f"{len(LOG['engine']) - before} request(s) got through")
+    st, b = http(GW, "/api/gate")
+    d = json.loads(b)
+    ck("the refusals are counted where the Monitor can read them, and the knob's state is named with them",
+       d["admin"]["denied"] >= 8 and d["admin"]["GATEWAY_ADMIN"] is False and d["admin"]["paths"] >= 20,
+       str(d["admin"])[:120])
+    for p in ("/version", "/load", "/server_info", "/tokenizer_info"):
+        st, b = http(GW, p)
+        ck(f"a read-only engine diagnostic ({p}) still goes through",
+           json.loads(b)["path"] == p, b[:80])
+    # GATEWAY_ADMIN=1 forwards -- to a loopback peer, which is all this test can be. The peer comes from the
+    # socket: a header cannot make a LAN connection look like a tunnel, so the loopback rule is not negotiable
+    # by the client.
+    AP = free_port()
+    agw = subprocess.Popen([sys.executable, os.path.join(ROOT, "serve/gateway.py")],
+                           env={**env, "GATEWAY_ADMIN": "1", "GATEWAY_PORT": str(AP)},
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(100):
+        try:
+            socket.create_connection(("127.0.0.1", AP), timeout=1).close()
+            break
+        except OSError:
+            time.sleep(0.1)
+    st, b = http(AP, "/sleep", "POST", "{}")
+    ck("GATEWAY_ADMIN=1 does forward it, so the operator's escape hatch is real",
+       json.loads(b)["path"] == "/sleep", b[:80])
+    st, b = http(AP, "/api/gate")
+    ck("and that door says so in its own state", json.loads(b)["admin"]["GATEWAY_ADMIN"] is True, b[:80])
+    agw.terminate()
 
     # (2) a big body arrives whole
     big = os.urandom(60 * 1024)

@@ -1,5 +1,62 @@
 # Changelog
 
+## The front door stops forwarding the engine's control plane, because `--api-key` does not guard it
+
+`serve/gateway.py` routes "everything else" to the engine. Enumerating the installed wheel's route table (0.32)
+rather than reading the docs showed what that hands a client who can reach the door: vLLM's `--api-key` guards
+exactly four prefixes -- `GUARDED_PREFIX = /v1 /v2 /inference /cohere` in
+`entrypoints/serve/middleware/authenticate.py` -- and the engine's control plane is registered outside all four:
+`/sleep`, `/wake_up`, `/pause`, `/resume`, `/abort_requests`, `/reset_prefix_cache`, `/reset_mm_cache`,
+`/reset_encoder_cache`, `/release_kv_cache_memory`, `/start_profile`, `/stop_profile`, `/update_weights`,
+`/start_weight_update`, `/start_draft_weight_update`, `/finish_weight_update`, `/update_weight_version`,
+`/init_weight_transfer_engine`, `/shutdown_weight_transfer_engine`, `/weight_checker`, `/weight_info`,
+`/collective_rpc`, `/get_world_size`, `/is_scaling_elastic_ep`. A door bound to a LAN interface therefore offers
+"stop the model", "wipe the cache everyone is hitting" and "run code on the ranks" with no credential in the way.
+
+Those paths now answer **404 from the door, with the engine never contacted** -- the check runs before the
+admission gate's accounting and before an upstream connection exists, and it is counted apart from the gate's
+holds (`/api/gate` now carries `admin: {paths, GATEWAY_ADMIN, denied}`; the gate's holds are a KV-pressure story
+and an auth-shaped refusal inside them would make the Monitor row lie about both). `GATEWAY_ADMIN=1` forwards
+them, and then only to a loopback peer -- the peer is read from the socket at connect time, because no header can
+change which socket a request arrived on. The operator's way in stays an ssh tunnel. Read-only diagnostics
+(`/version`, `/load`, `/server_info`, `/tokenizer_info`) still go through: the Monitor and `setup.py` need them.
+
+`tests/test_gateway.py` grows 17 checks (48 -> 65): each control-plane path returns the door's 404 with
+`type: gateway_admin`, the fake upstream's request log proves none of them got through, the refusal count is
+readable where the Monitor can see it, the read-only diagnostics still route, and an `ADMIN=1` door does forward
+(so the escape hatch is real rather than documented). The hop-cost check is untouched and still passes: the rule
+reads headers the door has already read, never the body.
+
+`~/.config/r9700-stack/native.env` (box-local, not in the repo) carried the same contradiction the door was about
+to expose: its 2026-11-15 block says "the engine, both CPU sidecars and the Monitor page are now reached through
+ONE address", and yet `R9K_WEB_BIND=0.0.0.0` had the webui sidecar answering on every interface -- which is what
+`ss` still showed -- and a stale `HOST=0.0.0.0` from before the door survived only because a later `HOST=127.0.0.1`
+overrode it. Both are fixed and the comments now say the current reason instead of the reason from before the
+door existed: one LAN surface (the door on 0.0.0.0:8080), everything behind it loopback, the Monitor reached at
+`http://<box>:8080/monitor`. `DRY=1` on the two launchers confirms it: sidecar `--bind 127.0.0.1`, door
+`GATEWAY_BIND=0.0.0.0 ENGINE=http://127.0.0.1:8180`.
+
+**Live as of 2026-11-19, with the engine never touched.** Checked first that nothing was in flight
+(`vllm:num_requests_running 0`, `waiting 0`, `kv_cache_usage_perc 0.0`; 8080 held four idle keep-alive
+connections from 192.168.1.200 and .222 -- LiteLLM's warm sockets, not requests in flight), then restarted the door
+and the sidecar through their own scripts. Confirmed after: `ss` shows exactly one of our sockets on a LAN address
+(`0.0.0.0:8080`, the door) with 8180 / 8181 / 8090 / 8092 all on `127.0.0.1`, and from the LAN address those four
+answer *connection refused*. Through the door from the LAN address: `/v1/models` 200 (`Qwen3.8`), `/monitor` 200,
+`/api/status` 200, `/v1/embeddings` 200 (dim 1024), `/v1/rerank` 200. Control plane through the door: `/sleep`,
+`/reset_prefix_cache`, `/collective_rpc` → 404 `gateway_admin`, `/api/gate` counting `denied: 3`, and
+`/health` on the engine still 200 -- the refusal happens before an upstream connection exists. The door's own log
+line starts `control-plane=not forwarded (23 paths)`. Clients reconnected by themselves: four new ESTABLISHED
+sockets from .200 and .222, different ports, no client-side change.
+
+Three checks in `tests/test_webui.py` were pinning the old posture (they demanded `HOST=0.0.0.0` in the box file and
+`0.0.0.0` binds for the sidecar) and failed, correctly: the box file had been carrying `HOST=0.0.0.0` rescued only
+by a second `HOST=127.0.0.1` later in the file, so the check was passing on ordering rather than on the box being
+loopback-behind-a-door. They now assert the topology instead -- one address exposed (the door), engine and pages
+loopback, no line that would re-expose the engine if the file were tidied -- plus a live check that the running door
+refuses a control-plane path (a read-only one, `/get_world_size`, so the test can never put the model to sleep even
+if `GATEWAY_ADMIN` is ever set).
+
+
 ## The README says which machine every number came from, and it lost a sixth of its length doing it
 
 Documentation and measurement-provenance pass; no kernel, launcher or plugin code changed.

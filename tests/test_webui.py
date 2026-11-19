@@ -2255,12 +2255,23 @@ def _localenv():
     return Path.home() / ".config/r9700-stack/native.env"
 
 
-ck("this box's machine-local env exists, binds 0.0.0.0, and lives outside the repo",
-   _localenv().exists() and "HOST=0.0.0.0" in _localenv().read_text() and not str(_localenv()).startswith(ROOT),
-   str(_localenv()))
-# The Monitor's sidecar has the same problem as the engine: the repo default is loopback (0f64838 -- /api/* carries
-# the engine config and the request records), and this box reads the Monitor from other machines. The choice is
-# written in the machine-local file, not in the repo, and both launchers read that file the same way.
+# 2026-11-19: this check used to demand "HOST=0.0.0.0" in the box file, which stopped being true the day a gateway
+# took the LAN-facing port -- and it had been PASSING only because a SECOND HOST= line later in the file overrode
+# the first. That is the failure class this file keeps running into: a fact stated twice, with the meaning carried
+# by ordering. So the rule is now what the box actually is: ONE address on the LAN (the door), everything behind it
+# loopback, and no line in the file that would re-expose the engine if someone tidied the file.
+_lenv = _localenv().read_text()
+ck("this box's machine-local env exists, exposes exactly one address (the door), and lives outside the repo",
+   _localenv().exists() and not str(_localenv()).startswith(ROOT)
+   and _lenv.count("HOST=0.0.0.0") == 0
+   and [l.split("=")[1].split()[0] for l in _lenv.splitlines() if l.startswith("HOST=")] == ["127.0.0.1"]
+   and "GATEWAY_BIND=0.0.0.0" in _lenv and "R9K_WEB_BIND=127.0.0.1" in _lenv,
+   str(_localenv()) + " " + str([l for l in _lenv.splitlines() if l.startswith("HOST=")])[:80])
+# The Monitor's sidecar binds loopback for the same reason the engine does now: the repo default is loopback
+# (0f64838 -- /api/* carries the engine config and the request records), and the page is READ from other machines
+# through the door (http://<box>:8080/monitor routes /monitor /about /web/* /api/* to PAGES). A page bound to
+# every interface is a page that answers POSTs from anyone on the network, so the box's file says 127.0.0.1 and the
+# operator's direct route to :8181 is an ssh tunnel. Both launchers read that file the same way.
 _wsh = open(os.path.join(ROOT, "serve/webui.sh")).read()
 _libenv = open(os.path.join(ROOT, "serve/lib/localenv.sh")).read()
 ck("the sidecar's bind is resolved flag -> machine-local file -> repo default, and passed explicitly on the "
@@ -2283,8 +2294,9 @@ ck("this box's file states the bind addresses -- the gateway that faces the LAN,
                                               "GATEWAY_PORT=8080", "EMBED_BIND=127.0.0.1")), str(_localenv()))
 _dr = subprocess.run(["bash", os.path.join(ROOT, "serve/webui.sh")], capture_output=True, text=True, timeout=120,
                      env={**os.environ, "DRY": "1", "WEBUI_PORT": "8099"})
-ck("DRY=1 previews the sidecar command line, and neither starts nor kills anything",
-   _dr.returncode == 0 and "--bind 0.0.0.0" in _dr.stdout and "nothing started, nothing stopped" in _dr.stdout,
+ck("DRY=1 previews the sidecar command line bound loopback (the door fronts it), and starts and kills nothing",
+   _dr.returncode == 0 and "--bind 127.0.0.1" in _dr.stdout and "--bind 0.0.0.0" not in _dr.stdout
+   and "nothing started, nothing stopped" in _dr.stdout,
    (_dr.stdout + _dr.stderr)[:240])
 _dr2 = subprocess.run(["bash", os.path.join(ROOT, "serve/webui.sh")], capture_output=True, text=True, timeout=120,
                       env={**os.environ, "DRY": "1", "WEBUI_PORT": "8099", "LOCAL_ENV": "/nonexistent-box.env"})
@@ -2309,10 +2321,24 @@ ck("and the engine behind it is loopback-only: reachable on 127.0.0.1:8180, abse
    [l.split()[-1] for l in _ss.splitlines() if ":818" in l or ":808" in l])
 _ps = subprocess.run(["ps", "-eo", "args"], capture_output=True, text=True, timeout=30).stdout
 _side = sorted({m.group(1) for m in re.finditer(r"serve/webui\.py --port (\d+)", _ps)})
-ck("and every standalone sidecar that IS running is bound the way the file says (running none is fine: the "
-   "standing Monitor is the plugin inside the serve, not a second port)",
-   all(f"0.0.0.0:{p}" in _ss for p in _side),
-   f"sidecars up: {_side or 'none'}; sockets: {[l.split()[-1] for l in _ss.splitlines() if ':80' in l][:4]}")
+ck("and every standalone sidecar that IS running is bound loopback, with the door the only way to it from the "
+   "network (running none is fine: the standing Monitor is the plugin inside the serve, not a second port)",
+   all(f"127.0.0.1:{p}" in _ss and f"0.0.0.0:{p}" not in _ss for p in _side),
+   f"sidecars up: {_side or 'none'}; sockets: {[l.split()[-1] for l in _ss.splitlines() if ':81' in l][:4]}")
+# The same proof for the ONE address the box does expose. GATEWAY_ADMIN is not set on this box, and the path asked
+# for here is a read-only one, so the check is safe even if that changes -- what it must never become is a test
+# that puts the running model to sleep in order to prove it is not reachable.
+try:
+    import urllib.request as _ur
+    with _ur.urlopen(_ur.Request("http://127.0.0.1:8080/get_world_size", data=b"", method="POST"), timeout=5) as _r:
+        _live_admin = (_r.status, _r.read()[:120].decode("latin-1"))
+except urllib.error.HTTPError as _e:
+    _live_admin = (_e.code, _e.read()[:120].decode("latin-1"))
+except OSError as _e:
+    _live_admin = (None, str(_e))
+ck("the live door refuses to hand the engine's control plane to whatever can reach it -- vLLM's --api-key guards "
+   "only /v1 /v2 /inference /cohere, so the door is the one deciding",
+   _live_admin[0] == 404 and "gateway_admin" in _live_admin[1], str(_live_admin)[:140])
 ck("the decision note answers the measurement that turned the cache off instead of ignoring it",
    all(k in _nd for k in ("5056943", "285 ms", "ITEMS=0,66,152", "How it landed")),
    [k for k in ("5056943", "285 ms", "ITEMS=0,66,152", "How it landed") if k not in _nd])
