@@ -2060,6 +2060,51 @@ Deployment: the sidecar restarted twice; the engine was never touched, so the me
 engine restart. Test totals: `tests/test_gateway.py` 90 -> **100**, `tests/test_webui.py` +21 (the three arms, the
 `_restored` stamp, the two sentences, the extraction, the merge, and the four static claims about the pane), and
 `tests/test_webui_plugin.py`'s gap check now cites the record instead of the old relay pointer.
+The boot shape bit twice in one day, and the second time it was a test that had never been testing anything: a boot
+is `<seconds>-<pid>`, so two `Journal` objects opened inside the same second of **one process** share it. The
+production consequence was the mislabel above. The test consequence: `... a restored row carries the launch it came
+from` asserted that the newest row's boot equalled the OLD launch's -- true only because the live row added two
+lines earlier happened to collide with it. It passes when the clock has ticked and fails when it has not, which is
+the worst possible shape for a check. The test now declares the boots apart (`j2.boot = j1.boot + "-b"`, with a
+comment saying why) and asserts the two facts separately: the row this process watched carries this launch's boot
+and no `_restored`; a replayed row carries the other launch's boot and does.
+
+One more wart, found by reading the live pane back: the recipe "send `X-R9K-Capture: 1`" was printed TWICE under an
+empty pane -- once by the page's fallback, once by the sidecar's sentence -- and a reader cannot tell which is
+current. The payload now carries `says_capture` when its own sentence already named the recipe, and the page
+branches on that field rather than re-reading the prose for a substring (which would break the moment somebody
+rewords the sentence). The page's fuller fallback stays for boxes where nothing wires the sidecar to the door.
+The capture endpoint shipped broken, and the running box could not show it. `serve/gateway.py` dispatched
+`await capture_page(writer, query)` onto a **synchronous** page function that writes to the transport and returns a
+bool -- every read of `/api/capture` raised `object bool can't be used in 'await' expression`. Three things about
+that:
+
+* The live box looked fine because the running gateway (`pid 2460384`, started 03:52:33) predated the edit that
+  introduced the `await` (the file's mtime: 04:50:21). A restarted gateway would have failed the first read.
+* The Monitor hid it. `gateway_capture()` catches everything, so the merge degraded to the empty dict -- which
+  renders as "the front door was asked for this id and has no capture of it". That is the same sentence a genuinely
+  uncaptured row produces, so the failure looked like an ordinary idle box.
+* What caught it was the first test that actually **fetched** the page. The endpoint's routing, keying and index
+  were all exercised; nothing had ever asked it for bytes.
+
+`/api/capture` is now `return capture_page(...)` (like `admin_page`, which the dispatch already called without
+`await`), and the live gateway was restarted onto the fixed code (`pid 2504934`; engine untouched, inflight 0
+before and after). Verified end to end on the box: index answers, an unknown id returns `found: false`, an opted-in
+89-byte request comes back through the sidecar with `path=/v1/chat/completions`, `model=Qwen3.8`, `bytes_out 765`,
+and a row nobody captured carries `says_capture: true`.
+
+The render harness had an arithmetic check whose bound was a guess. It multiplied the two numbers printed on the
+generation card -- `N tok/stream-s xM` -- and required the headline, at a flat `max(0.05, 3%)`. On a quiet box the
+card prints `170 tok/stream-s x0.003` for a fan-out of 0.0036, and no correct card can pass that: the printed
+product is 0.51 against a printed 0.6. So the bound is now the uncertainty the printed precision itself allows
+(half the last printed place, half a percent when the value went through the compact formatter), pushed through the
+product rule and added to the headline's own rounding.
+
+Measured rather than asserted: copies of the harness with the fan-out nudged **8%** -- both the old flat bound and
+the new propagated one said nothing, because at three decimals and three significant figures the check is simply
+inert below ~15% of the headline. That is worth printing, so the harness now says so out loud when its own bound
+exceeds a tenth of the number it is checking, instead of passing silently. The check still earns its place at normal
+load, where a wrong fan-out is off by a factor rather than by a printed place.
 
 ### The two histograms, made comparable (2026-11-19)
 

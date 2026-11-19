@@ -206,7 +206,13 @@ function content() {
   }
   if (!detail.input && !detail.response && !detail.output) {
     text("content", why);
-    text("content-note", how);
+    // ONE recipe on the screen. When the sidecar is pointed at the front door its own sentence already names the
+    // header and the environment variable; repeating them underneath it leaves a reader wondering which of the two
+    // is current. The fuller fallback stays for boxes where nothing wired the two together.
+    text("content-note", detail.says_capture
+      ? "The same reason covers the other three panes: Output, Reasoning and API response are empty because no "
+        + "process on this box kept anything for this id."
+      : how);
     return;
   }
   let value = detail[pane];

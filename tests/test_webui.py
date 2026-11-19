@@ -453,6 +453,10 @@ _short = _er.add(_two)
 ck("a 2-token request reads 10 tok/s, not the 20 tok/s that counts its first token twice",
    abs(_short["timings"]["predicted_per_second"] - 10.0) < 1e-9, str(_short["timings"]))
 j2 = W.Journal(jpath, keep=5)
+# A boot is `<seconds>-<pid>`, so two Journals opened inside the same second of ONE process share a boot -- the
+# same collision that mislabelled every live row as "restored" on the live box. This check is about which launch
+# wrote which row, so the test declares the boots apart instead of passing only when the clock happened to tick.
+j2.boot = j1.boot + "-b"
 e2 = W.EngineRecords(keep=5, journal=j2)
 ck("a new process replays the last rows, newest first",
    [r["id"] for r in e2.listing()] == [f"chatcmpl-{i}" for i in (6, 5, 4, 3, 2)],
@@ -460,9 +464,19 @@ ck("a new process replays the last rows, newest first",
 ck("replay is capped at --keep, so the file can outgrow the page without the page growing", len(e2) == 5, str(len(e2)))
 ck("seq continues past the restored rows instead of colliding with them",
    e2.add(Fin(99)).get("seq") == 8, str(e2.listing()[0]["seq"]))
-ck("a restored row carries the launch it came from, so two boots do not read as one odd afternoon",
+ck("a restored row carries the launch it came from, and a row this process watched carries THIS one -- the "
+   "check used to assert the newest row's boot was the old launch's, which was only true because the live row "
+   "added above happened to share a boot with it",
    jpath.read_text().splitlines()[-1].find('"boot"') > 0
-   and e2.listing()[0]["boot"] == j1.boot, str(e2.listing()[0])[:160])
+   and e2.listing()[0]["boot"] == j2.boot
+   and [r for r in e2.listing() if r["id"] == "chatcmpl-6"][0]["boot"] == j1.boot,
+   str([(r["id"], r["boot"]) for r in e2.listing()[:3]])[:180])
+ck("the reader's mark and the writer's mark are different facts: replayed rows carry _restored, a watched row "
+   "does not, and neither is journalled",
+   any(x.get("_restored") for x in e2.items if x["id"] == "chatcmpl-6")
+   and not any(x.get("_restored") for x in e2.items if x["id"] == "chatcmpl-99")
+   and all("boot" in json.loads(l) for l in jpath.read_text().splitlines() if l.strip().endswith("}")),
+   str([(x["id"], bool(x.get("_restored"))) for x in list(e2.items)[:3]])[:150])
 jpath.write_text(jpath.read_text() + '{"seq": 4242, "state": "compl')      # the write a reset cut in half
 ck("a torn trailing line is dropped, not rendered as a request",
    len(W.Journal(jpath, keep=5).replay()) == 5 and all(r["seq"] != 4242 for r in W.Journal(jpath, keep=5).replay()),
@@ -877,6 +891,19 @@ _d4 = _ck.get("chatcmpl-e2")
 ck("and the engine arm gains a sentence about the door when a capture URL is configured: asking found nothing, "
    "which is a different fact from never having asked",
    "X-R9K-Capture" in _d4["input_note"], str(_d4["input_note"])[-160:])
+ck("and it says in a FIELD that its own sentence named the recipe, so the pane does not print the same instruction "
+   "twice under an empty pane -- which is what the live box showed after the first version of this shipped",
+   _d4.get("says_capture") is True, str(sorted(k for k in _d4 if k.startswith("says")))[:60])
+_rr.absorb([{"id": "chatcmpl-c1", "seq": 91, "boot": "prevboot", "state": "completed", "started_at": 7.0}])
+_d7 = _rr.get("chatcmpl-c1")
+ck("a row the door DID copy does not claim that -- the recipe sentence would sit under a pane that is full",
+   _d7.get("input") is not None and not _d7.get("says_capture") and "front door" in _d7["input_note"],
+   str({k: str(_d7.get(k))[:36] for k in ("input", "says_capture", "input_note")})[:160])
+_mjsays = open(os.path.join(ROOT, "serve/web/monitor.js")).read()
+ck("the page branches on that field rather than re-reading the prose for a substring, which would break the "
+   "moment somebody rewords the sentence",
+   "detail.says_capture" in _mjsays and '.includes("X-R9K-Capture")' not in _mjsays,
+   f"{_mjsays.count('says_capture')} references in the page")
 W.CAPTURE_URL = ""
 _ck2 = W.EngineRecords(keep=4)
 _ck2.add(_stats(rid="chatcmpl-e3"))

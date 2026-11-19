@@ -2704,6 +2704,11 @@ def bodyless_detail(out, r, attached=False):
     elif CAPTURE_URL:
         note += (" The front door was asked for this id and has no capture of it: it keeps a copy only of requests "
                  "that send the header X-R9K-Capture: 1 while GATEWAY_CAPTURE is on.")
+        # Said ONCE. The pane keeps its own fuller fallback for boxes where nothing wired the two together, and
+        # printing the same recipe twice under an empty pane leaves a reader guessing which sentence is current.
+        # So the payload states that its own sentence covered it -- rather than the page hunting for a substring
+        # in prose and hoping nobody rewords it.
+        out["says_capture"] = True
     out["input_note"] = note
     out.update(merged)
     return out

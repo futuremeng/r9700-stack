@@ -998,8 +998,10 @@ async def handle(reader, writer):
                 return
             continue
         if path == "/api/capture":
-            await capture_page(writer, query)
-            return                       # always closes: a read of a buffer, not a proxied request
+            # NOT awaited: like admin_page, this is a synchronous write to the transport that returns a bool,
+            # and an `await` on it raised "object bool can't be used in 'await' expression" the first time the
+            # suite actually asked for the page.
+            return capture_page(writer, query)      # always closes: a read of a buffer, not a proxied request
         ok, held, why = await admit(path, declared_length(headers))
         if not ok:
             # 503 only exists with GATE_HOLD_S=0. A held request that the gate refused never reached the

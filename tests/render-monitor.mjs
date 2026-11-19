@@ -533,10 +533,38 @@ const cardLabel = (id) => {
     console.log(`BAD  note-gen shows x${gotStreams} decoding for a fan-out of ${wantStreams}`); process.exitCode = 1;
   }
   // The three numbers on the card have to be one arithmetic: per stream-second x fan-out = the summed headline.
-  const shown = firstNum(html("rate-gen"));
+  // The bound CANNOT be a flat percent, because these are the PRINTED numbers: on an idle box the note line reads
+  // "170 tok/stream-s x0.003" for a fan-out of 0.0036, and at three decimals and three significant figures no
+  // correct card reproduces the headline -- the printed product is 0.51 against a printed 0.6. So the tolerance is
+  // the uncertainty the printed precision itself allows (half the last printed place, or half a percent of the
+  // value when it was rounded to a compact form), pushed through the product rule and plus the headline's own
+  // rounding. A wrong fan-out still fails: it is off by a factor, not by a printed place.
+  const shownRaw = (html("rate-gen") || "").trim();
+  const shownM = shownRaw.match(/^([\d.,kKM]+)/);
+  const shown = firstNum(shownRaw);
+  const dpOf = (s) => { const t = String(s == null ? "" : s).trim().replace(/,/g, "");
+                        const i = t.indexOf("."); return i < 0 ? 0 : (t.length - i - 1); };
+  const unc = (printed, val) => {
+    if (typeof val !== "number") return NaN;
+    const half = 0.5 * Math.pow(10, -dpOf(printed));
+    const coarse = /[kKM]/.test(String(printed)) || String(Math.trunc(Math.abs(val))).length >= 3;
+    return Math.max(half, (coarse ? 0.005 : 0.0005) * Math.abs(val));
+  };
+  const da = unc(fm ? fm[1] : "", gotStream), db = unc(fm ? fm[2] : "", gotStreams);
+  const dd = unc(shownM ? shownM[1] : "", shown);
+  const bound = Math.abs(gotStreams) * da + Math.abs(gotStream) * db + da * db + dd;
+  if (typeof shown === "number" && bound > 0.1 * Math.abs(shown))
+    // SAY WHEN THE CHECK IS INERT. On an idle box the factors are printed to three decimals and three figures, so
+    // the product of the printed values cannot resolve anything under ~15% of the headline -- neither the old flat
+    // 3% bound nor this one catches a wrong fan-out at that precision (verified against copies of this file with
+    // the fan-out nudged 8%: neither version said a word). A silent pass there is worse than a notice.
+    console.log(`  note: the product check is inert at this idle precision -- the printed values allow +-${bound
+      .toFixed(3)} against a headline of ${shown}, so it cannot see an error under `
+      + `${Math.round((100 * bound) / Math.abs(shown))}% of it`);
   if ([gotStream, gotStreams, shown].every((v) => typeof v === "number")
-      && Math.abs(gotStream * gotStreams - shown) > Math.max(0.05, 0.03 * Math.abs(shown))) {
-    console.log(`BAD  the card's numbers are not one arithmetic: ${gotStream} x ${gotStreams} != ${shown}`)
+      && Math.abs(gotStream * gotStreams - shown) > bound) {
+    console.log(`BAD  the card's numbers are not one arithmetic: ${gotStream} x ${gotStreams} != ${shown} `
+                + `(the printed values only allow +-${bound.toFixed(3)})`)
     ; process.exitCode = 1;
   }
   if (/% dec/.test(line)) {

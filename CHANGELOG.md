@@ -28,6 +28,23 @@ pane was reporting a lookup that found nothing, when nothing on this topology ha
   could ever ask for.
 - Found by a test, fixed as a bug: `Records.start` stored `body[:CAP]` and `get` concatenated a str marker, so a
   bytes body would 500 the detail pane; it normalises now and the check feeds it bytes on purpose.
+- A boot is `<seconds>-<pid>`, so two journals opened in the same second of one process share it -- the same
+  collision that mislabelled the live rows, and it had also made the boot check pass only when the clock happened to
+  tick. The test now declares the boots apart and asserts the watched row and the replayed row separately.
+- The recipe "send X-R9K-Capture: 1" was printed twice under an empty pane (page fallback + sidecar sentence); the
+  payload now says in a field (`says_capture`) that its own sentence covered it, and the page branches on the field
+  rather than re-reading prose for a substring.
+- The endpoint shipped broken and the running box could not show it: dispatch did `await capture_page(...)`, an
+  await on a synchronous page function, so every read raised. The live gateway process predated the edit, and
+  `gateway_capture()` swallows the failure -- which renders as "the door was asked and has no capture", the same
+  sentence an uncaptured row gives. What caught it was the first test that fetched the page at all. Now
+  `return capture_page(...)`, like `admin_page` beside it; the live gateway was restarted onto the fixed code
+  (engine untouched) and re-verified end to end.
+- The render harness's card arithmetic check required `N x M = headline` at a flat `max(0.05, 3%)`, which an idle
+  box cannot satisfy however correct the card is (`170 x 0.003` printed for a fan-out of 0.0036). The bound is now
+  the uncertainty the printed precision allows, pushed through the product rule; and because a sabotage run (fan-out
+  off by 8%) showed BOTH bounds were blind at that precision, the harness prints that its check is inert rather
+  than passing quietly.
 - Live: an opted-in 102-byte request came back with `path=/v1/chat/completions`, `model=Qwen3.8`, `bytes_out 811`,
   the prompt intact and the model's `reasoning` extracted (`content` was `null`: the whole 24-token budget went to
   thinking). A row that did not ask says so, names the file and its writer, and adds that the door was asked and
