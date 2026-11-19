@@ -2105,6 +2105,41 @@ the new propagated one said nothing, because at three decimals and three signifi
 inert below ~15% of the headline. That is worth printing, so the harness now says so out loud when its own bound
 exceeds a tenth of the number it is checking, instead of passing silently. The check still earns its place at normal
 load, where a wrong fan-out is off by a factor rather than by a printed place.
+### Restarting the standing launch, and what the first restart got wrong (2026-11-19)
+
+The merged page needed an engine restart to get the histogram masses at all: `serve/plugin/r9700_webui` does
+`import webui as W` when the engine starts, so the page on the engine's own port is frozen at boot. Two restarts
+were spent, and the first one is the instructive one.
+
+It came back with the page **answering and empty**. `WEBUI=same` was in the old process's environment and in nobody's
+file: the previous launch had been brought up through a path that exported it, and a bare
+`bash serve/native-flashnext.sh` does not. The plugin still loaded -- vLLM loads every plugin in its group by
+default, and the log happily printed `r9700 webui loaded in vllm 0.32.0 (this process)` -- so `:8180/api/requests`
+answered 200 with `rows: 0`, no `lengths`, no `journal`, and no error anywhere in the log. Worse,
+`R9700_WEBUI_JOURNAL` was unset, so those five minutes of real traffic were never journalled: the request list now
+has a hole in it and nothing says so. The box-local `native.env` now carries `WEBUI=same`, with a comment naming
+exactly this failure, and the launcher's existing note (it refuses to honour `WEBUI_PORT` in `same` mode) is what
+stopped `WEBUI_PORT=8181` from making the mess worse.
+
+A probe error worth recording, because it nearly rewrote a true claim: I asked `/api/requests` for `lengths` to
+check whether the restart had delivered `band_tok`, found nothing, and concluded the merged page lacked the
+histograms. It does not. `lengths` is added to the **status** payload (`serve/webui.py:3077`) in both
+implementations and was never on `/api/requests`. Measured after the second restart, `:8180/api/status` and
+`:8181/api/status` report identical band masses (`prompt band_tok [506, 0, 0, 719547, 6855780, 398554, 0]`). The
+claim that the merged page would get the masses on the next engine restart was correct; my instrument was not.
+
+The `_restored` stamp then did its first live work. The merged page replayed 100 rows: one from the launch it is
+inside, 99 from the launch that was running for the 17 hours before it. The single live row reports
+`source: engine`; a replayed one reports `source: journal` and the sentence "restored from the request journal of an
+earlier launch (1795002184-2159531)". Before today that sentence was wrong in both directions on this box -- it was
+applied to live rows (a boot is `<seconds>-<pid>`, and a live row carries its own) and never applied correctly here.
+
+Not fixed, recorded: `STOP=1 bash serve/native-flashnext.sh` clears the ranks with
+`pkill -9 -f 'vll[m] serve'`. The bracket stops the pattern matching `pkill` itself; it does not stop it matching
+**any process whose command line happens to contain the phrase**. Run from a wrapper that mentioned the serve in the
+same command line, it SIGKILLed that wrapper: exit 137, no output at all, the caller dead before it could report
+anything. A fix is pgrep-then-kill with this shell and its parent excluded, plus a test that a caller mentioning the
+serve survives asking for it to stop.
 
 ### The two histograms, made comparable (2026-11-19)
 

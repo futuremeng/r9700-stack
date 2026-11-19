@@ -628,6 +628,23 @@ activation memory, which the memory-profiling run bounds at `--max-num-batched-t
 belongs on the client, and the engine stays at 262,144 because real traffic here has already contained a 227,421-token
 request that a 128k engine would answer with a 400.
 
+**How far apart two boots of ONE command are (2026-11-19).** The standing fp8 launch was restarted twice on purpose
+that morning (to pick up the Monitor plugin, which is imported at engine start -- see notes/webui.md), and the boot
+line is the record:
+
+```
+logs/setup-114247.log          11-18 11:46:11  902,153 tokens   3.44x
+logs/setup-1119-0502-engine.log 11-19 05:05:38  902,153 tokens   3.44x
+logs/setup-1119-0507-engine2.log 11-19 05:10:21 887,983 tokens   3.39x
+```
+
+Byte-identical argv (checked by diffing the `DRY=1` launch line against `/proc/<pid>/cmdline` of the running one),
+same env apart from the Monitor wiring, same box, same cards: 14,170 tokens -- 1.6% -- of pool, and a reported
+concurrency that moves 3.44x -> 3.39x. So quote the pool as "what this launch printed at", never as a property of
+the configuration; the 8.6% pair above (497,588 vs 540,202 at MAXLEN 32,768) is the same effect, larger. What did NOT
+move across all three boots: weights at 59-60 s for the first worker, and the whole launch answering
+`/health` 141-196 s after the launcher was invoked.
+
 **Time is the constraint, and it is cold prefill.** Measured on the live box, unique content each time:
 
 | probe | prompt tokens | first token | implied prefill |

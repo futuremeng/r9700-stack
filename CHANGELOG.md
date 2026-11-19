@@ -1,5 +1,34 @@
 # Changelog
 
+## A pool is a boot reading, and a restart can bring the page back answering with nothing in it
+
+The standing launch was restarted to pick up the Monitor plugin (merged mode imports `webui` at engine start, so the
+page on the engine's port is frozen at boot). Three things came out of it, all recorded in
+[notes/context-256k.md](notes/context-256k.md) and [notes/webui.md](notes/webui.md):
+
+- **The KV pool moved between boots of one command.** Byte-identical argv (the `DRY=1` launch line diffed against
+  `/proc/<pid>/cmdline` of the running serve), same box, same cards: 902,153 tokens / 3.44x twice, and 887,983 /
+  3.39x the third time -- 1.6%. The README's current-state rows now say what a launch printed rather than what the
+  configuration has, and keep the dated readings beside them.
+- **A missing `WEBUI=same` does not fail; it serves an empty page.** vLLM loads every plugin in its group by
+  default, so the plugin logged itself as loaded and `/api/requests` answered 200 with `rows: 0`, no `lengths`, no
+  `journal` and no error. It also left `R9700_WEBUI_JOURNAL` unset, so five minutes of real traffic was never
+  journalled. Fixed where that fact belongs -- this box's machine-local env, with a comment naming the failure.
+- **My instrument was wrong before the docs were.** Checking the merged page for `band_tok` against
+  `/api/requests` found nothing and nearly caused a true claim to be rewritten: `lengths` rides the **status**
+  payload (`serve/webui.py:3077`) in both implementations. After the restart both pages report the same band
+  masses.
+
+The `_restored` stamp then passed its first live test: the merged page holds one row from its own launch
+(`source: engine`) and 99 from the launch it replaced (`source: journal`, "restored from the request journal of an
+earlier launch (1795002184-2159531)") -- the case that sentence was written for, which the old boot-based test got
+backwards.
+
+Recorded, not yet fixed: `STOP=1 bash serve/native-flashnext.sh` clears the ranks with `pkill -9 -f 'vll[m] serve'`.
+The bracket protects the pattern from matching `pkill` itself, not from matching any process whose command line
+mentions the serve -- run from a wrapper that did, it SIGKILLed the wrapper (exit 137, no output). Needs
+pgrep-then-kill excluding this shell and its parent, and a test that the caller survives.
+
 ## A request row that has no body has to say who did not keep one, and the only process that could is the door
 
 Opened on the live box: `chatcmpl-95c0b444afff244f · null` with Input / Output / Reasoning / API response all empty,
