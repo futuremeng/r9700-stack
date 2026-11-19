@@ -7,6 +7,10 @@ body and rebuilds it; the gateway measured +0.8 ms, notes/embed-sidecar-box-test
 risk: every bug in it is an HTTP framing bug, which a client sees as a hang or a truncated reply, not as a
 nonzero exit. So this file tests framing, not features:
 
+  (1c) who may ask for anything: keyed by default (model traffic), open by exception (/health, /metrics, the
+      Monitor and its data endpoints), refused outright (the engine control plane). Observe mode counts what a key
+      would have refused and names the paths; enforce mode 401s them, accepts the right Bearer token and rejects a
+      wrong one, and never reports the key itself -- only its length and where it was read from.
   (1) routing, including the /api/sidecars the gateway answers itself, and a path that merely STARTS with a
       routed prefix (/v1/embeddings-x) taking the default instead -- plus the paths it refuses to route at all:
       the engine's control plane (/sleep, /reset_prefix_cache, /collective_rpc, /update_weights, ...), which
@@ -361,6 +365,129 @@ try:
     st, b = http(AP, "/api/gate")
     ck("and that door says so in its own state", json.loads(b)["admin"]["GATEWAY_ADMIN"] is True, b[:80])
     agw.terminate()
+
+    # (1c) who may ask for anything. The door keys model traffic and keeps open only what the box needs open to
+    # work (the watcher's /health, the gate poller's /metrics, the Monitor and its data endpoints). Two facts the
+    # checks have to hold at once: the key is asked of REMOTE peers -- a loopback peer is exempt, because every
+    # bench, tool and the sidecar already reach the engine at 127.0.0.1:8180 uncredentialed -- and it ships
+    # observe-first, because a key that silently 401s whatever sits in front of this box is an outage. So the
+    # remote checks below need a non-loopback address to arrive on.
+    LAN = None
+    _u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        _u.connect(("8.8.8.8", 1))                    # no packet leaves; this just asks the routing table
+        LAN = _u.getsockname()[0]
+    except OSError:
+        pass
+    finally:
+        _u.close()
+    ck("this box has a non-loopback address, which the remote-peer checks have to arrive on",
+       bool(LAN), str(LAN))
+
+    def http_at(host, port, path, method="GET", body=None, hdrs=None):
+        s = socket.create_connection((host, port), timeout=10)
+        data = (body or "").encode()
+        h = {"host": f"{host}:{port}", "connection": "close", "content-length": str(len(data))}
+        h.update(hdrs or {})
+        s.sendall(f"{method} {path} HTTP/1.1\r\n".encode()
+                  + b"".join(f"{k}: {v}\r\n".encode() for k, v in h.items()) + b"\r\n" + data)
+        return read_one(s)
+
+    KF = tempfile.NamedTemporaryFile(prefix="r9700-key-", mode="w", delete=False)
+    KF.write("test-door-key\n")
+    KF.close()
+    os.chmod(KF.name, 0o600)                          # the way a key should be carried: not in argv
+
+    def door(extra, bind="127.0.0.1"):
+        p = free_port()
+        pr = subprocess.Popen([sys.executable, os.path.join(ROOT, "serve/gateway.py")],
+                              env={**env, **extra, "GATEWAY_PORT": str(p), "GATEWAY_BIND": bind},
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            try:
+                socket.create_connection((bind, p), timeout=1).close()
+                return p, pr
+            except OSError:
+                time.sleep(0.1)
+        raise AssertionError("the auth door did not come up")
+
+    st, b = http(GW, "/v1/chat/completions", "POST", '{"x":1}')
+    ck("a loopback peer reaching the model needs no credential", json.loads(b)["role"] == "engine", b[:80])
+    st, b = http(GW, "/api/gate")
+    a = json.loads(b)["auth"]
+    ck("and the door says so out loud: no key set, not enforcing, keyed by default, loopback exempt",
+       a["key"]["set"] is False and a["enforce"] is False and a["keyed_by_default"] is True
+       and a["loopback_exempt"] is True and a["counts"]["auth_local"] >= 1, str(a)[:200])
+
+    if LAN:
+        # observing: a remote peer with no credential still gets through, and the door writes down what it would
+        # have refused -- that count is the input to the decision to enforce
+        OP, od = door({"GATEWAY_KEY_FILE": KF.name}, bind=LAN)
+        st, b = http_at(LAN, OP, "/v1/chat/completions", "POST", '{"x":1}')
+        st2, b2 = http_at(LAN, OP, "/api/gate")
+        aa = json.loads(b2)["auth"]
+        ck("observe mode: the remote request still reaches the engine",
+           json.loads(b)["role"] == "engine" and aa["key"]["set"] is True and aa["enforce"] is False, b[:80])
+        ck("and the path it WOULD have refused is named, so enforcing is a decision made on data",
+           aa["counts"]["auth_would401"] >= 1 and "/v1/chat/completions" in aa["unkeyed_paths"],
+           str(aa["counts"])[:140])
+        ck("the reported key is a length and a source -- never the value",
+           aa["key"]["chars"] == len("test-door-key") and "file:" in aa["key"]["source"]
+           and "test-door-key" not in b2.decode("latin-1"), str(b2)[:120])
+        od.terminate()
+
+        EP, ed = door({"GATEWAY_KEY_FILE": KF.name, "GATEWAY_KEY_ENFORCE": "1"}, bind=LAN)
+        st, b = http_at(LAN, EP, "/v1/chat/completions", "POST", '{"x":1}')
+        ck("under ENFORCE a remote peer with no credential gets 401 typed gateway_auth, naming the header",
+           st.startswith("HTTP/1.1 401") and json.loads(b)["error"]["type"] == "gateway_auth"
+           and "Bearer" in json.loads(b)["error"]["hint"], f"{st} {b[:70]}")
+        st, b = http_at(LAN, EP, "/v1/chat/completions", "POST", '{"x":1}',
+                        hdrs={"authorization": "Bearer nope"})
+        ck("a wrong key is refused as well", st.startswith("HTTP/1.1 401"), st)
+        st, b = http_at(LAN, EP, "/v1/chat/completions", "POST", '{"x":1}',
+                        hdrs={"authorization": "Bearer test-door-key"})
+        ck("the right key reaches the engine", json.loads(b)["role"] == "engine", b[:80])
+        for p in ("/health", "/metrics", "/monitor", "/about", "/api/status", "/api/requests", "/api/host",
+                  "/version", "/web/app.js"):
+            st, b = http_at(LAN, EP, p)
+            ck(f"{p} stays open under ENFORCE -- setup.py's watcher, the gate's own /metrics poller and the "
+               f"Monitor all depend on it", st.startswith("HTTP/1.1 200"), st)
+        st, b = http_at(LAN, EP, "/api/notify", "POST", "{}")
+        ck("the webhook that pages a phone is keyed by exception, not swept up by the /api/ prefix",
+           st.startswith("HTTP/1.1 401"), st)
+        st, b = http_at(LAN, EP, "/tokenize", "POST", "{}")
+        ck("/tokenize is keyed here even though vLLM's own guard never covers that prefix",
+           st.startswith("HTTP/1.1 401"), st)
+        st, b = http_at(LAN, EP, "/api/gate")
+        cc = json.loads(b)["auth"]["counts"]
+        ck("every one of those decisions is counted where the Monitor can read it",
+           cc["auth_401"] >= 4 and cc["auth_ok"] >= 1 and cc["auth_open"] >= 9, str(cc)[:150])
+        ed.terminate()
+
+    # the exemption is about the loopback NET, not one spelling: this host also answers on 127.0.1.1 (its own
+    # name, on lo), and a door whose rule said "127.0.0.1" would refuse a request that came from the box itself
+    LP2, ld2 = door({"GATEWAY_KEY_FILE": KF.name, "GATEWAY_KEY_ENFORCE": "1"}, bind="0.0.0.0")
+    st, b = http_at("127.0.1.1", LP2, "/v1/chat/completions", "POST", '{"x":1}')
+    ck("a peer address of 127.0.1.1 is loopback too -- the rule is about where the request came from, not a string",
+       json.loads(b)["role"] == "engine", f"{st} {b[:80]}")
+    ld2.terminate()
+
+    # the exemption is the knob's, not an accident of ordering: the SAME door asked of the SAME loopback peer
+    # behaves the other way the moment GATEWAY_KEY_LOCAL=1 says local peers count too
+    LP, ld = door({"GATEWAY_KEY_FILE": KF.name, "GATEWAY_KEY_ENFORCE": "1"})
+    st, b = http(LP, "/v1/chat/completions", "POST", '{"x":1}')
+    ck("loopback stays exempt under ENFORCE -- this is what keeps bench/, tools/ and the sidecar working",
+       json.loads(b)["role"] == "engine", b[:80])
+    ld.terminate()
+    SP, sd = door({"GATEWAY_KEY_FILE": KF.name, "GATEWAY_KEY_ENFORCE": "1", "GATEWAY_KEY_LOCAL": "1"})
+    st, b = http(SP, "/v1/chat/completions", "POST", '{"x":1}')
+    ck("GATEWAY_KEY_LOCAL=1 flips that same peer to refused, so the exemption is a policy with a name",
+       st.startswith("HTTP/1.1 401"), st)
+    st, b = http(SP, "/v1/chat/completions", "POST", '{"x":1}',
+                 headers={"authorization": "Bearer test-door-key"})
+    ck("and a local peer that does present the key still gets through",
+       json.loads(b)["role"] == "engine", b[:80])
+    sd.terminate()
 
     # (2) a big body arrives whole
     big = os.urandom(60 * 1024)

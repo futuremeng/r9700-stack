@@ -2221,18 +2221,47 @@ def _dry(extra):
     return txt, next((l for l in txt.splitlines() if l.startswith("launch:")), "")
 
 
+def _dry_rc(extra):
+    """Same preview, keeping the exit code: the bind rule below is a refusal, and a refusal that only shows up in
+    a line of output while still exiting 0 is a warning, not a rule."""
+    env = {**os.environ, "DRY": "1", "FORCE": "1", "MAXLEN": "262144", "NSEQ": "32", "NBT": "8192"}
+    env.update(extra)
+    r = subprocess.run(["bash", ROOT + "/serve/native-flashnext.sh"], env=env,
+                       capture_output=True, text=True, timeout=180)
+    return r.returncode, r.stdout + r.stderr
+
+
 with tempfile.TemporaryDirectory() as td:
     _out, line = _dry({"LOCAL_ENV": str(Path(td) / "absent.env")})
     ck("with no machine-local env the launch binds loopback, and the cache stays on",
        "--host 127.0.0.1" in line and "--no-enable-prefix-caching" not in line, line[:220])
     _le = Path(td) / "box.env"
-    _le.write_text("HOST=10.20.30.40\n")
+    # 127.0.1.1 is this host's own name, on lo. Legal under the bind rule below, and it proves the rule is about
+    # the loopback NET rather than one spelling -- a check that used 10.20.30.40 here was asserting, until
+    # 2026-11-19, that a machine-local file could put the engine on a routable address.
+    _le.write_text("HOST=127.0.1.1\n")
     _out2, line2 = _dry({"LOCAL_ENV": str(_le)})
     ck("a machine-local env beats the repo default and names itself in the log",
-       "--host 10.20.30.40" in line2 and "local env: " + str(_le) in _out2, line2[:180])
+       "--host 127.0.1.1" in line2 and "local env: " + str(_le) in _out2, line2[:180])
     _out3, line3 = _dry({"LOCAL_ENV": str(_le), "PREFIX_CACHE": "0"})
     ck("PREFIX_CACHE=0 remains the escape hatch, and is the only thing that re-adds the flag",
        "--no-enable-prefix-caching" in line3, line3[-200:])
+    # The bind rule. serve/gateway.py is the only socket this box puts on a LAN address, and it is where the
+    # decisions live: it refuses the 23-path engine control plane (vLLM's --api-key guards four prefixes: /v1 /v2
+    # /inference /cohere -- and not /tokenize, /classify, or any of the control plane), and its own key is asked
+    # of remote peers. An engine bound to a routable address walks past both. Until 2026-11-19 the box's own env
+    # carried HOST=0.0.0.0, kept from ever applying only because a LATER line set HOST again.
+    _bad = Path(td) / "lan.env"
+    _bad.write_text("HOST=10.20.30.40\n")
+    _rc, _txt = _dry_rc({"LOCAL_ENV": str(_bad)})
+    ck("a machine-local env can no longer put the ENGINE on a routable address: the launcher refuses",
+       _rc != 0 and "FATAL" in _txt and "serve/gateway.py" in _txt, _txt[-300:])
+    ck("and refusing means exiting nonzero, not printing and launching anyway",
+       not any(l.startswith("launch:") for l in _txt.splitlines()), _txt[-200:])
+    _rc2, _txt2 = _dry_rc({"LOCAL_ENV": str(_bad), "ALLOW_LAN_ENGINE": "1"})
+    ck("the operator can still say it out loud -- and is told, in the same breath, what they are walking past",
+       _rc2 == 0 and any(l.startswith("launch:") for l in _txt2.splitlines())
+       and "WARN" in _txt2 and "control plane" in _txt2, _txt2[:200])
     _meta = Path(td) / "meta.json"
     _side = subprocess.run(["pgrep", "-cf", "webui[.]py"], capture_output=True, text=True).stdout.strip()
     _out4, _l4 = _dry({"LOCAL_ENV": str(_le), "WEBUI": "1", "WEBUI_META": str(_meta)})
@@ -2246,7 +2275,7 @@ with tempfile.TemporaryDirectory() as td:
                         capture_output=True, text=True, timeout=180)
     _m = json.loads(_meta.read_text()) if _meta.exists() else {}
     ck("METAONLY=1 refreshes the recipe file of a launch that is already up, and records the address it bound",
-       _r.returncode == 0 and _meta.exists() and _m.get("host") == "10.20.30.40"
+       _r.returncode == 0 and _meta.exists() and _m.get("host") == "127.0.1.1"
        and _m.get("prefix_cache") == "1" and "nothing started" in (_r.stdout + _r.stderr),
        str(_m)[:240])
 
@@ -2368,6 +2397,19 @@ ck("the recipe check keeps no copy of the recipe: it asks the launcher (DRY=1) a
    '"DRY": "1"' in _rcs and "FORCE" in _rcs
    and not any(n in _rcs for n in ("262144", "8192", "fp8_e4m3")),          # no copied defaults, anywhere
    "a default hardcoded outside TRUTH goes stale the day native-flashnext.sh changes")
+# what the box shows the network. The whole front-door design rests on one claim that lives in a file OUTSIDE
+# this repo ("the engine, the sidecars and the page are loopback-only; the door is the only LAN socket"), so the
+# recipe check reads it rather than trusting it.
+_lan, _door, _eng = rc.exposure(8080, 8180)
+ck("the exposure read finds exactly one of our sockets on a non-loopback address, and it is the door",
+   len(_lan) == 1 and _lan[0].endswith(":8080"), str(_lan)[:140])
+ck("and it lists OUR ports, not the box: ss here shows sshd, resolved and the engine's own rank sockets, and a "
+   "report that sweeps them in hides the one fact that matters",
+   not any(x.endswith((":22", ":53", ":8180", ":8181")) for x in _lan), str(_lan)[:140])
+ck("it reports the door's key state rather than assuming it",
+   isinstance(_door, dict) or _door in ("old", "down"), str(_door)[:140])
+ck("the engine behind the door is asked what IT does with an uncredentialed model request",
+   "credential" in _eng, _eng)
 ck("the production launch, taken from this tree's own launcher, passes the check",
    rc.compare(_PROD_CMD, _CFG, _META) == [], str(rc.compare(_PROD_CMD, _CFG, _META)))
 ck("a PREFIX_CACHE=1 test config left running is caught and named (the launcher says off, the box says on)",
@@ -2664,6 +2706,10 @@ else:
     ck("gate: a payload with no argv says the FLAGS ARE UNPROVABLE instead of claiming they match "
        "(unprovable is not matching)",
        "UNPROVABLE" in _r.stdout and "every launch flag" not in _r.stdout, _r.stdout[:200])
+    ck("a saved payload gets NO exposure claim: a file proves nothing about which sockets this box has open, so "
+       "the tool says NOT ASKED instead of reassuring anyone that nothing is exposed",
+       "NOT ASKED" in _r.stdout and "no socket of ours on a non-loopback address" not in _r.stdout,
+       _r.stdout[-220:])
     ck("a MONITOR's own argv is never compared to the launcher: a sidecar's command line carries --port/--upstream "
        "and none of the serve's flags, and comparing it invented 17 deviations on 2026-11-15 ("'"'"--compilation-config: "
        "the live process was launched with nothing"'"'"') on a box whose engine was exactly as configured",

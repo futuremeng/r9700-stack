@@ -32,6 +32,33 @@ switch that puts the model to sleep and the switch that wipes the KV cache, with
 answer 404 here, with a body that says so and names the knob; GATEWAY_ADMIN=1 forwards them, and then to a
 loopback peer only -- the operator's way in is an ssh tunnel, not an open route.
 
+Who may ask for anything (GATEWAY_KEY): the door groups the paths it forwards, because two groups have to stay
+open for the box to work at all.
+
+    OPEN     /health (setup.py's watcher and every client already poll it), /metrics (this file's own gate
+             poller reads it raw, see read_gauges), and the Monitor's page plus its data endpoints -- the page
+             whose whole job is to survive a wedged engine is the wrong place to put a credential question
+    KEYED    everything that reaches a model: /v1*, /v2*, /inference, /cohere, the rerank routes, /tokenize and
+             /classify (both OUTSIDE vLLM's four guarded prefixes, so the door is the only thing deciding), and
+             /api/notify, which writes the webhook that pages a phone
+    DENIED   the engine control plane above, whatever the key
+
+Keyed by DEFAULT, open by exception: a new engine route is protected by being unknown. The key lives here rather
+than in the engine's --api-key for three reasons measured on this box: the engine, both CPU sidecars and the page
+already bind loopback (from the LAN address, 8180/8181/8090/8092 are connection refused), bench/ and tools/ aim
+at THIS port (ten of them say localhost:8080), and an engine --api-key is a command-line argument -- readable by
+every local user through ps, where a key read from a mode-0600 file is not.
+
+It ships OBSERVE, exactly like the admission gate: a key that silently 401s the LiteLLM clients in front of this
+box is an outage rather than a security improvement, so the door first counts and logs what it WOULD have
+refused, and that count is what decides when to set GATEWAY_KEY_ENFORCE=1.
+
+The key asks REMOTE peers. A request that arrived on loopback is exempt unless GATEWAY_KEY_LOCAL=1, for the same
+reason the control-plane rule above is loopback-shaped: every bench, tool and the Monitor sidecar already reach
+the engine directly at 127.0.0.1:8180 with no credential, so keying a local peer at the door would add ceremony
+and no boundary -- it would only decide which loopback door a local process presents a credential to. The
+boundary that matters is the one the LiteLLM hosts cross, and that is what this asks.
+
 /Metrics is the ENGINE's: the Monitor's parser speaks vLLM's Prometheus, and llama.cpp's dialect has its own
 watcher (serve/embed-watch.py). Each sidecar's /health stays internal; the gateway's /health answers for the
 engine, which is what setup.py's watcher and every client already poll.
@@ -166,6 +193,8 @@ import asyncio
 import json
 import os
 import re
+import hashlib
+import secrets
 import sys
 import time
 import urllib.request
@@ -201,12 +230,70 @@ ADMIN = frozenset("""/sleep /wake_up /pause /resume /abort_requests /reset_prefi
     /init_weight_transfer_engine /shutdown_weight_transfer_engine /weight_checker /weight_info
     /collective_rpc /get_world_size /is_scaling_elastic_ep""".split())
 ADMIN_ON = os.environ.get("GATEWAY_ADMIN", "") == "1"
-LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+
+def is_loopback(peer):
+    """The loopback NET, not one address. 127.0.0.1 is the peer a local client usually presents, but this host
+    also answers on 127.0.1.1 (its own name, on lo) and a peer address of ::ffff:127.x is the same thing mapped
+    into v6 -- all of them came from the box, which is the boundary both rules below are drawn on. Naming one
+    address would make the rule about a spelling."""
+    return peer.startswith("127.") or peer.startswith("::ffff:127.") or peer in ("::1", "")
 
 
 def admin_denied(path, peer):
     """True when this path is engine control plane and this door is not allowed to answer it for this peer."""
-    return path in ADMIN and not (ADMIN_ON and peer in LOOPBACK)
+    return path in ADMIN and not (ADMIN_ON and is_loopback(peer))
+
+# ---- who may ask for anything ---------------------------------------------------------------------------
+# Keyed by default, open by exception: an engine route nobody has looked at is protected, not exposed.
+OPEN_EXACT = frozenset("""/health /metrics /ready /readyz /ping /version /load /monitor /about /favicon.svg
+    /api/status /api/requests /api/host /api/gate /api/sidecars""".split())
+OPEN_PREFIX = ("/web/",)                        # the page's own static assets
+KEYED_EXACT = frozenset(("/api/notify",))       # writes the webhook that pages a phone
+
+
+def auth_group(path):
+    """None for a path the door answers keyless, "keyed" for one that needs the door's key."""
+    if path in KEYED_EXACT:
+        return "keyed"
+    if path in OPEN_EXACT or path.startswith(OPEN_PREFIX):
+        return None
+    return "keyed"
+
+
+def _read_key():
+    """The door's key, and where it came from. GATEWAY_KEY_FILE (mode 0600) is the way it should be set: a key
+    passed as GATEWAY_KEY= lands in this process's own argv, readable by every local user through ps -- which is
+    the exact reason an engine --api-key is the weaker answer on this box."""
+    f = os.environ.get("GATEWAY_KEY_FILE", "")
+    if f:
+        try:
+            with open(f) as fh:
+                return fh.read().strip(), f"file:{f}"
+        except OSError as e:
+            return "", f"file:{f} unreadable ({e}) -- not enforcing"
+    if os.environ.get("GATEWAY_KEY", ""):
+        return os.environ["GATEWAY_KEY"], "GATEWAY_KEY (in argv: readable by ps; use GATEWAY_KEY_FILE)"
+    return "", "unset"
+
+
+KEY, KEY_SRC = _read_key()
+KEY_ENFORCE = os.environ.get("GATEWAY_KEY_ENFORCE", "") == "1"
+KEY_LOCAL = os.environ.get("GATEWAY_KEY_LOCAL", "") == "1"
+KEY_HASH = hashlib.sha256(KEY.encode()).digest() if KEY else None
+
+
+def auth_ok(headers):
+    """Bearer check against the door's own key, constant-time, on the headers already in hand: the door is a
+    byte pipe, and answering this must not turn it into a frame parser."""
+    if not KEY_HASH:
+        return False
+    m = re.search(rb"(?im)^authorization: *(.+?)\r?\n", headers)
+    if not m:
+        return False
+    scheme, _, param = m.group(1).decode("latin-1").strip().partition(" ")
+    return scheme.lower() == "bearer" and secrets.compare_digest(
+        hashlib.sha256(param.encode()).digest(), KEY_HASH)
 
 # ---- the gate -------------------------------------------------------------------------------------------
 # Policy v2, rewritten on 2026-11-15 after a day of production data said v1 was wrong in a specific way: with a
@@ -262,6 +349,7 @@ G = {"kv": None, "run": None, "wait": None, "at": 0.0, "err": None, "closed": Fa
      # is what the engine measures, and this box's pool is 902,153 tokens (6.65 GiB, from its own boot log).
      "pool_tokens": int(os.environ.get("GATE_POOL_TOKENS", "902153")),
      "admin_denied": 0,      # control-plane paths this door refused to hand to the engine
+     "auth_open": 0, "auth_keyed": 0, "auth_ok": 0, "auth_401": 0, "auth_would401": 0, "auth_local": 0,
      "inflight": 0, "held": 0, "held_now": 0, "released": 0, "expired": 0, "refused": 0, "admitted": 0,
      "small_passed": 0, "held_over": 0, "polls": 0,
      # Counted because observing is now the job: who came, of which declared-size class, and how many arrived while
@@ -497,6 +585,14 @@ def gate_blob():
                        "gated": list(GATED),
                        "admin": {"paths": len(ADMIN), "GATEWAY_ADMIN": ADMIN_ON,
                                  "denied": G["admin_denied"]},
+                       "auth": {"key": {"set": bool(KEY), "source": KEY_SRC, "chars": len(KEY)},
+                                "enforce": KEY_ENFORCE, "open_exact": len(OPEN_EXACT),
+                                "keyed_by_default": True,
+                                "loopback_exempt": not KEY_LOCAL,
+                                "counts": {k: G[k] for k in ("auth_open", "auth_keyed", "auth_ok", "auth_401",
+                                                             "auth_would401", "auth_local")},
+                                "unkeyed_paths": dict(sorted(G.get("auth_401_paths", {}).items(),
+                                                             key=lambda kv: -kv[1])[:8])},
                        "counters": {k: G[k] for k in ("held", "held_now", "released", "expired", "refused",
                                                       "admitted", "small_passed", "held_over", "gated_seen",
                                                       "declared_small", "declared_big", "arrived_shut",
@@ -727,6 +823,36 @@ async def handle(reader, writer):
             if not keep:
                 return
             continue
+        grp = auth_group(path)
+        # A loopback peer is exempt unless the box says otherwise -- see the docstring for why that is the boundary
+        # and not a hole: a local process that wanted the model unkeyed already has 127.0.0.1:8180.
+        if grp and is_loopback(peer) and not KEY_LOCAL:
+            G["auth_local"] += 1
+            grp = None
+        if grp:
+            allowed = auth_ok(headers)
+            G["auth_keyed"] += 1
+            if allowed:
+                G["auth_ok"] += 1
+            else:
+                G["auth_401" if KEY_ENFORCE else "auth_would401"] += 1
+                seen = G.setdefault("auth_401_paths", {})
+                seen[path] = seen.get(path, 0) + 1
+            if not allowed and KEY_ENFORCE:
+                msg = json.dumps({"error": {"message": f"gateway requires a key for {path!r}",
+                                            "type": "gateway_auth",
+                                            "hint": "Authorization: Bearer <the door's key>; /health, /metrics "
+                                                    "and the Monitor stay open",
+                                            "unauthorized": G["auth_401"]}}).encode()
+                writer.write(b'HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer realm="r9700-stack"\r\n'
+                             b"Content-Type: application/json\r\nContent-Length: "
+                             + str(len(msg)).encode() + b"\r\n\r\n" + msg)
+                await writer.drain()
+                if not keep:
+                    return
+                continue
+        else:
+            G["auth_open"] += 1
         if path == "/api/gate":
             await gate_page(writer)
             if not keep:
@@ -829,6 +955,14 @@ async def main():
     print(f"gateway: http://{BIND}:{PORT}/  engine={ENGINE} embed={EMBED} rerank={RERANK} pages={PAGES} "
           f"sidecars={len(SIDECAR_STATE)}  control-plane={'loopback only' if ADMIN_ON else 'not forwarded'} "
           f"({len(ADMIN)} paths)", flush=True)
+    kmode = "loopback keyed too" if KEY_LOCAL else "loopback exempt: bench/, tools/ and the sidecar ride it"
+    print(f"auth: keyed by default, open={len(OPEN_EXACT)} exact + {list(OPEN_PREFIX)} prefix; "
+          f"asked of remote peers only ({kmode}); "
+          f"key={'set from ' + KEY_SRC if KEY else 'NOT SET'}; "
+          + ("ENFORCING (401)" if KEY_ENFORCE and KEY else
+             ("GATEWAY_KEY_ENFORCE=1 with no key: NOT enforcing" if KEY_ENFORCE else
+              "observing -- unkeyed model requests are counted at /api/gate, nothing refused")),
+          flush=True)
     if GATE_ON and GATE_POLICY != "hold":
         G["task"] = asyncio.create_task(gate_poll())
         # The MODE goes in the log next to the thresholds: someone comparing two gateway logs has to be able to tell

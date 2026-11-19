@@ -492,6 +492,18 @@ through it: +0.8 ms on a small request, engine ITL unchanged (13.0 -> 12.8 ms at
 request line and pipes bytes, because a proxy that parses bodies costs 2-3 ms. `tests/test_gateway.py` keeps that
 promise; [notes/embed-sidecar-box-test.md](notes/embed-sidecar-box-test.md) has the numbers and the restart order.
 
+That last clause is what makes the door the place to decide things, and since 2026-11-19 two decisions live there.
+It does not forward the **engine's control plane** — 23 paths (`/sleep`, `/reset_prefix_cache`, `/collective_rpc`,
+the weight-update family) that vLLM's own `--api-key` never guarded: `GUARDED_PREFIX` is `/v1`, `/v2`, `/inference`,
+`/cohere`, which also leaves `/tokenize` and `/classify` unguarded. They answer 404 from the door with the engine
+never contacted; `GATEWAY_ADMIN=1` forwards them to a loopback peer. And `GATEWAY_KEY` keys **model traffic by
+path** — open: `/health`, `/metrics`, the Monitor and its data endpoints; keyed: everything that reaches a model,
+plus `/api/notify` — asked of remote peers, since a local process already reaches `127.0.0.1:8180` anyway. It ships
+**observing** like the gate does: it counts and names at `/api/gate` what a key would have refused, and
+`GATEWAY_KEY_ENFORCE=1` is the separate switch. `serve/native-flashnext.sh` refuses to bind the engine to a routable
+address at all (`ALLOW_LAN_ENGINE=1` says otherwise out loud), and `tools/recipe-check.py` reports which of our
+sockets face the LAN rather than trusting the machine-local file that used to say `HOST=0.0.0.0`.
+
 In front of the engine it also runs an **admission gate**, and since 2026-11-16 it **observes rather than acts**:
 `GATE_POLICY=observe` reads the engine's harm signals — `num_preemptions_total` **moving** (blocks taken back from a
 running request) or the pool reaching `GATE_KV_HIGH=0.92` — keeps the ring, the counters and the Monitor row, and

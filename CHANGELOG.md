@@ -1,5 +1,73 @@
 # Changelog
 
+## The key goes on the front door, not on the engine, because the engine's `--api-key` guards four prefixes and sits in `ps`
+
+The entry above removed the door's exposure of the control plane. This one puts the credential decision in the same
+place, for reasons measured on this box rather than assumed:
+
+- the box already has exactly one socket on a LAN address -- from a LAN address, `:8180` (engine), `:8181` (the
+  Monitor sidecar), `:8090`/`:8092` (the two `llama-server` sidecars) are connection-refused, `:8080` is the door;
+- `bench/` and `tools/` already aim at the door: ten of their defaults say `localhost:8080`, and the two that say
+  `127.0.0.1:8180` (`bench/itl.py`, `tools/soak-mixed-step.py`) are the fault-hunt tools that bypass the door on
+  purpose. So keying at the door and keying at the engine cost the benches the same thing -- they would all have to
+  send a header -- while an engine key costs a restart (4 min of weights) and hands the Monitor sidecar a model
+  credential, which is the opposite of 2026-11-15's lesson that the page has to answer when the engine cannot;
+- vLLM's `--api-key` is a **command-line argument**, so it is readable by every local user through `ps` /
+  `/proc/<pid>/cmdline`. The door reads its key from a mode-0600 file (`GATEWAY_KEY_FILE`) and never puts it in argv.
+
+`serve/gateway.py` now groups what it forwards -- **DENIED** (the 23 control-plane paths, whatever the key), **OPEN**
+(`/health` for `setup.py`'s watcher, `/metrics` for the door's own gate poller, the Monitor's page and its data
+endpoints: the page whose job is to survive a wedged engine is the wrong place for a credential question), and
+**KEYED** for everything else, so a new engine route is protected by being unknown. `/api/notify` is keyed by
+exception rather than swept in by the `/api/` prefix, because it writes the webhook that pages a phone.
+`/tokenize` and `/classify` are keyed because `GUARDED_PREFIX` never covers them. The check is a constant-time
+digest compare on the header bytes the door has already read: it does not parse a body, and the hop-cost check
+("hop must be < 2 ms") still passes. `tests/test_gateway.py` 65 -> **90 checks**.
+
+It ships **observing**, exactly like the admission gate: with `GATEWAY_KEY` set and `GATEWAY_KEY_ENFORCE` unset the
+request still reaches the engine and the door counts it in `auth.counts.auth_would401` **and names the paths**
+(`auth.unkeyed_paths`) at `/api/gate`, because a key that silently 401s the LiteLLM hosts in front of this box is an outage, and the decision
+to enforce should be made on that list. The blob reports the key as a length and a source (`file:...`, or
+`GATEWAY_KEY (in argv: readable by ps; use GATEWAY_KEY_FILE)`), never the value.
+
+The key asks **remote** peers; a request that arrived on loopback is exempt unless `GATEWAY_KEY_LOCAL=1`, for the
+same reason the control-plane rule is loopback-shaped -- a local process that wanted the model uncredentialed
+already has `127.0.0.1:8180`, so keying it at the door chooses which loopback door to present a credential to
+rather than adding a boundary. While writing that check the rule had to be widened: loopback is a **net**, not one
+address (`127.0.1.1` is this host's own name on `lo`, `::ffff:127.x` is the same in v6), so a rule naming
+`127.0.0.1` would have refused a request that came from the box.
+
+Door-only keying spends the depth it gave up on one invariant -- the backends are loopback-only -- and nothing in
+this repo enforced that invariant: `setup.py`, `tools/recipe-check.py`, `serve/native-flashnext.sh` and
+`serve/lib/localenv.sh` contain no check of the bind, and the box had been carrying `HOST=0.0.0.0` in its
+machine-local file until 2026-11-19, rescued from applying only because a later line set `HOST` again. So:
+
+- `serve/native-flashnext.sh` **refuses** a non-loopback `HOST` (exit 1, naming the door and the four guarded
+  prefixes) unless `ALLOW_LAN_ENGINE=1` says it out loud, in which case it WARNs about what is being walked past;
+- `tools/recipe-check.py` gained an **exposure read**: which of *our* ports sit on a non-loopback address (not
+  every listener -- `ss -ltn` on this box lists 80-odd, including sshd, `127.0.0.54:53` and the engine's own rank
+  sockets on `192.168.1.120`, and a report that sweeps them in hides the one fact that matters), what the door
+  says about its own key, and what the engine does with an uncredentialed `/v1/models`. On this box: `0.0.0.0:8080`
+  and nothing else, engine answers 200 with no credential, door reporting its key state. Given a saved payload it
+  prints `exposure: NOT ASKED` rather than reassuring anyone that nothing is exposed -- same rule as the launch
+  flags: what was NOT measured has to say so whichever verdict came first;
+- `tests/test_webui.py` had two checks that asserted the old posture with a fabricated `HOST=10.20.30.40` ("a
+  machine-local env beats the repo default" and the `METAONLY` record of it). They are now driven by `127.0.1.1`
+  -- legal, and it proves the rule is about the net -- and three new checks cover the refusal: nonzero exit, no
+  `launch:` line, and the override printing what it walks past. Plus one live check that the exposure read finds
+  exactly one of our sockets facing the LAN, and that it is the door.
+
+Live on this box as of 2026-11-19, engine never touched (checked in flight first: one request was running -- seq
+95932, 103,302 prompt tokens / 423 completion, 3.3 s -- and it had finished before the door restarted). The key is
+48 hex chars in `~/.config/r9700-stack/gateway.key`, mode 0600, named in the machine-local file as
+`GATEWAY_KEY_FILE`, with `GATEWAY_KEY_ENFORCE=` deliberately empty and a comment saying what has to be true before
+that is worth flipping. The door's first line now reads `auth: keyed by default, open=15 exact + ['/web/'] prefix;
+asked of remote peers only (loopback exempt...); key=set from file:...; observing`. Measured through it: a peer on
+`192.168.1.120` asking `/v1/models` with no credential got 200 and was counted (`auth_would401 1`,
+`unkeyed_paths {"/v1/models": 1}`), the same request with the key counted `auth_ok 1`, `GET /get_world_size`
+through the door is still 404, and the LiteLLM hosts on .200/.222 reconnected by themselves on new ports. The
+enforcement decision is now a reading off `/api/gate` rather than a guess about what those hosts send.
+
 ## The front door stops forwarding the engine's control plane, because `--api-key` does not guard it
 
 `serve/gateway.py` routes "everything else" to the engine. Enumerating the installed wheel's route table (0.32)

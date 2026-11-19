@@ -106,10 +106,31 @@ if [ "$missing_orjson" = missing ]; then
 fi
 
 # Machine-local launch defaults, deliberately kept outside the repo. The repo's own defaults are the conservative
-# ones: HOST=127.0.0.1, which is also upstream's (`args.host or "127.0.0.1"`). This box is not served over loopback
-# -- `ss` shows 192.168.1.130 and 192.168.1.200 holding :8080 open -- so the bind address is a fact about the box,
-# not about the code, and it lives here where it survives a checkout reset and gets named in the log at every
+# ones: HOST=127.0.0.1, which is also upstream's (`args.host or "127.0.0.1"`). Whether the box is REACHED from the
+# LAN is a fact about the box and lives in that file -- but it is not the same question as whether the ENGINE is
+# reached from it: the clients holding :8080 (`ss` here: 192.168.1.130, .200, .222) are talking to
+# serve/gateway.py, and the engine behind that door answers loopback only. See the check below.
 : ${HOST:=127.0.0.1}
+
+# The engine binds loopback, and this is the place that enforces it rather than commenting about it -- a comment
+# is what let this box carry `HOST=0.0.0.0` in its machine-local env until 2026-11-19, rescued from ever applying
+# only because a LATER line in the same file set HOST again. serve/gateway.py is the one socket this box puts on
+# a LAN address, and it is where every decision about what may be asked lives: it does not forward the 23-path
+# engine control plane, and it asks its own key of remote peers. An engine bound to a LAN address walks past both,
+# and what vLLM's own --api-key covers is narrower than people assume -- GUARDED_PREFIX is /v1, /v2, /inference,
+# /cohere (entrypoints/serve/middleware/authenticate.py), so /tokenize, /classify and the control plane stay
+# unguarded. That is "exposed and keyless", so it is refused here and the operator has to say it out loud.
+case "$HOST" in
+    127.*|localhost|::1) ;;
+    *) if [ "${ALLOW_LAN_ENGINE:-}" != "1" ]; then
+         echo "FATAL: this launcher would bind the engine to $HOST. The engine carries no key and guards four" >&2
+         echo "       prefixes, not its own control plane -- serve/gateway.py is the front door and the only" >&2
+         echo "       LAN socket (GATEWAY_BIND). Point the clients at the door, or say what you mean:" >&2
+         echo "       ALLOW_LAN_ENGINE=1 (and then put a real --api-key on the engine yourself)." >&2
+         exit 1
+       fi
+       echo "WARN: engine bound to $HOST, past the front door: no key here, control plane reachable. Read the"             "comment above before shipping that." ;;
+esac
 # stock ROCm 7.2-era vLLM wheels link OpenMPI; on a box without root we unpacked the runtime debs locally
 OPENMPI=${OPENMPI:-$HOME/opt/openmpi/usr/lib/x86_64-linux-gnu}
 [ -d "$OPENMPI" ] && export LD_LIBRARY_PATH=$OPENMPI${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}

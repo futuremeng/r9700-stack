@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -299,6 +300,64 @@ def compare_flags(prod_cmd, live_line):
     return bad
 
 
+def exposure(gateway_port, engine_port):
+    """What this box shows the network, read rather than assumed: which of our sockets sit on a non-loopback
+    address, what the front door says about its own key, and whether the engine behind it answers a model request
+    with no credential at all.
+
+    Worth asking every time this runs, because the whole front-door design rests on one claim that lives in a file
+    outside this repo -- "the engine, the sidecars and the page are loopback-only, the door is the only LAN socket"
+    -- and this box spent weeks carrying `HOST=0.0.0.0` in that file (2026-11-19: removed, and the launcher now
+    refuses a non-loopback HOST outright).
+    """
+    # Only OUR ports. `ss -ltn` on this box lists 80-odd listeners -- sshd, resolved, and the engine's own
+    # intra-rank sockets on 127.0.1.1 and 192.168.1.120 -- and a report that sweeps them in is a wall of noise
+    # whose one real finding is impossible to see.
+    ours = {str(p) for p in (gateway_port, engine_port)}
+    for name in ("WEBUI_PORT", "GATEWAY_PORT", "ENGINE_PORT", "EMBED_PORT", "RERANK_PORT"):
+        if os.environ.get(name, "").isdigit():
+            ours.add(os.environ[name])
+    for name in ("R9K_WEB_PORT", "EMBED_PORT", "RERANK_PORT"):
+        if os.environ.get(name, "").isdigit():
+            ours.add(os.environ[name])
+    lan = []
+    try:
+        out = subprocess.run(["ss", "-ltn"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    for line in out.splitlines():
+        m = re.search(r"([\d.]+|\[?[0-9a-f:.]+\]?):(\d+)\s", line)
+        if not m or m.group(2) not in ours:
+            continue
+        addr = m.group(1).strip("[]")
+        # loopback is a NET: 127.0.1.1 is this host's own name on lo, and a rule that excludes only 127.0.0.1
+        # calls it exposed
+        if addr.startswith("127.") or addr in ("::1", "[::1]", "::1"):
+            continue
+        lan.append(f"{addr}:{m.group(2)}")
+    lan = sorted(set(lan))
+    door, gate = None, True
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{gateway_port}/api/gate", timeout=5) as f:
+            gate = json.load(f)
+            door = gate.get("auth")
+    except (OSError, ValueError):
+        gate = None
+    if door is None and gate is None:
+        door = "down"
+    elif door is None:
+        door = "old"
+    eng = "no answer"
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{engine_port}/v1/models", timeout=5) as f:
+            eng = f"answers {f.status} with NO credential"
+    except urllib.error.HTTPError as e:
+        eng = f"answers {e.code} with no credential"
+    except OSError:
+        pass
+    return lan, door, eng
+
+
 def looks_like_monitor(argv):
     """Is this `argv` the monitor's own command line rather than the serve's?
 
@@ -332,6 +391,13 @@ def main(argv):
         print(f"no status from {arg}: {type(e).__name__}: {e}", file=sys.stderr)
         return 2
     url = url or arg
+    # ports: the door is whatever URL this tool was pointed at; the engine is what the payload says, falling back
+    # to this box's convention (ENGINE_PORT, else PORT, else 8180)
+    m = re.search(r"://[^/:]+:(\d+)", url)
+    gw_port = int(m.group(1)) if m else 8080
+    eng_port = ((st.get("meta") or {}).get("port") or (st.get("config") or {}).get("port")
+                or os.environ.get("ENGINE_PORT") or os.environ.get("PORT") or 8180)
+    lan, door_auth, eng_ans = (exposure(gw_port, eng_port) if url_mode else ([], None, "not asked (file payload)"))
     # Which payload the FLAG claim is resting on, said out loud, because the page that answers the front door is
     # not necessarily the process that was launched.
     flag_src, argv_note = url, ""
@@ -366,7 +432,8 @@ def main(argv):
     flags = compare_flags(cmd, st.get("argv") or "") if st.get("argv") else []
     if as_json:
         print(json.dumps({"production_launch": cmd, "live_launch": st.get("launch"), "deviations": dev,
-                          "env_deviations": env_dev, "flag_deviations": flags}))
+                          "env_deviations": env_dev, "flag_deviations": flags,
+                          "exposure": {"lan_sockets": lan, "door_auth": door_auth, "engine": eng_ans}}))
     elif not dev and not env_dev and not flags:
         if st.get("argv"):
             print(f"PRODUCTION recipe ({flag_src}): every measured knob, every R9K_/R9700_ env name and every "
@@ -415,6 +482,29 @@ def main(argv):
         print(f"  tmux new-session -d -s r9700-native-flashnext 'WEBUI=same LOG=<the launch's log> "
               f"bash $PWD/serve/native-flashnext.sh 2>&1 | tee -a <log>'")
         print(f"the live box was started as: {st.get('launch')}")
+    if not url_mode:
+        # "no socket of ours is exposed" is a claim about measurements that were never taken. Same lesson as the
+        # launch flags above: what was NOT checked has to read identically whichever verdict came first.
+        print("\nexposure: NOT ASKED -- a saved payload proves nothing about which sockets this box has open")
+        return 1 if (dev or env_dev or flags) else 0
+    print(f"\nexposure ({url}): " + (", ".join(lan) if lan else "no socket of ours on a non-loopback address"))
+    others = [x for x in lan if x.split(":")[-1] != str(gw_port)]
+    if others:
+        print(f"  WARN: {', '.join(others)} is on a LAN address and is NOT the front door -- a client that reaches "
+              f"it directly walks past the door's key and past its refusal to forward the engine control plane")
+    if isinstance(door_auth, dict):
+        k = door_auth["key"]
+        print(f"  the door: key {'set (' + str(k['chars']) + ' chars, from ' + k['source'] + ')' if k['set'] else 'NOT SET'}"
+              f", {'ENFORCING' if door_auth['enforce'] else 'observing'}"
+              f", loopback {'keyed too' if not door_auth['loopback_exempt'] else 'exempt'}"
+              f", refused {door_auth['counts']['auth_401']} (would-have-been {door_auth['counts']['auth_would401']})")
+    elif door_auth == "old":
+        print(f"  the door: :{gw_port} answers /api/gate but carries no auth block -- a door older than this "
+              f"check is running; restart it to make that claim provable")
+    else:
+        print(f"  the door: no /api/gate answer from :{gw_port} -- is the front door even running?")
+    print(f"  the engine on :{eng_port} {eng_ans} -- expected while the door is the thing that asks, and a real "
+          f"problem for anything this engine can reach without one")
     return 1 if (dev or env_dev or flags) else 0
 
 
