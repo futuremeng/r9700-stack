@@ -1,5 +1,63 @@
 # Changelog
 
+## A request row that has no body has to say who did not keep one, and the only process that could is the door
+
+Opened on the live box: `chatcmpl-95c0b444afff244f · null` with Input / Output / Reasoning / API response all empty,
+and the note still claiming "The request body as it arrived." Same class as a cap printed without an answer: the
+pane was reporting a lookup that found nothing, when nothing on this topology had ever kept a body.
+
+- The payload **already carried** the reason (`input_note`); the page read it only under `detail.source ===
+  "engine"`, and `source` is a key of `/api/requests` (the list) that never appears on the `/api/requests?id=`
+  detail payload -- so that arm had never run, for any row, on any page. The pane now takes its sentence from the
+  payload, and `detail-title` stopped interpolating `value.path` raw (an engine-stats row has no path, and the word
+  "null" was in the heading).
+- Why no path: read the dataclass, not the docs -- `vllm/v1/metrics/stats.py:288` `FinishedRequestStats` carries
+  `request_id`, token counts, timings, finish reason; **no text, no path, no model**. On this box the Monitor list
+  is the serve's own journal, attached read-only, so the sidecar never held those bodies either.
+- Three arms, three sentences (engine stats / attached journal / journal of an earlier launch; relay rows keep
+  bodies). The live box caught two wrong labels immediately: `boot` cannot mean "carried over" (a live row carries
+  its own boot, and a boot is `<seconds>-<pid>`, so two journals opened in the same second share one -- every live
+  row was labelled "restored"), and "restored from an earlier launch" is a claim about a dead launch when the
+  writer is the **live** serve. `replay()`/`absorb()` now stamp `_restored`, never journalled or listed.
+- Bodies are now possible at all: `GATEWAY_CAPTURE=<bytes>` + the request header `X-R9K-Capture: 1` make the door
+  tap that one request -- the only process that pipes both directions. Bounded twice (bytes per side, last
+  `GATEWAY_CAPTURE_KEEP` rows in RAM), indexed by the id in the engine's own answer, kept even when the connection
+  died (`state: "incomplete"`), read back at `/api/capture`, which is **keyed by exception** because those rows are
+  prompt text. A request that does not ask pays one header regex and is stored nowhere. The tap keeps a separate
+  >= 2 KiB index head, because the id lives past the framing and a 32-byte cap would have stored rows nothing
+  could ever ask for.
+- Found by a test, fixed as a bug: `Records.start` stored `body[:CAP]` and `get` concatenated a str marker, so a
+  bytes body would 500 the detail pane; it normalises now and the check feeds it bytes on purpose.
+- Live: an opted-in 102-byte request came back with `path=/v1/chat/completions`, `model=Qwen3.8`, `bytes_out 811`,
+  the prompt intact and the model's `reasoning` extracted (`content` was `null`: the whole 24-token budget went to
+  thinking). A row that did not ask says so, names the file and its writer, and adds that the door was asked and
+  has no capture. Sidecar restarted; engine untouched, so the merged page on the engine's port keeps the old
+  sentence until the next restart. `tests/test_gateway.py` 90 -> 100, `tests/test_webui.py` +21.
+
+## The two context histograms start sharing a bar scale, because each one scaling to its own maximum made two full-width bars mean different things
+
+The card's own thesis is that a prompt's row count is traffic and its uncached tokens are work -- and it drew both
+histograms as **counts only**, letting the reader rank bands by the quantity the card says is the wrong one. This
+box's list says how wrong: across the 100 rows in view, uncached `1k-8k` held **67 rows / 158,726 tokens** and
+`64k-128k` held **2 rows / 167,217 tokens**. Two rows: 3% of the list, 44.5% of everything the engine computed. As
+counts side by side, that band reads like a footnote.
+
+- `_dist` now publishes the bands summed in tokens (`band_tok`), from the same loop that counts them; the page
+  prints rows / % of rows / tokens / % of tokens per band. Both masses are checked to add up to the total printed
+  above them, and `tests/render-monitor.mjs` recounts them from the rows the page was fed (exactly in fixture mode;
+  live mode fetches the summary and the rows a moment apart and one 100k-token row makes any tolerance on a mass
+  comparison meaningless -- the harness says so rather than loosening the number).
+- One bar scale across both cards (`scale = biggest band in either`, stamped as `data-scale`), with a harness check
+  that the two cards agree. Amber keeps meaning "more than one 8,192-token step of prefill".
+- Bands are aligned grid rows with one axis line instead of a wrapping run of chips, and the axis and the rows are a
+  **single CSS grid rule** -- an earlier draft wrote the column template twice, which would have made "the columns
+  line up" a claim resting on two strings staying equal.
+- No `band_tok` in the payload (older sidecar, or the merged page: `serve/plugin/r9700_webui` does
+  `import webui as W` at engine start) means **em-dashes and `data-mass="none"`**, not zeros. Live on this box: the
+  sidecar restarted and shows the masses; the engine was not touched, so its own page on :8180 keeps the dashes
+  until the next restart. `tests/test_webui.py` covers the shared scale, the masses summing, the axis/row grid, and
+  the none-is-not-zero rule.
+
 ## The key goes on the front door, not on the engine, because the engine's `--api-key` guards four prefixes and sits in `ps`
 
 The entry above removed the door's exposure of the control plane. This one puts the credential decision in the same

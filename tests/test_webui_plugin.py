@@ -112,8 +112,10 @@ ck("on a build that does not publish the mean, the fallback is the engine's OWN 
    "so a 128-token request reads 79.4 tok/s and not the 80 that counts the prefill's first token as a decode token",
    abs(_t2["predicted_per_second"] - 127.0 / 1.6) < 1e-9 and "127 tokens after the first" in _t2["speed_basis"],
    json.dumps(_t2))
-ck("the gaps say what is missing instead of showing an empty body",
-   d["input"] is None and "serve/webui.sh with WEBUI_MODE=proxy" in d["input_note"])
+ck("the gaps say what is missing -- and cite the record rather than the docs: FinishedRequestStats has no text, "
+   "and not even a path or a model name -- instead of showing an empty body under a confident heading",
+   d["input"] is None and d["source"] == "engine" and "FinishedRequestStats" in d["input_note"]
+   and "not even a path" in d["input_note"], str(d.get("input_note"))[:220])
 ck("detail lookup by id only", er.get("nope") is None)
 for i in range(5):
     er.add(Fin(request_id=f"x{i}"))

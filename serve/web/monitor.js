@@ -182,12 +182,31 @@ function list() {
 // -- one request, read in full ---------------------------------------------------------------------
 function content() {
   if (!detail) return;
-  if (detail.source === "engine") {
-    // The merged monitor reads the engine's own per-request stats: tokens and timings, never the text.
-    // Saying so beats three panes that each invent a different apology.
-    text("content", detail.input_note || "The engine reports timings and token counts, not the text.");
-    text("content-note", "From vLLM's FinishedRequestStats. To capture bodies, run the separate sidecar "
-      + "(serve/webui.sh with WEBUI_MODE=proxy): it sits between the client and the serve.");
+  // "No input." under the heading "The request body as it arrived." is the failure this function exists to avoid:
+  // it reads as a lookup that found an empty body, when in fact nobody on this box kept one -- and the payload
+  // already says which process handled the row and what it keeps. The sentence comes from the payload
+  // (input_note), because the sidecar is the process that knows which of the three arms a bodyless row belongs to.
+  const why = detail.input_note
+    ? detail.input_note
+    : (detail.source === "journal"
+      ? "This row was restored from the request journal, which keeps timings and token counts but never the text."
+      : "No process on this box kept a body for this request.");
+  const how = "The only process here that ever holds both a request and its answer is the front door, and it keeps "
+    + "a copy only of requests that ask: set GATEWAY_CAPTURE=<bytes> in the machine-local env and send the request "
+    + "with the header X-R9K-Capture: 1. (A sidecar run as a relay instead -- WEBUI_MODE=proxy -- keeps every body "
+    + "it carries, up to 256 KiB.)";
+  let capNote = "";
+  if (detail.capture) {
+    // Merged in from the door's tap. The provenance goes in the note at the bottom, because a truncated copy of a
+    // prompt and a complete API response look identical on screen.
+    const c = detail.capture;
+    capNote = ` Copied by the front door at ${stamp(c.at)}: ${fmt(c.bytes_in)} bytes in, ${fmt(c.bytes_out)} out`
+      + (c.input_truncated || c.response_truncated ? ", truncated -- the API response itself was not shortened" : "")
+      + (c.state === "incomplete" ? ", and the connection ended before the answer did" : "") + ".";
+  }
+  if (!detail.input && !detail.response && !detail.output) {
+    text("content", why);
+    text("content-note", how);
     return;
   }
   let value = detail[pane];
@@ -195,16 +214,17 @@ function content() {
   if (value === undefined || value === null || value === "") {
     value = pane === "response" ? (detail.response || "The response body was not kept (an empty or non-JSON answer).")
       : pane === "reasoning" ? "No separate reasoning content in this response."
-      : pane === "output" ? "No text kept for this request." : detail.input || "No input.";
+      : pane === "output" ? "The answer's text is not in the copy kept for this row -- the API response pane has "
+                          + "what was captured, raw." : "No input.";
   }
   if (pane === "input" || pane === "response") { try { value = JSON.stringify(JSON.parse(value), null, 2); } catch (_) {} }
   text("content", value);
-  const note = pane === "input" ? "The request body as it arrived."
+  text("content-note", (pane === "input" ? "The request body as it arrived."
     : pane === "output" ? "What the model said. Streaming text, concatenated."
     : pane === "reasoning" ? "reasoning_content, when the model separates it."
-    : "The response body as it left the server.";
-  text("content-note", note + (detail.output_truncated && pane === "output"
-    ? " Our copy is truncated at 256 KiB; the API response was not shortened." : ""));
+    : "The response body as it left the server.")
+    + (detail.output_truncated && pane === "output"
+      ? " Our copy is truncated at 256 KiB; the API response was not shortened." : "") + capNote);
 }
 
 async function showDetail() {
@@ -214,7 +234,9 @@ async function showDetail() {
   if (selected !== id) return;                       // you clicked another row while this was in flight
   detail = value;
   $("selection").hidden = false; $("no-selection").hidden = true;
-  text("detail-title", `${value.id} · ${value.path}`);
+  // An engine-stats row has no path and no model: FinishedRequestStats carries neither, so printing the field
+  // raw puts the word "null" in the heading of the panel a user is reading.
+  text("detail-title", [value.id, value.path, value.model].filter(Boolean).join(" \u00b7 "));
   text("detail-status", value.state);
   $("detail-status").className = `tag tag--${value.state}`;
   text("detail-time", stamp(value.started_at));
@@ -1017,8 +1039,18 @@ function paintLengths(s) {
     }
   }
 
-  lenBars("len-bars-p", bands, p.bands || []);
-  lenBars("len-bars-u", bands, u.bands || []);
+  // One scale for both histograms. Each card used to scale to its own maximum, which made the two full-width bars
+  // mean different things a few pixels apart -- and "48 rows came in at 64k-128k, 4 of them had to be computed
+  // there" is the whole reason the two are printed next to each other. So full width = the biggest band in EITHER
+  // card, and the comparison is a shape rather than a guess.
+  const scale = Math.max(1, ...(p.bands || []), ...(u.bands || []));
+  lenBars("len-bars-p", bands, p.bands || [], p.band_tok || [], scale, p.n || L.rows, p.sum);
+  lenBars("len-bars-u", bands, u.bands || [], u.band_tok || [], scale, u.n || L.rows, u.sum);
+  text("len-scale", `both histograms are drawn to one scale: a full bar is ${fmt(scale)} row${scale === 1 ? "" : "s"}. `
+       + `Amber bands are the ones whose prefill cannot hide inside a single step (${fmt(8192)} tokens, this `
+       + `launch's --max-num-batched-tokens). The two right-hand pairs are rows and their share of the rows in this `
+       + `card, then the TOKENS those rows carry and their share of the total above -- because a band with four rows `
+       + `in it can still be most of the work.`);
   qualText("len-prompt", `${fmt(p.p95)} p95 · ${fmt(p.max)} max tok`, `median ${fmt(p.median)}`);
   text("len-prompt-note", `${fmt(p.sum)} prompt tokens sent in all`);
   qualText("len-uncached", `${fmt(u.p95)} p95 · ${fmt(u.max)} max tok`, `median ${fmt(u.median)}`);
@@ -1054,19 +1086,45 @@ function paintLengths(s) {
 // One chip per band, count inside, width proportional to the count. Chips rather than a stacked bar on purpose:
 // a 338/0/23/33/6 traffic shape drawn as one bar puts the interesting band (six requests over 64k) under a
 // pixel wide, and the whole reason this card exists is the tail.
-function lenBars(id, bands, counts) {
+// One band per row, columns aligned with the axis labels in the HTML: band, bar, rows, share of rows, tokens,
+// share of tokens. The bar is the ROW count (that is what the shape claim is), and `scale` comes from the caller
+// across BOTH histograms so the two cards are comparable. The token pair is the cost claim: 48 rows in 64k-128k
+// is a shape, the 3.9M tokens those rows carry is why anyone should care.
+function lenBars(id, bands, counts, mass, scale, rows, sumTok) {
   const el = $(id);
   if (!el) return;
-  const max = Math.max(1, ...counts);
+  const sc = Math.max(1, scale || 1);
+  // A sidecar that publishes no per-band tokens is answered with em-dashes, not zeros: "0 tokens in this band" and
+  // "this payload does not say" are different claims, and the second one is the one that is true.
+  const hasMass = Array.isArray(mass);
   const html = bands.map((b, i) => {
     const c = counts[i] || 0;
-    const w = c ? Math.max(3, Math.round(58 * c / max)) : 2;
+    const tok = hasMass ? (((mass || [])[i]) || 0) : null;
+    const w = c ? Math.max(1.5, (100 * c) / sc) : 0;
     const tail = (b.lo || 0) >= 8192 ? 1 : 0;
+    const share = rows ? Math.round((100 * c) / rows) : null;
+    const tshare = (sumTok && tok !== null) ? Math.round((100 * tok) / sumTok) : null;
     return `<div class="len-bar" data-band="${b.label}" data-tail="${tail}" data-count="${c}"`
-         + ` title="${c} of the rows in view fall in ${b.label} tokens">`
-         + `<span>${b.label}</span><i style="width:${w}px"></i><b>${c.toLocaleString("en-US")}</b></div>`;
+         + ` data-mass="${tok === null ? "none" : tok}" data-scale="${sc}"`
+         + ` title="${c} of the ${fmt(rows)} rows in view fall in ${b.label} tokens; those rows carry `
+         + `${tok === null ? "no token count in this payload" : fmt(tok)} of the ${fmt(sumTok)} tokens this card `
+         + `totals. Bar = rows, drawn on the same scale as the other card (full width = ${fmt(sc)} rows).">`
+         + `<span>${b.label}</span><i class="track"><i style="width:${w.toFixed(2)}%"></i></i>`
+         + `<b>${fmt(c)}</b><em>${share === null ? "\u2014" : `${share}%`}</em>`
+         + `<span class="tok">${lenTok(tok)}</span><em>${tshare === null ? "\u2014" : `${tshare}%`}</em>`
+         + `</div>`;
   }).join("");
   if (el.innerHTML !== html) el.innerHTML = html;
+}
+
+// Compact on purpose: seven rows of seven-digit token counts is a wall of digits, and this column's job is
+// comparison, not arithmetic -- the exact total is the line above the card, and the card's note keeps the exact
+// per-band counts in the tooltip.
+function lenTok(n) {
+  if (!isnum(n) || !n) return "\u2014";
+  if (n >= 1e6) return `${fmt(n / 1e6, 1)}M`;
+  if (n >= 1e3) return `${fmt(Math.round(n / 1e3))}k`;
+  return fmt(n);
 }
 
 // A tick on the window bar. Hidden when there is nothing to place (no median in view, or a step larger than the

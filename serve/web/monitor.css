@@ -187,17 +187,29 @@ main>.down-line{margin:10px 0 4px}
    stacked bar draws the six expensive requests a pixel wide, and the tail is the reason the card exists. Bands
    at or above one step (8,192 = --max-num-batched-tokens) get the amber edge: that is the first band whose
    prefill cannot hide inside a single step. */
-.len-block{margin:10px 0 0}
+/* One column template, defined once: the axis and every band row read the same custom property, so "the columns
+   line up" is a single definition rather than two strings that have to stay equal. Each row keeps its own box --
+   display:contents would have folded them into the parent grid and lost the row tooltip along the way. */
+.len-block{margin:10px 0 0;--len-grid:7.5em minmax(48px,1fr) 4.5em 5.5em 5.5em 6.5em}
 .len-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
 .len-head .value--sm{font-size:15px}
-.len-bars{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 0}
-.len-bar{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--st-line);border-radius:4px;
-         padding:2px 7px;font-size:12px}
-.len-bar span{opacity:.7}
-.len-bar i{display:inline-block;height:8px;border-radius:2px;background:var(--st-line)}
+/* Bands as aligned rows, not chips: the card's whole argument is the comparison BETWEEN the two histograms and
+   between a band's row count and the tokens it carries, and a wrapping run of chips makes the eye re-match the
+   bands on every line. One grid, shared by the axis and the rows, so every column lines up. */
+.len-axis,.len-bar{display:grid;grid-template-columns:var(--len-grid);gap:6px;margin:6px 0 0}
+.len-axis{font-size:10px;letter-spacing:.04em;text-transform:uppercase;opacity:.55;padding:0 2px;white-space:nowrap}
+.len-bar{align-items:center;font-size:12px}
+.len-axis span:nth-child(3),.len-bar b,.len-bar em,.len-bar .tok{justify-self:end;text-align:right}
+.len-bar>span{opacity:.72;font-variant-numeric:tabular-nums}
+.len-bar .track{display:block;height:11px;border-radius:2px;background:var(--st-line-soft);position:relative}
+.len-bar .track>i{display:block;height:100%;border-radius:2px;background:var(--st-line)}
 .len-bar b{font-variant-numeric:tabular-nums;font-weight:600}
-.len-bar[data-tail="1"]{border-color:#e0a13c}
-.len-bar[data-tail="1"] i{background:#e0a13c}
+.len-bar em{font-style:normal;opacity:.6;font-variant-numeric:tabular-nums}
+.len-bar .tok{opacity:.8;font-variant-numeric:tabular-nums}
+.len-bar[data-count="0"]>span,.len-bar[data-count="0"] .tok{opacity:.38}
+.len-bar[data-count="0"] .track>i{background:transparent}
+.len-bar[data-tail="1"] .track>i{background:#e0a13c}
+.len-bar[data-tail="1"]>span{color:#e0a13c}
 /* The headline: four numbers, big enough to read from across the room, because they are the four a client can act
    on -- what a normal request costs, what the tail costs, what the worst one in view cost, and how much of it the
    cache spared. Band chips stay below for SHAPE (the tail is three requests, and a percentile hides that). */

@@ -1098,18 +1098,22 @@ const bar = t("error");
     const labels = (L.bands || []).map((b) => b.label);
     const EDGES = [1024, 8192, 32768, 65536, 131072, 262144];
     const band = (v) => { for (let i = 0; i < EDGES.length; i++) { if (v < EDGES[i]) return i; } return EDGES.length; };
-    const recount = { p: new Array(EDGES.length + 1).fill(0), u: new Array(EDGES.length + 1).fill(0) };
+    // Counts AND token masses per band, recounted from the rows the page was fed: the masses are what the cost
+    // column claims, and a per-band breakdown that does not add up to the total above it is a decoration.
+    const recount = { p: new Array(EDGES.length + 1).fill(0), u: new Array(EDGES.length + 1).fill(0),
+                      ptok: new Array(EDGES.length + 1).fill(0), utok: new Array(EDGES.length + 1).fill(0) };
     let sumU = 0, over = 0, unknown = 0, big = null;
     for (const r of rpays) {
       const p = r.usage && r.usage.prompt_tokens;
       if (typeof p !== "number") continue;
-      recount.p[band(p)]++;
+      recount.p[band(p)]++; recount.ptok[band(p)] += p;
       const det = r.usage && r.usage.prompt_tokens_details;
       const c = det ? det.cached_tokens : undefined;
       if (typeof c !== "number") { unknown++; continue; }
       const un = Math.max(0, p - c);
       recount.u[band(un)]++; sumU += un;
       if (un >= 8192) over++;
+      recount.utok[band(un)] += un;
       if (!big || un > big.uncached) big = { uncached: un, id: r.id || `req-${r.seq}` };
     }
     const chips = (id) => {
@@ -1238,6 +1242,71 @@ const bar = t("error");
         console.log(`BAD  the ${m[1]} band is marked data-tail="${m[2]}" while its lower edge is `
                     + `${overStep ? "at or above" : "below"} one 8,192-token step`);
         process.exitCode = 1;
+      }
+    }
+    // The band rows carry the TOKENS as well as the rows, and both cards share one bar scale. A count says what
+    // came in; the tokens say what it cost, and the two histograms only mean anything next to each other.
+    const mass = (id) => {
+      const out = {};
+      for (const m of String(html(id) || "").matchAll(/data-band="([^"]+)"[^>]*data-mass="(\d+|none)"/g)) {
+        out[m[1]] = m[2] === "none" ? null : Number(m[2]);
+      }
+      return out;
+    };
+    const scales = [...String(html("len-bars-p") + html("len-bars-u")).matchAll(/data-scale="(\d+)"/g)]
+      .map((m) => Number(m[1]));
+    const wantScale = Math.max(1, ...(L.prompt.bands || []).concat(L.uncached.bands || []));
+    if (scales.length !== labels.length * 2 || scales.some((s) => s !== wantScale)) {
+      console.log(`BAD  the two histograms are not drawn on one scale (scales seen: `
+                  + `${[...new Set(scales)].join(",") || "none"}; the biggest band in either card is `
+                  + `${wantScale} rows) -- each card scaling to its own maximum made two full-width bars mean `
+                  + "different things a few pixels apart, which is the one comparison this card exists to invite");
+      process.exitCode = 1;
+    }
+    if (!Array.isArray(L.prompt.band_tok)) {
+      const mp = mass("len-bars-p"), any = Object.values(mp).some((v) => v !== null);
+      if (any || Object.keys(mp).length !== labels.length) {
+        console.log("BAD  this payload publishes no per-band token mass and the page still put a number in the "
+                   + "tokens column -- no mass and zero mass are different claims");
+        process.exitCode = 1;
+      } else {
+        console.log("  (this payload carries no band_tok: the tokens column prints em-dashes, not zeros)");
+      }
+    } else {
+      const mp = mass("len-bars-p"), mu = mass("len-bars-u");
+      console.log(`  prompt tok  ${labels.map((l) => `${l}:${mp[l] === undefined ? "?" : mp[l]}`).join(" ")}`
+                  + ` = ${L.prompt.sum}`);
+      console.log(`  uncach tok  ${labels.map((l) => `${l}:${mu[l] === undefined ? "?" : mu[l]}`).join(" ")}`
+                  + ` = ${L.uncached.sum}`);
+      labels.forEach((l, i) => {
+        if (mp[l] !== (L.prompt.band_tok || [])[i] || mu[l] !== (L.uncached.band_tok || [])[i]) {
+          console.log(`BAD  the ${l} band prints ${mp[l]}/${mu[l]} tokens and the payload says `
+                      + `${(L.prompt.band_tok || [])[i]}/${(L.uncached.band_tok || [])[i]}`);
+          process.exitCode = 1;
+        }
+      });
+      const sump = Object.values(mp).reduce((a, b) => a + (b || 0), 0);
+      const sumu = Object.values(mu).reduce((a, b) => a + (b || 0), 0);
+      for (const [what, got, want] of [["prompt", sump, L.prompt.sum], ["uncached", sumu, L.uncached.sum]]) {
+        if (sump || sumu ? got !== want : false) {
+          console.log(`BAD  the ${what} bands add to ${got} tokens and the card's own total line says ${want} `
+                      + "-- a per-band breakdown that does not sum to the total it is under is a decoration");
+          process.exitCode = 1;
+        }
+      }
+      // Exactly, and only in fixture mode: live mode fetches the summary and the rows a moment apart, so a row can
+      // land between them (the count check above carries a tolerance for that; a 100k-token row makes any tolerance
+      // here meaningless).
+      if (FIX && rpays.length) {
+        let moff = 0;
+        labels.forEach((l, i) => {
+          moff += Math.abs((mp[l] || 0) - (recount.ptok[i] || 0)) + Math.abs((mu[l] || 0) - (recount.utok[i] || 0));
+        });
+        if (moff) {
+          console.log(`BAD  the per-band token masses do not match a recount of the rows the page was fed `
+                      + `(${moff} off) -- the cost column describes this list or nothing`);
+          process.exitCode = 1;
+        }
       }
     }
     const need = { "len-read": nf(L.uncached.sum) + " tok",

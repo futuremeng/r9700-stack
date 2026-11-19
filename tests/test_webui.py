@@ -594,6 +594,17 @@ ck("uncached bands count the WORK, and a cached 100k prompt lands where its 98k 
 ck("sums carry both, so the gap between them (the cache) is aritable on the page",
    _szst["prompt"]["sum"] == 145500 and _szst["uncached"]["sum"] == 139500
    and _szst["uncached"]["cached_tokens"] == 6000, str(_szst["prompt"]["sum"]) + " " + str(_szst["uncached"]))
+ck("the same bands are also summed in TOKENS, because a row count is a shape and the tokens are the cost: these "
+   "four rows put one row in 1k-8k (a 5,000-token prompt) and one in 64k-128k (100,000), and the mass column is "
+   "what says the second is 20x the first",
+   _szst["prompt"]["band_tok"] == [500, 5000, 0, 40000, 100000, 0, 0]
+   and _szst["uncached"]["band_tok"] == [1500, 0, 0, 40000, 98000, 0, 0],
+   str(_szst["prompt"]["band_tok"]) + " " + str(_szst["uncached"]["band_tok"]))
+ck("the per-band masses add up to the total the card prints above them -- a breakdown that does not sum to its "
+   "own total is a decoration",
+   sum(_szst["prompt"]["band_tok"]) == _szst["prompt"]["sum"]
+   and sum(_szst["uncached"]["band_tok"]) == _szst["uncached"]["sum"],
+   f"{sum(_szst['uncached']['band_tok'])} vs {_szst['uncached']['sum']}")
 ck("over_step names the rows whose prefill cannot hide inside one 8192-token step",
    _szst["uncached"]["over_step"] == 2, str(_szst["uncached"]["over_step"]))
 ck("the distributions carry p90 beside p95/p99, because the card's HEADLINE reads p50/p90/max and a missing "
@@ -724,6 +735,176 @@ ck("an OWNED journal is never followed (it has no other writer, and following wo
    _OW.follow() == [], str(_OW.follow()))
 ck("and following does not turn an attached journal into a writer (no append handle, no rotation)",
    _J.f is None and _J.append({"seq": 99, "boot": "x"}) is False, str(_J.f))
+
+
+# --------------------------------------- (2e) who kept the body, and what the pane is allowed to say ----
+# A row with timings and no text is the honest shape here: the engine's FinishedRequestStats (read the dataclass in
+# the installed wheel, not the docs) carries request_id, token counts and the timing breakdown -- no body, no path,
+# no model. What must never happen is a pane that prints "No input." under the heading "The request body as it
+# arrived.", because that reads as a lookup that found an empty body. Three arms, three sentences:
+def _stats(rid="chatcmpl-e1", gen=5, prompt=100, cached=40):
+    return types.SimpleNamespace(request_id=rid, e2e_latency=1.0, num_prompt_tokens=prompt,
+                                 num_cached_tokens=cached, num_generation_tokens=gen, queued_time=0.0,
+                                 prefill_time=0.2, inference_time=0.6, decode_time=0.4,
+                                 mean_time_per_output_token=0.1, finish_reason=types.SimpleNamespace(name="stop"))
+
+
+_h = W.EngineRecords(keep=8)
+_h.add(_stats())
+_d = _h.get("chatcmpl-e1")
+ck("a row read out of the engine's own stats says that is where it came from, and names what that record does NOT "
+   "carry, instead of printing an empty pane under a confident heading",
+   _d["source"] == "engine" and _d["input"] is None and "FinishedRequestStats" in _d["input_note"]
+   and "no path" not in _d["input_note"], str(_d.get("input_note"))[:200])
+_jd2 = tempfile.mkdtemp(prefix="r9700-attach-")
+_rr = W.Records(keep=8, journal=W.Journal(Path(_jd2) / "own.jsonl"))
+_rr.absorb([{"id": "chatcmpl-j1", "seq": 4, "boot": "prevboot", "state": "completed", "started_at": 1.0,
+             "usage": {"prompt_tokens": 10}}])
+_d2 = _rr.get("chatcmpl-j1")
+_rr.start("/v1/chat/completions", "Qwen3.8", '{"hello": 1}', False)   # a live row, so the file has a line to read
+# boot is not enough to tell the arms apart: a LIVE row carries its own launch's boot too (so the list can say
+# which launch a row belongs to after a restart), and on the live box that mislabelled every live row as
+# "restored from the journal" the first time this was checked.
+_jd = tempfile.mkdtemp(prefix="r9700-boot-")
+_jj = W.Journal(Path(_jd) / "live.jsonl")
+_ee = W.EngineRecords(keep=6, journal=_jj)
+_ee.add(_stats(rid="chatcmpl-live1"))
+_dl = _ee.get("chatcmpl-live1")
+ck("a live row that carries THIS launch's boot is an engine row, not a row carried over -- boot alone cannot be "
+   "the test, and the live box found it labelled every live row 'restored from the journal'",
+   _dl["source"] == "engine" and "request journal" not in _dl["input_note"],
+   str(_dl.get("source")) + " " + str(_dl.get("input_note"))[:120])
+ck("the mark is the one only the reader can make: replay and absorb stamp _restored, and boot is NOT the test "
+   "(a boot is <seconds>-<pid>, so two journals opened in the same second of one process share it -- and a live "
+   "row carries its own launch's boot on purpose)",
+   W.restored_row({"_restored": "1795000000-1"}) is True and W.restored_row({"boot": "1795000000-1"}) is False,
+   "stamped, not inferred")
+ck("a row folded in from an ATTACHED journal is marked restored too -- nobody watched that request go through",
+   any(x.get("_restored") for x in _rr.items if x.get("boot") == "prevboot"),
+   str([x.get("_restored") for x in _rr.items])[:120])
+ck("and the mark stays in memory: it is not in the listing the page reads, and it is not a journalled key, so a "
+   "restart does not inherit a claim about who watched the request",
+   all("_restored" not in r for r in _rr.listing()) and "_restored" not in W.ROW_KEYS,
+   str([k for k in (_rr.listing()[0] if _rr.listing() else {}) if k.startswith("_")])[:120])
+ck("a row this process only READ (attached journal, or replayed at startup) says who wrote the file, and makes no "
+   "claim about whether that launch is still up -- on this box the writer is the LIVE serve, and 'restored from an "
+   "earlier launch' was wrong for every row folded in while the engine keeps running",
+   _d2["source"] == "journal" and "does not write" in _d2["input_note"]
+   and "read-only" in _d2["input_note"] and "earlier launch" not in _d2["input_note"],
+   str(_d2.get("input_note"))[:220])
+_ro = W.Records(keep=6, journal=W.Journal("/tmp/r9700-webui-readonly-none.jsonl", keep=6, readonly=True))
+_ro.absorb([{"id": "chatcmpl-att1", "seq": 7, "boot": "1795002184-2159531", "state": "completed",
+             "started_at": 5.0}])
+_d6 = _ro.get("chatcmpl-att1")
+ck("the same sentence comes from the store's own journal being read-only, not from a per-row guess",
+   _d6["source"] == "journal" and "the serve journals" in _d6["input_note"], str(_d6.get("input_note"))[:160])
+_jd3 = tempfile.mkdtemp(prefix="r9700-replay-")
+_jp3 = Path(_jd3) / "own.jsonl"
+_j3 = W.Journal(_jp3, keep=6)
+_r3 = W.Records(keep=6, journal=_j3)
+_c3 = _r3.start("/v1/chat/completions", "Qwen3.8", '{"hello": 1}', False)
+_c3["usage"] = {"prompt_tokens": 11, "completion_tokens": 3}
+_r3.finish(_c3, "completed", status=200)
+_r4 = W.Records(keep=6, journal=W.Journal(_jp3, keep=6))
+_d5 = _r4.get(f"req-{_c3['seq']}")
+ck("a row replayed at startup from the journal of a launch that is gone gets THAT sentence -- the reader is being "
+   "told which process wrote the row, not that the box has amnesia",
+   _d5["source"] == "journal" and "earlier launch" in _d5["input_note"], str(_d5.get("input_note"))[:200])
+_r = _rr.start("/v1/chat/completions", "Qwen3.8", b'{"model":"Qwen3.8","messages":[]}', False)
+_rr.note(_r, "hello there")
+_rr.note_resp(_r, b'{"choices":[{"message":{"content":"hello there"}}]}')
+_d3 = _rr.get(f"req-{_r['seq']}")
+ck("a row this sidecar carried itself (WEBUI_MODE=proxy) has the bodies and says it carried them",
+   _d3["source"] == "proxy" and _d3["input"].startswith('{"model"') and _d3["output"] == "hello there"
+   and "choices" in _d3["response"], str({k: str(_d3.get(k))[:40] for k in ("source", "input", "output")}))
+
+ck("the extraction reads a JSON answer, an SSE stream of deltas, and reasoning_content when the model separates "
+   "it -- and returns nothing rather than inventing an answer when the copy is truncated mid-chunk",
+   W.captured_text('{"choices":[{"message":{"content":"hi","reasoning_content":"think"}}]}') == ("hi", "think")
+   and W.captured_text('data: {"choices":[{"delta":{"content":"a"}}]}\n\ndata: '
+                       '{"choices":[{"delta":{"content":"b"}}]}\n\ndata: [DONE]\n') == ("ab", None)
+   and W.captured_text('data: {"choices":[{"del') == (None, None)
+   and W.captured_text("") == (None, None), str(W.captured_text('data: {"choices":[{"del'))[:80])
+
+import http.server as _hs                                                              # noqa: E402
+
+
+class _Capd(_hs.BaseHTTPRequestHandler):
+    rows = {"chatcmpl-c1": {"at": 1.0, "path": "/v1/chat/completions", "model": "Qwen3.8", "state": "completed",
+                            "bytes_in": 30, "bytes_out": 60, "input_truncated": False,
+                            "response_truncated": False,
+                            "input": '{"model":"Qwen3.8","messages":[{"role":"user","content":"x"}]}',
+                            "response": '{"id":"chatcmpl-c1","choices":[{"message":{"content":"the answer"}}]}'},
+            "chatcmpl-c2": {"at": 2.0, "path": "/v1/chat/completions", "model": "Qwen3.8", "state": "completed",
+                            "bytes_in": 30, "bytes_out": 4096, "input_truncated": False,
+                            "response_truncated": True,
+                            "input": '{"model":"Qwen3.8","messages":[{"role":"user","content":"y"}]}',
+                            "response": '{"id":"chatcmpl-c2","choices":[{"message":{"content":"a long answer tha'}}
+
+    def do_GET(self):                                                            # noqa: N802
+        rid = self.path.split("id=")[1] if "id=" in self.path else ""
+        body = json.dumps({"id": rid, "found": rid in self.rows, "row": self.rows.get(rid)}).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+_cps = _hs.HTTPServer(("127.0.0.1", 0), _Capd)
+threading.Thread(target=_cps.serve_forever, daemon=True).start()
+W.CAPTURE_URL = f"http://127.0.0.1:{_cps.server_address[1]}/api/capture"
+_m = W.gateway_capture("chatcmpl-c1")
+ck("a capture held by the front door is merged into the row: the body, the answer's text, and the PATH the engine "
+   "never reported (the door saw the request line)",
+   _m["input"].startswith('{"model"') and _m["output"] == "the answer"
+   and _m["path"] == "/v1/chat/completions" and _m["model"] == "Qwen3.8"
+   and _m["model"] == "Qwen3.8" and _m["capture"]["response_truncated"] is False
+   and _m["capture"]["bytes_out"] == 60, str({k: str(_m.get(k))[:40] for k in _m})[:240])
+_m2 = W.gateway_capture("chatcmpl-c2")
+ck("a capture whose copy was cut mid-answer keeps the raw bytes and does NOT invent the missing text: the panes "
+   "show what was captured and say it stopped",
+   "a long answer" in _m2["response"] and "output" not in _m2 and _m2["capture"]["response_truncated"] is True,
+   str({k: str(_m2.get(k))[:50] for k in _m2})[:220])
+ck("no capture for this id is an empty merge -- the row keeps its own explanation, and the sidecar says it asked",
+   W.gateway_capture("chatcmpl-nope") == {}, str(W.gateway_capture("chatcmpl-nope"))[:80])
+_ck = W.EngineRecords(keep=4)
+_ck.add(_stats(rid="chatcmpl-e2"))
+W.CAPTURE_URL = f"http://127.0.0.1:{_cps.server_address[1]}/api/capture"
+_d4 = _ck.get("chatcmpl-e2")
+ck("and the engine arm gains a sentence about the door when a capture URL is configured: asking found nothing, "
+   "which is a different fact from never having asked",
+   "X-R9K-Capture" in _d4["input_note"], str(_d4["input_note"])[-160:])
+W.CAPTURE_URL = ""
+_ck2 = W.EngineRecords(keep=4)
+_ck2.add(_stats(rid="chatcmpl-e3"))
+ck("with no capture URL configured the sentence stays out of the note -- the page is not told about a door nobody "
+   "pointed it at", "X-R9K-Capture" not in (_ck2.get("chatcmpl-e3") or {}).get("input_note", ""),
+   str((_ck2.get("chatcmpl-e3") or {}).get("input_note", ""))[-120:])
+_ck2h = _ck2.get("chatcmpl-e3")
+ck("(the row still describes itself honestly with no door in the picture)",
+   _ck2h["source"] == "engine" and "FinishedRequestStats" in _ck2h["input_note"], "")
+_cps.shutdown()
+
+# and the page: the pane must never show a "nothing here" string under a heading that claims it looked.
+_mj = open(os.path.join(ROOT, "serve/web/monitor.js")).read()
+ck("the detail pane takes its apology from the payload (input_note) and only falls back to its own sentence when "
+   "the payload gave none -- the sidecar is the process that knows which arm a bodyless row belongs to",
+   "const why = detail.input_note" in _mj
+   and "if (!detail.input && !detail.response && !detail.output) {" in _mj
+   and "text(\"content\", why)" in _mj, "the payload speaks")
+ck("and it names the way to get a body on THIS topology -- the door's opt-in tap -- not just the older relay "
+   "sidecar answer, which is the topology this box stopped running",
+   "GATEWAY_CAPTURE" in _mj and "X-R9K-Capture: 1" in _mj and "WEBUI_MODE=proxy" in _mj, "both knobs, named")
+ck("the panel heading never prints the word null: an engine-stats row has no path and no model, and the earlier "
+   "code interpolated it straight into the title",
+   "[value.id, value.path, value.model].filter(Boolean).join(" in _mj, "filter(Boolean)")
+ck("a row whose text came from the door's tap says so, with the sizes and the truncation -- a truncated copy and "
+   "a complete answer look identical otherwise",
+   "capNote" in _mj and "Copied by the front door at" in _mj and "bytes in" in _mj, "provenance")
+
 
 # ------------------------------------------------------------------ (3) the sysfs read -----------
 fake = Path("/tmp/r9700-webui-sysfs")
@@ -3602,6 +3783,31 @@ ck("it prints prompt sent AND uncached, with the two sharing their bands -- prom
    "difference is what the engine had to compute (same 186,739-token context: 26.3 s cold, 0.69 s warm)",
    'id="len-bars-p"' in _wh and 'id="len-bars-u"' in _wh and 'lenBars("len-bars-p"' in _mjs2
    and 'lenBars("len-bars-u"' in _mjs2 and len(_wh.split('id="len-bars-p"')) == 2)
+ck("the two histograms are drawn on ONE scale, so a full bar means the same number of rows in each card -- each "
+   "one scaling to its own maximum made two full-width bars mean different things a few pixels apart, and the "
+   "comparison between the cards is the whole point of printing them together",
+   "const scale = Math.max(1, ...(p.bands || []), ...(u.bands || []))" in _mjs2
+   and 'lenBars("len-bars-p", bands, p.bands || [], p.band_tok || [], scale' in _mjs2
+   and 'lenBars("len-bars-u", bands, u.bands || [], u.band_tok || [], scale' in _mjs2,
+   "one scale, passed to both cards")
+ck("every band row carries its rows, its share, its tokens and the tokens' share, and the axis labels line up "
+   "because the axis and the rows share one grid template",
+   'data-mass="' in _mjs2 and 'class="track"' in _mjs2 and _wh.count('<div class="len-axis">') == 2
+   and _mcss.count("--len-grid:") == 1
+   and re.search(r"\.len-axis,\.len-bar\{[^}]*grid-template-columns:var\(--len-grid\)", _mcss) is not None
+   and re.search(r"display:\s*contents\s*;", _mcss) is None,
+   "one template, read by both the axis and the rows; display:contents would drop the row's tooltip")
+ck("a payload that publishes no per-band tokens gets em-dashes, not zeros: 'this band holds 0 tokens' and 'this "
+   "sidecar does not say' are different claims, and the merged page on an engine older than the field is the case",
+   "const hasMass = Array.isArray(mass)" in _mjs2 and 'data-mass="${tok === null ? \"none\" : tok}"' in _mjs2
+   and 'if (!isnum(n) || !n) return "\\u2014"' in _mjs2, "none, not zero")
+ck("the token column is compact (5.6M, not 5,642,819) and says so where the exact numbers live -- the total line "
+   "above the card and the tooltip keep the exact values",
+   "function lenTok(n)" in _mjs2 and "M`" in _mjs2 and 'fmt(n / 1e6, 1)' in _mjs2, "compact on purpose")
+ck("and the card says in words what the reader has to know to use the bars: one scale, what amber means, and that "
+   "the right-hand pair is tokens not rows",
+   'text("len-scale"' in _mjs2 and 'id="len-scale"' in _wh and "cannot hide inside a single step" in _mjs2,
+   "the scale claim is printed, not implied")
 ck("a sidecar with no lengths block hides the card rather than printing zeros into it",
    'if (!L || !L.rows) {\n    sec.hidden = true;' in _mjs2, "hidden, not zeroed")
 ck("the cold-token total, the rate it was measured at and the seconds it cost are three separate facts, so the "

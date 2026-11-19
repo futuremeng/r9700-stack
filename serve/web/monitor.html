@@ -263,14 +263,19 @@ sidecar has only been up a few minutes - the label says what was averaged.">1 h<
       <div class="len-head"><span class="label">Prompt sent</span>
         <span class="value value--sm" id="len-prompt"></span>
         <span class="small" id="len-prompt-note"></span></div>
+      <div class="len-axis"><span>band</span><span>bar = rows</span><span>rows</span><span>% of rows</span>
+        <span>tokens</span><span>% of tokens</span></div>
       <div class="len-bars" id="len-bars-p"></div>
     </div>
     <div class="len-block">
       <div class="len-head"><span class="label">Not cached — what the engine had to compute</span>
         <span class="value value--sm" id="len-uncached"></span>
         <span class="small" id="len-uncached-note"></span></div>
+      <div class="len-axis"><span>band</span><span>bar = rows</span><span>rows</span><span>% of rows</span>
+        <span>tokens</span><span>% of tokens</span></div>
       <div class="len-bars" id="len-bars-u"></div>
     </div>
+    <div class="small" id="len-scale"></div>
     <div class="len-cost" id="len-cost-line">
       <div><span>Cold context computed here</span><b class="slot" id="len-read">—</b></div>
       <div><span>Prefill rate, from these rows</span><b class="slot" id="len-rate">—</b></div>

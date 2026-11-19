@@ -492,6 +492,13 @@ through it: +0.8 ms on a small request, engine ITL unchanged (13.0 -> 12.8 ms at
 request line and pipes bytes, because a proxy that parses bodies costs 2-3 ms. `tests/test_gateway.py` keeps that
 promise; [notes/embed-sidecar-box-test.md](notes/embed-sidecar-box-test.md) has the numbers and the restart order.
 
+That pipe is also the only thing on the topology that ever holds a request *and* its answer, which is why the
+Monitor's per-request body capture hangs off it: `GATEWAY_CAPTURE=<bytes>` plus the request header
+`X-R9K-Capture: 1` keeps that request's first N bytes per side in a ring of the last 50 rows, in RAM, readable at
+`/api/capture` — keyed, never open, since those rows are prompt text. A request that does not ask pays one header
+regex and is stored nowhere. Without it the detail pane has to say what it does not have: the engine's
+`FinishedRequestStats` record carries timings, token counts, and no body — not even a path or a model name.
+
 That last clause is what makes the door the place to decide things, and since 2026-11-19 two decisions live there.
 It does not forward the **engine's control plane** — 23 paths (`/sleep`, `/reset_prefix_cache`, `/collective_rpc`,
 the weight-update family) that vLLM's own `--api-key` never guarded: `GUARDED_PREFIX` is `/v1`, `/v2`, `/inference`,

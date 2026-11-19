@@ -194,6 +194,7 @@ import json
 import os
 import re
 import hashlib
+from collections import OrderedDict, deque
 import secrets
 import sys
 import time
@@ -250,6 +251,7 @@ OPEN_EXACT = frozenset("""/health /metrics /ready /readyz /ping /version /load /
     /api/status /api/requests /api/host /api/gate /api/sidecars""".split())
 OPEN_PREFIX = ("/web/",)                        # the page's own static assets
 KEYED_EXACT = frozenset(("/api/notify",))       # writes the webhook that pages a phone
+KEYED_EXACT = KEYED_EXACT | {"/api/capture"}   # reads back captured prompt and answer text
 
 
 def auth_group(path):
@@ -350,6 +352,7 @@ G = {"kv": None, "run": None, "wait": None, "at": 0.0, "err": None, "closed": Fa
      "pool_tokens": int(os.environ.get("GATE_POOL_TOKENS", "902153")),
      "admin_denied": 0,      # control-plane paths this door refused to hand to the engine
      "auth_open": 0, "auth_keyed": 0, "auth_ok": 0, "auth_401": 0, "auth_would401": 0, "auth_local": 0,
+     "capture_wanted": 0, "capture_stored": 0, "capture_orphan": 0, "capture_hits": 0, "capture_misses": 0,
      "inflight": 0, "held": 0, "held_now": 0, "released": 0, "expired": 0, "refused": 0, "admitted": 0,
      "small_passed": 0, "held_over": 0, "polls": 0,
      # Counted because observing is now the job: who came, of which declared-size class, and how many arrived while
@@ -583,6 +586,11 @@ def gate_blob():
                        "hist": G["hist"], "hist_n": G["hist_n"],
                        "hist_span_s": int(round(G["hist_n"] * GATE_POLL_S)),
                        "gated": list(GATED),
+                       "capture": {"GATEWAY_CAPTURE": CAPTURE_CAP, "keep": CAPTURE_KEEP,
+                                   "stored": len(CAPTURES), "orphans": len(CAPTURE_ORPHAN),
+                                   "counts": {k: G[k] for k in ("capture_wanted", "capture_stored",
+                                                                "capture_orphan", "capture_hits",
+                                                                "capture_misses")}},
                        "admin": {"paths": len(ADMIN), "GATEWAY_ADMIN": ADMIN_ON,
                                  "denied": G["admin_denied"]},
                        "auth": {"key": {"set": bool(KEY), "source": KEY_SRC, "chars": len(KEY)},
@@ -663,21 +671,27 @@ async def read_headers(reader, first=b""):
             return data
 
 
-async def copy_exact(reader, writer, n):
+async def copy_exact(reader, writer, n, tap=None):
     while n:
         b = await reader.read(min(CHUNK, n))
         if not b:
             return False                      # peer ended early: the keep-alive loop must stop
         n -= len(b)
         writer.write(b)
+        if tap:
+            tap(b)                            # bytes already in hand; the pipe does not wait on this
         await writer.drain()
     return True
 
 
-async def copy_chunked(reader, writer):
-    """Forward the chunk framing verbatim -- including the 0-size terminator and any trailers."""
+async def copy_chunked(reader, writer, tap=None):
+    """Forward the chunk framing verbatim -- including the 0-size terminator and any trailers. The tap sees the
+    framing bytes too: it is a byte tap, not a parser, and reassembling chunked bodies here would be the first
+    step back toward the proxy that costs 2-3 ms."""
     while True:
         line = await reader.readline()
+        if tap:
+            tap(line)
         if not line:
             return False
         writer.write(line)
@@ -699,19 +713,140 @@ async def copy_chunked(reader, writer):
             await writer.drain()
 
 
-async def relay_body(uread, writer, headers):
+async def relay_body(uread, writer, headers, tap=None):
     low = headers.lower()
     if b"transfer-encoding:" in low and b"chunked" in low:
-        return await copy_chunked(uread, writer)
+        return await copy_chunked(uread, writer, tap)
     m = re.search(rb"\r?\ncontent-length: *(\d+)", low)
     if m:
-        return await copy_exact(uread, writer, int(m.group(1)))
+        return await copy_exact(uread, writer, int(m.group(1)), tap)
     while True:                               # no framing: answer ends when the upstream closes
         b = await uread.read(CHUNK)
         if not b:
             return False
         writer.write(b)
+        if tap:
+            tap(b)
         await writer.drain()
+
+
+# ---- an opt-in byte tap ------------------------------------------------------------------------------
+# A Monitor row with timings and no text is the honest shape of a pipe that never reads bodies -- but "the
+# request body as it arrived" as a heading over an empty pane is not honest, it is a label for a thing that was
+# never kept. The only process on this topology that ever holds both the request and the answer is THIS one, so
+# the capture lives here, and it is opted into per request by a header (X-R9K-Capture: 1). That keeps the cost
+# where it belongs: an ordinary request pays one regex over header bytes already in hand, and only the request
+# that asked for its own copy gets buffered. GATEWAY_CAPTURE=0 (the shipped default) turns the feature off
+# entirely and the header is then ignored.
+CAPTURE_CAP = int(os.environ.get("GATEWAY_CAPTURE", "0") or 0)
+CAPTURE_KEEP = max(1, int(os.environ.get("GATEWAY_CAPTURE_KEEP", "50")))
+CAPTURE_HARD = 1 << 20                      # per side, whatever the knob says: this process must stay bounded
+if CAPTURE_CAP > CAPTURE_HARD:
+    CAPTURE_CAP = CAPTURE_HARD
+CAPTURE_HEAD = max(int(os.environ.get("GATEWAY_CAPTURE", "0") or 0), 2048)   # index head, see Tap
+CAPTURES = OrderedDict()                    # response id -> row, oldest dropped first
+CAPTURE_ORPHAN = deque()                    # captures whose response carried no id we could read
+
+
+class Tap:
+    """One opted-in request's bytes. Two separate counters: how many bytes went past (n_in/n_out) and how many
+    were kept -- so the row can say "truncated at N of M" instead of quietly showing a prefix."""
+
+    def __init__(self, path):
+        self.at, self.path, self.state = time.time(), path, "incomplete"
+        self.inp, self.out, self.head_in, self.head_out = [], [], [], []
+        self.n_in = self.n_out = 0
+        self.stored = False
+
+    def take(self, side):
+        def put(b):
+            # Two buffers per side. The display copy is what GATEWAY_CAPTURE says it is. The HEAD exists because a
+            # capture with no readable id cannot be found again -- the id is in the ANSWER, past the framing, so a
+            # 32-byte cap would store rows nothing could ever ask for. The head is bounded too, and by the operator's
+            # cap whenever that is the bigger number: it is an index, not a second copy.
+            if side == "in":
+                self.n_in += len(b)
+                for buf, room_n in ((self.inp, CAPTURE_CAP), (self.head_in, CAPTURE_HEAD)):
+                    room = room_n - sum(map(len, buf))
+                    if room > 0:
+                        buf.append(b[:room])
+            else:
+                self.n_out += len(b)
+                for buf, room_n in ((self.out, CAPTURE_CAP), (self.head_out, CAPTURE_HEAD)):
+                    room = room_n - sum(map(len, buf))
+                    if room > 0:
+                        buf.append(b[:room])
+        return put
+
+
+def capture_wanted(headers):
+    """The header is the opt-in. Absent, or 0 / false / off, means do not buffer anything for this request."""
+    m = re.search(rb"(?im)^x-r9k-capture: *([^\r\n]*)", headers)
+    if not m:
+        return False
+    return m.group(1).strip().lower() not in (b"", b"0", b"false", b"off", b"no")
+
+
+def store_capture(tap):
+    """Index the capture by the id the engine put in its own answer, which is the only key the Monitor rows are
+    addressed by. Reading that id is the one place this file looks inside a body, and it looks only in a tap that
+    a client asked for, bounded at 8 KiB -- not in the stream on the way through."""
+    data_in, data_out = b"".join(tap.inp), b"".join(tap.out)
+    head_in, head_out = b"".join(tap.head_in), b"".join(tap.head_out)
+    rid = None
+    m = re.search(rb'"id"\s*:\s*"(chatcmpl-[0-9a-zA-Z-]{4,80})"', head_out)
+    if m:
+        rid = m.group(1).decode("latin-1")
+    model = None
+    m2 = re.search(rb'"model"\s*:\s*"([^"]{1,120})"', head_in)
+    if m2:
+        model = m2.group(1).decode("latin-1")
+    row = {"at": round(tap.at, 3), "path": tap.path, "model": model, "state": tap.state,
+           "stream": b'"stream"' in head_in and b"true" in head_in,
+           "bytes_in": tap.n_in, "bytes_out": tap.n_out,
+           "input_truncated": tap.n_in > len(data_in), "response_truncated": tap.n_out > len(data_out),
+           "input": data_in.decode("utf-8", "replace"), "response": data_out.decode("utf-8", "replace")}
+    if rid:
+        CAPTURES[rid] = row
+        while len(CAPTURES) > CAPTURE_KEEP:
+            CAPTURES.popitem(last=False)
+    else:
+        CAPTURE_ORPHAN.appendleft(row)
+        while len(CAPTURE_ORPHAN) > CAPTURE_KEEP:
+            CAPTURE_ORPHAN.pop()
+    tap.stored = True
+    G["capture_stored"] += 1
+    if not rid:
+        G["capture_orphan"] += 1
+    return rid
+
+
+def capture_page(writer, q):
+    """GET /api/capture -- the index, or one row by id. Keyed, never open: these rows contain prompt text, and a
+    path nobody has looked at is protected by the rule above, not by luck. Loopback reads it keyless, which is how
+    the Monitor's own process merges it into the row it is showing."""
+    rid = None
+    for kv in q.split(b"&"):
+        k, _, v = kv.partition(b"=")
+        if k == b"id":
+            rid = v.decode("latin-1")
+    if rid:
+        row = CAPTURES.get(rid)
+        G["capture_hits" if row else "capture_misses"] += 1
+        body = json.dumps({"id": rid, "found": bool(row), "row": row})
+    else:
+        body = json.dumps({"cap": CAPTURE_CAP, "keep": CAPTURE_KEEP, "stored": len(CAPTURES),
+                           "orphans": len(CAPTURE_ORPHAN),
+                           "counts": {k: G[k] for k in ("capture_wanted", "capture_stored", "capture_orphan",
+                                                        "capture_hits", "capture_misses")},
+                           "ids": [{"id": k, "at": v["at"], "path": v["path"], "model": v["model"],
+                                    "bytes_in": v["bytes_in"], "bytes_out": v["bytes_out"],
+                                    "state": v["state"]}
+                                   for k, v in reversed(list(CAPTURES.items()))][:CAPTURE_KEEP]})
+    msg = body.encode()
+    writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+                 + str(len(msg)).encode() + b"\r\nConnection: close\r\n\r\n" + msg)
+    return True
 
 
 def _state_fetch(url):
@@ -799,7 +934,11 @@ async def handle(reader, writer):
             writer.write(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
             return
         _method, target, version = parts
-        path = target.split(b"?")[0].decode("latin-1")
+        # The query is kept because /api/capture?id= is addressed by it; the routing decision still uses the
+        # path alone, exactly as before.
+        tq = target.split(b"?")
+        path = tq[0].decode("latin-1")
+        query = tq[1] if len(tq) > 1 else b""
         try:
             headers = await read_headers(reader)
         except (asyncio.IncompleteReadError, ValueError):
@@ -858,6 +997,9 @@ async def handle(reader, writer):
             if not keep:
                 return
             continue
+        if path == "/api/capture":
+            await capture_page(writer, query)
+            return                       # always closes: a read of a buffer, not a proxied request
         ok, held, why = await admit(path, declared_length(headers))
         if not ok:
             # 503 only exists with GATE_HOLD_S=0. A held request that the gate refused never reached the
@@ -882,6 +1024,10 @@ async def handle(reader, writer):
             if not keep:
                 return
             continue
+        tap = None
+        if CAPTURE_CAP and capture_wanted(headers):
+            tap = Tap(path)
+            G["capture_wanted"] += 1
         try:
             host, port = split_url(upstream(path))
             uread, uwrite = await asyncio.open_connection(host, port)
@@ -901,7 +1047,10 @@ async def handle(reader, writer):
 
         async def send_body():
             if m:
-                await copy_exact(reader, uwrite, int(m.group(1)))
+                await copy_exact(reader, uwrite, int(m.group(1)), tap.take("in") if tap else None)
+            elif tap:
+                # a chunked request body: the tap sees the framing, because it is a byte tap
+                await copy_chunked(reader, uwrite, tap.take("in"))
 
         body_task = asyncio.create_task(send_body())
         try:
@@ -915,11 +1064,19 @@ async def handle(reader, writer):
                 if re.match(rb"HTTP/1\.[01] 1\d\d", status):
                     continue                                   # 100 Continue and friends: not the response
                 break
-            if not await relay_body(uread, writer, rheaders):
+            if not await relay_body(uread, writer, rheaders, tap.take("out") if tap else None):
                 return
+            if tap:
+                tap.state = "completed"
+                store_capture(tap)
         except (asyncio.IncompleteReadError, ConnectionResetError, ConnectionRefusedError, ValueError, OSError):
             return
         finally:
+            # A capture is kept even when the connection died on the way: an aborted or reset request is exactly
+            # the row someone opens the detail pane for, and "incomplete" is a fact worth keeping rather than a
+            # reason to throw the bytes away.
+            if tap and not tap.stored:
+                store_capture(tap)
             body_task.cancel()
             try:
                 uwrite.close()
@@ -963,6 +1120,11 @@ async def main():
              ("GATEWAY_KEY_ENFORCE=1 with no key: NOT enforcing" if KEY_ENFORCE else
               "observing -- unkeyed model requests are counted at /api/gate, nothing refused")),
           flush=True)
+    print("capture: " + (f"off -- nothing on this box buffers a request body, so a Monitor row shows timings "
+                         f"and no text, and says which" if not CAPTURE_CAP else
+                         f"OPT-IN (header X-R9K-Capture: 1), {CAPTURE_CAP} bytes per side, the last "
+                         f"{CAPTURE_KEEP} rows in RAM, readable at /api/capture (keyed, loopback exempt); "
+                         f"a request that does not ask pays one header regex"), flush=True)
     if GATE_ON and GATE_POLICY != "hold":
         G["task"] = asyncio.create_task(gate_poll())
         # The MODE goes in the log next to the thresholds: someone comparing two gateway logs has to be able to tell

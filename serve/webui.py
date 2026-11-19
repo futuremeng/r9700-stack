@@ -1994,6 +1994,13 @@ def length_stats(rows, window=None):
     prompt, uncached = [], []
     counts_p = [0] * (len(LEN_BANDS) + 1)
     counts_u = [0] * (len(LEN_BANDS) + 1)
+    # The same bands, counted in TOKENS instead of rows. A count says "48 rows landed in 64k-128k"; the tokens say
+    # "those 48 rows are 77% of everything this box computed", and it is the second sentence that decides whether a
+    # client should cap its context. Both histograms are per-row counts of DIFFERENT row sets (a 100k prompt that
+    # came in warm is a 64k-128k row by prompt and an under-1k row by work), so the two cannot be stacked into one
+    # bar without lying -- the mass per band is what makes them comparable instead.
+    mass_p = [0] * (len(LEN_BANDS) + 1)
+    mass_u = [0] * (len(LEN_BANDS) + 1)
     no_usage = unknown = clamped = 0
     sum_p = sum_c = sum_u = 0
     pre_tok = pre_s = 0.0
@@ -2011,6 +2018,7 @@ def length_stats(rows, window=None):
             no_usage += 1
             continue
         counts_p[_band(p)] += 1
+        mass_p[_band(p)] += p
         prompt.append(p)
         sum_p += p
         det = u.get("prompt_tokens_details")
@@ -2023,6 +2031,7 @@ def length_stats(rows, window=None):
                 c = p
             un = p - c
             counts_u[_band(un)] += 1
+            mass_u[_band(un)] += un
             uncached.append(un)
             sum_c += c
             sum_u += un
@@ -2049,8 +2058,8 @@ def length_stats(rows, window=None):
            "bands": [{"label": _band_label(i), "lo": (0 if i == 0 else LEN_BANDS[i - 1][0]),
                       "hi": (LEN_BANDS[i][0] if i < len(LEN_BANDS) else None)}
                      for i in range(len(LEN_BANDS) + 1)],
-           "prompt": _dist(prompt, counts_p, sum_p),
-           "uncached": _dist(uncached, counts_u, sum_u)}
+           "prompt": _dist(prompt, counts_p, sum_p, mass_p),
+           "uncached": _dist(uncached, counts_u, sum_u, mass_u)}
     out["uncached"]["cached_tokens"] = sum_c
     out["uncached"]["over_step"] = sum(1 for v in uncached if v >= 8192)   # >= NBT: more than one step of prefill
     out["window"] = window if isinstance(window, int) and window > 0 else None
@@ -2081,13 +2090,16 @@ def _band_label(i):
     return f"{LEN_BANDS[i - 1][1]}-{LEN_BANDS[i][1]}"
 
 
-def _dist(vals, counts, total):
+def _dist(vals, counts, total, band_tok=None):
+    """The distribution of one quantity over the rows in view: counts per band, and -- because a count of rows is
+    a SHAPE and not a cost -- the same bands summed in tokens (`band_tok`)."""
     def pct(f):
         if not vals:
             return None
         s = sorted(vals)
         return s[min(len(s) - 1, int(len(s) * f))]
-    return {"n": len(vals), "bands": counts, "sum": total, "mean": round(total / len(vals)) if vals else None,
+    return {"n": len(vals), "bands": counts, "band_tok": list(band_tok or [0] * len(counts)),
+            "sum": total, "mean": round(total / len(vals)) if vals else None,
             "median": pct(0.5), "p90": pct(0.90), "p95": pct(0.95), "p99": pct(0.99),
             "max": (max(vals) if vals else None)}
 
@@ -2291,6 +2303,8 @@ class EngineRecords:
         if journal is not None:
             rows = journal.replay()
             journal.rows_in = len(rows)
+            for r in rows:
+                r["_restored"] = r.get("boot") or "unknown"    # in-memory only: not in ROW_KEYS, never written
             self.items.extend(rows)                       # newest first, which is how replay returns them
             self.n = max([r.get("seq") or 0 for r in rows], default=0)
 
@@ -2362,11 +2376,8 @@ class EngineRecords:
         with self.lock:
             for r in self.items:
                 if rid in (r["id"], f"req-{r['seq']}"):
-                    return dict(r, source="engine", input=None, output=None, response=None, reasoning=None,
-                                input_note="The engine reports timings and token counts per request, not the "
-                                           "text: this monitor runs inside the serve (serve/plugin), it never "
-                                           "sits between the client and the model. Captured bodies need the "
-                                           "separate sidecar: serve/webui.sh with WEBUI_MODE=proxy.")
+                    return bodyless_detail(dict(r, input=None, output=None, response=None, reasoning=None), r,
+                                           attached=getattr(self.journal, "readonly", False))
         return None
 
     def __len__(self):
@@ -2395,6 +2406,8 @@ class Records:
         if journal is not None:
             rows = journal.replay()
             journal.rows_in = len(rows)
+            for r in rows:
+                r["_restored"] = r.get("boot") or "unknown"    # in-memory only: not in ROW_KEYS, never written
             self.items.extend(rows)
             self.n = max([r.get("seq") or 0 for r in rows], default=0)
 
@@ -2416,6 +2429,7 @@ class Records:
             for r in sorted(rows, key=lambda x: -int(x.get("seq") or 0)):     # newest first, like self.items
                 if r.get("seq") is None:
                     continue
+                r["_restored"] = "attached"                 # folded in from another journal, not watched here
                 key = (r.get("boot"), r.get("seq"))
                 if key in seen:
                     continue
@@ -2428,6 +2442,10 @@ class Records:
             return added
 
     def start(self, path, model, body, stream):
+        # Normalised here rather than trusted from the caller: `get` concatenates this with a str marker, so a
+        # bytes body from a future caller would be a 500 in the detail pane rather than a row with a body.
+        if isinstance(body, (bytes, bytearray)):
+            body = bytes(body).decode("utf-8", "replace")
         with self.lock:
             self.n += 1
             r = {"id": None, "seq": self.n, "path": path, "model": model, "state": "queued",
@@ -2507,17 +2525,18 @@ class Records:
         with self.lock:
             for r in self.items:
                 if rid in (r["id"], f"req-{r['seq']}"):
-                    if "_in" not in r:                    # a row carried over from an earlier launch: the
+                    if "_in" not in r:                    # no body was kept for this row by THIS process. Three
+                        # different reasons end up here and they need three different sentences: a journal row, a
+                        # row read out of the engine's own finished-request stats, and (rarely) a relay row from a
+                        # sidecar that has since been restarted. Printing "No input." over any of them is the page
+                        # claiming it looked and found nothing.
                         out = {k: r.get(k) for k in ("id", "seq", "path", "model", "state", "started_at",
                                                      "wallclock_s", "first_token_s", "load_s", "queue_s",
                                                      "stream", "http_status", "response_format", "usage",
                                                      "timings", "error")}
                         out["id"] = r["id"] or f"req-{r['seq']}"
                         out["input"] = out["output"] = out["response"] = out["reasoning"] = None
-                        out["input_note"] = ("This row was restored from the request journal "
-                                             f"(launch {r.get('boot')}), which keeps timings and token counts "
-                                             "but never the text.")
-                        return out
+                        return bodyless_detail(out, r, attached=getattr(self.journal, "readonly", False))
                     out = {k: r.get(k) for k in ("id", "seq", "path", "model", "state", "started_at",
                                                  "wallclock_s", "first_token_s", "load_s", "queue_s",
                                                  "stream", "http_status", "response_format", "usage",
@@ -2528,6 +2547,7 @@ class Records:
                     out["reasoning"] = "".join(r["_reason"]) or None
                     out["response"] = b"".join(r["_resp"]).decode("utf-8", "replace")
                     out["output_truncated"] = r["_out_len"] >= CAP
+                    out["source"] = "proxy"
                     return out
         return None
 
@@ -2592,6 +2612,134 @@ def engine_version(cfg_ver, body):
     except (ValueError, AttributeError, TypeError):
         ver = ""
     return {"vllm_version": ver, "version_src": "engine /version"} if ver else {}
+
+
+
+# ------------------------------------------------------------------ the front door's byte tap, read back
+# The pipe (serve/gateway.py) is the only process on this topology that ever holds both a request and its answer,
+# and it keeps a copy only when asked (GATEWAY_CAPTURE + the X-R9K-Capture: 1 header). This sidecar reads that
+# copy over loopback and merges it into the row it is showing -- so the extraction below parses bodies in a page
+# process, which is exactly where parsing belongs and the door refuses it.
+CAPTURE_URL = os.environ.get("R9K_CAPTURE_URL", "").strip()
+
+
+def gateway_capture(rid):
+    """The door's capture of this id, as fields the detail panes already understand. None on any failure: a door
+    that is down or has no capture leaves the row describing itself, which the panes already say."""
+    if not CAPTURE_URL or not rid:
+        return {}
+    try:
+        with urllib.request.urlopen(f"{CAPTURE_URL}?id={urllib.parse.quote(str(rid))}", timeout=3) as f:
+            got = json.load(f)
+    except (urllib.error.URLError, OSError, ValueError):
+        return {}
+    row = got.get("row") if got.get("found") else None
+    if not row:
+        return {}
+    out = {"capture": {"at": row.get("at"), "cap": None, "state": row.get("state"),
+                       "bytes_in": row.get("bytes_in"), "bytes_out": row.get("bytes_out"),
+                       "input_truncated": row.get("input_truncated"),
+                       "response_truncated": row.get("response_truncated")}}
+    if row.get("input"):
+        out["input"] = row["input"]
+    if row.get("response"):
+        out["response"] = row["response"]
+        ans, rsn = captured_text(row["response"])
+        if ans:
+            out["output"] = ans
+        if rsn:
+            out["reasoning"] = rsn
+    # The door saw the request LINE, which the engine's stats do not carry (FinishedRequestStats has no path and
+    # no model field -- read the dataclass, not the docs): this is where a row gets its path back.
+    if row.get("path"):
+        out["path"] = row["path"]
+    if row.get("model"):
+        out["model"] = row["model"]
+    return out
+
+
+def restored_row(r):
+    """True when this process READ the row (off the journal, or out of an attached one) rather than watched the
+    request go through.
+
+    `boot` cannot be the test: a live row carries its own launch's boot too -- the list has to say which launch a
+    row belongs to after a restart -- and a boot is only `<seconds>-<pid>`, so two journals opened in the same
+    second of one process share it. The live box showed what that meant: every live row was labelled "restored
+    from the journal". The honest mark is the one only the reader can make, so the replay and the absorb stamp it.
+    """
+    return bool(r.get("_restored"))
+
+
+def bodyless_detail(out, r, attached=False):
+    """Say, for a row whose body nobody kept, WHICH process handled it and what it keeps -- then merge in the front
+    door's copy if it has one.
+
+    The sentence matters more than it looks. "No input." printed under the heading "The request body as it arrived."
+    reads as a lookup that found an empty body; it is really the page claiming a fact it never measured. Three arms
+    end up here and they are three different claims: a row restored from the journal, a row read out of the
+    engine's own stats, and a relay row whose sidecar was restarted.
+    """
+    if restored_row(r):
+        out["source"] = "journal"
+        if attached or r.get("_restored") == "attached":
+            # No claim about whether that launch is still up -- the boot is <seconds>-<pid> of the process that
+            # WROTE the row, and on this box that process is the live serve. "Restored from an earlier launch" was
+            # the old sentence and it was wrong for every row the Monitor folds in while the engine keeps running.
+            note = ("This row was read out of a request journal this process does not write: the serve journals "
+                    f"its own finished requests and the Monitor follows that file read-only (written by launch "
+                    f"{r.get('boot')}). That file keeps timings and token counts and never the text.")
+        else:
+            note = (f"This row was restored from the request journal of an earlier launch ({r.get('boot')}), "
+                    "which keeps timings and token counts but never the text.")
+    else:
+        out["source"] = "engine"
+        note = ("This row came from the engine's own finished-request stats. Read the record, not the docs: "
+                "vllm/v1/metrics/stats.py FinishedRequestStats carries request_id, the token counts and the timing "
+                "breakdown -- no text, and not even a path or a model name. Nothing downstream of the engine can "
+                "recover a body from it.")
+    merged = gateway_capture(out.get("id") or "")
+    if merged:
+        note = ("The body below was copied by the front door (serve/gateway.py) -- the only process on this box "
+                "that sees both the request and the answer -- matched by the id in the engine's own answer.")
+    elif CAPTURE_URL:
+        note += (" The front door was asked for this id and has no capture of it: it keeps a copy only of requests "
+                 "that send the header X-R9K-Capture: 1 while GATEWAY_CAPTURE is on.")
+    out["input_note"] = note
+    out.update(merged)
+    return out
+
+
+def captured_text(raw):
+    """(answer text, reasoning text) out of a captured response body -- one JSON answer or one SSE stream of
+    deltas. Best effort on purpose: it reads what the panes show, and returns (None, None) rather than inventing
+    an answer when the copy is truncated mid-chunk. The raw bytes stay available as the "API response" pane."""
+    if not raw:
+        return None, None
+    try:
+        obj = json.loads(raw)
+        ch = (obj.get("choices") or [{}])[0]
+        msg = ch.get("message") or ch.get("delta") or {}
+        return (msg.get("content"), msg.get("reasoning_content") or msg.get("reasoning"))
+    except ValueError:
+        pass
+    out, reason, ok = [], [], False
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        try:
+            obj = json.loads(line[5:].strip())
+        except ValueError:
+            continue
+        ch = (obj.get("choices") or [{}])[0]
+        d = ch.get("delta") or ch.get("message") or {}
+        if d.get("content"):
+            out.append(d["content"])
+            ok = True
+        r = d.get("reasoning_content") or d.get("reasoning")
+        if r:
+            reason.append(r)
+    return ("".join(out) if ok else None, "".join(reason) or None)
 
 
 class Hub:

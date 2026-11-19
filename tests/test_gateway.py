@@ -7,6 +7,9 @@ body and rebuilds it; the gateway measured +0.8 ms, notes/embed-sidecar-box-test
 risk: every bug in it is an HTTP framing bug, which a client sees as a hang or a truncated reply, not as a
 nonzero exit. So this file tests framing, not features:
 
+  (1d) the opt-in byte tap: nothing stored while GATEWAY_CAPTURE is 0, one request's body and answer stored when
+      it sends X-R9K-Capture: 1, indexed by the id in the engine's own answer, byte-capped with the truncation
+      stated, ring-limited, orphans counted, and the read endpoint keyed for remote peers.
   (1c) who may ask for anything: keyed by default (model traffic), open by exception (/health, /metrics, the
       Monitor and its data endpoints), refused outright (the engine control plane). Observe mode counts what a key
       would have refused and names the paths; enforce mode 401s them, accepts the right Bearer token and rejects a
@@ -159,6 +162,9 @@ def upstream(role, port, slow_stream=False):
                     return
                 payload = json.dumps({"role": role, "path": path, "n": len(body),
                                       "sha": hashlib.sha256(body).hexdigest()[:16],
+                                      # an id shaped like the engine's, so the door's byte tap has something to
+                                      # index a capture by (it reads it back out of the ANSWER, not the request)
+                                      "id": "chatcmpl-" + hashlib.sha256(body).hexdigest()[:16],
                                       "count": len(LOG[role])}).encode()
                 if role == "engine" and path == "/metrics":     # what the gate reads, not an echo
                     if port in SLOW_METRICS:                    # a /metrics that never answers
@@ -488,6 +494,89 @@ try:
     ck("and a local peer that does present the key still gets through",
        json.loads(b)["role"] == "engine", b[:80])
     sd.terminate()
+
+    # (1d) the opt-in byte tap. On this topology the door is the ONLY process that ever holds both a request and
+    # its answer, and the reason it is fast is that it pipes bytes without looking at them. So a capture is asked
+    # for per request by header, bounded twice (bytes per side, rows kept), and readable only through an endpoint
+    # that is keyed by exception -- those rows contain prompt text.
+    def capdoor(extra, bind="127.0.0.1"):
+        p = free_port()
+        pr = subprocess.Popen([sys.executable, os.path.join(ROOT, "serve/gateway.py")],
+                              env={**env, "GATEWAY_PORT": str(p), "GATEWAY_BIND": bind, **extra},
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            try:
+                socket.create_connection((bind, p), timeout=1).close()
+                return p, pr
+            except OSError:
+                time.sleep(0.1)
+        raise AssertionError("the capture door did not come up")
+
+    BODY = '{"model":"Qwen3.8","messages":[{"role":"user","content":"say it"}]}'
+    CID = "chatcmpl-" + hashlib.sha256(BODY.encode()).hexdigest()[:16]
+
+    st, b = http(GW, "/api/capture")                                  # the main door: GATEWAY_CAPTURE unset
+    idx = json.loads(b)
+    ck("with the feature off the door stores nothing and says the cap is 0 rather than pretending to have rows",
+       idx["cap"] == 0 and idx["ids"] == [] and idx["stored"] == 0, str(idx)[:140])
+    st, b = http(GW, "/v1/chat/completions", "POST", BODY, headers={"x-r9k-capture": "1"})
+    st2, b2 = http(GW, "/api/capture")
+    ck("and the header alone changes nothing while the cap is 0 -- no row, not even a wanted count",
+       json.loads(b2)["counts"]["capture_wanted"] == 0 and json.loads(b2)["ids"] == [], str(b2)[:140])
+
+    CP, cd = capdoor({"GATEWAY_CAPTURE": "4096"})
+    st, b = http(CP, "/v1/chat/completions", "POST", BODY)            # a request that did not ask
+    st2, b2 = http(CP, "/api/capture")
+    ck("capture on, request that did not ask for it: nothing is buffered",
+       json.loads(b2)["ids"] == [] and json.loads(b2)["counts"]["capture_wanted"] == 0, str(b2)[:160])
+    st, b = http(CP, "/v1/chat/completions", "POST", BODY, headers={"x-r9k-capture": "1"})
+    st2, b2 = http(CP, f"/api/capture?id={CID}")
+    got = json.loads(b2)
+    ck("the request that asked comes back, indexed by the id the ENGINE put in its answer",
+       got["found"] is True and got["row"]["input"] == BODY and CID in got["row"]["response"], str(got)[:200])
+    ck("and the row carries the two facts the engine's stats do not have: the path it arrived on and the model "
+       "it named (FinishedRequestStats carries neither -- read the dataclass)",
+       got["row"]["path"] == "/v1/chat/completions" and got["row"]["model"] == "Qwen3.8"
+       and got["row"]["bytes_in"] == len(BODY) and got["row"]["state"] == "completed",
+       str({k: got["row"].get(k) for k in ("path", "model", "bytes_in", "state")}))
+    st, b = http(CP, "/v1/chat/completions", "POST", BODY, headers={"x-r9k-capture": "0"})
+    st2, b2 = http(CP, "/api/capture")
+    ck("X-R9K-Capture: 0 is a refusal, not an ask", len(json.loads(b2)["ids"]) == 1, str(json.loads(b2))[:140])
+    cd.terminate()
+
+    TP, td = capdoor({"GATEWAY_CAPTURE": "32"})
+    big = '{"model":"Qwen3.8","prompt":"' + "x" * 400 + '"}'
+    http(TP, "/v1/chat/completions", "POST", big, headers={"x-r9k-capture": "1"})
+    st, b = http(TP, "/api/capture?id=chatcmpl-" + hashlib.sha256(big.encode()).hexdigest()[:16])
+    r = json.loads(b)["row"]
+    ck("GATEWAY_CAPTURE is a byte ceiling per side, and the row says how much it did NOT keep",
+       len(r["input"]) == 32 and r["input_truncated"] is True and r["bytes_in"] == len(big),
+       f"kept={len(r['input'])} " + str({k: r.get(k) for k in ("bytes_in", "input_truncated")}))
+    td.terminate()
+
+    KP, kd = capdoor({"GATEWAY_CAPTURE": "512", "GATEWAY_CAPTURE_KEEP": "1"})
+    for p in (BODY, '{"model":"Qwen3.8","prompt":"second"}'):
+        http(KP, "/v1/chat/completions", "POST", p, headers={"x-r9k-capture": "1"})
+    st, b = http(KP, "/api/capture")
+    ck("the store is a ring: the last KEEP rows, newest first, older ones gone",
+       len(json.loads(b)["ids"]) == 1 and json.loads(b)["stored"] == 1
+       and json.loads(b)["ids"][0]["path"] == "/v1/chat/completions", str(json.loads(b)["ids"])[:160])
+    http(KP, "/slow", "POST", '{"stream":true}', headers={"x-r9k-capture": "1"})    # SSE, carries no such id
+    st, b = http(KP, "/api/capture")
+    ck("an answer that carries no readable id is kept as an orphan and counted, not silently dropped",
+       json.loads(b)["orphans"] == 1 and json.loads(b)["counts"]["capture_orphan"] == 1, str(json.loads(b))[:200])
+    kd.terminate()
+
+    if LAN:
+        XP, xd = capdoor({"GATEWAY_CAPTURE": "512", "GATEWAY_KEY_FILE": KF.name, "GATEWAY_KEY_ENFORCE": "1"},
+                         bind="0.0.0.0")
+        st, b = http_at(LAN, XP, "/api/capture")
+        ck("/api/capture is keyed, not swept into the open /api/ group: those rows are prompt text",
+           st.startswith("HTTP/1.1 401"), st)
+        st, b = http(XP, "/api/capture")                                # loopback: the Monitor's own process
+        ck("and loopback still reads it, which is how the sidecar merges a capture into the row it is showing",
+           st.startswith("HTTP/1.1 200") and json.loads(b)["cap"] == 512, st)
+        xd.terminate()
 
     # (2) a big body arrives whole
     big = os.urandom(60 * 1024)
