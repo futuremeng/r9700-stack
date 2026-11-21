@@ -29,7 +29,7 @@
 #   ./stop.sh --engine           the engine, its Monitor page and its tmux session only
 #   ./stop.sh --check            report what is running; stop nothing
 #   DRY=1 ./stop.sh              print what would run, run nothing
-#   STATE=path/to/launch.json    stop FROM that record instead of .r9700-state/launch.json (the gate uses it)
+#   STATE=path/to/launch.json    stop FROM that record instead of .r9700-state/launch.json
 #   WAIT=20                      how long to give the ranks to leave on their own after the TERM (default 20s)
 #   ./stop.sh --yes              no question before the engine -- which is asked because coming back up costs
 #                                the four minutes of loading that the launch log is full of
@@ -77,8 +77,8 @@ tasks() { sed -n '/case "\$TASK"/,/^esac/p' serve/embed.sh | sed -n 's/^  \([a-z
 count() { local n; n=$(pgrep -cf "$1" 2>/dev/null); [ -n "$n" ] || n=$(pgrep -f "$1" 2>/dev/null | wc -l | tr -d ' ')
   echo "${n:-0}"; }
 left() { count 'VLLM[::]|vll[m] serve'; }
-# Where the last launch recorded itself. A knob so the gate can ask "which script would you stop for THIS
-# record" without touching the box's real state.
+# Where the last launch recorded itself. A knob so a stop can be aimed at one record instead of the box's
+# live state -- "stop what THIS launch.json names", asked of a file that is not .r9700-state's own.
 STATE=${STATE:-.r9700-state/launch.json}
 # The port a sidecar task listens on. Asked of the launcher in DRY mode rather than parsed out of it: the task
 # blocks do not all carry their own default the same way, and a parsed guess is how a stop ends up aimed at a
