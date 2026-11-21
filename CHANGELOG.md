@@ -1,5 +1,22 @@
 # Changelog
 
+## The stack gets one way down: `./stop.sh`
+
+Every launcher already answered `STOP=1`, but stopping the whole stack by hand meant knowing the ORDER (the
+monitors poll, so a watched thing stopped first spends its last seconds printing errors nobody asked for; the
+front door should close before what it fronts goes down), the GRACE (the engine's STOP is a `-9` by necessity --
+the ranks ignore SIGTERM -- but it should not be the FIRST move), and the SESSION (the tmux pane is the liveness
+probe the next launch asks, and a bare pkill leaves the corpse that cost this box 17 minutes on 2026-11-15).
+`./stop.sh` walks monitors, door, sidecars, engine in that order, TERM first with the launchers' own patterns
+read out of their own files, and ends with an honest count -- "stopped" and "stopped with four ranks still
+holding the cards" are different sentences. `--embedding` / `--engine` stop one half and leave the door up for
+the other; `--check` previews without touching anything. The sidecar walk reads the `TASK` block out of
+`serve/embed.sh` rather than keeping a list, so the reranker is stopped without a name in this file, and
+`serve/gateway.sh` grew the one `PAT=` line it was missing -- the door had been the only process the honest
+tail could not count. (`stop.sh` itself is older than this tree: it came from the `PROFILE=eg2` experiment on a
+side branch, and the design it guarded was superseded by this one; what survived the comparison is this file,
+rewalked for the door. `tests/test_stop.py` pins the couplings.)
+
 ## A pool is a boot reading, and a restart can bring the page back answering with nothing in it
 
 The standing launch was restarted to pick up the Monitor plugin (merged mode imports `webui` at engine start, so the

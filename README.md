@@ -772,6 +772,10 @@ these numbers runs.
    ```bash
    ./update.sh                                 # git pull here (refuses on tracked edits), re-check
    ```
+   ```bash
+   ./stop.sh                                   # one way down: monitors, then the door, then the sidecars, then
+                                               # the engine -- and an honest count of what is left
+   ```
    **The native path is the default; the container path is the one thing asked for, with a default of no** (`--docker`
    takes it, `--no-docker` declines without the prompt, `--yes` does not answer it). Every later step follows that answer:
    with the container path off, the image is not inspected or built, the second checkout `serve.sh` mounts is not cloned,

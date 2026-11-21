@@ -44,6 +44,10 @@ PYTHON=${PYTHON:-$HOME/r9700-stack/.venv/bin/python}
 [ -x "$PYTHON" ] || PYTHON=$(command -v python3)
 LOG=${LOG:-$HOME/logs/gateway-$GATEWAY_PORT.log}; mkdir -p "$(dirname "$LOG")"
 PIDF=${PIDF:-$HOME/.r9700-state/gateway-$GATEWAY_PORT.pid}; mkdir -p "$(dirname "$PIDF")"
+# The pidfile is this STOP's whole memory, and a door can outlive it (hand-started, pidfile cleared); stop.sh
+# falls back to this pattern, so the process is recognizable without a pidfile. Pattern in ONE file: the one
+# the stopper reads is the one this script would have launched with.
+PAT="serve/gateway.py"
 
 # The gate (serve/gateway.py): since 2026-11-16 it OBSERVES by default. It reads the engine's harm signals -- its
 # preemption counter moving, or its KV pool at GATE_KV_HIGH -- and reports them on the Monitor and at /api/gate,
