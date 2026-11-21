@@ -37,6 +37,10 @@ TESTED = {
     # went 297 -> 153 prompt tokens (two replayed images no longer encoded) and 400 -> 200. The container pin is
     # NOT listed: nothing has run that target there, and an unlisted pin is a warning, not a guess.
     "mm_last_turn": (("0.32.0",), "vllm: process only the images of the last submitted turn of a chat request"),
+    # the OCR pass in front of a picture: k narrow band asks instead of one long transcription that collapses into a
+    # repetition cycle, and the extracted text goes into the prompt (compat/mm_ocr_pass.py). Same seam as
+    # mm_last_turn, so the same pin; 0.32.0 measured on this box 2026-11-21 (bench/mm_ocr_ab.py).
+    "mm_ocr_pass": (("0.32.0",), "vllm: nothing -- this is this stack's policy, not a workaround for an upstream gap"),
 }
 
 

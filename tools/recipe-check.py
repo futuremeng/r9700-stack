@@ -67,7 +67,8 @@ OPERATOR_KNOBS = ("MAXLEN", "NSEQ", "NBT", "UTIL", "KVDTYPE", "MTP", "PREFIX_CAC
                   # the production answer any more than an ambient NBT would. MM_DEFAULT is on the list because it is
                   # the knob that decides what an unset MM means -- and the About page now quotes that default from
                   # the recipe, so it has to be a knob the gate can see, not a second place to drift.
-                  "MM", "MM_DEFAULT", "MM_IMAGE", "MM_VIDEO", "MM_MAX_PIX", "MM_MIN_PIX")
+                  "MM", "MM_DEFAULT", "MM_IMAGE", "MM_VIDEO", "MM_MAX_PIX", "MM_MIN_PIX", "MM_EMBEDS",
+                  "MM_TP_MODE")
 
 
 def clean_env(extra=None):

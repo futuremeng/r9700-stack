@@ -30,14 +30,32 @@ the model saw them, not on fonts or the client. From two pictures up, when the k
 budget each oversized one is shrunk here to budget/k -- the same 16,384-token worst case the old 4 x 4,096 cost,
 but paid jointly. History pictures are gone before the budget runs, so they are never measured or resized.
 
-What this deliberately does NOT do: it does not make an earlier picture still visible -- asking "what was in the
-first screenshot?" needs the client to send it again. That is the trade, and it is what "只处理最后一次提交内容中的图片"
-asks for. `R9K_MM_LAST_TURN=0` restores stock behavior (every image in the prompt is processed, 400 and all),
-`R9K_MM_MAX_IMAGE=N` overrides the count cap when reading the model config is not enough, and
-`R9K_MM_TOTAL_PIX=N` the pixel budget.
+A THIRD policy rides on the same seam (2026-11-21, later the same day, and it exists because the second one was
+not enough). "Only the last turn's pictures" is exactly right about cost and exactly wrong about a follow-up
+question: the client replays the screenshot inside the message it was attached to, the NEXT user message is plain
+text, and the strict rule then hands the model a request with no picture in it and not one word saying a picture
+was removed. Measured on the live serve (notes/multimodal-input.md, 2026-11-21): the same screenshot and the same
+question cost 232 prompt tokens in one message and 84 tokens asked on the next turn -- 84 is the question alone,
+the picture is not there. What came back at 84 tokens was "我当前没有看到可读取的图片内容", and in other turns the
+model answered by invention with same-family glyphs (猫 read out as 猛, a whole sentence as 冗冗冗), which from the
+other end of the wire is precisely "汉字都认不出来". So two things changed, both about not failing silently:
+
+1. every message that loses pictures keeps one text part saying so, whether or not the message still has text; and
+2. when the turn being answered carries NO picture at all, the newest replayed picture stays --
+   `R9K_MM_HISTORY_IMAGE=N`, default 1, `0` restores the strict rule. At most one extra picture, still inside the
+   same count cap and the same per-turn pixel budget.
+
+What this deliberately does NOT do: it does not make an arbitrary earlier picture still visible -- asking "what was
+in the first of six screenshots?" needs the client to send it again. That is the trade, and it is what
+"只处理最后一次提交内容中的图片" asks for; the fallback covers the one shape where the strict rule stops the
+question itself from being answerable. `R9K_MM_LAST_TURN=0` restores stock behavior (every image in the prompt is
+processed, 400 and all), `R9K_MM_MAX_IMAGE=N` overrides the count cap when reading the model config is not enough,
+`R9K_MM_TOTAL_PIX=N` the pixel budget, and `R9K_MM_HISTORY_IMAGE=N` how many replayed pictures stay when this turn
+carries none.
 """
 from __future__ import annotations
 
+import logging
 import os
 
 try:                                                   # the pure helper has to be importable without vLLM
@@ -49,8 +67,11 @@ except Exception:                                      # noqa: BLE001
 logger = init_logger("vllm." + __name__)
 
 _PATCHED = False
-_SHOWN = False
-_RESIZED = False
+# Running totals, printed with every line: "does this fire in production, and how often" is the first question an
+# operator asks about a filter that edits other people's requests, and the answer used to be "once per launch, in
+# one INFO line, then nothing at all".
+_DROPPED = 0
+_RESIZED = 0
 
 # The part types a chat request can carry a picture in. TypedDicts in vLLM's chat_utils spell it four ways: the
 # OpenAI wire format ("image_url"), the simple form some clients send ("image_url" as a bare string is normalized
@@ -61,6 +82,11 @@ IMG_TYPES = ("image_url", "image", "input_image", "image_pil", "image_embeds")
 # rather than one invented here. The launchers pass the same value as MM_MAX_PIX, so pixel_budget() normally
 # reads it back from the engine rather than using this.
 _TOTAL_PIX = 16777216
+
+# How many REPLAYED pictures stay when the turn being answered carries none at all. One, because the shape this
+# covers is a follow-up question about the screenshot the user attached one message ago, and one picture is what
+# that question needs; the count cap and the pixel budget still decide what it may cost.
+_HISTORY_IMAGE = 1
 
 # The vision patch grid: a resize must round dimensions down to a multiple of this (patch 16 x merge 2) or the
 # engine resamples the result anyway.
@@ -79,45 +105,76 @@ def _turn_cut(messages) -> int:
     return len(messages) - 1
 
 
-def strip_history_images(messages, keep: int = 4):
-    """(messages, kept, dropped) -- `messages` untouched unless something had to change.
+def _image_slots(msg):
+    """The part indexes a picture sits at in this message's content, or [] for a string/absent content."""
+    content = (msg or {}).get("content")
+    return [j for j, p in enumerate(content) if _is_image(p)] if isinstance(content, list) else []
 
-    `keep` is the number of pictures the last turn may carry; the newest ones win. Returns the SAME list object
-    when nothing was dropped, so a request that needs no change is not copied.
+
+def strip_history_images(messages, keep: int = 4, older: int = _HISTORY_IMAGE):
+    """(messages, kept, dropped, kept_from_history) -- `messages` untouched unless something had to change.
+
+    `keep` is the engine's own per-prompt picture limit and it bounds the TOTAL the request carries, newest first.
+    `older` is the fallback slot: when the turn being answered carries no picture at all, the newest `older`
+    pictures of the replayed history stay, so a follow-up question about a screenshot is still a question about a
+    picture. `older` is clamped to `keep`, so the fallback can never lift the engine's limit.
+
+    Every message that loses at least one picture gets one text part saying so -- including a message that still
+    has its text. That is not decoration: "看这张截图" with the screenshot quietly deleted reads to the model as a
+    picture it is looking at, and it answers by invention. Returns the SAME list object when nothing was dropped,
+    so a request that needs no change is not copied.
     """
     if not messages:
-        return messages, 0, 0
+        return messages, 0, 0, 0
     # the last submitted turn: the last user message, and anything after it (tool results with a screenshot in
     # them belong to the turn being answered, not to history)
     cut = _turn_cut(messages)
-    out, kept, dropped = list(messages), 0, 0
+    slots = min(older, keep) if older > 0 else 0
+    # what the turn being answered carries on its own decides whether a replayed picture gets a slot at all
+    if sum(len(_image_slots(m)) for m in messages[cut:]) or not slots:
+        slots = 0
+    # the newest `slots` replayed pictures, counted back from the end of the transcript
+    older_spots = [(i, j) for i in range(min(cut, len(messages))) for j in _image_slots(messages[i])]
+    stay = set(older_spots[len(older_spots) - slots:]) if slots else set()
+
+    out, kept, dropped, kept_older = list(messages), 0, 0, 0
     for i, msg in enumerate(messages):
         content = (msg or {}).get("content")
         if not isinstance(content, list):
             continue                                    # a plain string content carries no parts
+        spots = _image_slots(msg)
         if i >= cut:
-            imgs = [p for p in content if _is_image(p)]
-            if len(imgs) <= keep:
-                kept += len(imgs)
+            if len(spots) <= keep:
+                kept += len(spots)
                 continue
-            gone = imgs[:len(imgs) - keep]              # the OLDEST of this turn's own pictures
-            keep_imgs = imgs[len(imgs) - keep:]
+            gone = spots[:len(spots) - keep]            # the OLDEST of this turn's own pictures
             dropped += len(gone)
-            kept += len(keep_imgs)
-            new = [p for p in content if not _is_image(p)] + keep_imgs
-            out[i] = dict(msg, content=new)
+            kept += len(spots) - len(gone)
+            # the kept pictures stay where the client put them (only the dropped ones are pulled out), and the
+            # message says how many went -- the old code also moved the survivors to the end of the content, which
+            # is exactly the part order that was measured to change what the model reads out of a picture
+            new = [p for j, p in enumerate(content) if j not in set(gone)]
+            out[i] = dict(msg, content=new + [{"type": "text", "text": f"[{len(gone)} image(s) dropped: this "
+                                                          f"request processes only the newest {keep}]"}])
             continue
-        gone = [p for p in content if _is_image(p)]
+        gone = [j for j in spots if (i, j) not in stay]
         if not gone:
+            # every picture in this replayed message stayed -- that is the fallback doing its job, and the caller
+            # has to be able to tell that from "the turn being answered carried them"
+            kept += len(spots)
+            kept_older += len(spots)
             continue
+        stayed = len(spots) - len(gone)
         dropped += len(gone)
-        rest = [p for p in content if not _is_image(p)]
-        if not rest:
-            # a message that was only pictures would render as an empty turn, which reads to the model as a
-            # glitch in the transcript; one line saying what happened is cheaper than a confused answer
-            rest = [{"type": "text", "text": f"[{len(gone)} image(s) from an earlier turn not re-processed]"}]
+        kept += stayed
+        kept_older += stayed
+        rest = [p for j, p in enumerate(content) if j not in set(gone)]
+        # a message that was only pictures would render as an empty turn, which reads to the model as a glitch in
+        # the transcript, and a message that still has its text would read as a picture it can see. One line
+        # saying what happened is cheaper than a confident answer about a picture that is not in the prompt.
+        rest += [{"type": "text", "text": f"[{len(gone)} image(s) from an earlier turn not re-processed]"}]
         out[i] = dict(msg, content=rest)
-    return (out, kept, dropped) if dropped else (messages, kept, dropped)
+    return (out, kept, dropped, kept_older) if dropped else (messages, kept, dropped, kept_older)
 
 
 def _data_url(part):
@@ -247,6 +304,15 @@ def image_limit(self) -> int:
     return 4                                            # serve/native-flashnext.sh's MM_IMAGE default
 
 
+def history_keep() -> int:
+    """How many replayed pictures stay when the turn being answered carries none -- 1 by default, 0 for the strict
+    rule. Not read from the model config: there is no engine number for it, this stack's policy is the number."""
+    v = os.environ.get("R9K_MM_HISTORY_IMAGE", "")
+    if v.isdigit():
+        return int(v)
+    return _HISTORY_IMAGE
+
+
 def pixel_budget(self) -> int:
     """What one turn's pictures may cost TOGETHER, in pixels -- the engine's own size cap again, not a copy of
     it: the launchers pass MM_MAX_PIX as --mm-processor-kwargs' longest_edge, and the budget IS that number so
@@ -262,6 +328,28 @@ def pixel_budget(self) -> int:
     except Exception:                                   # noqa: BLE001 -- a moved attribute must not break a request
         pass
     return _TOTAL_PIX
+
+
+def log_line(kept, dropped, from_history, older, total):
+    """(level, message) for one chat request that carried pictures, or None when it carried none.
+
+    Pure on purpose: `patch()` needs a vLLM to run, and the question this answers -- "did the picture the user is
+    asking about reach the model" -- has to be held by tests/test_mm_last_turn.py without one. It exists at all
+    because a request whose OWN turn carries the picture used to log nothing whatsoever, so "the model answered
+    about a screenshot" and "the model was never shown one" were indistinguishable in the log.
+    """
+    if not kept and not dropped:
+        return None
+    if not kept:
+        return "warning", (f"r9700 mm last-turn: dropped {dropped} image(s) replayed from history and NOTHING is "
+                           f"left in the prompt: the turn being answered carries no picture and "
+                           f"R9K_MM_HISTORY_IMAGE={older} kept none as a fallback, so the model is being asked "
+                           f"about a picture it was not shown (the transcript now says so in words); "
+                           f"running total dropped {total}")
+    return "info", (f"r9700 mm last-turn: {kept} image(s) in the prompt ({kept - from_history} from the turn being "
+                    f"answered, {from_history} the newest replayed one kept as a fallback), dropped {dropped} "
+                    f"replayed from history; running total dropped {total} "
+                    f"(R9K_MM_HISTORY_IMAGE=0 is the strict rule, R9K_MM_LAST_TURN=0 restores stock)")
 
 
 def patch() -> bool:
@@ -287,33 +375,30 @@ def patch() -> bool:
     orig = cls.render_chat_request
 
     async def wrapped(self, request):
-        global _SHOWN, _RESIZED
+        global _DROPPED, _RESIZED
         try:
-            msgs, kept, dropped = strip_history_images(getattr(request, "messages", None), image_limit(self))
+            msgs, kept, dropped, from_history = strip_history_images(getattr(request, "messages", None),
+                                                                     image_limit(self), history_keep())
             if dropped:
                 request.messages = msgs
-                if not _SHOWN:
-                    _SHOWN = True
-                    logger.info("r9700 mm last-turn: dropped %d image(s) replayed from history, kept %d from the "
-                                "turn being answered (R9K_MM_LAST_TURN=0 restores stock behavior)", dropped, kept)
-                else:
-                    logger.debug("r9700 mm last-turn: dropped %d, kept %d", dropped, kept)
+                _DROPPED += dropped
+            line = log_line(kept, dropped, from_history, history_keep(), _DROPPED)
+            if line:
+                logger.log(logging.WARNING if line[0] == "warning" else logging.INFO, line[1])
             msgs, shrunk = adapt_pixels(msgs, pixel_budget(self))
             if shrunk:
                 request.messages = msgs
-                if not _RESIZED:
-                    _RESIZED = True
-                    logger.info("r9700 mm last-turn: shrank %d oversized image(s) so the turn's pictures share the "
-                                "%d px budget (one image may take it whole; R9K_MM_TOTAL_PIX overrides)",
-                                shrunk, pixel_budget(self))
-                else:
-                    logger.debug("r9700 mm last-turn: shrank %d image(s) to the per-turn pixel budget", shrunk)
+                _RESIZED += shrunk
+                logger.info("r9700 mm last-turn: shrank %d oversized image(s) so the turn's pictures share the "
+                            "%d px budget (one image may take it whole; R9K_MM_TOTAL_PIX overrides); running "
+                            "total shrunk %d", shrunk, pixel_budget(self), _RESIZED)
         except Exception as e:                          # noqa: BLE001 -- a dropped request is worse than an old bug
             logger.warning("r9700 mm last-turn: leaving the request untouched: %r", e)
         return await orig(self, request)
 
     cls.render_chat_request = wrapped
     _PATCHED = True
-    logger.info("r9700 mm last-turn installed on %s.render_chat_request (only the images of the last submitted "
-                "turn are processed, and they share one pixel budget)", cls.__name__)
+    logger.info("r9700 mm last-turn installed on %s.render_chat_request (only the last submitted turn's images are "
+                "processed; when it carries none, the newest %d replayed picture stays, and every message that loses "
+                "a picture says so)", cls.__name__, history_keep())
     return True

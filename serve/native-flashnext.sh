@@ -287,14 +287,32 @@ print(json.dumps(d, sort_keys=True))'; }
 # Only the images of the turn being answered, not the whole conversation's. A chat client replays the transcript on
 # every turn, so turn N carries N-1 pictures again, and stock vLLM re-encodes each one (a vision-tower step, and
 # the turn's pictures share a budget of MM_MAX_PIX/1024 image tokens) -- and since --limit-mm-per-prompt counts
-# images PER PROMPT, the replay by
-# itself reaches MM_IMAGE and answers 400 on the turn that adds the new one. r9700_vllm/compat/mm_last_turn.py
+# images PER PROMPT, the replay by itself reaches MM_IMAGE and answers 400 on the turn that adds the new one. r9700_vllm/compat/mm_last_turn.py
 # drops them; R9K_MM_LAST_TURN=0 restores stock behavior. Baked here, not left to whoever starts the box -- and set
 # ABOVE the env-recipe print, because a knob exported below it is missing from the tree's own answer: the recipe
 # file (written later) had R9K_MM_LAST_TURN while ENVRECIPE=1 did not, and tools/recipe-check.py read that as the
 # tree not setting a knob the live engine had.
+# R9K_MM_HISTORY_IMAGE (2026-11-21) is the exception inside that rule, and it is the shape a chat client actually
+# produces: the screenshot rides in the message it was attached to, the NEXT user message is plain text, and the
+# strict rule then sends the model a request with no picture in it at all -- measured, the same question with its
+# picture is 232 prompt tokens and the follow-up asked one turn later is 84 (the question alone). The model then
+# either says it cannot see one or invents a same-family glyph (猫 read out as 猛), which from the client's side
+# reads as "cannot read Chinese". One replayed picture stays in that case; R9K_MM_HISTORY_IMAGE=0 is the strict
+# rule back, and the engine's own MM_IMAGE count cap still bounds the total either way.
 : ${R9K_MM_LAST_TURN:=1}
-export R9K_MM_LAST_TURN
+: ${R9K_MM_HISTORY_IMAGE:=1}
+# R9K_MM_OCR (measured 2026-11-21, then DEMOTED to off the same day by the MM_TP_MODE finding above) puts a narrow
+# read of the picture in FRONT of the answer: pictures are cut into their TEXT LINES (a row-profile segmentation, not
+# equal-height bands), each line is asked on its own with thinking off, and what comes back is pasted into the prompt
+# as a labelled block. What it is worth depends entirely on the mode above: with the tower sharded (`weights`) it is
+# the difference between garbage and a readable answer -- CER 96.8%/100% with 2/2 collapses becomes 32.3% with none --
+# and equal-height bands measured WORSE than the baseline (99.8% / 8.5 s), which is why lines are the policy and bands
+# only a fallback. With the tower replicated (`data`) every arm is already CER 0.0%, so the pass buys nothing and costs
+# 40-90% more wall time on the turn that carries the picture -- which is why the default is off. Set `hybrid` (keep the
+# picture, add its text) or `text` (replace it) when running MM_TP_MODE=weights, or for pictures smaller than what
+# this checkpoint reads. notes/multimodal-input.md.
+: ${R9K_MM_OCR:=off}
+export R9K_MM_LAST_TURN R9K_MM_HISTORY_IMAGE R9K_MM_OCR
 
 if [ "${ENVRECIPE:-0}" = 1 ]; then echo "env recipe: $(r9k_env_json)"; exit 0; fi
 
@@ -351,15 +369,56 @@ if [ "${ENVRECIPE:-0}" = 1 ]; then echo "env recipe: $(r9k_env_json)"; exit 0; f
 # patch 16 and merge 2, one image token covers 32x32 = 1,024 pixels, so that default is 16,384 image tokens per
 # image -- and boot agrees: "Encoder cache will be initialized with a budget of 16384 tokens". Measured on
 # 2026-11-05: a 2,560x6,236 screenshot arrived as 15,664 prompt tokens, 6% of a 262,144-token window, from one image.
-# MM_MAX_PIX is therefore the knob that bounds what the pictures of ONE TURN cost TOGETHER, and since 2026-11-21 it
-# is the checkpoint's own 16,777,216 px (~16,384 tokens): one image may take the whole budget and is never
-# resampled. The old 4,194,304 px PER-IMAGE cap (~4,096 tokens each) is what made a low-resolution screenshot's
-# small Chinese text come back unreadable -- the pixels were gone before the model saw them, not the font
-# (notes/multimodal-input.md, 2026-11-21). The worst case did not grow: the old cap cost at most 4 x 4,096 tokens,
-# the new one costs at most 16,384 paid JOINTLY -- r9700_vllm/compat/mm_last_turn.py shrinks each oversized
-# picture of a k >= 2 turn to budget/k when their total exceeds it. MM_MIN_PIX is left at the checkpoint's own
-# shortest_edge (tiny images get upscaled to ~64 tokens).
-: ${MM_MAX_PIX:=16777216}; : ${MM_MIN_PIX:=65536}
+# MM_MAX_PIX is therefore the knob that bounds what the pictures of ONE TURN cost TOGETHER, and it is back to
+# 4,194,304 px (~4,096 tokens) as of the same day it was raised: that raise rested on a theory that has now been
+# measured and found wrong. Reading one hand-drawn card at three scales, the cliff is at the BOTTOM, not the top --
+# 765 image tokens reads `i il i il i il i` where 3,062 tokens reads `机 器 学 习 模 型 识 别`, and 6,878 tokens is
+# WORSE than 3,062 (a repetition cycle starts, and the first line becomes 机机机机). So the band is what gets set
+# here, and both edges are the model's, not the box's:
+#   floor  1,048,576 px = 1,024 image tokens. llama.cpp says it out loud ("Qwen-VL models require at minimum 1024
+#          image tokens to function correctly on grounding tasks"), and the engine serving this same base model
+#          from a GGUF runs its picture reader at max_tokens 1024 while measuring CER 12.1% at a 300-token cap
+#          against 1.66% at 1,024 (Strata #5443). The checkpoint's own shortest_edge, 65,536 px = 64 tokens, is a
+#          floor it was never meant to be run at -- and a client that resizes pasted pictures down sends its
+#          screenshots in at 450-800 tokens, straight into the cliff (the `l l l l` TIME-cover answer).
+#   ceiling 4,194,304 px = 4,096 tokens: the same number that other engine uses, and past it this checkpoint
+#          starts repeating. Against yesterday's 16,777,216 this is 4x CHEAPER in the worst case.
+# One turn's pictures still share the budget, and mm_last_turn.py shrinks each oversized picture of a k >= 2 turn
+# to budget/k -- with these two numbers every picture that survives lands on or above the floor by construction.
+# The price of the floor, measured: a 400x300 thumbnail costs 1,099 prompt tokens where it cost ~120 (0.82 s).
+: ${MM_MAX_PIX:=4194304}; : ${MM_MIN_PIX:=1048576}
+# MM_EMBEDS=1 (on for this family) lets a caller send PRE-COMPUTED picture encodings instead of pixels --
+# `{"type":"image_embeds","image_embeds":<npy/torch payload>}` -- and the model then skips `self.visual(...)`
+# (vllm/models/qwen4_exp/amd/model.py builds Qwen3_VisionTransformer, the same tower Strata ships as a BF16
+# mmproj; bench/mm_encoder.py is this stack's own encoder over the checkpoint's 333 BF16 visual tensors). It is
+# the seam for reading the same picture through a different preprocessor without touching the engine's vision
+# path, and the request must carry image_grid_thw with it (Qwen2VLMultiModalDataParser.embedding_fields: the grid
+# is what sizes the placeholder range and the mrope positions). Off costs nothing; on accepts tensors a client
+# chose -- which on this box is exactly what the front door's key is for.
+: ${MM_EMBEDS:=1}
+# MM_TP_MODE decides how the VISION TOWER is parallelised (the LM's TP is unaffected): "weights" (vLLM's default)
+# splits each ViT layer across the TP ranks, "data" replicates the tower on every rank and splits the pictures instead.
+# Worth a knob because the tower here is Qwen3-VL's: 27 blocks, hidden 1152, 16 heads -> head_dim 72 (not a power of
+# two), bilinear-interpolated position embeddings and 3D RoPE, all of which have to be sliced correctly to stay
+# equivalent. vLLM's own ROCm maintainer handed `--mm-encoder-tp-mode data` to the RDNA4 multimodal report
+# (vllm-project/vllm#49851) as the way to run a ViT on these cards, and our model file supports it
+# (vllm/models/qwen4_exp/amd/model.py:866 -> use_data_parallel).
+# MM_TP_MODE decides how the VISION TOWER is parallelised (the LM's TP is unaffected): "weights" (vLLM's default)
+# splits each ViT layer across the TP ranks, "data" replicates the tower on every rank and splits the pictures instead.
+# THIS IS THE ANSWER TO "THE BOX CANNOT READ PICTURES" (measured 2026-11-21, same cards, same asks, everything else
+# identical): with `weights` on 4x R9700 a dense Chinese card transcribes at CER 32.3% -- 96.8-100% and a repetition
+# cycle if the OCR pass below is off -- and with `data` the SAME request is **CER 0.0% with 0/4 collapses**, exact
+# character for character, with or without the pass. Everything blamed earlier (the MXFP4 pack's vision_sequences: 0,
+# the pixel band, MTP, fp8 KV, the resample filter, the sampler, the length of the ask) was a symptom of a vision
+# encoder that was being sliced into quarters and was not equivalent for it: 27 blocks, hidden 1152, 16 heads ->
+# head_dim 72 (not a power of two), bilinear-interpolated position embeddings and 3D RoPE. vLLM's own ROCm maintainer
+# handed `--mm-encoder-tp-mode data` to the RDNA4 multimodal report (vllm-project/vllm#49851), and our model file
+# supports it (vllm/models/qwen4_exp/amd/model.py:866 -> use_data_parallel).
+# The price, measured in the same pair of boots: the replicated tower costs 0.65 GiB of KV per rank -- KV cache 6.55
+# GiB / 887,983 tokens / 3.39x concurrency becomes 5.9 GiB / 797,453 tokens / 3.04x. That is the trade this box makes:
+# fewer cached tokens for pictures that are actually read. `MM_TP_MODE=weights` is the old behaviour, and the OCR pass
+# below is what makes it usable at all.
+: ${MM_TP_MODE:=data}
 
 ARGS=(--served-model-name "${SERVED_NAME:-Qwen3.8}" --host "$HOST" --port "${PORT:-8080}"
       --tensor-parallel-size "${TP:-4}" --max-model-len "${MAXLEN}"
@@ -380,6 +439,8 @@ if [ "$MM" = 1 ]; then
   else
     ARGS+=(--mm-processor-kwargs "{\"size\": {\"longest_edge\": ${MM_MAX_PIX}, \"shortest_edge\": ${MM_MIN_PIX}}}")
   fi
+  [ "${MM_EMBEDS}" = 1 ] && ARGS+=(--enable-mm-embeds)
+  ARGS+=(--mm-encoder-tp-mode "${MM_TP_MODE}")
 else
   ARGS+=(--language-model-only)
 fi
@@ -400,6 +461,14 @@ fi
 # those 32 rows a step are exactly what is scarce. MTP=3 is the better choice for a single interactive stream:
 # MTP=3 bash serve/native-flashnext.sh.
 MTP=${MTP:-2}
+# MTP=0 (also accepted: off, none) means no drafter at all. vLLM rejects num_speculative_tokens=0, so until now
+# there was no way to ask for it -- and what it is worth switching off for is a correctness question, not a speed
+# one. Upstream carries open reports of MTP turning generation into a repetition loop on hybrid/PLE models:
+# "correct first token, garbage from the second", draft acceptance collapsing, finish_reason=length on a loop
+# (vllm#55357, the same qwen4_exp family; vllm#52475 with a quantized KV cache; their own control is "no
+# speculation: 0/46 corrupted"). Same fingerprint seen here reading text out of a picture -- see notes/
+# multimodal-input.md. Costs ~18% of aggregate decode at 32 streams; it is a diagnosis knob, not a default.
+case "${MTP,,}" in 0|off|none) MTP= ;; esac
 [ -n "$MTP" ] && ARGS+=(--speculative-config "{\"method\": \"mtp\", \"num_speculative_tokens\": $MTP${SPEC_EXTRA:+, $SPEC_EXTRA}}")
 [ -n "${ATTN:-}" ] && ARGS+=(--attention-backend "$ATTN")
 CC=()
@@ -472,8 +541,8 @@ if [ "${WEBUI:-0}" = 1 ] || [ "${WEBUI:-}" = same ]; then
       mm_max_pix="$([ "$MM" = 1 ] && echo "$MM_MAX_PIX" || echo 0)" \
       mm_min_pix="$([ "$MM" = 1 ] && echo "$MM_MIN_PIX" || echo 0)" \
       mm_max_tok="$([ "$MM" = 1 ] && echo "$((MM_MAX_PIX / 1024))" || echo 0)" \
-      mm_if_on="MM_IMAGE=${MM_IMAGE} MM_VIDEO=${MM_VIDEO} MM_MAX_PIX=${MM_MAX_PIX} MM_MIN_PIX=${MM_MIN_PIX}" \
-      mm_limits="$([ "$MM" = 1 ] && echo "image ${MM_IMAGE}, video ${MM_VIDEO}, ${MM_MAX_PIX} px (~$((MM_MAX_PIX / 1024)) tokens) shared by one turn" \
+      mm_if_on="MM_IMAGE=${MM_IMAGE} MM_VIDEO=${MM_VIDEO} MM_MAX_PIX=${MM_MAX_PIX} MM_MIN_PIX=${MM_MIN_PIX} MM_EMBEDS=${MM_EMBEDS} MM_TP_MODE=${MM_TP_MODE}" \
+      mm_limits="$([ "$MM" = 1 ] && echo "image ${MM_IMAGE}, video ${MM_VIDEO}, ${MM_MAX_PIX} px (~$((MM_MAX_PIX / 1024)) tokens) shared by one turn, each picture at least ${MM_MIN_PIX} px (~$((MM_MIN_PIX / 1024)) tokens)" \
                      || echo "image 0, video 0 (--language-model-only)")" \
       env="$(r9k_env_json)" extra="${EXTRA:-}"
   fi

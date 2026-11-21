@@ -1,4 +1,96 @@
 # Changelog
+## `MM_TP_MODE=data` -- pictures were unreadable because the vision tower was being sliced across the four cards; replicated, the same request reads character-exact (CER 32.3% -> 0.0%)
+
+The entry below is the one that blamed the pixel band, and it was wrong about the cause: the stroke soup it fixed a
+symptom of is what a **broken vision encoder** looks like from the outside. vLLM's default
+`--mm-encoder-tp-mode weights` splits each ViT layer across the TP ranks; on TP4 this box was running a quarter of a
+Qwen3-VL tower per rank -- 27 blocks, hidden 1152, 16 heads so head_dim 72, bilinearly interpolated position
+embeddings, 3D RoPE, and three `deepstack` feature maps the LM adds to its first layers. `MM_TP_MODE=data` replicates
+the tower on every rank and splits the pictures instead, and that single flag turns the failure off. Same cards, same
+asks, temperature 0, thinking off, everything else in the launch byte-identical, both directions re-run: long
+transcription of a dense Chinese card is CER 96.8%/100% with repetition collapses (pre-pass off), 32.3% with the
+per-line read-out pass on, and **0.0% with 0/4 collapses under `data`** -- `机器学习模型识别 / 合同需在月底前签署 /
+本季度销售额增长 18.6%`, 0.38 s, in the plain engine path. Ruled out first, each by measurement: the quantized pack
+(the visual tensors are BF16 and unquantized, 333/333), the other engine's mmproj (identical tower: same 27 blocks,
+patch 16, merge 2, mean/std 0.5, projection 2560, and the same class vLLM builds at
+`vllm/models/qwen4_exp/amd/model.py:871`), the resample filter (bicubic/lanczos/box/nearest), image-token count
+(1,020 vs 3,080), the drafter (`MTP=0` changes nothing; acceptance ~54%, so upstream's MTP+PLE index bug is not this
+build), fp8 KV, the sampler (`no_repeat_ngram_size` 2/3/4 and `repetition_penalty` up to 1.15 change the shape of the
+junk and keep it junky), and the language (text-only dictation of the same lines is exact). Nobody upstream reports
+an RDNA4 vision-encoder *accuracy* bug; the nearest is vllm-project/vllm#49851, multimodal failing to load on
+gfx1201, whose fix from vLLM's ROCm maintainer was `--mm-encoder-tp-mode data`. Price, from the pair of boots: 0.65
+GiB of KV per rank -- 6.55 GiB / 887,983 tokens / 3.39x becomes 5.9 GiB / 797,453 tokens / 3.04x. The 1,024-token
+floor below stays for now and now looks unnecessary; retest at the checkpoint's own `shortest_edge` before changing
+it. `R9K_MM_OCR` (the pre-pass below) goes back to **off** at the same time: with the tower replicated it buys
+nothing and costs 40-90% more wall time on the picture turn, and it stays in the tree as the mitigation for anyone
+running `MM_TP_MODE=weights`, where it is the difference between garbage and a usable answer. Full write-up,
+including what is claimed and what is not: notes/multimodal-input.md.
+
+## `MM_MIN_PIX` -- a picture arriving under ~1,024 image tokens reads as stroke soup, and a 400 x 300 thumbnail costs 1,099 prompt tokens with the floor on
+
+The report was 汉字认不出来 again, with a TIME-cover image attached: the model described the LAYOUT perfectly (red
+frame, the head, the barcode area) and rendered every word on the page as repeated thin strokes (`l l l l`). The
+same card drawn by hand fails the same way, and the variable that decides the outcome is how many image tokens the
+picture arrives with. A 1,400 x 560 card (765 image tokens) reads `i il i il i il i`; the identical card at
+2,800 x 1,120 (3,062 tokens) reads `机 器 学 习 模 型 识 别 | 合 同 需 求 月 底 前 签 署 | 本 季 度 销 售 额 增 长 18.6%`.
+The checkpoint's own `shortest_edge` -- which `serve.sh` and `native-flashnext.sh` had taken over as `MM_MIN_PIX`
+-- is 65,536 px, i.e. **64 tokens**, and a client that resizes pasted pictures down sends screenshots in at
+450-800 tokens, straight into the cliff. llama.cpp warns about exactly this ("Qwen-VL models require at minimum
+1024 image tokens to function correctly on grounding tasks"), and Strata -- serving the same base model from a
+GGUF and a BF16 mmproj -- runs its GPU picture reader at `max_tokens: 1024` and measures **CER 12.1% at a 300-token
+cap against 1.66% at 1024** on dense pages (their #5443). `MM_MIN_PIX=1048576` asks for the same floor here.
+
+Measured price on this box: a 400 x 300 picture goes from ~120 to **1,099 prompt tokens** (0.82 s), a
+1,200 x 400 to 1,127 (1.07 s).
+
+The other edge moved the same evening: `MM_MAX_PIX` goes back from the checkpoint's own 16,777,216 px to
+**4,194,304 px**, because the top of the band is where the reading degrades too -- a 6,878-token picture answered
+`杌杌杌杌杌杌杌杌` per line, and the 4,096-token ceiling costs 4,107 tokens and still repeats. Halving the ceiling
+halves what the encoder may hold, and the boot line hands that back as a number: *"Encoder cache will be
+initialized with a budget of 8192 tokens"* where it read 16384. So what ships is a **band** -- 1,024 to 4,096 image
+tokens, both edges the model's, `k` oversized pictures of one turn sharing the budget at ~budget/k so k=4 lands on
+the floor rather than under it. Nothing else had to be paid: the drafter (`MTP=2`) and the fp8 KV cache were each
+disproved as causes of the collapse by turning them off and re-running the same probes, so the box runs them
+exactly as before.
+
+What the floor does NOT explain, said plainly because it is the other half of the complaint: asking for a LONG
+transcription collapses into a repetition cycle (`机机机机…`, a period-2 `机会机会…`, `I A I I A I…` on an English
+card, or 2,500 generated tokens with an empty `content` at `finish_reason=length`), while asking for ONE line off
+the same picture is exact 5 runs out of 5, and dictating the same three lines as plain TEXT is exact every time.
+Turning the drafter off (`MTP=0`, a spelling the launcher had to learn because vLLM rejects
+`num_speculative_tokens: 0`) and putting the main KV cache back to bf16 (`R9K_QSA_KVF8=0 KVDTYPE=`) leaves the
+collapse **unchanged** -- so it is neither the drafter nor the fp8 KV, and vllm#55357's MTP+PLE index bug is
+already fixed in the 0.32.0 wheel this box runs. Numbers, probes and the four PNGs kept for the cross-engine A/B:
+`notes/multimodal-input.md`.
+
+
+## `R9K_MM_HISTORY_IMAGE` -- a follow-up question about a screenshot was reaching the model with no screenshot in it, and the filter that did it said nothing
+
+Asked from a Mac about 汉字认不出来, the tree already had an answer written for it -- the previous day's
+`MM_MAX_PIX` raise, on the theory that the old 4,194,304 px per-image cap had blurred the text. Re-measuring on the
+live serve says that theory is wrong and that a different failure was hiding behind it. The cap is not involved: a
+lone screenshot is never resampled now (+458 image tokens for 1,200 x 400, +4,000 for 3,200 x 1,280), and the same
+text drawn at **16 px and at 256 px** (63 -> 4,000 image tokens) is read no better bigger -- the 256 px row was the
+worst of five sizes. What was happening is `mm_last_turn.py` doing its job to the letter: a chat client replays the
+transcript, the screenshot rides in the message it was attached to, the follow-up is plain text, so the strict
+last-turn rule hands the model a request with **no picture at all** -- 232 prompt tokens for the screenshot and its
+question in one message, **84** for the same question one turn later, which is the question alone. The model then
+either says it cannot see one (*"我当前没有看到可读取的图片内容"*) or invents a same-family glyph (猫 read as 猛, a
+sentence as 冗冗冗), which from the client's side is exactly "cannot read Chinese". Three changes, one knob:
+**a turn that carries no picture keeps the newest replayed one** (`R9K_MM_HISTORY_IMAGE=N`, default 1, `0` restores
+the strict rule) -- bounded by the engine's own `--limit-mm-per-prompt` count cap and by the per-turn pixel budget,
+so the worst case grows by exactly one picture; **nothing disappears in silence** -- every message that loses
+pictures carries a text part saying how many, where before only an image-only message got that note, so "看这张截图"
+stayed and the screenshot behind it did not; and **the log answers "did it fire on that turn"** -- every
+image-bearing request logs dropped/kept at INFO with running totals instead of one INFO line per launch and DEBUG
+after, and the nothing-left case is a WARNING naming the knob. Both launchers bake the default above their
+env-recipe print, as `R9K_MM_LAST_TURN` is, and `serve/serve.sh`'s docker line passes it through.
+The measurements also retire two claims this tree was quoting: the same character drawn at 260 px answers 偏旁 犭,
+右边 苗, 拼音 māo, 11 画, 小猫, and 四选一/是·否 3/4 and 6/6 -- so vision, mm positions and the CJK vocabulary all
+work and only the see-it-write-the-glyph step does not; and putting the image *before* the text in one message turned
+`猛` into `猫` on an identical request, which is owed a probe of its own. Side finding, and a trap for anyone
+re-checking this: the host has **no CJK font** (`fc-list :lang=zh` empty) and `bench/mmvl.py` looks for DejaVu only,
+so every Chinese image this repo generates for itself is tofu.
 
 ## `./update.sh --restart` brings a running launch back up on the pull -- green checks first, an asked answer second
 

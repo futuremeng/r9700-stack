@@ -70,26 +70,36 @@ OFFL=(); [ "${OFFLOAD_GB:-34}" != 0 ] && OFFL=(--cpu-offload-gb ${OFFLOAD_GB:-34
 UTIL=${UTIL:-$([ "${OFFLOAD_GB:-34}" != 0 ] && [ "${TP:-2}" = 2 ] && echo 0.96 || echo 0.94)}
 # Images are ON by default here too, with the same numbers serve/native-flashnext.sh measures (that launcher's
 # comment block and notes/multimodal-input.md carry the cost: the vision tower's KV, the ~60 s of extra boot, and
-# MM_MAX_PIX bounding what the pictures of ONE TURN cost together. Since 2026-11-21 that is the checkpoint's own
-# 16,777,216 px (~16,384 tokens), the same worst case the old 4 x 4,194,304 cap cost: one image may take it whole
-# (and is not resampled -- the old per-image cap is what blurred a low-resolution screenshot's small text), and
-# mm_last_turn.py shares it ~budget/k when a turn keeps k > 1 oversized pictures. MM=0 is the text-only path; it
+# MM_MAX_PIX bounding what the pictures of ONE TURN cost together, and MM_MIN_PIX a floor under each one. Both
+# edges are the model's, measured 2026-11-21: 4,194,304 px = 4,096 image tokens up (past that this checkpoint
+# starts repeating what it already wrote -- notes/multimodal-input.md has the 6,878-token row that turned
+# 机器学习模型识别 into 机机机机), and 1,048,576 px = 1,024 tokens down (below that a picture arrives as stroke
+# soup: 765 tokens reads `i il i il i il i` where 3,062 reads the characters, and a client that resizes pasted
+# pictures sends its screenshots in at 450-800). The checkpoint's own shortest_edge, 65,536 px = 64 tokens, is not
+# a floor it was trained for. mm_last_turn.py shares the budget ~budget/k when a turn keeps k > 1 oversized
+# pictures, so k=4 lands each one at the 1,024-token floor rather than under it. MM=0 is the text-only path; it
 # used to be spelled LMONLY=1, and since nothing else in the tree read that name the spelling is gone rather than
 # kept as an alias.
 # --limit-mm-per-prompt's image count is MM_IMAGE; it applies to the last submitted turn only, which
 # r9700_vllm/compat/mm_last_turn.py enforces (history images are dropped, never re-encoded).
 : ${MM_DEFAULT:=1}; : ${MM:=$MM_DEFAULT}; : ${MM_IMAGE:=4}; : ${MM_VIDEO:=0}
-: ${MM_MAX_PIX:=16777216}; : ${MM_MIN_PIX:=65536}
+: ${MM_MAX_PIX:=4194304}; : ${MM_MIN_PIX:=1048576}; : ${MM_EMBEDS:=1}; : ${MM_TP_MODE:=data}
 if [ "$MM" = 1 ]; then
   MMARGS=(--limit-mm-per-prompt "{\"image\": ${MM_IMAGE}, \"video\": ${MM_VIDEO}}"
           --mm-processor-kwargs "{\"size\": {\"longest_edge\": ${MM_MAX_PIX}, \"shortest_edge\": ${MM_MIN_PIX}}}")
+  [ "${MM_EMBEDS}" = 1 ] && MMARGS+=(--enable-mm-embeds)
+  MMARGS+=(--mm-encoder-tp-mode "${MM_TP_MODE}")
 else
   MMARGS=(--language-model-only)
 fi
 # r9700_vllm/compat/mm_last_turn.py: a chat client replays the whole conversation every turn, and stock vLLM then
 # re-encodes every earlier picture (and the replay alone can reach --limit-mm-per-prompt and answer 400 on the
 # turn that adds a new one). Only the last submitted turn's pictures are processed. R9K_MM_LAST_TURN=0 restores.
-: ${R9K_MM_LAST_TURN:=1}
+# R9K_MM_HISTORY_IMAGE=1 (the default, 2026-11-21) is the exception the same file argues for: when the turn being
+# answered carries no picture at all -- the client replayed the screenshot and the user's follow-up is plain text --
+# the newest replayed picture stays, because otherwise the model is asked about a picture that is not in its
+# context. 0 is the strict rule back.
+: ${R9K_MM_LAST_TURN:=1}; : ${R9K_MM_HISTORY_IMAGE:=1}; : ${R9K_MM_OCR:=off}
 
 [ "${EAGER:-0}" = 1 ] && ARGS+=(--enforce-eager)
 # KVDTYPE=fp8: fp8 KV cache (vLLM --kv-cache-dtype; unset = "auto" = the model dtype). On GLM-5.3-Flash only the 11 sparse-MLA
@@ -154,7 +164,8 @@ sudo docker run -d --name ${NAME:-vllmstock} --ipc=host --network=host ${PIDNS--
   --cap-add SYS_PTRACE --security-opt seccomp=unconfined \
   -e HIP_VISIBLE_DEVICES=${GPUS:-0,1} -e VLLM_ROCM_USE_AITER=0 -e HSA_ENABLE_IPC_MODE_LEGACY=0 \
   -e GPU_MAX_HW_QUEUES=${HWQ:-1} -e HSA_ENABLE_MWAITX=${MWAITX:-1} -e OMP_NUM_THREADS=8 -e R9K_LIB=/opt/r9700/r9700_vllm/kernels/libr9k.so \
-  -e R9K_MM_LAST_TURN=${R9K_MM_LAST_TURN} \
+  -e R9K_MM_LAST_TURN=${R9K_MM_LAST_TURN} -e R9K_MM_HISTORY_IMAGE=${R9K_MM_HISTORY_IMAGE} \
+  -e R9K_MM_OCR=${R9K_MM_OCR} \
   $DOCKER_ARGS "${MNT[@]}" -v $HOME/models:/models -v $HOME/vllmstock-cache-$CKEY:/root/.cache/vllm \
   -v $HOME/vllmstock-triton:/root/.triton \
   "${ENTRY[@]}" $IMG "${PRE[@]}" ${MODEL:-/models/Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ} \

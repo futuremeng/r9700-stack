@@ -186,9 +186,8 @@ function render() {
         ? `${lim.image ?? "?"} image(s), ${lim.video ?? "?"} video(s) per prompt`
           // A limit on the COUNT is not a limit on the COST. Since 2026-11-21 the size number is a SHARED budget
           // for the last turn's images (r9700_vllm/compat/mm_last_turn.py drops history images and splits the
-          // budget ~1/k at k oversized ones), and one picture may take it whole without being resampled -- the
-          // old per-image 4,194,304 cap is what blurred a low-resolution screenshot's small text. A missing cap
-          // falls back to the checkpoint's own 16,777,216 px = 16,384 image tokens (patch 16 x merge 2).
+          // budget ~1/k at k oversized ones), and one picture may take it whole without being resampled. A missing
+          // cap falls back to the checkpoint's own 16,777,216 px = 16,384 image tokens (patch 16 x merge 2).
           + (mmk && mmk.size ? ` · the last turn's images share up to ${num(mmk.size.longest_edge)} px (~${
               num(Math.round(Number(mmk.size.longest_edge) / 1024))} tokens; one image may take it whole)`
             : " · no size cap passed: the turn's images share the checkpoint's own 16,777,216 px (~16,384 tokens)")
@@ -234,9 +233,18 @@ function render() {
     + "15,664 prompt tokens uncapped and 4,123 with the old per-image cap; drawn text down to 28 px in a canvas "
     + "that size still read correctly at the cap. Since 2026-11-21 the number above is a SHARED budget for the "
     + "last turn's images (history pictures are dropped, not re-encoded): one picture may take it whole and is not "
-    + "resampled; k oversized ones share it ~1/k each. per-request mm_processor_kwargs are refused, so the cap is "
-    + "a ceiling a client cannot lift. Not measured: images under concurrency (every probe so far was one request "
-    + "at a time on an idle box), photographs, video.");
+    + "resampled; k oversized ones share it ~1/k each. The one exception is the picture this turn needs and does "
+    + "not carry: when the turn being answered has no picture at all, the newest replayed one stays "
+    + "(R9K_MM_HISTORY_IMAGE=1) and every message that loses a picture says so in words — before that a follow-up "
+    + "question about a screenshot reached the model with no picture in it (232 prompt tokens with it, 84 without) "
+    + "and got answered by invention. per-request mm_processor_kwargs are refused, so the cap is a ceiling a client "
+    + "cannot lift. And the thing that decided whether pictures could be read at all: the vision tower runs REPLICATED "
+    + "on every rank rather than split across them (MM_TP_MODE=data; vLLM's own default is weights). On four cards the "
+    + "split tower transcribed a dense Chinese card at 32.3% character error -- 96.8-100%, with a repetition cycle, "
+    + "when the read-out pass was off -- and the same request through the replicated tower is exact: 0.0% CER, no "
+    + "collapse. The price is 0.65 GiB of KV per rank (887,983 cached tokens became 797,453). "
+    + "Not measured: images under concurrency (every probe so far was one request at a time on an idle "
+    + "box), photographs, video.");
 
   facts($("facts-host"), [
     ["Hostname", host.hostname],

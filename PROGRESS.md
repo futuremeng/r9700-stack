@@ -3478,3 +3478,107 @@ What is owed after this:
   them now read the name from `/v1/models` through `bench/served_model.py`, `MODEL=` overrides for A/B, and
   `tests/test_served_names.py` guards the class of mistake. **Still owed: if some external client is found that must not
   be reconfigured, its alias has to be an explicit, dated, logged decision -- not a silent mapping.**
+
+## 2026-11-21 17:0x - 汉字认不出来 was not the pixel cap: a follow-up turn had no picture in it, and the filter said nothing
+
+* Asked from a Mac (Zed): *"识别图片有问题，汉字都认不出来，最近改了图片压缩策略还是不行"*. The tree's own answer from
+  nine hours earlier was the `MM_MAX_PIX` raise. Re-measured on the live serve, that answer does not hold: a lone
+  screenshot is not resampled any more (+458 image tokens at 1,200 x 400, +4,000 at 3,200 x 1,280 -- arithmetic the
+  32 px grid predicts), and the same words drawn at **16, 32, 64, 128 and 256 px** are read no better as they get
+  bigger; 256 px was the worst of the five. So the "old cap blurred the Chinese text" line in the README and in
+  `notes/multimodal-input.md` is corrected, not re-stated, and the new default is defended on cost rather than on
+  legibility.
+* What was actually happening is `compat/mm_last_turn.py` obeying its own rule. Same screenshot, same question:
+  **232 prompt tokens** in one user message, **84** asked on the next turn -- 84 is the question alone, the picture
+  is not in the prompt, and the answer was *"我当前没有看到可读取的图片内容"*. The engine had been logging this as
+  `dropped N image(s) ... kept 0` -- **three launches show a request that reached the model with no picture at all**
+  -- and only the first occurrence per launch, at INFO; after that DEBUG, invisible at the default level. A box that
+  quietly deletes other people's pictures has to say so on every turn.
+* Fixed in the same seam, one knob: `R9K_MM_HISTORY_IMAGE=1` (default) keeps the newest replayed picture when the
+  turn being answered carries none, `0` is the strict rule back; the fallback cannot lift `--limit-mm-per-prompt`
+  and rides the same per-turn pixel budget, so the worst case grows by exactly one picture. Every message that loses
+  pictures now carries a text part naming how many (before, only an image-only message got the placeholder --
+  "看这张截图" survived and the screenshot behind it did not). Over-cap drops inside one turn are named too, and the
+  survivors are now left **where the client put them**: the old code moved kept images to the end of `content`,
+  which is the part order measured to change what this checkpoint reads out of a picture.
+* Tests (`tests/test_mm_last_turn.py`, host python, no vLLM): the 4-tuple `(kept, dropped, kept_from_history)` ripples
+  through every existing check, plus the client shapes that broke it -- follow-up-with-no-picture keeps the newest
+  replayed one and copies nothing; `older=0` is the strict rule and the message says so; two replayed pictures and an
+  empty turn keep the NEWEST, not the oldest; the fallback does not fire when the turn already carries a picture; and
+  `older=9` asked against `keep=1` still keeps one.
+* Evidence that retires two other claims: a 260 px character asked five ways answers 偏旁 犭 / 右边 苗 / 拼音 māo /
+  11 画 / 小猫, and 四选一 3/4, 是·否 6/6 -- so the vision tower, the mm positions and the CJK vocabulary work, and
+  only the transcribe-the-glyph step fails (`猫` -> `猛`). Latin OCR at **14 px** is exact. Image-before-text vs
+  text-before-image flipped `猛` to `猫` on an identical request: real, reproducible, and owed its own probe.
+* Traps found on the way, both worth writing into the note: `--reasoning-parser qwen3` with a small `max_tokens`
+  gives `content:""` + `finish:length` (the note already says this, and I still wrote a probe that tripped on it),
+  and the host has **no CJK font at all** (`fc-list :lang=zh` empty, `bench/mmvl.py` looks for DejaVu only), so
+  every Chinese image this repo draws for itself is tofu -- the CJK numbers above needed `wqy-microhei.ttc`.
+* Not done, owed: `bench/mm_cjk.py` that refuses to run without a CJK font; the part-order probe. (Retired from
+  this list: the box now runs the launch that carries `R9K_MM_HISTORY_IMAGE`, and `tools/recipe-check.py` reads
+  PRODUCTION recipe with every measured knob matching -- so no `env:` deviation stands.)
+
+## 2026-11-21 (night): what a picture costs in IMAGE TOKENS is a band, 1,024 to 4,096 -- and the expensive fixes were all refuted before paying for them
+
+* Measured, one hand-drawn card, only the scale changing: 765 image tokens -> `i il i il i il i`; 3,062 ->
+  `机 器 学 习 模 型 识 别 | 合 同 需 求 月 底 前 签 署 | 本 季 度 销 售 额 增 长 18.6%`; 6,878 -> `杌杌杌杌…`.
+  So the cliff is at the bottom (the checkpoint's own `shortest_edge` is 65,536 px = **64 tokens**, and a client
+  that resizes pasted pictures sends screenshots in at 450-800) and the reading degrades again above ~4,096.
+  llama.cpp states the floor as advice ("Qwen-VL models require at minimum 1024 image tokens…"); the engine
+  serving this same base model from a GGUF runs 1,024/4,096 and measures CER 12.1% at a 300-token cap against
+  1.66% at 1,024 (Strata #5443). Shipped: `MM_MIN_PIX=1048576`, `MM_MAX_PIX=4194304`; the encoder cache budget
+  drops 16,384 -> 8,192 tokens, so the box is not paying for the fix.
+* Refuted, each by turning it off and re-running the same probes: the MTP drafter, the fp8 main KV cache, and
+  vllm#55357's MTP+PLE index bug (0.32.0 already passes `state_idx_stride`; this box's counters read 9,010
+  accepted of 16,676 drafted). Text-only controls are exact (three-line dictation, repeat-three-times, a
+  passage required to contain 篡改 three times), so the LM, its CJK table and the PLE n-gram path are clean.
+* Open, and the shape is not acuity: at a fixed 1,138-token prompt, 18 px glyphs transcribe with 2 errors, 32 px
+  gives `111111111`, and 40-144 px give per-line repetition -- the first token committed is the token that keeps
+  coming. Samples with the drafter off in the same band read better than with `MTP=2`, which is a hint, not a
+  result: the owed test is a collapse-rate count on identical probes with and without it. And `~/vision-probes/`
+  (four PNGs + a fixed question) exists so the same pictures can be run through the other engine unchanged --
+  their own reports put this class at CER 1.66% and one dropped character in eight, so the gap is real but
+  smaller than it looks from here.
+
+## 2026-11-21 (18:00-19:40): pictures read exactly — the vision tower was being sliced into quarters (`MM_TP_MODE=data`)
+
+* Started as the OCR pre-pass the previous block left open, and ended as the cause. `r9700_vllm/compat/mm_ocr_pass.py`
+  (one narrow ask per segmented **text line**, thinking off, results cached per picture × cut, fail-open) went live and
+  measured: dense card long-transcription **CER 96.8% → 32.3%**, collapses 2/2 → 0/2, at 2x wall. Equal-height bands
+  measured worse than the baseline (99.8%, 8.5 s), so lines are the policy and bands only a fallback — `line_slices()`
+  from a row profile, `band_slices()` behind it.
+* Two live bugs the tests could not see, both found by watching the log on a real request: `wrapped` called
+  `_run(self, request)` without the ask (a TypeError, swallowed by the fail-open arm, so every image turn went through
+  untouched while the install line printed on all five processes), and `logging` was imported **only in the no-vLLM
+  branch** of the logger fallback, so the pass NameErrored on its own log line. The test file now drives the wrapper
+  itself — `patch(cls=…, ask=…, decode=…, crop=…)` — and asserts the asks happened, that the fail-open counter did not
+  move, and that an INFO line reached the logger. `passes()`/`_run`/`inject` were green through both bugs.
+* The pass also looked only at the turn being answered, which is not where a client's screenshot lives: Zed replays it
+  in the message it was attached to. The pass now reads every picture left in the request after `mm_last_turn` has
+  filtered, and `text` mode replaces those pictures wherever they are.
+* Then `mm_encoder_tp_mode`: **`weights` (vLLM's default) splits the ViT across the 4 ranks, `data` replicates it**.
+  Same bench, same cards, everything else identical, both directions re-run: `weights` + pass = CER 32.3%, `weights`
+  without pass = 96.8%/100% with collapses, **`data` = 0.0% with 0/4 collapses** — exact with the pass off, in the
+  plain engine path, Chinese and Latin, narrow and long, on the four PNGs this note spent days calling unreadable.
+  Price measured in the same pair of boots: KV 6.55 GiB / 887,983 tokens / 3.39x → 5.9 GiB / 797,453 / 3.04x.
+* Ruled out by measurement before that, all of it: the MXFP4 pack (visual tensors are BF16, 333/333, unquantized;
+  `vision_sequences: 0` in the report is suspicious but not it), the other engine's mmproj (same tower, same weights,
+  same vLLM class at `models/qwen4_exp/amd/model.py:871` — so the cross-engine gap was never the encoder), the resample
+  filter, the image-token count, `no_repeat_ngram_size` 2/3/4 and `repetition_penalty` up to 1.15, the drafter, fp8 KV,
+  and the language. No upstream report of an RDNA4 vision-encoder *accuracy* bug exists; the closest is #49851
+  (multimodal failing to *load* on gfx1201) whose fix was the same `--mm-encoder-tp-mode data`.
+* Also answered the same evening: **the 8090 sidecar cannot supply picture vectors.** `qwen3-embedding-0.6b-q8_0` is
+  text-only (measured: `image input is not supported — hint: … provide the mmproj`), and even a vision *embedder* would
+  hand back one pooled 1,024-d retrieval vector, not the N×2560 merged rows plus three `deepstack_input_embeds` maps
+  this LM consumes. `--enable-mm-embeds` (shipped as `MM_EMBEDS=1`) is the seam for feeding the tower's own output, and
+  `bench/mm_encoder.py` runs that tower out-of-engine (HF `qwen3_vl`, the checkpoint's 333 BF16 tensors, CPU) — the
+  payload must carry `image_grid_thw` beside the embeds, which stock 0.32's single-tensor `ImageEmbeddingMediaIO`
+  refuses, so a client-side embedding path needs a compat patch for the parser, not a flag.
+* Shipped: `MM_TP_MODE=data` and `R9K_MM_OCR=off` as launcher defaults (with the tables in their comments), the knob in
+  `tools/recipe-check.py`, the mm-note on the About page rewritten, and `tools/recipe-check.py` reporting the live argv
+  and every `R9K_*` name matching the tree. `tests/test_mm_ocr_pass.py` (new wrapper arms), `tests/test_mm_last_turn.py`
+  and `tests/test_webui.py` PASS; the standing box is `--mm-encoder-tp-mode data`, `R9K_MM_OCR=off`, gate PASS.
+* Owed: the 1,024-token floor (`MM_MIN_PIX`) was set to dodge the stroke soup this flag explains — retest at the
+  checkpoint's own `shortest_edge`; whether `data` costs decode throughput or TTFT with a picture in the batch; images
+  under concurrency; photographs and video; and the four PNGs run through the other engine unchanged, which now reads
+  as a comparison of replicated-vs-sharded rather than of engines.

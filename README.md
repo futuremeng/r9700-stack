@@ -88,7 +88,7 @@ Qwen3.8-Flash-Next (MoE, 512 experts, MXFP4 experts plus fp8 dense) on four Rade
 | **decoding, one stream** | **225 tok/s** (best sample 228) | 14.3-14.4 ms a step; **the 210 W gate box**, four cards, 32k, the v0.3.3 gate — the four gates since read 221.4-222.9 |
 | **decoding, 32 streams** | **1,823 tok/s** aggregate (best sample 1,836.3) | 1,200-token waves, `bench/probe32.sh`; the native box, uncapped. The fp8 main-KV launch it now defaults to reads **1,792** (1,789 / 1,796) at the same protocol, and the 2026-11-08 standing launch (vLLM 0.32, router cap 4, util 0.96, `PREFIX_CACHE=0`) read **1,767 / 1,780** — inside that spread, so the router cap costs nothing measurable here (notes/bug-router-gemm-oob.md) |
 | **reading a prompt** | **9,633 tok/s** | 7,789-token prompt, the native box uncapped (7,141 at the 210 W gate); **9,702** on the fp8 launch, 7,792 tokens |
-| **context** | **262,144 tokens**, needle found at 250,078 | the checkpoint's own ceiling, and the window this box serves at today; KV pool **902,153 tokens** (`Maximum concurrency for 262,144 tokens per request: 3.44x`) on the standing launch — and a later boot of the byte-identical command printed **887,983** (3.39x), so the pool is what a launch printed, not a property of the config ([notes/context-256k.md](notes/context-256k.md)) — fp8 e4m3 main KV, image inputs on, `--gpu-memory-utilization 0.96`. At 0.97 the same launch read 935,216 with the vision knobs and 1,009,899 without them; 540,202 at bf16 main KV |
+| **context** | **262,144 tokens**, needle found at 250,078 | the checkpoint's own ceiling, and the window this box serves at today; the standing launch (`MM_TP_MODE=data`, replicated vision tower) prints **797,453 tokens** (`Maximum concurrency for 262,144 tokens per request: 3.04x`) — the same launch with the tower split across the ranks printed **887,983** (3.39x), and one before that **902,153** (3.44x), so the pool is what a launch printed, not a property of the config ([notes/context-256k.md](notes/context-256k.md), and the tower price in [notes/multimodal-input.md](notes/multimodal-input.md)) — fp8 e4m3 main KV, image inputs on, `--gpu-memory-utilization 0.96`. At 0.97 the same launch read 935,216 with the vision knobs and 1,009,899 without them; 540,202 at bf16 main KV |
 | **decoding, in real work** (not a benchmark) | **162 tok/s** with the box to yourself, **115 tok/s** as a request actually finishes | 1,568 real requests off the fp8 launch's journal over 10.25 h, the 115 being the median of the 1,525 that generated >=40 tokens, prompts p50 52,083; the benchmark rows above describe a machine nobody sits on |
 
 <sub>Two boxes, two power settings, and these tables do not cross: the second table's first row is the **210 W gate
@@ -659,13 +659,34 @@ payload carries none. [notes/webui.md](notes/webui.md) carries that face in full
 written for: images are ON by default since 2026-11-05 (`MM=0` is the way back), they were never impossible, and no
 `vllm:*` label says whether the serve came up `--language-model-only` — which is why the cost is recorded in
 [notes/multimodal-input.md](notes/multimodal-input.md) (977,726 → 935,216 KV tokens, −4.35%, boot unchanged) instead
-of being inferred. Since 2026-11-21 the cap that paragraph argues about is a turn budget, not a per-image one:
-`MM_MAX_PIX` bounds what the last submitted turn's pictures cost **together**, at the checkpoint's own 16,777,216 px
-≈ 16,384 image tokens — one screenshot takes it whole and is never resampled (the old 4,194,304 px per-image cap is
-what blurred a low-resolution screenshot's small Chinese text; the text came back readable at full resolution), and
-k ≥ 2 oversized ones share it ~budget/k each — worst case the same 16,384 tokens, now paid jointly
-(`R9K_MM_TOTAL_PIX` overrides; `r9700_vllm/compat/mm_last_turn.py` enforces the last-turn rule underneath, so
-history images are dropped before anything measures them).
+of being inferred. Since 2026-11-21 the cap that paragraph argues about is a turn budget, not a per-image one, and
+it is a **band**, both edges measured: `MM_MAX_PIX` bounds what the last submitted turn's pictures cost **together**
+at 4,194,304 px ≈ 4,096 image tokens, and `MM_MIN_PIX` puts a floor of 1,048,576 px ≈ 1,024 tokens under each one.
+those are the model's numbers, not the box's: under ~1,024 tokens a picture arrives as stroke soup (`i il i il i`
+where the same card at 3,062 tokens reads 机器学习模型识别 — that is what a client that resizes pasted pictures
+sends in, at 450-800 tokens), and past ~4,096 this checkpoint starts repeating what it already wrote. **The stroke-soup
+half of that has since been traced to something else entirely** (measured the same day): the vision tower was being
+split across the four TP ranks — vLLM's default `--mm-encoder-tp-mode weights` — and a quarter of a Qwen3-VL ViT per
+rank is not numerically equivalent for it, so `MM_TP_MODE=data` (replicate the tower, split the pictures) takes the
+identical request from CER 32.3% to **0.0% with no collapses**, for 0.65 GiB of KV per rank. The floor is still
+shipped; it now looks unnecessary and should be retested at the checkpoint's own `shortest_edge` before it is moved.
+llama.cpp
+prints the same floor as advice, and the engine serving this same base model from a GGUF caps a picture at 4,096
+tokens and measures CER 12.1% at a 300-token cap against 1.66% at 1,024. k ≥ 2 oversized pictures share the budget
+~budget/k each, so k=4 lands each on the floor rather than under it (`R9K_MM_TOTAL_PIX` overrides). The old
+16,777,216 px ceiling — the checkpoint's own — is 4x the worst case and measured no better; halving what the
+encoder may hold paid for itself in the boot line: **16,384 → 8,192 tokens**.
+`r9700_vllm/compat/mm_last_turn.py` enforces the last-turn rule underneath, so history images are dropped before
+anything measures them — with one exception added the same day, because that rule was silently eating a real use
+case: when the turn being answered carries **no** picture at all (the client replayed the screenshot, the follow-up
+question is plain text), the newest replayed picture stays — `R9K_MM_HISTORY_IMAGE=1` by default, `0` is the strict
+rule back — and every message that loses a picture now says so in words. Measured, not designed:
+the same screenshot and question are 232 prompt tokens in one message and **84** asked one turn later, i.e. no
+picture in the prompt at all, and the model said so or invented a same-family glyph. (The 4,194,304 px per-image cap
+in that older paragraph is **not** what made a screenshot's small Chinese text unreadable — the same words drawn at
+16 px and at 256 px read no better, and the sweep is in
+[notes/multimodal-input.md](notes/multimodal-input.md); what does read fine on this checkpoint is a Latin line at
+14 px, and a CJK character it is shown 四选一 and by 拼音 — just not transcribed.)
 
 Since 2026-11-15 the page also answers three questions the device-fault hunt could not answer at the moment they
 mattered ([notes/bug-causal-conv1d-oob.md](notes/bug-causal-conv1d-oob.md) §18): **which physical card each rank
@@ -773,8 +794,7 @@ these numbers runs.
    ./update.sh                                 # git pull here (refuses on tracked edits), re-check
    ```
    ```bash
-   ./stop.sh                                   # one way down: monitors, then the door, then the sidecars, then
-                                               # the engine -- and an honest count of what is left
+   ./stop.sh                                   # one way down: monitors, door, sidecars, engine -- and it counts what
    ```
    **The native path is the default; the container path is the one thing asked for, with a default of no** (`--docker`
    takes it, `--no-docker` declines without the prompt, `--yes` does not answer it). Every later step follows that answer:

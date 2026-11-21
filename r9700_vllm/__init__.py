@@ -68,6 +68,15 @@ def register() -> None:
         from .compat import qsa_kvfp8
         if qsa_kvfp8.patch():
             done.append("patch:qsa_kvfp8")
+    # ORDER MATTERS: the last patch installed on a method is the first to RUN. The OCR pass wants to see the
+    # pictures that will actually reach the model -- after the last-turn filter and the pixel budget -- and it may
+    # replace them with text, so it is installed HERE, before mm_last_turn, and therefore runs after it.
+    if not _disabled("mm_ocr_pass"):
+        # read the text out of a picture with k narrow asks, then hand the model the text (compat/mm_ocr_pass.py);
+        # off unless R9K_MM_OCR=hybrid|text is said out loud
+        from .compat import mm_ocr_pass
+        if mm_ocr_pass.patch():
+            done.append("patch:mm_ocr_pass")
     if not _disabled("mm_last_turn"):
         # only the images of the last submitted turn of a chat request are processed (compat/mm_last_turn.py)
         from .compat import mm_last_turn
