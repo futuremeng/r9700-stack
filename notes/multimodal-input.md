@@ -359,3 +359,49 @@ Unmeasured, and worth knowing before pointing a heavy vision client at this: eve
 time on an idle box. Vision-tower steps interleaving with 32 concurrent deep-context decodes is still unmeasured
 (the same gap the `MM=1` default took on), and `mm_processor_cache` behavior across many distinct pictures in a long
 conversation has not been looked at.
+
+## 2026-11-21: the size cap becomes ONE budget the last turn's pictures share -- and one image may take it whole
+
+The incident: a low-resolution screenshot of small Chinese text came back unreadable -- the model saw the layout
+but not the characters. Re-sending the same text as a high-resolution image recognized every character, which
+localized the failure to pixels, not fonts and not the chat client: at the standing 4,194,304 px PER-IMAGE cap a
+capture larger than ~4,096 image tokens was resampled DOWN before the vision tower saw it, and small glyphs do
+not survive that. (This section's cap column already carried the evidence: the 2,560x6,236 screenshot arrived at
+15,664 tokens uncapped and 4,123 capped; the 28 px digits that survived were never evidence about 6 pt text.)
+
+Two policy changes, both riding on the seam `r9700_vllm/compat/mm_last_turn.py` already owns:
+
+1. **The count cap is last-turn-only** -- in force since 2026-11-09 and now stated as policy: `MM_IMAGE=4` applies
+   to the pictures of the turn being answered, never to the replayed history, and history images are dropped
+   before anything measures or encodes them. (Anthropic is the useful contrast: every turn's images stay visible
+   in its payload model, re-sent and re-billed each turn -- dropping history is this box's cost trade, not the
+   industry default.)
+2. **The pixel cap becomes a SHARED budget.** `MM_MAX_PIX` goes 4,194,304 -> 16,777,216 -- back to the
+   checkpoint's own `preprocessor_config.json` `size.longest_edge` -- and it now bounds what one turn's kept
+   pictures cost TOGETHER: one image may take the whole budget and is never resampled (a full-HD 16.7M-px
+   screenshot passes through byte-for-byte intact), and from k >= 2 up, when the kept turn's total exceeds the
+   budget, each oversized picture is shrunk to budget/k in the compat layer (data: URLs only, dimensions floored
+   to the 32 px patch grid, re-encoded lossless PNG -- this step exists because resampling hurt drawn text, it
+   must not also add JPEG artifacts; anything undecodable is left untouched and the engine's cap stands).
+   The worst case did not grow: 4 x 4,096 = 16,384 image tokens then, 16,384 now, paid jointly. `R9K_MM_TOTAL_PIX`
+   overrides the budget; normally it reads the engine's own `mm_processor_kwargs` cap back, so there is one number.
+
+How the others do it (fetched 2026-11-21 unless marked; general knowledge is labelled):
+
+| engine | count limit | size limit |
+|---|---|---|
+| vLLM stock | `--limit-mm-per-prompt` per PROMPT -- the very bug this patch fixes; per-request kwargs refused unless `--trust-request-mm-kwargs` | server-wide `max_pixels` PER IMAGE (this box: one number, shared by policy here) |
+| SGLang | `--limit-mm-data-per-request` JSON | `--mm-process-config '{"image":{"max_pixels":...}}'`, per modality; 64 MiB download cap, `--allowed-media-domains` |
+| Anthropic API | 10-600 images/request; >20 images in one request tightens EVERY image to a 3,000 px long edge | per-image tiers (1,568 px standard; 2,576 px on 4.7+ models); docs warn lossy pre-compression hurts text |
+| OpenAI (general knowledge) | per request | `detail=auto` tiles an image at 768 px then 512 px tiles -- many tokens for a big one, none for a small one |
+| Gemini (general knowledge) | per request | ~258 fixed tokens/image (768x768) -- small text is a known loss |
+
+Nobody counts only the last turn -- the last-turn scoping is this stack's own; Anthropic's >20-images tightening
+and this budget/k are the same shape: the more pictures a request carries, the smaller each may stay.
+
+Unmeasured after this change, in order of what to look at first: the PIL decode/resize inside
+`render_chat_request` adds latency only when a turn keeps k >= 2 oversized pictures (k = 1 never decodes here --
+the raised engine cap makes it a no-op); the boot encoder-cache reservation returns to 16,384 tokens
+("1 item profiled" -- the uncapped column above is the evidence that number runs fine); and both launchers'
+new default wants one live soak before the About-page wording reads as settled: it says "shared by one turn"
+because that is what the code enforces, not what has been measured under load.

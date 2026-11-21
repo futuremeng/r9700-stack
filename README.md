@@ -659,7 +659,13 @@ payload carries none. [notes/webui.md](notes/webui.md) carries that face in full
 written for: images are ON by default since 2026-11-05 (`MM=0` is the way back), they were never impossible, and no
 `vllm:*` label says whether the serve came up `--language-model-only` — which is why the cost is recorded in
 [notes/multimodal-input.md](notes/multimodal-input.md) (977,726 → 935,216 KV tokens, −4.35%, boot unchanged) instead
-of being inferred.
+of being inferred. Since 2026-11-21 the cap that paragraph argues about is a turn budget, not a per-image one:
+`MM_MAX_PIX` bounds what the last submitted turn's pictures cost **together**, at the checkpoint's own 16,777,216 px
+≈ 16,384 image tokens — one screenshot takes it whole and is never resampled (the old 4,194,304 px per-image cap is
+what blurred a low-resolution screenshot's small Chinese text; the text came back readable at full resolution), and
+k ≥ 2 oversized ones share it ~budget/k each — worst case the same 16,384 tokens, now paid jointly
+(`R9K_MM_TOTAL_PIX` overrides; `r9700_vllm/compat/mm_last_turn.py` enforces the last-turn rule underneath, so
+history images are dropped before anything measures them).
 
 Since 2026-11-15 the page also answers three questions the device-fault hunt could not answer at the moment they
 mattered ([notes/bug-causal-conv1d-oob.md](notes/bug-causal-conv1d-oob.md) §18): **which physical card each rank

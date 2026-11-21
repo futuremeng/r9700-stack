@@ -2720,12 +2720,13 @@ Path(_mj).unlink(missing_ok=True)
 # because the fixture predates the mm flag and a substring replace on a string that lacks the flag is a no-op that
 # would have made the "caught in both directions" check pass on equality.
 _REAL_CMD = rc.production_args()
-# These mm numbers belong to the Flash-Next family: `--mm-processor-kwargs {"size": ...}` with a 4,194,304 px cap
-# (~4,096 tokens an image) is what that checkpoint's processor accepts, while the Nemotron-H omni processor refuses
-# the `size` kwarg (its budget is min/max patches in its own preprocessor_config.json). The launcher picks the family
-# by grepping the checkpoint's config.json, so the family-dependent runs below pin a MODEL whose config.json is not
-# there -- missing means the Flash-Next defaults -- and whichever checkpoint this box currently serves cannot change
-# what these assertions see.
+# These mm numbers belong to the Flash-Next family: `--mm-processor-kwargs {"size": ...}` with the checkpoint's own
+# 16,777,216 px cap (~16,384 tokens the last turn's images share, one image able to take it whole) is what that
+# checkpoint's processor accepts, while the Nemotron-H omni processor refuses the `size` kwarg (its budget is min/max
+# patches in its own preprocessor_config.json). The launcher picks the family by grepping the checkpoint's
+# config.json, so the family-dependent runs below pin a MODEL whose config.json is not there -- missing means the
+# Flash-Next defaults -- and whichever checkpoint this box currently serves cannot change what these assertions see.
+# The size-cap assertion itself lives below, on the family-pinned line, for exactly that reason.
 _FAM = {"MODEL": "/nonexistent/flashnext-checkpoint"}
 ck("images are ON by default in this tree (2026-11-05): the live launch carries a per-prompt count cap and no "
    "--language-model-only, whatever family this box is serving",
@@ -2756,13 +2757,14 @@ _mmcmd3 = next((l for l in _mml3.splitlines() if l.startswith("launch:")), "")[l
 ck("MM=1 swaps the text-only flag for real per-prompt limits, and MM_IMAGE is not decorative",
    "--language-model-only" not in _mml and '--limit-mm-per-prompt {"image": 4, "video": 0}' in _mml
    and '--limit-mm-per-prompt {"image": 2, "video": 0}' in _mml2, _mml[-120:])
-# --limit-mm-per-prompt caps how MANY images a prompt may carry; it says nothing about what ONE image may cost.
-# The checkpoint's own default is longest_edge = 16,777,216 pixels = 16,384 image tokens (patch 16 x merge 2 ->
-# 1,024 px per token), and a 2,560x6,236 screenshot was measured arriving at 15,664 prompt tokens. So the size cap
-# is a separate flag, and it has to be visible in the launch line the same way.
-ck("MM=1 also caps how big an image may be, in pixels, with the token cost spelled out in the comment next to it",
-   '--mm-processor-kwargs {"size": {"longest_edge": 4194304, "shortest_edge": 65536}}' in _mml, _mml[-200:])
-ck("MM_MAX_PIX moves that cap (4,096 tokens/image is the default, not a constant someone has to remember)",
+# --limit-mm-per-prompt caps HOW MANY images, not what they cost. The checkpoint's own size default is
+# longest_edge = 16,777,216 pixels = 16,384 image tokens (patch 16 x merge 2 -> 1,024 px per token), and since
+# 2026-11-21 that IS the launcher's cap: it bounds what the pictures of ONE turn cost TOGETHER -- one image may
+# take it whole (no resample; the old per-image 4,194,304 cap is what blurred a low-resolution screenshot's small
+# text), and mm_last_turn shares it ~1/k at k oversized ones. The flag stays a separate knob, visible in the line.
+ck("MM=1 caps the pixels one turn's images cost together, in the launch line the same way (one image may take it whole)",
+   '--mm-processor-kwargs {"size": {"longest_edge": 16777216, "shortest_edge": 65536}}' in _mml, _mml[-200:])
+ck("MM_MAX_PIX moves that cap (16,384 tokens/turn is the default, not a constant someone has to remember)",
    '{"size": {"longest_edge": 1048576, "shortest_edge": 65536}}' in _mml3, _mml3[-200:])
 ck("a changed size cap is a recipe deviation the gate names (it changes what every prompt token count means)",
    [f for f, _, _ in rc.compare_flags(_mmcmd, _mmcmd3)] == ["--mm-processor-kwargs"],
@@ -2792,8 +2794,8 @@ _ck_expl = _dryline({"MM": _mmdef_src or "0"})
 ck("an unset MM means exactly MM=<the default the recipe records> -- one source of truth, not two places to drift",
    _ck_unset != "" and _ck_unset == _ck_expl, _ck_unset[-120:])
 for _mm, _want in (("0", "image 0, video 0 (--language-model-only)"),
-                   (None, "image 2, video 0, max 4194304 px (~4096 tokens each)"),
-                   ("1", "image 2, video 0, max 4194304 px (~4096 tokens each)")):
+                   (None, "image 2, video 0, 16777216 px (~16384 tokens) shared by one turn"),
+                   ("1", "image 2, video 0, 16777216 px (~16384 tokens) shared by one turn")):
     _mp = "/tmp/r9700-mm-meta-honest.json"
     Path(_mp).unlink(missing_ok=True)
     _e = {"METAONLY": "1", "FORCE": "1", "WEBUI": "same", "WEBUI_META": _mp, "MM_IMAGE": "2"}
@@ -2810,9 +2812,9 @@ for _mm, _want in (("0", "image 0, video 0 (--language-model-only)"),
        _mv.get("mm_effective") == ("on" if _on else "off")
        and _mv.get("mm_default") == _mmdef_src
        and _mv.get("mm_image") == ("2" if _on else "0") and _mv.get("mm_video") == "0"
-       and _mv.get("mm_max_pix") == ("4194304" if _on else "0")
-       and _mv.get("mm_max_tok") == ("4096" if _on else "0")
-       and "MM_IMAGE=2" in (_mv.get("mm_if_on") or "") and "MM_MAX_PIX=4194304" in (_mv.get("mm_if_on") or ""),
+       and _mv.get("mm_max_pix") == ("16777216" if _on else "0")
+       and _mv.get("mm_max_tok") == ("16384" if _on else "0")
+       and "MM_IMAGE=2" in (_mv.get("mm_if_on") or "") and "MM_MAX_PIX=16777216" in (_mv.get("mm_if_on") or ""),
        str({k: _mv.get(k) for k in ("mm_effective", "mm_image", "mm_max_pix", "mm_max_tok", "mm_if_on")}))
     Path(_mp).unlink(missing_ok=True)
 ck("a launch line's flags parse with their JSON values intact, and a bare flag is present with value None",

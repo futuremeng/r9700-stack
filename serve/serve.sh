@@ -70,12 +70,16 @@ OFFL=(); [ "${OFFLOAD_GB:-34}" != 0 ] && OFFL=(--cpu-offload-gb ${OFFLOAD_GB:-34
 UTIL=${UTIL:-$([ "${OFFLOAD_GB:-34}" != 0 ] && [ "${TP:-2}" = 2 ] && echo 0.96 || echo 0.94)}
 # Images are ON by default here too, with the same numbers serve/native-flashnext.sh measures (that launcher's
 # comment block and notes/multimodal-input.md carry the cost: the vision tower's KV, the ~60 s of extra boot, and
-# MM_MAX_PIX bounding what one picture can cost -- 16,777,216 px straight from preprocessor_config.json would let
-# a single screenshot take 16,384 tokens). MM=0 is the text-only path; it used to be spelled LMONLY=1, and since
-# nothing else in the tree read that name the spelling is gone rather than kept as an alias.
-# --limit-mm-per-prompt's image count is MM_IMAGE.
+# MM_MAX_PIX bounding what the pictures of ONE TURN cost together. Since 2026-11-21 that is the checkpoint's own
+# 16,777,216 px (~16,384 tokens), the same worst case the old 4 x 4,194,304 cap cost: one image may take it whole
+# (and is not resampled -- the old per-image cap is what blurred a low-resolution screenshot's small text), and
+# mm_last_turn.py shares it ~budget/k when a turn keeps k > 1 oversized pictures. MM=0 is the text-only path; it
+# used to be spelled LMONLY=1, and since nothing else in the tree read that name the spelling is gone rather than
+# kept as an alias.
+# --limit-mm-per-prompt's image count is MM_IMAGE; it applies to the last submitted turn only, which
+# r9700_vllm/compat/mm_last_turn.py enforces (history images are dropped, never re-encoded).
 : ${MM_DEFAULT:=1}; : ${MM:=$MM_DEFAULT}; : ${MM_IMAGE:=4}; : ${MM_VIDEO:=0}
-: ${MM_MAX_PIX:=4194304}; : ${MM_MIN_PIX:=65536}
+: ${MM_MAX_PIX:=16777216}; : ${MM_MIN_PIX:=65536}
 if [ "$MM" = 1 ]; then
   MMARGS=(--limit-mm-per-prompt "{\"image\": ${MM_IMAGE}, \"video\": ${MM_VIDEO}}"
           --mm-processor-kwargs "{\"size\": {\"longest_edge\": ${MM_MAX_PIX}, \"shortest_edge\": ${MM_MIN_PIX}}}")

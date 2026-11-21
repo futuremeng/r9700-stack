@@ -285,8 +285,9 @@ for ln in sys.stdin:
     d[k] = v
 print(json.dumps(d, sort_keys=True))'; }
 # Only the images of the turn being answered, not the whole conversation's. A chat client replays the transcript on
-# every turn, so turn N carries N-1 pictures again, and stock vLLM re-encodes each one (a vision-tower step and up
-# to MM_MAX_PIX/1024 image tokens each) -- and since --limit-mm-per-prompt counts images PER PROMPT, the replay by
+# every turn, so turn N carries N-1 pictures again, and stock vLLM re-encodes each one (a vision-tower step, and
+# the turn's pictures share a budget of MM_MAX_PIX/1024 image tokens) -- and since --limit-mm-per-prompt counts
+# images PER PROMPT, the replay by
 # itself reaches MM_IMAGE and answers 400 on the turn that adds the new one. r9700_vllm/compat/mm_last_turn.py
 # drops them; R9K_MM_LAST_TURN=0 restores stock behavior. Baked here, not left to whoever starts the box -- and set
 # ABOVE the env-recipe print, because a knob exported below it is missing from the tree's own answer: the recipe
@@ -350,10 +351,15 @@ if [ "${ENVRECIPE:-0}" = 1 ]; then echo "env recipe: $(r9k_env_json)"; exit 0; f
 # patch 16 and merge 2, one image token covers 32x32 = 1,024 pixels, so that default is 16,384 image tokens per
 # image -- and boot agrees: "Encoder cache will be initialized with a budget of 16384 tokens". Measured on
 # 2026-11-05: a 2,560x6,236 screenshot arrived as 15,664 prompt tokens, 6% of a 262,144-token window, from one image.
-# MM_MAX_PIX is therefore the knob that bounds what an image can cost; 4,194,304 px is ~4,096 tokens, which keeps a
-# 1,200x654 documentation PNG (760 tokens) untouched and shrinks the giant screenshot to 4,059. MM_MIN_PIX is left at
-# the checkpoint's own shortest_edge (tiny images get upscaled to ~64 tokens).
-: ${MM_MAX_PIX:=4194304}; : ${MM_MIN_PIX:=65536}
+# MM_MAX_PIX is therefore the knob that bounds what the pictures of ONE TURN cost TOGETHER, and since 2026-11-21 it
+# is the checkpoint's own 16,777,216 px (~16,384 tokens): one image may take the whole budget and is never
+# resampled. The old 4,194,304 px PER-IMAGE cap (~4,096 tokens each) is what made a low-resolution screenshot's
+# small Chinese text come back unreadable -- the pixels were gone before the model saw them, not the font
+# (notes/multimodal-input.md, 2026-11-21). The worst case did not grow: the old cap cost at most 4 x 4,096 tokens,
+# the new one costs at most 16,384 paid JOINTLY -- r9700_vllm/compat/mm_last_turn.py shrinks each oversized
+# picture of a k >= 2 turn to budget/k when their total exceeds it. MM_MIN_PIX is left at the checkpoint's own
+# shortest_edge (tiny images get upscaled to ~64 tokens).
+: ${MM_MAX_PIX:=16777216}; : ${MM_MIN_PIX:=65536}
 
 ARGS=(--served-model-name "${SERVED_NAME:-Qwen3.8}" --host "$HOST" --port "${PORT:-8080}"
       --tensor-parallel-size "${TP:-4}" --max-model-len "${MAXLEN}"
@@ -467,7 +473,7 @@ if [ "${WEBUI:-0}" = 1 ] || [ "${WEBUI:-}" = same ]; then
       mm_min_pix="$([ "$MM" = 1 ] && echo "$MM_MIN_PIX" || echo 0)" \
       mm_max_tok="$([ "$MM" = 1 ] && echo "$((MM_MAX_PIX / 1024))" || echo 0)" \
       mm_if_on="MM_IMAGE=${MM_IMAGE} MM_VIDEO=${MM_VIDEO} MM_MAX_PIX=${MM_MAX_PIX} MM_MIN_PIX=${MM_MIN_PIX}" \
-      mm_limits="$([ "$MM" = 1 ] && echo "image ${MM_IMAGE}, video ${MM_VIDEO}, max ${MM_MAX_PIX} px (~$((MM_MAX_PIX / 1024)) tokens each)" \
+      mm_limits="$([ "$MM" = 1 ] && echo "image ${MM_IMAGE}, video ${MM_VIDEO}, ${MM_MAX_PIX} px (~$((MM_MAX_PIX / 1024)) tokens) shared by one turn" \
                      || echo "image 0, video 0 (--language-model-only)")" \
       env="$(r9k_env_json)" extra="${EXTRA:-}"
   fi

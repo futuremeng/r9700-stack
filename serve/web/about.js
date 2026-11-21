@@ -184,12 +184,14 @@ function render() {
       ? "no images, no video (--language-model-only)"
       : lim
         ? `${lim.image ?? "?"} image(s), ${lim.video ?? "?"} video(s) per prompt`
-          // A limit on the COUNT is not a limit on the COST: the checkpoint's own size default is
-          // longest_edge 16,777,216 px = 16,384 image tokens (patch 16 x merge 2 = 1,024 px per token), which is
-          // how one screenshot arrived at 15,664 prompt tokens. So "no cap" is said out loud rather than assumed.
-          + (mmk && mmk.size ? ` · one image up to ${num(mmk.size.longest_edge)} px (~${
-              num(Math.round(Number(mmk.size.longest_edge) / 1024))} tokens)`
-            : " · no size cap passed: the checkpoint's own default is 16,777,216 px (~16,384 tokens an image)")
+          // A limit on the COUNT is not a limit on the COST. Since 2026-11-21 the size number is a SHARED budget
+          // for the last turn's images (r9700_vllm/compat/mm_last_turn.py drops history images and splits the
+          // budget ~1/k at k oversized ones), and one picture may take it whole without being resampled -- the
+          // old per-image 4,194,304 cap is what blurred a low-resolution screenshot's small text. A missing cap
+          // falls back to the checkpoint's own 16,777,216 px = 16,384 image tokens (patch 16 x merge 2).
+          + (mmk && mmk.size ? ` · the last turn's images share up to ${num(mmk.size.longest_edge)} px (~${
+              num(Math.round(Number(mmk.size.longest_edge) / 1024))} tokens; one image may take it whole)`
+            : " · no size cap passed: the turn's images share the checkpoint's own 16,777,216 px (~16,384 tokens)")
         : "images allowed; the limit is not in the command line this page can see";
   $("mm-card").hidden = !argv && !meta.mm_effective;
   // A sidecar holds its own command line, not the serve's, so on a sidecar page the argv row cannot answer what the
@@ -203,7 +205,7 @@ function render() {
       ? `${meta.mm_effective}` + (meta.mm_image === undefined ? ""
         : ` · image ${meta.mm_image}, video ${meta.mm_video}`
           + (Number(meta.mm_max_pix) > 0
-            ? ` · one image up to ${num(meta.mm_max_pix)} px (~${num(meta.mm_max_tok)} tokens), floor `
+            ? ` · up to ${num(meta.mm_max_pix)} px (~${num(meta.mm_max_tok)} tokens) shared by one turn's images, floor `
               + `${num(meta.mm_min_pix)} px`
             : " · no image can be sent at all")) : null],
     ["The knobs that choose it", meta.mm_if_on
@@ -229,10 +231,12 @@ function render() {
       + "check that can see it"],
   ]);
   text("mm-note", "Measured on this box (notes/multimodal-input.md): one 2,560 x 6,236 screenshot arrived as "
-    + "15,664 prompt tokens uncapped and 4,123 with the size cap; drawn text down to 28 px in a canvas that size "
-    + "still read correctly at the cap; per-request mm_processor_kwargs are refused, so the cap is a ceiling a "
-    + "client cannot lift. Not measured: images under concurrency (every probe so far was one request at a time on "
-    + "an idle box), photographs, video.");
+    + "15,664 prompt tokens uncapped and 4,123 with the old per-image cap; drawn text down to 28 px in a canvas "
+    + "that size still read correctly at the cap. Since 2026-11-21 the number above is a SHARED budget for the "
+    + "last turn's images (history pictures are dropped, not re-encoded): one picture may take it whole and is not "
+    + "resampled; k oversized ones share it ~1/k each. per-request mm_processor_kwargs are refused, so the cap is "
+    + "a ceiling a client cannot lift. Not measured: images under concurrency (every probe so far was one request "
+    + "at a time on an idle box), photographs, video.");
 
   facts($("facts-host"), [
     ["Hostname", host.hostname],
