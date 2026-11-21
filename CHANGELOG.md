@@ -1,5 +1,28 @@
 # Changelog
 
+## `./update.sh --restart` brings a running launch back up on the pull -- green checks first, an asked answer second
+
+An update has always ended at an offer, never at a restart: the contract said a running launch is untouched,
+so updating meant reading the report, typing the stop line it suggested, then typing the launch line. The
+flag keeps the contract exactly where it was -- WITHOUT it nothing changes -- and where it does change,
+three rules carry the incidents that made this repo distrust a scripted restart: the stop happens only when
+this run's own checks said no FAIL (bad() now records what said FAIL, because the running launch is the one
+thing on the box that demonstrably works and a red check means the tree you are restarting into is
+known-broken); the stop is the recipe's OWN `STOP=1 bash serve/<recipe>` -- the command stop_wedge has
+proved against ranks that ignore SIGTERM, with the same RESTART_STOP_WAIT poll before anything loads onto
+the cards, because the 11-14 fault left ranks up for eleven minutes and restarting into those is two
+launches fighting for four cards; and the restart goes back through `setup.py --yes --launch` with the
+record's config, flags and pages choice -- the decision the watcher's crash restart already makes -- so the
+/health wait, the context check, the gateway bring-up and the watcher arming are the tested ones rather than
+a second launch nothing tests. The answer is asked with ask_no: --yes does NOT answer for this one, because
+what is about to go down is a working box; a declined answer says the stack keeps running the old pull.
+Building this surfaced an old bug in the watcher's own restart: launch.json records the WEBUI spelling
+("1") but --webui parses the name (side), so restart_launch handed a side launch to argparse as
+`--webui 1` -- invalid choice, the child died at once and the watcher still logged a RESTARTING line.
+The cmd is now one pure restart_cmd(rec) with the mapping, shared by the watcher's restart_launch and this
+path, and tests/test_setup.py pins it -- including this record, since the bug was invisible from inside
+restart_launch alone.
+
 ## The non-git branch of `./update.sh` ends where its own sentence says it ends
 
 The branch that tells a copy "not made with git ... Download the newest one" printed its advice and then

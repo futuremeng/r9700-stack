@@ -5,7 +5,9 @@
 # docker/Dockerfile's BASE changed), the SECOND checkout serve.sh mounts ($HOME/r9700-build/repo, which is where
 # the running plugin actually comes from), the host tests, the embedding sidecar's two facts (the
 # $HOME/llama.cpp build and the GGUF in ~/models -- an update checks them, never builds or fetches), and then it
-# offers a launch. Start one later with ./setup.sh. Options are passed on to setup.py.
+# offers a launch. Start one later with ./setup.sh. --restart asks first and then brings a RUNNING launch back
+# up on the pull: its own STOP=1, the ranks waited out, setup.py --yes --launch; a red check stops nothing and
+# --check restarts nothing. Options are passed on to setup.py.
 cd "$(dirname "$0")" || exit 1
 main() {
   # -e, not -d: a linked worktree keeps .git as a file, and it is a git checkout that CAN pull itself

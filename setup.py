@@ -62,6 +62,10 @@ NATIVE_VENV = Path(os.environ.get("VENV", Path.home() / "venv-r9700"))
 # WEBUI is what the launch scripts read: 1 = the sidecar on PORT+1, same = the pages inside the serve
 # (serve/plugin), 0 = neither. Names kept as the scripts spell them, so setup.py cannot invent a value.
 WEBUI_ENV = {"side": "1", "same": "same", "off": "0"}
+# and back: what launch.json RECORDS is the WEBUI spelling and what --webui PARSES is the name, so the
+# record's "1" must become "side" before it goes into a restart command -- side launches used to die at
+# argparse with invalid choice '1'
+WEBUI_NAME = {value: name for name, value in WEBUI_ENV.items()}
 
 
 # -------------------------------------------------------------------------------------------- reporting ---
@@ -83,8 +87,12 @@ def warn(msg, fix=None):
         say(f"         -> {fix}")
 
 
+FAIL_STEPS = []      # what said FAIL this run: --restart refuses to stop a working box on their word
+
+
 def bad(msg, fix=None):
     say(f"    FAIL {msg}")
+    FAIL_STEPS.append(msg)
     if fix:
         say(f"         -> {fix}")
 
@@ -853,6 +861,23 @@ def watch_dead(port, sess, prev=None, quiet=0):
     return None                           # ranks present, no answer: still loading -- not "gone"
 
 
+def restart_cmd(rec):
+    """The setup.py command that re-runs this launch -- pure, so tests/test_setup.py can hold it without a
+    box. The recipe, the pages choice, the stored configuration name and the extra flags this launch was
+    given all come off the record: a restart that silently drops the flags someone typed is a restart into a
+    different launch. The record's webui is the WEBUI spelling ("1"); --webui parses the name, so both
+    spellings are taken and mapped here."""
+    webui = str(rec.get("webui"))
+    cmd = [sys.executable, str(ROOT / "setup.py"), "--yes", "--launch", rec["recipe"],
+           "--webui", webui if webui in WEBUI_ENV else WEBUI_NAME.get(webui, "same")]
+    if rec.get("config"):
+        cmd += ["--config", rec["config"]]
+    if rec.get("no_tmux"):
+        cmd += ["--no-tmux"]
+    cmd += list(rec.get("rest") or [])
+    return cmd
+
+
 def restart_launch(rec):
     """Re-run THIS launch through setup.py, not through a bespoke restart path.
 
@@ -860,16 +885,11 @@ def restart_launch(rec):
     re-does the /health wait, the context check, the gateway bring-up, the recipe check and the watcher arming
     instead of inventing a second, slightly different launch that nothing else in this repo tests. The recipe,
     the pages choice, the stored configuration name and the extra flags this launch was given all come off the
-    record, because a restart that silently drops the flags someone typed is a restart into a different launch.
+    the record, because a restart that silently drops the flags someone typed is a restart into a different
+    launch.
     """
-    cmd = [sys.executable, str(ROOT / "setup.py"), "--yes", "--launch", rec["recipe"],
-           "--webui", rec.get("webui") or "same"]
-    if rec.get("config"):
-        cmd += ["--config", rec["config"]]
-    if rec.get("no_tmux"):
-        cmd += ["--no-tmux"]
-    cmd += list(rec.get("rest") or [])
-    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, start_new_session=True)
+    return subprocess.Popen(restart_cmd(rec), stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+                            start_new_session=True)
 
 
 # ---- the ledger: what the box keeps after the record it was written into is overwritten ------------------
@@ -2200,6 +2220,64 @@ def launch_status():
     return prev
 
 
+def restart_after_update(cfg):
+    """--restart: bring the launch this box runs back up on what was just pulled. Three rules, each one
+    someone's incident: the checks above must be GREEN -- a red check says the updated tree is known-broken,
+    and stopping the one working thing for it turns an update into an outage (which is also why every run
+    WITHOUT this flag leaves a running launch alone, update.sh's header); the stop is the recipe's OWN
+    STOP=1 -- the command stop_wedge proved against ranks that ignore SIGTERM, where an ad-hoc pkill would
+    be a second, worse opinion about the same processes; and the restart goes back through setup.py --yes
+    --launch, the tested restart decision, so the /health wait, the context check, the gateway bring-up and
+    the watcher arming are the ones this file already runs rather than a second launch nothing tests.
+    Returns True when this run ends here; False only when there was nothing to restart, and the ordinary
+    offer below runs."""
+    rec = state_read("launch.json")
+    if not rec or not rec.get("recipe"):
+        note("--restart: no launch recorded here (.r9700-state/launch.json): this flag restarts what runs; "
+             "starting a fresh one is what the offer below is for")
+        return False
+    if not (ROOT / "serve" / rec["recipe"]).exists():
+        bad(f"--restart: the launch on the record runs serve/{rec['recipe']}, which this checkout no longer "
+            f"has (renamed in what was pulled?): the stack is left running it",
+            f"./stop.sh if you want it down; ./setup.sh --launch names the recipes this pull has")
+        return True
+    n = left_vllm()
+    if not n:
+        note(f"--restart: serve/{rec['recipe']} is not running -- why is above, in launch_status: nothing "
+             f"to stop, and the offer below is what brings it back")
+        return False
+    if FAIL_STEPS:
+        say(f"--restart: NOT stopping anything: {len(FAIL_STEPS)} check(s) above said FAIL, and the running "
+            f"launch is the one thing on this box that demonstrably works")
+        for m in FAIL_STEPS[:4]:
+            say(f"         FAIL {m}")
+        say(f"         the stack keeps running what it was started with: fix those, then ./stop.sh and "
+            f"./setup.sh --launch {rec['recipe'][:-3]}")
+        return True
+    if not ask_no(cfg, f"the checks above are green: stop serve/{rec['recipe']} ({n} vLLM process(es) up) "
+                       f"and bring it back up on what was just pulled (GPUs go busy for ~75 s)?"):
+        say("--restart declined: the stack keeps running what it was started with, not what was just pulled")
+        return True
+    say(f"    $ STOP=1 bash serve/{rec['recipe']}")
+    rc, last = stop_wedge(rec)
+    deadline = time.time() + RESTART_STOP_WAIT
+    while left_vllm() and time.time() < deadline:
+        time.sleep(3)
+    left = left_vllm()
+    say(f"    the stop returned {rc}: {last}; ranks after it: {left}")
+    if left:
+        bad(f"--restart: {left} rank(s) still hold the GPUs {RESTART_STOP_WAIT} s after the recipe's own "
+            f"stop -- not restarting into that: two launches on four cards is the 11-14 fault again",
+            f"./stop.sh walks everything and counts what is left, then ./setup.sh --launch "
+            f"{rec['recipe'][:-3]}")
+        return True
+    cmd = restart_cmd(rec)
+    say("    ranks cleared; bringing it back through the tested restart path:")
+    say("    $ " + " ".join(cmd[1:] if cmd[0] == sys.executable else cmd))
+    subprocess.call(cmd)
+    return True
+
+
 def launch(cfg, have="docker"):
     step(8, "a launch")
     rs = recipes()
@@ -2209,6 +2287,12 @@ def launch(cfg, have="docker"):
         say(f"    serve/{name}   {head[:90]}{needs}")
     launch_status()
     if cfg.check:
+        if getattr(cfg, "restart", False):
+            note("--check restarts nothing: a full run with --restart asks first, then stops a running "
+                 "launch with its own STOP=1 and re-runs it through setup.py --yes --launch, only once "
+                 "every check above it is green")
+        return
+    if getattr(cfg, "restart", False) and restart_after_update(cfg):
         return
     pick = cfg.launch
     if pick == "none":
@@ -2423,6 +2507,12 @@ def main():
                     help="the embedding sidecar: check llama.cpp and the GGUF, and build llama.cpp in $HOME "
                          "when missing (the only step that compiles third-party source; an update only "
                          "reports it). Start the sidecar itself with --launch embed.sh or bash serve/embed.sh.")
+    ap.add_argument("--restart", action="store_true",
+                    help="what ./update.sh --restart runs: after a green walk, ASK, then stop the launch "
+                         "this box is running with its own STOP=1, wait for the ranks to clear, and re-run "
+                         "it through setup.py --yes --launch. A FAIL above it stops nothing (the running "
+                         "launch is the working thing), --check restarts nothing, and --yes does NOT answer "
+                         "for you -- what goes down is a working box")
     ap.add_argument("--watch", action="store_true",
                     help="internal (setup.py arms this itself, detached, once a launch answers /health): poll "
                          "that launch and write died_at/reason into .r9700-state/launch.json when it stops. "

@@ -458,6 +458,42 @@ _rows = S.gpu_links()
 ck(f"and the four cards on this box really do answer at rating ({len(_rows)} AMD display device(s) read)",
    len(_rows) >= 4 and S.link_short(_rows) == [], f"short: {S.link_short(_rows)}; {_rows[:2]}")
 
+# ------------------------------------------------------- what --restart runs: the shared restart_cmd ----
+# ./update.sh --restart brings a RUNNING launch back on the pull: green checks, an asked answer, the recipe's
+# own STOP, the ranks waited out, then the same setup.py --yes --launch the watcher's crash restart uses.
+# The webui pin below is that restart's oldest bug, made invisible by living across two spellings.
+def _webui_of(rec):
+    c = S.restart_cmd(rec)
+    return c[c.index("--webui") + 1]
+
+
+_c1 = {"side": _webui_of({"recipe": "x.sh", "webui": "side"}),
+       "record": _webui_of({"recipe": "x.sh", "webui": "1"}),
+       "none": _webui_of({"recipe": "x.sh"})}
+_cmd = S.restart_cmd({"recipe": "native-flashnext.sh", "webui": "same", "config": "256k",
+                      "rest": ["--launch", "x"], "no_tmux": True})
+ck("restart_cmd re-runs the recipe through setup.py --yes with the record's config, tmux choice and flags: "
+   "a restart that drops the flags someone typed is a restart into a different launch",
+   "--yes" in _cmd and "--config" in _cmd and "--no-tmux" in _cmd and _cmd[-2:] == ["--launch", "x"],
+   str(_cmd))
+ck("a side launch restarts with --webui side, not the record's WEBUI spelling: launch.json stores '1', "
+   "--webui parses the name, and restart_launch used to hand argparse --webui 1 -- the child died at once "
+   "and the watcher still logged a RESTARTING line",
+   _c1["side"] == "side" and _c1["record"] == "side" and _c1["none"] == "same")
+_src = open(ROOTP / "setup.py").read()
+_ra = _src.split("def restart_after_update")[1].split("def launch(")[0]
+ck("--restart is discoverable from --help the way every other knob is",
+   "--restart" in subprocess.run([sys.executable, str(ROOTP / "setup.py"), "--help"],
+                                 capture_output=True, text=True).stdout)
+ck("a red walk stops nothing: the gate reads FAIL_STEPS, and bad() appends to it, so the one working thing "
+   "on the box is never stopped to make room for a tree the run itself called broken",
+   "if FAIL_STEPS:" in _ra and "FAIL_STEPS.append(msg)" in _src)
+ck("--restart makes the same two moves the crash restart makes -- the recipe's own stop_wedge, then "
+   "restart_cmd -- and asks with the N default, where --yes does not answer for it",
+   "stop_wedge(rec)" in _ra and "restart_cmd(rec)" in _ra and "ask_no(cfg" in _ra)
+ck("--check never reaches the restart: the check return stands before the gate in launch()",
+   _src.split("def launch(cfg")[1].index("if cfg.check:") < _src.split("def launch(cfg")[1].index("restart_after_update(cfg)"))
+
 # ---------------------------------------------------------------------------- the tmux environment ----
 text = (ROOTP / "serve" / "native-flashnext.sh").read_text()
 os.environ["VENV"] = "/home/x/venv-r9700"
