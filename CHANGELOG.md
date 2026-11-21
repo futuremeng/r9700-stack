@@ -1,4 +1,18 @@
 # Changelog
+## the OCR pre-pass is deleted: its premise was the vision tower's sharding, and `bench/mm_ocr_ab.py` keeps the recipe
+
+`r9700_vllm/compat/mm_ocr_pass.py` (in the tree for one commit, `6cc716c`) cut a request's pictures into their TEXT
+LINES, asked about each line on its own with thinking off, and pasted what came back into the prompt as a labelled
+block. It worked as designed -- under `MM_TP_MODE=weights` a dense Chinese card went CER 96.8%/100% with repetition
+collapses to 32.3% with none -- and it was deleted the same day the flag above was found, because with the tower
+replicated every arm of the bench is already CER 0.0%: the pass bought nothing and cost 40-90% more wall time on the
+turn that carries a picture, while rewriting user prompts and installing a wrapper on the request path. Equal-height
+band cuts (the shape it started with) measured WORSE than the baseline (99.8% / 8.5 s), which is worth recording since
+it is the obvious first guess for how to cut a page. What stays is the measurement and the method: `bench/mm_ocr_ab.py`
+does the whole thing client-side -- PIL line segmentation, one ask per line, the text as an ordinary text part -- so
+the experiment can be replayed against any live engine without a plugin. `R9K_MM_OCR` is gone from both launchers and
+from the plugin's registration and gate table.
+
 ## `MM_TP_MODE=data` -- pictures were unreadable because the vision tower was being sliced across the four cards; replicated, the same request reads character-exact (CER 32.3% -> 0.0%)
 
 The entry below is the one that blamed the pixel band, and it was wrong about the cause: the stroke soup it fixed a
@@ -21,10 +35,8 @@ an RDNA4 vision-encoder *accuracy* bug; the nearest is vllm-project/vllm#49851, 
 gfx1201, whose fix from vLLM's ROCm maintainer was `--mm-encoder-tp-mode data`. Price, from the pair of boots: 0.65
 GiB of KV per rank -- 6.55 GiB / 887,983 tokens / 3.39x becomes 5.9 GiB / 797,453 tokens / 3.04x. The 1,024-token
 floor below stays for now and now looks unnecessary; retest at the checkpoint's own `shortest_edge` before changing
-it. `R9K_MM_OCR` (the pre-pass below) goes back to **off** at the same time: with the tower replicated it buys
-nothing and costs 40-90% more wall time on the picture turn, and it stays in the tree as the mitigation for anyone
-running `MM_TP_MODE=weights`, where it is the difference between garbage and a usable answer. Full write-up,
-including what is claimed and what is not: notes/multimodal-input.md.
+it. The pre-pass above (implemented, measured, then deleted the same day) is what made `weights` mode answerable at
+all. Full write-up, including what is claimed and what is not: notes/multimodal-input.md.
 
 ## `MM_MIN_PIX` -- a picture arriving under ~1,024 image tokens reads as stroke soup, and a 400 x 300 thumbnail costs 1,099 prompt tokens with the floor on
 

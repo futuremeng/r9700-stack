@@ -1,31 +1,36 @@
 #!/usr/bin/env python3
-"""bench/mm_ocr_ab.py - does the OCR pass in front of a picture actually beat asking for one long transcription?
+"""bench/mm_ocr_ab.py - does reading a picture line by line beat asking for one long transcription of it?
 
-The claim being tested (notes/multimodal-input.md, 2026-11-21): this checkpoint reads a picture fine when the
-answer is SHORT and collapses into a repetition cycle when the answer has to be a long transcription of it --
-`只转录图片里的第一行` answered 机器学习模型识别 5 runs out of 5 while `逐行转录` on the same picture answered
-机机机习机机机机 | 合同需机月机前机 | ... So `r9700_vllm/compat/mm_ocr_pass.py` asks k narrow band questions
-instead and hands the model the merged text.
+What it settled (notes/multimodal-input.md, 2026-11-21): a picture this box could not read at all -- `i il i il i`,
+`机机机机`, whole pages answering `''` -- was not a reading problem. `--mm-encoder-tp-mode weights` (vLLM's default)
+splits the vision tower across the TP ranks, and on 4x R9700 that quarter-tower is not numerically equivalent; with
+`MM_TP_MODE=data` the same requests come back character-exact (CER 0.0%). Under the broken mode this bench's pre-pass
+was the difference between garbage and a usable answer (96.8% -> 32.3% CER, collapses 2/2 -> 0/2), which is what made
+the shape of the failure legible: a SHORT answer was always right, a long transcription collapsed.
 
-This measures that, on cards whose text is known, so the score is real rather than an impression:
+It also killed two plausible ideas with numbers: equal-height BAND cuts, the obvious way to slice a page, measured
+WORSE than the baseline (99.8% / 8.5 s) -- a band of a big-font picture is still a long answer, and the ask itself
+collapsed into `机机机机`; per-text-line crops are the shape that worked.
 
-  baseline   one request: the whole picture + "逐行转录"
-  pre-pass   k band asks (the same ASK string, the same band geometry the plugin uses, imported from the plugin),
-             then one request with the merged text block AND the picture (hybrid mode)
+The in-engine version of this (`r9700_vllm/compat/mm_ocr_pass.py`) was implemented, measured, and deleted the same
+day: with the tower replicated it buys nothing and costs 40-90% more wall time on the picture turn. It is in git at
+`6cc716c`; the policy lives here, self-contained, so the experiment replays against any live engine with no restart
+and no plugin:
 
-Reported per card: character error rate against the ground truth, whether the answer COLLAPSED (a repetition
-cycle: one character dominating, or finish_reason=length with the budget burned), the image tokens the main
-request paid, and the wall time including the band asks.
+  baseline         one request: the whole picture + "逐行转录"
+  pre-pass lines   one crop per text line (row-darkness segmentation below), one narrow ask each, then one request
+                   carrying the merged, labelled text block AND the picture
+  pre-pass bands   the same with equal-height bands, kept because it is the counterexample
 
-It runs the policy over HTTP from the client side on purpose: the same arithmetic, no restart needed to A/B it, and
-the plugin's own functions are what compute the bands -- so if the bench says it works and the plugin differs, that
-is a bug in one of them, not a difference in what was measured.
+Reported per card: character error rate against the ground truth, whether the answer COLLAPSED (a repetition cycle: one
+character dominating, or an empty answer with the budget burned), the prompt tokens the main request paid, and wall
+time including the asks.
 
 Needs a CJK font (this box has none by default: `fc-list :lang=zh` is empty and drawing Chinese with DejaVu draws
 tofu, which is how one earlier "Chinese OCR works" claim turned out to be meaningless). Point it at one with
 --font, e.g. /tmp/wqy.ttc.
 
-Run: ~/venv-r9700/bin/python3 bench/mm_ocr_ab.py [--font /tmp/wqy.ttc] [--repeat 3] [--bands 4] [--url ...]
+Run: ~/venv-r9700/bin/python3 bench/mm_ocr_ab.py [--font /tmp/wqy.ttc] [--repeat 3] [--bands 4] [--sizes 34,110] [--url ...]
 """
 import argparse
 import base64
@@ -39,8 +44,73 @@ import urllib.request
 
 from PIL import Image, ImageDraw, ImageFont
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from r9700_vllm.compat import mm_ocr_pass as O            # noqa: E402
+# The policy, owned here since the in-engine pass was deleted (git 6cc716c). Kept verbatim from it, because these
+# numbers are what the CER table in notes/multimodal-input.md was measured with.
+ASK = ("逐行转录这张图里的文字，只输出文字本身，一行一条；"
+       "看不清或图中没有文字就只输出：无")
+BLOCK_OPEN = "[图片文字·自动识别，可能有错]"
+BLOCK_CLOSE = "[/图片文字]"
+NOTE_EMPTY = f"{BLOCK_OPEN}\n（没有识别出文字）\n{BLOCK_CLOSE}"
+MIN_BAND_H, OVERLAP = 160, 0.08          # a band shorter than a glyph row answers 无 and wastes an ask
+
+
+def band_slices(h, n, min_h=MIN_BAND_H, overlap=OVERLAP):
+    """(y0, y1) covering 0..h in reading order, overlapping `overlap` of their own height so a text line is not cut
+    at a boundary; a picture that cannot host n bands gets as many as fit."""
+    if h <= 0:
+        return []
+    n = max(1, int(n))
+    if h < min_h * n:
+        n = max(1, h // min_h)
+    step = h / n
+    pad = int(step * overlap)
+    return [(max(0, int(i * step) - (pad if i else 0)), min(h, int((i + 1) * step) + (pad if i < n - 1 else 0)))
+            for i in range(n) if min(h, int((i + 1) * step) + (pad if i < n - 1 else 0)) >
+            max(0, int(i * step) - (pad if i else 0))]
+
+
+def line_slices(profile, min_h=10, pad=6, merge_gap=6):
+    """(y0, y1) per TEXT LINE from a per-row dark-pixel count: runs of rows, gaps <= `merge_gap` merged (CJK lines have
+    holes -- 川, 三 -- and a wrapped sentence leaves a hole inside one line), runs shorter than `min_h` dropped (a rule,
+    a dot), each line padded by `pad` for ascenders and descenders. [] means no line structure: a photo, a chart."""
+    h = len(profile)
+    if not h:
+        return []
+    runs, y = [], 0
+    while y < h:
+        if profile[y] > 0:
+            y0 = y
+            while y < h and profile[y] > 0:
+                y += 1
+            runs.append([y0, y])
+        else:
+            y += 1
+    if not runs:
+        return []
+    out = [runs[0]]
+    for r in runs[1:]:
+        if r[0] - out[-1][1] <= merge_gap:
+            out[-1][1] = r[1]
+        else:
+            out.append(r)
+    return [(max(0, a - pad), min(h, b + pad)) for a, b in out if b - a >= min_h]
+
+
+def merge(cuts):
+    """The cut answers in reading order, empty ones (无 / blank) dropped."""
+    out = []
+    for c in cuts or ():
+        t = (c or "").strip()
+        if not t:
+            continue
+        keep = [ln.strip() for ln in t.splitlines() if ln.strip() and ln.strip() not in ("无", "無", "无文字", "（无）")]
+        if keep:
+            out.append("\n".join(keep))
+    return "\n".join(out)
+
+
+def block_of(text):
+    return NOTE_EMPTY if not text else f"{BLOCK_OPEN}\n{text}\n{BLOCK_CLOSE}"
 
 FONTS = ("/tmp/wqy.ttc", "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
          "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
@@ -118,7 +188,7 @@ def cer(got, want):
 
 def bands_of(im, n):
     out = []
-    for y0, y1 in O.band_slices(im.height, n):
+    for y0, y1 in band_slices(im.height, n):
         buf = io.BytesIO()
         im.crop((0, y0, im.width, y1)).save(buf, format="PNG")
         out.append("data:image/png;base64," + base64.b64encode(buf.getvalue()).decode())
@@ -134,7 +204,7 @@ def lines_of(im):
     px = g.load()
     profile = [sum(1 for x in range(0, w, 2) if px[x, y] < 160) for y in range(h)]
     out = []
-    for y0, y1 in O.line_slices(profile):
+    for y0, y1 in line_slices(profile):
         buf = io.BytesIO()
         im.crop((0, y0, im.width, y1)).save(buf, format="PNG")
         out.append("data:image/png;base64," + base64.b64encode(buf.getvalue()).decode())
@@ -151,9 +221,9 @@ def pre_pass(im, url, n, policy="lines"):
     texts = []
     t0 = time.time()
     for u in crops_of(im, policy, n):
-        r = post([{"type": "image_url", "image_url": {"url": u}}, {"type": "text", "text": O.ASK}], 512)
+        r = post([{"type": "image_url", "image_url": {"url": u}}, {"type": "text", "text": ASK}], 512)
         texts.append(body_of(r))
-    return O.merge(texts), time.time() - t0, sum(1 for t in texts if t.strip())
+    return merge(texts), time.time() - t0, sum(1 for t in texts if t.strip())
 
 
 def main():
@@ -198,7 +268,7 @@ def main():
                     # empty block -- an image the model can read beats a pass that found nothing
                     parts = [{"type": "image_url", "image_url": {"url": url}}]
                     if text:
-                        parts.append({"type": "text", "text": O.block_of(text)})
+                        parts.append({"type": "text", "text": block_of(text)})
                     parts.append({"type": "text", "text": Q})
                     r = post(parts)
                     pt, w = r["pt"], r["wall"] + ask_w

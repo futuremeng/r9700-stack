@@ -3578,6 +3578,13 @@ What is owed after this:
   `tools/recipe-check.py`, the mm-note on the About page rewritten, and `tools/recipe-check.py` reporting the live argv
   and every `R9K_*` name matching the tree. `tests/test_mm_ocr_pass.py` (new wrapper arms), `tests/test_mm_last_turn.py`
   and `tests/test_webui.py` PASS; the standing box is `--mm-encoder-tp-mode data`, `R9K_MM_OCR=off`, gate PASS.
+* Removed the same evening (`R9K_MM_OCR` out of both launchers, the registration and the gate table, the plugin and its
+  test file deleted): with the tower replicated every arm of the bench is already CER 0.0%, so the pass bought nothing
+  and cost 40-90% more wall time while rewriting user prompts and wrapping the request path. It stays in history at
+  `6cc716c` — and the method stays executable, because `bench/mm_ocr_ab.py` implements the same pre-pass client-side
+  (line segmentation, one ask per line, the text as an ordinary text part). The two live bugs it taught (a wrapper
+  whose failing call is invisible behind fail-open; `logging` imported only in the no-vLLM branch) are written into
+  notes/multimodal-input.md, which is where the pass's CER table now lives.
 * Owed: the 1,024-token floor (`MM_MIN_PIX`) was set to dodge the stroke soup this flag explains — retest at the
   checkpoint's own `shortest_edge`; whether `data` costs decode throughput or TTFT with a picture in the batch; images
   under concurrency; photographs and video; and the four PNGs run through the other engine unchanged, which now reads

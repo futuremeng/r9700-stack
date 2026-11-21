@@ -676,10 +676,13 @@ concurrency, photographs, video.
 
 - `MM_TP_MODE=data` is the launcher's default in `serve/native-flashnext.sh` and `serve/serve.sh`, with the table
   above in its comment; `weights` is one env away (`MM_TP_MODE=weights bash serve/serve.sh`).
-- `R9K_MM_OCR` is back to **off**. The pass (`r9700_vllm/compat/mm_ocr_pass.py`, one narrow ask per segmented text
-  line, thinking off, results cached per picture × cut) stays in the tree as the mitigation for `weights` mode, where
-  it is the difference between garbage and a usable answer, and for text too small for this checkpoint to read. With
-  `data` it buys nothing and costs 40-90% more wall time on the picture turn.
+- The OCR pre-pass is **gone** (removed the same day, kept in git at `6cc716c`). It was `r9700_vllm/compat/mm_ocr_pass.py`:
+  one narrow ask per segmented text line (a row-profile segmentation; equal-height bands measured *worse* than the
+  baseline, 99.8% / 8.5 s), thinking off, results cached per picture × cut, fail-open. Under `weights` it was the
+  difference between garbage and a usable answer (96.8%/100% → 32.3%, collapses 2/2 → 0/2); under `data` every arm is
+  already 0.0%, so it bought nothing and cost 40-90% more wall time on the picture turn. The strategy and its CER table
+  live on in `bench/mm_ocr_ab.py`, which does the same thing client-side — cut, ask per line, paste the text in as an
+  ordinary text part — so nothing about the measurement was lost with the plugin.
 - `MM_EMBEDS=1` stays: `--enable-mm-embeds` lets a client send its own picture encoding. It is not a path to a better
   encoder for this arch — the LM needs merged embeds **plus** three deepstack feature maps and the wire carries one
   tensor — but it is the seam `bench/mm_encoder.py` uses to feed the tower's own output through, and it is measured

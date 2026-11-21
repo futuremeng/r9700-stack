@@ -99,7 +99,7 @@ fi
 # answered carries no picture at all -- the client replayed the screenshot and the user's follow-up is plain text --
 # the newest replayed picture stays, because otherwise the model is asked about a picture that is not in its
 # context. 0 is the strict rule back.
-: ${R9K_MM_LAST_TURN:=1}; : ${R9K_MM_HISTORY_IMAGE:=1}; : ${R9K_MM_OCR:=off}
+: ${R9K_MM_LAST_TURN:=1}; : ${R9K_MM_HISTORY_IMAGE:=1}
 
 [ "${EAGER:-0}" = 1 ] && ARGS+=(--enforce-eager)
 # KVDTYPE=fp8: fp8 KV cache (vLLM --kv-cache-dtype; unset = "auto" = the model dtype). On GLM-5.3-Flash only the 11 sparse-MLA
@@ -165,7 +165,6 @@ sudo docker run -d --name ${NAME:-vllmstock} --ipc=host --network=host ${PIDNS--
   -e HIP_VISIBLE_DEVICES=${GPUS:-0,1} -e VLLM_ROCM_USE_AITER=0 -e HSA_ENABLE_IPC_MODE_LEGACY=0 \
   -e GPU_MAX_HW_QUEUES=${HWQ:-1} -e HSA_ENABLE_MWAITX=${MWAITX:-1} -e OMP_NUM_THREADS=8 -e R9K_LIB=/opt/r9700/r9700_vllm/kernels/libr9k.so \
   -e R9K_MM_LAST_TURN=${R9K_MM_LAST_TURN} -e R9K_MM_HISTORY_IMAGE=${R9K_MM_HISTORY_IMAGE} \
-  -e R9K_MM_OCR=${R9K_MM_OCR} \
   $DOCKER_ARGS "${MNT[@]}" -v $HOME/models:/models -v $HOME/vllmstock-cache-$CKEY:/root/.cache/vllm \
   -v $HOME/vllmstock-triton:/root/.triton \
   "${ENTRY[@]}" $IMG "${PRE[@]}" ${MODEL:-/models/Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ} \

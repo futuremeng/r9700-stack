@@ -239,9 +239,9 @@ function render() {
     + "question about a screenshot reached the model with no picture in it (232 prompt tokens with it, 84 without) "
     + "and got answered by invention. per-request mm_processor_kwargs are refused, so the cap is a ceiling a client "
     + "cannot lift. And the thing that decided whether pictures could be read at all: the vision tower runs REPLICATED "
-    + "on every rank rather than split across them (MM_TP_MODE=data; vLLM's own default is weights). On four cards the "
-    + "split tower transcribed a dense Chinese card at 32.3% character error -- 96.8-100%, with a repetition cycle, "
-    + "when the read-out pass was off -- and the same request through the replicated tower is exact: 0.0% CER, no "
+    + "on every rank rather than split across them (MM_TP_MODE=data; vLLM's own default is weights). Asked to "
+    + "transcribe a dense Chinese card, the split tower on four cards answered at 96.8-100% character error -- repeated "
+    + "single strokes, or nothing at all -- and the same request through the replicated tower is exact: 0.0% CER, no "
     + "collapse. The price is 0.65 GiB of KV per rank (887,983 cached tokens became 797,453). "
     + "Not measured: images under concurrency (every probe so far was one request at a time on an idle "
     + "box), photographs, video.");

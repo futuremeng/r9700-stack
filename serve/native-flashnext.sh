@@ -301,18 +301,10 @@ print(json.dumps(d, sort_keys=True))'; }
 # rule back, and the engine's own MM_IMAGE count cap still bounds the total either way.
 : ${R9K_MM_LAST_TURN:=1}
 : ${R9K_MM_HISTORY_IMAGE:=1}
-# R9K_MM_OCR (measured 2026-11-21, then DEMOTED to off the same day by the MM_TP_MODE finding above) puts a narrow
-# read of the picture in FRONT of the answer: pictures are cut into their TEXT LINES (a row-profile segmentation, not
-# equal-height bands), each line is asked on its own with thinking off, and what comes back is pasted into the prompt
-# as a labelled block. What it is worth depends entirely on the mode above: with the tower sharded (`weights`) it is
-# the difference between garbage and a readable answer -- CER 96.8%/100% with 2/2 collapses becomes 32.3% with none --
-# and equal-height bands measured WORSE than the baseline (99.8% / 8.5 s), which is why lines are the policy and bands
-# only a fallback. With the tower replicated (`data`) every arm is already CER 0.0%, so the pass buys nothing and costs
-# 40-90% more wall time on the turn that carries the picture -- which is why the default is off. Set `hybrid` (keep the
-# picture, add its text) or `text` (replace it) when running MM_TP_MODE=weights, or for pictures smaller than what
-# this checkpoint reads. notes/multimodal-input.md.
-: ${R9K_MM_OCR:=off}
-export R9K_MM_LAST_TURN R9K_MM_HISTORY_IMAGE R9K_MM_OCR
+# No knob here for an OCR pre-pass: one was built and measured the same day (96.8% -> 32.3% CER with the tower
+# sharded) and then deleted -- the pictures were unreadable because of `MM_TP_MODE`, not because the model could not
+# read them. The strategy and its CER table live in bench/mm_ocr_ab.py; the plugin is in git history (6cc716c).
+export R9K_MM_LAST_TURN R9K_MM_HISTORY_IMAGE
 
 if [ "${ENVRECIPE:-0}" = 1 ]; then echo "env recipe: $(r9k_env_json)"; exit 0; fi
 
