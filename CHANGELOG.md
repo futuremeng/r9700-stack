@@ -1,5 +1,21 @@
 # Changelog
 
+## The non-git branch of `./update.sh` ends where its own sentence says it ends
+
+The branch that tells a copy "not made with git ... Download the newest one" printed its advice and then
+kept going: the build-repo print, then the exec of `setup.sh --update`, against a checkout its own message
+had just declared unfetchable -- while its sibling branch (git installed? no) had always stopped with
+`exit 1`. The asymmetry is not a regression: the guard has had no exit since the file was written
+(cbc607e), and the pull it warns about is the one thing a fall-through run cannot do, so the checks that
+followed only re-reported a stale state the advice said to throw away; the one useful thing the fall-through
+did, `buildrepo()` noticing "this copy has no git origin", setup.py:1882, stays reachable from any real
+checkout. The second edit is the guard's own eye: `[ ! -d .git ]` reads a linked worktree as "not made
+with git" because a worktree keeps `.git` as a FILE, and the false sentence there is worse than in the
+copy case -- the worktree is a checkout that COULD pull itself, and it silently did not. Both probes now
+test the entry (`[ ! -e .git ]`, and the build-repo one likewise), which is the honest test for "was this
+made with git", and `tests/test_update.py` runs the non-git branch in a temp copy and pins that it exits
+1 before the build-repo print, before the exec.
+
 ## The stack gets one way down: `./stop.sh`
 
 Every launcher already answered `STOP=1`, but stopping the whole stack by hand meant knowing the ORDER (the

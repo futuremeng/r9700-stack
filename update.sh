@@ -8,10 +8,12 @@
 # offers a launch. Start one later with ./setup.sh. Options are passed on to setup.py.
 cd "$(dirname "$0")" || exit 1
 main() {
-  if [ ! -d .git ]; then
+  # -e, not -d: a linked worktree keeps .git as a file, and it is a git checkout that CAN pull itself
+  if [ ! -e .git ]; then
     echo "This copy was not made with git, so it cannot fetch its own files. Download the newest one:"
     echo "  git clone https://github.com/futuremeng/r9700-stack && cd r9700-stack && ./setup.sh"
     echo "Your weights and caches live outside the repository and are not touched either way."
+    exit 1
   elif ! command -v git >/dev/null 2>&1; then
     echo "This folder is a git clone but git is not installed: install it (sudo apt install git) or run"
     echo "\"git pull\" here yourself, then run ./update.sh again."
@@ -38,7 +40,7 @@ main() {
   # the running plugin is not read from this folder: it is read from the build repo serve.sh mounts, so
   # say what that one is on before setup.py compares them
   repo=${REPO:-$HOME/r9700-build/repo}
-  if [ -d "$repo/.git" ]; then
+  if [ -e "$repo/.git" ]; then
     echo "The build repo serve.sh mounts is $repo at $(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo '?')."
     if [ -n "$(git -C "$repo" status --porcelain --untracked-files=no)" ]; then
       echo "It carries its own edits, so setup.py will not move it -- update it by hand if you want them gone."
