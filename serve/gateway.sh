@@ -18,6 +18,9 @@
 # Knobs: GATEWAY_PORT, GATEWAY_BIND, ENGINE, EMBED, RERANK, PAGES, SIDECAR_STATE, PYTHON, LOG, LOCAL_ENV,
 # and the admission gate's GATE_* set (below) -- passed through only when set, because the gate's defaults
 # live in serve/gateway.py and two copies of a default is how a launcher starts lying about the running one.
+# The capture knobs (GATEWAY_CAPTURE, GATEWAY_CAPTURE_FILE, GATEWAY_CAPTURE_DISK, GATEWAY_CAPTURE_KEEP,
+# GATEWAY_CAPTURE_FILE_MAX) ride through untouched from the machine-local env -- this script names no default
+# for them; the door's own startup line says what each one ended up as.
 
 # The machine-local file FIRST: it is where this box says where things live, and it stays a DEFAULT --
 # what the caller exported wins over it (serve/lib/localenv.sh, and the same order setup.py reads).

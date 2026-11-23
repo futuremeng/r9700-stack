@@ -9,7 +9,9 @@ nonzero exit. So this file tests framing, not features:
 
   (1d) the opt-in byte tap: nothing stored while GATEWAY_CAPTURE is 0, one request's body and answer stored when
       it sends X-R9K-Capture: 1, indexed by the id in the engine's own answer, byte-capped with the truncation
-      stated, ring-limited, orphans counted, and the read endpoint keyed for remote peers.
+      stated, ring-limited, orphans counted, and the read endpoint keyed for remote peers. GATEWAY_CAPTURE_FILE
+      additionally appends every capture to a disk journal -- one JSON line each, its own byte cap, its own
+      ceiling that stops the appending and counts it, and a journal that will not write is counted and never fatal.
   (1c) who may ask for anything: keyed by default (model traffic), open by exception (/health, /metrics, the
       Monitor and its data endpoints), refused outright (the engine control plane). Observe mode counts what a key
       would have refused and names the paths; enforce mode 401s them, accepts the right Bearer token and rejects a
@@ -518,7 +520,7 @@ try:
     st, b = http(GW, "/api/capture")                                  # the main door: GATEWAY_CAPTURE unset
     idx = json.loads(b)
     ck("with the feature off the door stores nothing and says the cap is 0 rather than pretending to have rows",
-       idx["cap"] == 0 and idx["ids"] == [] and idx["stored"] == 0, str(idx)[:140])
+       idx["cap"] == 0 and idx["ids"] == [] and idx["stored"] == 0 and not idx["file"], str(idx)[:140])
     st, b = http(GW, "/v1/chat/completions", "POST", BODY, headers={"x-r9k-capture": "1"})
     st2, b2 = http(GW, "/api/capture")
     ck("and the header alone changes nothing while the cap is 0 -- no row, not even a wanted count",
@@ -566,6 +568,53 @@ try:
     ck("an answer that carries no readable id is kept as an orphan and counted, not silently dropped",
        json.loads(b)["orphans"] == 1 and json.loads(b)["counts"]["capture_orphan"] == 1, str(json.loads(b))[:200])
     kd.terminate()
+
+    # The disk journal: the RAM ring dies with the door's next restart, and analysis wants the pile -- whole
+    # prompts, older than the last KEEP, readable with jq while no process is up. One line appended per stored
+    # capture, the display copy in RAM untouched, the journal bounded and counted, a bad path never fatal.
+    with tempfile.TemporaryDirectory() as jdir:
+        fp = os.path.join(jdir, "captures.jsonl")
+        big_in = '{"model":"Qwen3.8","prompt":"' + "x" * 1000 + '"}'
+        jid = "chatcmpl-" + hashlib.sha256(big_in.encode()).hexdigest()[:16]
+        JD, jd = capdoor({"GATEWAY_CAPTURE": "64", "GATEWAY_CAPTURE_FILE": fp, "GATEWAY_CAPTURE_DISK": "512"})
+        http(JD, "/v1/chat/completions", "POST", big_in, headers={"x-r9k-capture": "1"})
+        http(JD, "/v1/chat/completions", "POST", BODY)                 # asked for nothing: nothing on disk either
+        rows = [json.loads(l) for l in open(fp, encoding="utf-8")] if os.path.exists(fp) else []
+        ck("GATEWAY_CAPTURE_FILE appends one line per capture, and none for a request that did not ask",
+           len(rows) == 1, f"{len(rows)} lines " + str(rows)[:120])
+        ck("the disk line carries the id, the prompt text and the answer text for analysis -- at its own cap, "
+           "saying what it did not keep",
+           rows and rows[0]["id"] == jid and rows[0]["path"] == "/v1/chat/completions"
+           and len(rows[0]["input"]) == 512 and rows[0]["input_truncated"] is True
+           and rows[0]["bytes_in"] == len(big_in)
+           and json.loads(rows[0]["response"])["id"] == jid, str(rows)[:160])
+        ck("while the RAM copy stays the page's 64-byte display copy",
+           len(json.loads(http(JD, f"/api/capture?id={jid}")[1])["row"]["input"]) == 64, "")
+        g = json.loads(http(JD, "/api/gate", timeout=5)[1])
+        ck("and the journal is self-describing and counted where the Monitor can read it",
+           g["capture"]["file"] == fp and g["capture"]["counts"]["capture_file_written"] == 1
+           and g["capture"]["counts"]["capture_file_err"] == 0, str(g["capture"])[:180])
+        jd.terminate()
+        ED, ed = capdoor({"GATEWAY_CAPTURE": "512", "GATEWAY_CAPTURE_FILE": os.path.join(jdir, "gone", "c.jsonl")})
+        st, b = http(ED, "/v1/chat/completions", "POST", BODY, headers={"x-r9k-capture": "1"})
+        g = json.loads(http(ED, "/api/gate", timeout=5)[1])
+        ck("a journal that cannot be written is counted, not fatal: the door keeps piping, the row keeps answering",
+           json.loads(b)["role"] == "engine" and g["capture"]["counts"]["capture_file_err"] == 1
+           and g["capture"]["counts"]["capture_file_written"] == 0, str(g["capture"])[:160])
+        ed.terminate()
+    with tempfile.TemporaryDirectory() as jdir:
+        fp = os.path.join(jdir, "c.jsonl")
+        MD, md = capdoor({"GATEWAY_CAPTURE": "512", "GATEWAY_CAPTURE_FILE": fp,
+                          "GATEWAY_CAPTURE_FILE_MAX": "200"})
+        for i in range(3):
+            http(MD, "/v1/chat/completions", "POST", '{"model":"Qwen3.8","prompt":"p' + str(i) + '"}',
+                 headers={"x-r9k-capture": "1"})
+        n = len(open(fp, encoding="utf-8").readlines()) if os.path.exists(fp) else 0
+        g = json.loads(http(MD, "/api/gate", timeout=5)[1])
+        ck("and the journal stays bounded: at the ceiling the door stops appending and says so, rather than "
+           "filling this box's disk on its own", n < 3 and g["capture"]["counts"]["capture_file_full"] >= 1,
+           f"{n} lines " + str(g["capture"]["counts"])[:140])
+        md.terminate()
 
     if LAN:
         XP, xd = capdoor({"GATEWAY_CAPTURE": "512", "GATEWAY_KEY_FILE": KF.name, "GATEWAY_KEY_ENFORCE": "1"},

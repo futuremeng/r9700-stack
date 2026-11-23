@@ -2222,3 +2222,34 @@ the standalone sidecar picks it up when it restarts, which is cheaper and is wha
 `node tests/render-monitor.mjs http://127.0.0.1:8180` fails with "the payload's prompt distribution carries no p90"
 -- that claim is the harness naming a stale payload, not a broken page: the merged card shows `p90 —` and no window
 bar rather than inventing either.
+
+### The RAM ring dies with the door: the capture got a disk journal (2026-11-23)
+
+The capture above kept the last `GATEWAY_CAPTURE_KEEP` rows and nothing older, and the rows died with the door's
+next restart -- which this file's own history says happens. That is the wrong shape for analysis, which wants the
+pile: whole prompts, older than fifty, readable with `jq` while no process is up. So every stored capture now
+ALSO appends one JSON line to the file `GATEWAY_CAPTURE_FILE` names, orphans included (`id: null` is exactly what
+an orphan row is). Three rules the feature lives by, each with a comment at its code:
+
+* the disk copy has its own byte ceiling, `GATEWAY_CAPTURE_DISK` (1 MiB hard top), independent of the display
+  copy's `GATEWAY_CAPTURE` -- an analysis wants the 64 KB prompt, not the 2 KB the page asked for -- and the line
+  states its own truncation flags against its own cap, the same way the RAM row does for the page;
+* the journal is bounded by itself: `GATEWAY_CAPTURE_FILE_MAX` (default 64 Mi), and at the ceiling the door stops
+  appending and counts it (`capture_file_full`). A journal nobody pruned must not fill this box's disk by itself;
+* a journal that will not write is counted (`capture_file_err`) and never fatal: the client already has its answer,
+  and the pipe to the model is not worth interrupting for a failed append -- the same rule the page learned when
+  the capture endpoint itself shipped broken.
+
+The journal is self-describing: `/api/capture` and the gate's capture block carry the path, the bytes written so
+far and the three counts, and the door's startup line says `appending <path>, N bytes per side on disk, ceiling
+X` -- or `SET BUT INERT` when the path is set with `GATEWAY_CAPTURE=0`, which is the one configuration where the
+file stays empty forever and must say so out loud. `tests/test_gateway.py` §(1d) grows 6 checks on the door's own
+subprocesses: line-per-capture and none-for-a-request-that-did-not-ask, the disk cap and what-it-kept beside the
+untouched 64-byte display copy, the unwritable path staying non-fatal, and the bounded ceiling counted.
+
+Box state at write time: the change is in the tree, NOT deployed -- enabling it is three lines in
+`~/.config/r9700-stack/native.env` (`GATEWAY_CAPTURE`, `GATEWAY_CAPTURE_FILE`, and for the page merge
+`R9K_CAPTURE_URL=http://127.0.0.1:8080/api/capture`) and a restart of the door and the sidecar; the engine is
+not touched. `R9K_CAPTURE_URL` matters on its own: with it unset the sidecar never asks the door for a capture,
+so even a captured request shows the page only timings -- which is the sentence every row on this box carried
+until the merge existed.

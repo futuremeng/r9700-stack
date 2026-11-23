@@ -353,6 +353,7 @@ G = {"kv": None, "run": None, "wait": None, "at": 0.0, "err": None, "closed": Fa
      "admin_denied": 0,      # control-plane paths this door refused to hand to the engine
      "auth_open": 0, "auth_keyed": 0, "auth_ok": 0, "auth_401": 0, "auth_would401": 0, "auth_local": 0,
      "capture_wanted": 0, "capture_stored": 0, "capture_orphan": 0, "capture_hits": 0, "capture_misses": 0,
+     "capture_file_written": 0, "capture_file_full": 0, "capture_file_err": 0,
      "inflight": 0, "held": 0, "held_now": 0, "released": 0, "expired": 0, "refused": 0, "admitted": 0,
      "small_passed": 0, "held_over": 0, "polls": 0,
      # Counted because observing is now the job: who came, of which declared-size class, and how many arrived while
@@ -588,9 +589,12 @@ def gate_blob():
                        "gated": list(GATED),
                        "capture": {"GATEWAY_CAPTURE": CAPTURE_CAP, "keep": CAPTURE_KEEP,
                                    "stored": len(CAPTURES), "orphans": len(CAPTURE_ORPHAN),
+                                   "file": CAPTURE_FILE or None, "file_bytes": CAPTURE_FILE_BYTES,
+                                   "file_cap": CAPTURE_FILE_MAX, "disk_cap": CAPTURE_DISK_CAP,
                                    "counts": {k: G[k] for k in ("capture_wanted", "capture_stored",
                                                                 "capture_orphan", "capture_hits",
-                                                                "capture_misses")}},
+                                                                "capture_misses", "capture_file_written",
+                                                                "capture_file_full", "capture_file_err")}},
                        "admin": {"paths": len(ADMIN), "GATEWAY_ADMIN": ADMIN_ON,
                                  "denied": G["admin_denied"]},
                        "auth": {"key": {"set": bool(KEY), "source": KEY_SRC, "chars": len(KEY)},
@@ -747,6 +751,23 @@ CAPTURE_HEAD = max(int(os.environ.get("GATEWAY_CAPTURE", "0") or 0), 2048)   # i
 CAPTURES = OrderedDict()                    # response id -> row, oldest dropped first
 CAPTURE_ORPHAN = deque()                    # captures whose response carried no id we could read
 
+# The RAM ring dies with the door's next restart, and this file's own history says restarts happen. So the copy
+# that analysis wants -- whole prompts, older than the last fifty, readable by jq and python without this process
+# being up -- is APPENDED to a file: one JSON line per stored capture, orphans included (their id is null, which is
+# exactly what the orphan row is). GATEWAY_CAPTURE_DISK is the per-side byte ceiling of the DISK copy, usually
+# bigger than GATEWAY_CAPTURE's display copy because an analysis wants the whole 64 KB prompt, not the 2 KB the
+# page asked for; the extra buffer is the only extra RAM this costs the door, it exists only for opted-in
+# requests, and it stays bounded like everything else here (CAPTURE_HARD caps it at 1 Mi a side). The file is
+# bounded too: GATEWAY_CAPTURE_FILE_MAX, and at the ceiling the door stops appending and COUNTS it -- a journal
+# nobody pruned must not fill this box's disk by itself, and the count is on /api/gate so the page can say so.
+CAPTURE_FILE = os.environ.get("GATEWAY_CAPTURE_FILE", "").strip()
+CAPTURE_DISK_CAP = min(int(os.environ.get("GATEWAY_CAPTURE_DISK", str(CAPTURE_HARD)) or CAPTURE_HARD), CAPTURE_HARD)
+CAPTURE_FILE_MAX = int(os.environ.get("GATEWAY_CAPTURE_FILE_MAX", str(64 << 20)) or 0)   # 0 = no ceiling
+try:
+    CAPTURE_FILE_BYTES = os.path.getsize(CAPTURE_FILE) if CAPTURE_FILE else 0
+except OSError:
+    CAPTURE_FILE_BYTES = 0                  # an unreadable path gets counted on the next append attempt
+
 
 class Tap:
     """One opted-in request's bytes. Two separate counters: how many bytes went past (n_in/n_out) and how many
@@ -755,6 +776,8 @@ class Tap:
     def __init__(self, path):
         self.at, self.path, self.state = time.time(), path, "incomplete"
         self.inp, self.out, self.head_in, self.head_out = [], [], [], []
+        # The disk buffers exist only when a journal is configured; a door without one pays nothing extra.
+        self.disk_in, self.disk_out = ([], []) if CAPTURE_FILE else (None, None)
         self.n_in = self.n_out = 0
         self.stored = False
 
@@ -766,13 +789,19 @@ class Tap:
             # cap whenever that is the bigger number: it is an index, not a second copy.
             if side == "in":
                 self.n_in += len(b)
-                for buf, room_n in ((self.inp, CAPTURE_CAP), (self.head_in, CAPTURE_HEAD)):
+                bufs = [(self.inp, CAPTURE_CAP), (self.head_in, CAPTURE_HEAD)]
+                if self.disk_in is not None:
+                    bufs.append((self.disk_in, CAPTURE_DISK_CAP))
+                for buf, room_n in bufs:
                     room = room_n - sum(map(len, buf))
                     if room > 0:
                         buf.append(b[:room])
             else:
                 self.n_out += len(b)
-                for buf, room_n in ((self.out, CAPTURE_CAP), (self.head_out, CAPTURE_HEAD)):
+                bufs = [(self.out, CAPTURE_CAP), (self.head_out, CAPTURE_HEAD)]
+                if self.disk_out is not None:
+                    bufs.append((self.disk_out, CAPTURE_DISK_CAP))
+                for buf, room_n in bufs:
                     room = room_n - sum(map(len, buf))
                     if room > 0:
                         buf.append(b[:room])
@@ -785,6 +814,26 @@ def capture_wanted(headers):
     if not m:
         return False
     return m.group(1).strip().lower() not in (b"", b"0", b"false", b"off", b"no")
+
+
+def append_capture(row):
+    """One line in the disk journal. A disk that will not write is counted and swallowed, never fatal: the client
+    already has its answer and the pipe to the model is not worth interrupting for a failed append -- the same
+    rule the gate learned about never letting a side surface take the door down. The file's ceiling is enforced
+    by this function's own byte count, so nobody has to stat the journal per request."""
+    global CAPTURE_FILE_BYTES
+    if CAPTURE_FILE_MAX and CAPTURE_FILE_BYTES >= CAPTURE_FILE_MAX:
+        G["capture_file_full"] += 1
+        return
+    line = json.dumps(row, ensure_ascii=False)
+    try:
+        with open(CAPTURE_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError:
+        G["capture_file_err"] += 1
+        return
+    CAPTURE_FILE_BYTES += len(line.encode("utf-8", "replace")) + 1
+    G["capture_file_written"] += 1
 
 
 def store_capture(tap):
@@ -818,6 +867,15 @@ def store_capture(tap):
     G["capture_stored"] += 1
     if not rid:
         G["capture_orphan"] += 1
+    if CAPTURE_FILE:
+        # The disk line follows the DISK buffers, not the display ones: the file is the copy analysis reads,
+        # and it must say what it kept exactly the way the RAM row does (truncated flags against its own cap).
+        d_in, d_out = b"".join(tap.disk_in or []), b"".join(tap.disk_out or [])
+        append_capture({"at": row["at"], "id": rid, "path": tap.path, "model": model, "state": tap.state,
+                        "stream": row["stream"], "bytes_in": tap.n_in, "bytes_out": tap.n_out,
+                        "input_truncated": tap.n_in > len(d_in), "response_truncated": tap.n_out > len(d_out),
+                        "input": d_in.decode("utf-8", "replace"),
+                        "response": d_out.decode("utf-8", "replace")})
     return rid
 
 
@@ -837,8 +895,11 @@ def capture_page(writer, q):
     else:
         body = json.dumps({"cap": CAPTURE_CAP, "keep": CAPTURE_KEEP, "stored": len(CAPTURES),
                            "orphans": len(CAPTURE_ORPHAN),
+                           "file": CAPTURE_FILE or None, "file_bytes": CAPTURE_FILE_BYTES,
                            "counts": {k: G[k] for k in ("capture_wanted", "capture_stored", "capture_orphan",
-                                                        "capture_hits", "capture_misses")},
+                                                        "capture_hits", "capture_misses",
+                                                        "capture_file_written", "capture_file_full",
+                                                        "capture_file_err")},
                            "ids": [{"id": k, "at": v["at"], "path": v["path"], "model": v["model"],
                                     "bytes_in": v["bytes_in"], "bytes_out": v["bytes_out"],
                                     "state": v["state"]}
@@ -1127,6 +1188,11 @@ async def main():
                          f"OPT-IN (header X-R9K-Capture: 1), {CAPTURE_CAP} bytes per side, the last "
                          f"{CAPTURE_KEEP} rows in RAM, readable at /api/capture (keyed, loopback exempt); "
                          f"a request that does not ask pays one header regex"), flush=True)
+    if CAPTURE_FILE:
+        state = "appending" if CAPTURE_CAP else "SET BUT INERT -- GATEWAY_CAPTURE=0 taps nothing, so the file stays empty"
+        cap_s = "unlimited" if not CAPTURE_FILE_MAX else f"{CAPTURE_FILE_MAX} B"
+        print(f"capture file: {state}: {CAPTURE_FILE}, {CAPTURE_DISK_CAP} bytes per side on disk, "
+              f"ceiling {cap_s} (currently {CAPTURE_FILE_BYTES} B)", flush=True)
     if GATE_ON and GATE_POLICY != "hold":
         G["task"] = asyncio.create_task(gate_poll())
         # The MODE goes in the log next to the thresholds: someone comparing two gateway logs has to be able to tell

@@ -1,4 +1,20 @@
 # Changelog
+## the opt-in capture gets a disk journal, because the RAM ring dies with the door's next restart and analysis wants the pile
+
+The byte tap (`GATEWAY_CAPTURE` + `X-R9K-Capture: 1`) kept the last fifty rows and nothing older: one restart of
+the front door -- which this file's own history says happens -- and the pile an analysis needs was gone. So
+every stored capture now ALSO appends one JSON line to the file `GATEWAY_CAPTURE_FILE` names: whole prompts and
+answers (`GATEWAY_CAPTURE_DISK` bytes per side, the disk copy's own ceiling, usually above the display copy's,
+because an analysis wants the 64 KB prompt and not the 2 KB the page asked for), the same truncation flags the
+RAM row carries, orphan captures included with `id: null`. The two rules the feature lives by: the file is
+bounded (`GATEWAY_CAPTURE_FILE_MAX`, default 64 Mi -- at the ceiling the door stops appending and counts it, a
+journal nobody pruned must not fill this box's disk by itself), and a journal that will not write is counted
+(`capture_file_err`) and never fatal -- the client already has its answer, and the pipe to the model is not worth
+interrupting for a failed append. The journal is self-describing at `/api/gate` and at the index page; `jq` and a
+`for` loop read it back. `tests/test_gateway.py` (1d) gains the line-per-capture check, the none-for-a-request-
+that-did-not-ask check, the disk-cap-what-it-kept check beside the untouched 64-byte display copy, the unwritable
+path staying non-fatal, and the bounded-ceiling count -- 6 new checks on the door's own subprocesses.
+
 ## the OCR pre-pass is deleted: its premise was the vision tower's sharding, and `bench/mm_ocr_ab.py` keeps the recipe
 
 `r9700_vllm/compat/mm_ocr_pass.py` (in the tree for one commit, `6cc716c`) cut a request's pictures into their TEXT
