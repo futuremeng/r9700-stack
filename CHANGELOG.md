@@ -2431,6 +2431,28 @@ Radeon AI PRO R9700 -- at a 225 W cap through v0.2.3, at 210 W with a -42 mV vol
   changes inside a sentence (`999.9`, `16.2k`, `1.01M`).
 
 ### Added
+- **The ~30-minute NVFP4 -> MXFP4 requant at load is paid once, not every cold start**
+  (`r9700_vllm/quant/convertcache.py`, `quant/nvfp4.py`, `quant/modelopt.py`, `quant/ct.py`,
+  `serve/native-flashnext.sh`, `tests/test_convertcache.py`). Super VL 120B carries 40,960 expert matrices
+  and every cold launch dequantized and E2M1-re-searched every one of them -- the first cut's own words were
+  "no offline repack, no extra disk", and the bill was 30 minutes a start. The converted tensors now land in
+  `$VLLM_CACHE_ROOT/r9700-convert`, keyed by a checkpoint fingerprint (`config.json` + `hf_quant_config.json`
+  in full + every safetensors name and size -- vLLM's own cache level of trust, so an in-place shard edit at
+  unchanged names and sizes is invisible: delete the directory after doing that), the layer, the tensor shapes,
+  and the TP/EP rank -- under moe-TP two ranks hold DIFFERENT bytes of the same layer behind the SAME shape,
+  and with no rank in the key the last rank to boot would have poisoned every other rank's entry (the dense
+  linears shard along a dim the shapes already show; the MoE experts do not, which is exactly the case a
+  shapes-only key misses). `R9K_CONVERT_CACHE=0` turns it off, a path relocates it; every fault -- corrupt
+  file, disk full, no fingerprint because the model is an HF id -- degrades to converting and logs once,
+  because a plugin must never break a load.
+- **`setup.py` step 5 asks only for the models the SELECTED launch uses** (`setup.py`,
+  `tests/test_setup.py`). The checkpoint check walked every `serve/*.sh`, so a box launching 27b was told --
+  at warn level, with a `serve/deploy.sh` suggestion -- to fetch the 120B and the DS41 checkpoints that launch
+  never loads. `launch_model_names` resolves what ONE script actually names: its `/models/<name>` mentions
+  plus what its `MODEL=`/`DRAFT=`/`DRAFTER=` lines resolve to, environment first, the order the shell ranks
+  them in. Anything else is one short note instead of a warning, and present-but-unused checkpoints skip the
+  `du` and the total. With no recipe selected (a plain check, `--launch none`) the step stays exactly what it
+  was: every model any recipe wants.
 - **A launch is no longer called "up" just because it answers `/health` -- its context is compared to the
   checkpoint** (`setup.py`, `tests/test_setup.py`). After health, `setup.py` reads the context the launch is
   actually running at (`/api/status` `meta.maxlen`, falling back to the command line in the launch log) and

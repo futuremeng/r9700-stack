@@ -148,6 +148,15 @@ SO=$REPO/r9700_vllm/kernels/libr9k.so
 : ${R9K_DRAFT_LMHEAD:=mxfp4}; : ${R9K_TARGET_LMHEAD:=mxfp4}
 export R9K_FOLD R9K_AR_QUANT R9K_HC_FP8 R9K_HC_FP8_DECODE R9K_HC_FP8_DECODE_MAXM \
        R9K_HC_FP8_DOWN R9K_HC_FREE_BF16 R9K_FP8_BLOCK R9K_FP8_QA R9K_DRAFT_LMHEAD R9K_TARGET_LMHEAD
+
+# The load-time requant (NVFP4 -> MXFP4: 40,960 expert matrices on Super VL 120B, ~30 min on a cold start,
+# and until 2026-11-26 EVERY cold start paid it again). quant/convertcache.py keeps the converted tensors in
+# VLLM_CACHE_ROOT/r9700-convert keyed by a checkpoint fingerprint, the layer, the shapes and the TP/EP rank,
+# so the bill is once per checkpoint. R9K_CONVERT_CACHE=0 turns that off; a path relocates it. A checkpoint
+# edited in place at unchanged shard names and sizes is indistinguishable -- remove the cache directory (or
+# set 0) after doing that. Any cache fault degrades to converting; it never fails a load.
+: ${R9K_CONVERT_CACHE:=1}
+export R9K_CONVERT_CACHE
 for v in $(env | grep -o '^R9K_[A-Z0-9_]*'); do export "$v"; done
 
 # GDN diagnosis, off in production: 1 runs host range checks on the stock path plus stage syncs, on layer 0 only

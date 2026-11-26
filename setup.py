@@ -1458,6 +1458,28 @@ def wanted_models():
     return by, repos
 
 
+def launch_model_names(text):
+    """The checkpoints ONE launcher will actually touch: every /models/<name> its script names, plus whatever
+    its MODEL=/DRAFT=/DRAFTER= lines resolve to (exported environment first, then the machine-local file, then
+    the script's own default -- launcher_var's order).
+
+    Why both halves: serve/27b.sh writes MODEL=/models/... (the regex sees it), serve/native-flashnext.sh
+    writes MODEL=${MODEL:-$HOME/models/...} (only launcher_var sees that, and an operator's MODEL= outranks
+    the default the way the shell ranks it). A name only ANOTHER recipe's script mentions is not this
+    launch's business -- that is what made setup step 5 demand checkpoints the selected launch never
+    loads.
+
+    A comment mentioning /models/x counts: better a false "wanted" (fall back to the old behaviour) than a
+    false "not wanted" on the one line the operator needed to see."""
+    want = {m.group(1) for m in re.finditer(r"/models/([A-Za-z0-9._-]+)", text)
+            if m.group(1) not in ("...", "x")}
+    for k in ("MODEL", "DRAFT", "DRAFTER"):
+        v = launcher_var(text, k)
+        if v:
+            want.add(Path(v).name)
+    return want
+
+
 # ------------------------------------------------------------------------------------------- the steps ---
 def cards():
     """amdgpu cards the guest can see: (drm name, PCI bus, driver). The BMC's AST card is not one of them."""
@@ -1953,6 +1975,17 @@ def model_visibility(who, have):
 def models(cfg, have="docker"):
     step(5, f"checkpoints in {Path.home() / 'models'} (mounted at /models; third-party weights, not fetched here)")
     names, repos = wanted_models()
+    # Which launch this run actually made decides which checkpoint is a hole and which is scenery: a box
+    # launching 27b does not need the 120B fetched, and saying so at warn level is how a 40-line report
+    # trains people to skip the report. With no recipe selected (a plain check, --launch none) every
+    # recipe's models stay on the list, exactly as before.
+    sel = cfg.launch if cfg.launch and cfg.launch != "none" else None
+    want = None
+    if sel:
+        try:
+            want = launch_model_names((ROOT / "serve" / sel).read_text(errors="replace"))
+        except OSError:
+            note(f"serve/{sel} is not readable: this check covers every recipe's models, not only this launch")
     d = Path.home() / "models"
     if not d.is_dir():
         warn(f"{d} does not exist", "mkdir it and put the checkpoints in it, or change the MODEL= paths")
@@ -1961,7 +1994,12 @@ def models(cfg, have="docker"):
     for n in sorted(names):
         p = d / n
         who = ", ".join(sorted(f"serve/{s}" for s in names[n]))
+        in_launch = want is None or n in want
         if not p.is_dir():
+            if not in_launch:
+                note(f"/models/{n} missing: not wanted by the selected launch ({sel}), so this run does not "
+                     f"ask for it (wanted by {who})")
+                continue
             src = repos.get(n)
             line = (f"/models/{n} missing (wanted by {who})"
                     + (f"; serve/deploy.sh fetches it from {src}" if src else ""))
@@ -1972,6 +2010,9 @@ def models(cfg, have="docker"):
             else:
                 note(line + " -- no recipe this box can run wants it: container-only recipes, and this run "
                             "takes the native path")
+            continue
+        if not in_launch:                                    # present, but not this launch's model: no du,
+            note(f"/models/{n} is here; only {who} want it -- not this launch's model")   # not in the total
             continue
         rc, txt = out(["du", "-s", "-b", str(p)])
         size = int(txt.split()[0]) if rc == 0 else 0

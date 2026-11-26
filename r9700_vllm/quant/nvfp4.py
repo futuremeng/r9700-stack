@@ -30,6 +30,8 @@ from torch.nn.parameter import Parameter
 
 from vllm.logger import init_logger
 
+from . import convertcache
+
 logger = init_logger("vllm." + __name__)
 
 _E2M1 = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0])
@@ -126,7 +128,15 @@ def make_dense_scheme_cls(base):
         def process_weights_after_loading(self, layer) -> None:
             widths = list(layer.logical_widths)
             div = _row_div(layer.weight_global_scale.data, widths)
-            p, s = nvfp4_to_mxfp4(layer.weight_packed.data, layer.weight_scale.data, div)
+            wp = layer.weight_packed.data
+            shapes = (tuple(wp.shape), (wp.shape[0], wp.shape[1] * 2 // 32))
+            tag = ((getattr(self, "prefix", "") or getattr(layer, "prefix", "") or "") + "/dense") or None
+            hit = convertcache.load(tag, shapes)
+            if hit is not None:
+                p, s = hit["packed"].to(wp.device), hit["scale"].to(wp.device)
+            else:
+                p, s = nvfp4_to_mxfp4(wp, layer.weight_scale.data, div)
+                convertcache.put(tag, {"packed": p, "scale": s}, shapes)
             del layer.weight_packed
             del layer.weight_global_scale
             if hasattr(layer, "input_global_scale"):
@@ -230,14 +240,19 @@ def make_moe_method_cls(mxfp4_method_cls):
                     self.group_size = saved
 
         @staticmethod
-        def _convert(packed_p, scale_p, row_div):
+        def _convert(packed_p, scale_p, row_div, tag=None):
             E = packed_p.shape[0]
-            s_out = torch.empty((E, packed_p.shape[1], packed_p.shape[2] * 2 // 32), dtype=torch.uint8,
-                                device=scale_p.device)
+            shape_s = (E, packed_p.shape[1], packed_p.shape[2] * 2 // 32)
+            hit = convertcache.load(tag, (tuple(packed_p.shape), shape_s))
+            if hit is not None:                             # the 30-min loop, replaced by a file read
+                packed_p.data.copy_(hit["packed"].to(packed_p.data.device))
+                return hit["scale"].to(scale_p.device)
+            s_out = torch.empty(shape_s, dtype=torch.uint8, device=scale_p.device)
             for e in range(E):
                 p, s = nvfp4_to_mxfp4(packed_p.data[e], scale_p.data[e], row_div[e])
                 packed_p.data[e].copy_(p)
                 s_out[e].copy_(s)
+            convertcache.put(tag, {"packed": packed_p.data, "scale": s_out}, (tuple(packed_p.shape), shape_s))
             return s_out
 
         def process_weights_after_loading(self, layer) -> None:
@@ -255,8 +270,11 @@ def make_moe_method_cls(mxfp4_method_cls):
             if native:
                 prep_native_moe(layer, div13, div2)
             else:
-                s13 = self._convert(layer.w13_weight_packed, layer.w13_weight_scale, div13)
-                s2 = self._convert(layer.w2_weight_packed, layer.w2_weight_scale, div2)
+                name = getattr(layer, "layer_name", "") or ""
+                s13 = self._convert(layer.w13_weight_packed, layer.w13_weight_scale, div13,
+                                    (name + "/w13") if name else None)
+                s2 = self._convert(layer.w2_weight_packed, layer.w2_weight_scale, div2,
+                                   (name + "/w2") if name else None)
                 layer.w13_weight_scale = Parameter(s13, requires_grad=False)
                 layer.w2_weight_scale = Parameter(s2, requires_grad=False)
             for n in ("w13_weight_global_scale", "w2_weight_global_scale", "w13_input_global_scale",

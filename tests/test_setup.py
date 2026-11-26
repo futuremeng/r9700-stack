@@ -1148,5 +1148,32 @@ ck("and that port is not the front door's, so a dead door cannot be mistaken for
    not _rec or _rec.get("port") != int(S.env_file_var(_rsrc, "GATEWAY_PORT") or 8080),
    f"record port {_rec.get('port')} == the gateway port")
 
+# ------------------------------------------------ only the SELECTED launch is demanded by step 5
+# Step 5 walked every serve/*.sh and asked for every checkpoint any of them named, so a box launching 27b
+# was warned to deploy the 120B and the DS41 it would never load. launch_model_names is the one-script
+# question: its /models mentions plus what its MODEL=/DRAFT=/DRAFTER= lines really resolve to, environment
+# first -- the order the shell ranks them in, the same order launcher_var reads.
+_lm_saved = {k: os.environ.pop(k, None) for k in ("MODEL", "DRAFT", "DRAFTER") if k in os.environ}
+ck("a recipe's own /models paths and its ${DRAFT:-path} default both count as wanted",
+   S.launch_model_names("MODEL=/models/Chosen-27B DRAFT=${DRAFT:-/srv/somewhere/Draft-A} bash serve.sh")
+   == {"Chosen-27B", "Draft-A"},
+   str(S.launch_model_names("MODEL=/models/Chosen-27B DRAFT=${DRAFT:-/srv/somewhere/Draft-A} bash serve.sh")))
+os.environ["DRAFT"] = "/elsewhere/Draft-B"
+ck("and an exported DRAFT outranks the script's own default, the way the shell ranks it",
+   S.launch_model_names("MODEL=/models/Chosen-27B DRAFT=${DRAFT:-/srv/somewhere/Draft-A} bash serve.sh")
+   == {"Chosen-27B", "Draft-B"},
+   str(S.launch_model_names("MODEL=/models/Chosen-27B DRAFT=${DRAFT:-/srv/somewhere/Draft-A} bash serve.sh")))
+del os.environ["DRAFT"]
+ck("a /models path that only appears in a comment still counts: a false wanted falls back to the old "
+   "behaviour, a false not-wanted hides the one line the operator needed",
+   S.launch_model_names("# fetched once by deploy, run /models/From-Comment\n") == {"From-Comment"})
+ck("and the placeholders are not models",
+   S.launch_model_names("see /models/... and /models/x\n") == set())
+for _k, _v in _lm_saved.items():
+    if _v is None:
+        os.environ.pop(_k, None)
+    else:
+        os.environ[_k] = _v
+
 print("PASS" if fail == 0 else "FAIL", f"({fail} failing)")
 sys.exit(1 if fail else 0)

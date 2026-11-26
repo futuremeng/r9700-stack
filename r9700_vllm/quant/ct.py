@@ -136,23 +136,32 @@ class R9kW8A8Fp8(CompressedTensorsW8A8Fp8):
         if pat != "1" and not re.search(pat, prefix):
             return False
         from .nvfp4 import quantize_mxfp4_search
+        from . import convertcache
         from ..linear.mxfp4 import R9700Mxfp4LinearKernel
         from vllm.model_executor.kernels.linear.mxfp4.base import MxFp4LinearLayerConfig
         N, Kd = w.shape
         packed = torch.empty((N, Kd // 2), dtype=torch.uint8, device=w.device)
         e8 = torch.empty((N, Kd // 32), dtype=torch.uint8, device=w.device)
         bsf = bs.float()
-        for r0 in range(0, N, 4096):
-            r1 = min(N, r0 + 4096)
-            wf = w[r0:r1].float()
-            if bsf.numel() == N or bsf.numel() == 1:
-                wf = wf * bsf.reshape(-1, 1)[r0:r1] if bsf.numel() == N else wf * bsf.reshape(())
-            else:                                            # 128x128 block scales
-                sb = bsf.repeat_interleave(128, 0)[r0:r1].repeat_interleave(128, 1)[:, :Kd]
-                wf = wf * sb
-            p, s = quantize_mxfp4_search(wf)
-            packed[r0:r1].copy_(p)
-            e8[r0:r1].copy_(s)
+        shapes = (tuple(packed.shape), tuple(e8.shape))
+        hit = convertcache.load((prefix + "/fp8-mxfp4") or None, shapes, keys=("packed", "e8"))
+        if hit is not None:
+            packed.copy_(hit["packed"].to(w.device))
+            e8.copy_(hit["e8"].to(w.device))
+        else:
+            for r0 in range(0, N, 4096):
+                r1 = min(N, r0 + 4096)
+                wf = w[r0:r1].float()
+                if bsf.numel() == N or bsf.numel() == 1:
+                    wf = wf * bsf.reshape(-1, 1)[r0:r1] if bsf.numel() == N else wf * bsf.reshape(())
+                else:                                            # 128x128 block scales
+                    sb = bsf.repeat_interleave(128, 0)[r0:r1].repeat_interleave(128, 1)[:, :Kd]
+                    wf = wf * sb
+                p, s = quantize_mxfp4_search(wf)
+                packed[r0:r1].copy_(p)
+                e8[r0:r1].copy_(s)
+            convertcache.put((prefix + "/fp8-mxfp4") or None,
+                             {"packed": packed, "e8": e8}, shapes)
         kern = R9700Mxfp4LinearKernel(MxFp4LinearLayerConfig(activation_quant_key=None))
         layer.weight = Parameter(packed, requires_grad=False)
         layer.weight_scale = Parameter(e8, requires_grad=False)

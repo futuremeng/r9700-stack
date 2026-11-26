@@ -54,6 +54,7 @@ from .. import ops
 from ..moe import cache as C
 from ..moe import prep
 from ..moe.experts import r9k_available
+from . import convertcache
 from .ct import R9kMxfp4MoEMethod, _cached, _off
 from .nvfp4 import MOE_MODE, nvfp4_to_mxfp4, prep_native_moe
 
@@ -95,15 +96,22 @@ def make_moe_method_cls(mxfp4_method_cls):
             return (1.0 / g).repeat_interleave(rows // g.shape[1], dim=1).contiguous()
 
         @staticmethod
-        def _convert(packed_p, scale_p, row_div):
-            """Per expert: requant in place into the packed storage, e8m0 [E, N, K/32] u8 returned."""
+        def _convert(packed_p, scale_p, row_div, tag=None):
+            """Per expert: requant in place into the packed storage, e8m0 [E, N, K/32] u8 returned.
+            With a tag the result comes from / goes to the disk cache (quant/convertcache.py): the same
+            40,960-matrix bill on every cold start is what the cache exists to retire."""
             E = packed_p.shape[0]
-            s_out = torch.empty((E, packed_p.shape[1], packed_p.shape[2] * 2 // 32), dtype=torch.uint8,
-                                device=scale_p.device)
+            shape_s = (E, packed_p.shape[1], packed_p.shape[2] * 2 // 32)
+            hit = convertcache.load(tag, (tuple(packed_p.shape), shape_s))
+            if hit is not None:
+                packed_p.data.copy_(hit["packed"].to(packed_p.data.device))
+                return hit["scale"].to(scale_p.device)
+            s_out = torch.empty(shape_s, dtype=torch.uint8, device=scale_p.device)
             for e in range(E):
                 p, s = nvfp4_to_mxfp4(packed_p.data[e], scale_p.data[e], row_div[e])
                 packed_p.data[e].copy_(p)
                 s_out[e].copy_(s)
+            convertcache.put(tag, {"packed": packed_p.data, "scale": s_out}, (tuple(packed_p.shape), shape_s))
             return s_out
 
         def process_weights_after_loading(self, layer) -> None:
@@ -124,8 +132,11 @@ def make_moe_method_cls(mxfp4_method_cls):
                 if MOE_MODE == "native":
                     logger.info_once("r9700: modelopt NVFP4 MoE experts are host-offloaded: converting to MXFP4 "
                                      "(the expert cache is MXFP4-only)")
-                s13 = self._convert(layer.w13_weight_packed, layer.w13_weight_scale, div13)
-                s2 = self._convert(layer.w2_weight_packed, layer.w2_weight_scale, div2)
+                name = getattr(layer, "layer_name", "") or ""
+                s13 = self._convert(layer.w13_weight_packed, layer.w13_weight_scale, div13,
+                                    (name + "/w13") if name else None)
+                s2 = self._convert(layer.w2_weight_packed, layer.w2_weight_scale, div2,
+                                   (name + "/w2") if name else None)
                 layer.w13_weight_scale = Parameter(s13, requires_grad=False)
                 layer.w2_weight_scale = Parameter(s2, requires_grad=False)
                 for n in ("w13_weight_scale_2", "w2_weight_scale_2", "w13_input_scale", "w2_input_scale"):
