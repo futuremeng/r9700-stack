@@ -37,6 +37,9 @@ underneath it.
 **简体中文: [README.zh-CN.md](README.zh-CN.md)** — the same numbers in Chinese; where a translation drifts, this file is
 the one of record.
 
+**日本語: [README.ja.md](README.ja.md)** — the same numbers in Japanese; where a translation drifts, this file is
+the one of record.
+
 <p align="center">
   <a href="docs/r9700-stack-page.png"><img src="docs/r9700-stack-page.svg" alt="r9700-stack main: what runs on it, the weight formats, the speed"></a>
   <br><sub>The release on one page: what the stack is, the five model configurations the stack serves, each bar tagged with the box its number came from, and how fast they run —
