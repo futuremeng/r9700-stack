@@ -34,11 +34,8 @@ underneath it.
 > are at the top of <a href="#speed">Speed</a>. Your rig will differ; the serve scripts carry every knob with the
 > reason next to it.
 
-**简体中文: [README.zh-CN.md](README.zh-CN.md)** — the same numbers in Chinese; where a translation drifts, this file is
-the one of record.
-
-**日本語: [README.ja.md](README.ja.md)** — the same numbers in Japanese; where a translation drifts, this file is
-the one of record.
+**[简体中文](README.zh-CN.md) | [日本語](README.ja.md)** — the same numbers in Chinese and Japanese; where a translation
+drifts, this file is the one of record.
 
 <p align="center">
   <a href="docs/r9700-stack-page.png"><img src="docs/r9700-stack-page.svg" alt="r9700-stack main: what runs on it, the weight formats, the speed"></a>
