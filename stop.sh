@@ -70,6 +70,9 @@ pats() { grep -o "pkill -9 -f '[^']*'" "$1" 2>/dev/null | sed "s/.*'\(.*\)'/\1/"
 # Which sidecar tasks the launcher knows. Read from the file, not from a list kept here: a third task added
 # there is a third process this has to stop, and a list in two files is how one gets left running.
 tasks() { sed -n '/case "\$TASK"/,/^esac/p' serve/embed.sh | sed -n 's/^  \([a-z][a-z0-9]*\)).*/\1/p'; }
+# The perception layer's tasks live in serve/percept.sh (the cpu-sidecar plan, serve/cpu-sidecars.md);
+# same rule: enumerated from the file, never listed here.
+tasks2() { sed -n '/case "\$TASK"/,/^esac/p' serve/percept.sh | sed -n 's/^  \([a-z][a-z0-9]*\)).*/\1/p'; }
 
 # A count, not a match: this file's report is numbers, and "stopped" versus "stopped with four ranks still
 # holding the cards" has to be distinguishable in it. pgrep -c is GNU, so the launchers can assume it and this
@@ -100,6 +103,7 @@ say "stopping what this checkout started ($(pwd))$([ "$CHECK" = 1 ] && echo ' --
 mons=""
 [ "$ENGINE" = 1 ] && mons="webui.sh"          # the Monitor page polls the engine
 [ "$EMB" = 1 ] && mons="$mons embed-watch.sh" # and this one polls the sidecar it watches
+[ "$EMB" = 1 ] && mons="$mons percept-watch.sh" # the perception layer's page reads the journal, same contract
 if [ -n "$mons" ]; then
   say "monitors first: their errors would otherwise fill the log you are about to read"
   for s in $mons; do
@@ -127,9 +131,9 @@ if [ "$GATE" = 1 ]; then
   fi
 fi
 
-# ---------------------------------------- 3. the CPU sidecars, mmap and cheap (embed and the reranker)
+# ------------------ 3. the CPU sidecars, mmap and cheap (embed, the reranker, the perception layer)
 if [ "$EMB" = 1 ]; then
-  say "embedding and reranking sidecars: no GPU, no state, nothing to lose by stopping them"
+  say "embedding, reranking and perception sidecars: no GPU, no state, nothing to lose by stopping them"
   for t in $(tasks); do
     tp=$(task_port "$t")
     if [ -z "$tp" ]; then
@@ -141,6 +145,12 @@ if [ "$EMB" = 1 ]; then
     else
       say "  $t: not running on :$tp"
     fi
+  done
+  # the perception layer runs CLI-shaped (sherpa-onnx offline binaries), so there is no port to probe:
+  # the STOP pass kills any in-flight run by the launcher's own pattern, per task it enumerates.
+  for t in $(tasks2); do
+    say "  percept TASK=$t: stopping any in-flight run (no port; CLI-shaped)"
+    run env STOP=1 TASK="$t" bash serve/percept.sh
   done
 fi
 
@@ -190,12 +200,13 @@ m=$(count "llama-server")
 w=$(count "$(pat_any serve/embed-watch.sh)")
 u=$(count "$(pat_any serve/webui.sh)")
 d=$(count "$(pat_any serve/gateway.sh)")
-if [ "$n$m$w$u$d" = 00000 ]; then
-  say "nothing left running: 0 vLLM, 0 llama-server, 0 embedding monitor, 0 Monitor page, 0 door"
+p=$(count "sherpa-onnx")
+if [ "$n$m$w$u$d$p" = 000000 ]; then
+  say "nothing left running: 0 vLLM, 0 llama-server, 0 sherpa-onnx, 0 embedding monitor, 0 Monitor page, 0 door"
   [ "$DRY" = 1 ] && say "  (a preview: nothing above was run, and those counts are what is up right now)"
   say "bring it back: ./setup.sh   (with a stored launch configuration it re-asks nothing)"
 else
-  say "still up: $n vLLM, $m llama-server, $w embedding monitor, $u Monitor page, $d door$([ "$DRY" = 1 ] && echo '  (a preview: nothing above was run)')"
+  say "still up: $n vLLM, $m llama-server, $p sherpa-onnx, $w embedding monitor, $u Monitor page, $d door$([ "$DRY" = 1 ] && echo '  (a preview: nothing above was run)')"
   if [ "${n:-0}" != 0 ] && [ "$DRY" != 1 ]; then
     say "  those vLLM processes are what the next launch refuses to start over: it reads them as your cards"
     say "  being allocated -- rerun this, or STOP=1 bash serve/${recipe:-native-flashnext}.sh, or FORCE=1 anyway"
