@@ -24,12 +24,15 @@ underneath it.
 
 
 > [!NOTE]
-> Every number here came from one of two machines, and every table names which: **the 210 W gate box** (eight R9700,
-> 210 W cap a card, -42 mV, a KVM guest with emulated PCIe switches whose 120 V feed holds eight-card runs to a
-> -500 MHz clock offset) or **the native box** (four R9700, Gen5 host, no docker, **no power cap** — ~299 W a card in
-> practice). Card count is a deployment shape, not a machine, and a 210 W number is never comparable with an uncapped
-> one. The legend with both boxes' settings, and the one place where they disagree, are at the top of
-> <a href="#speed">Speed</a>. Your rig will differ; the serve scripts carry every knob with the reason next to it.
+> Every number here comes from one of two machines, and every table names which — but they are not equals. Our own
+> measurements were taken on **the native box** (four R9700, Gen5 host, no docker, **no power cap** — ~299 W a card
+> in practice), the machine this fork runs day to day, and they lead every table. The other machine is **upstream's
+> release gate**, the **210 W gate box** (eight R9700, 210 W cap a card, -42 mV, a KVM guest with emulated PCIe
+> switches whose 120 V feed holds eight-card runs to a -500 MHz clock offset); its numbers are kept only as a
+> comparison column, never as our results. Card count is a deployment shape, not a machine, and a 210 W number is
+> never comparable with an uncapped one. The legend with both boxes' settings, and the one place where they disagree,
+> are at the top of <a href="#speed">Speed</a>. Your rig will differ; the serve scripts carry every knob with the
+> reason next to it.
 
 <p align="center">
   <a href="docs/r9700-stack-page.png"><img src="docs/r9700-stack-page.svg" alt="r9700-stack main: what runs on it, the weight formats, the speed"></a>
@@ -39,10 +42,11 @@ re-draw cannot drift from them — including which box each bar was measured on.
 it lands at 14 px; the tag's own hand-drawn <code>docs/r9700-stack-v0.4.3.svg</code> carries the same claims at
 11 px on a 1200-unit canvas, which measures out at 9.0 px in that column — clicked-to-read, so the generated page
 is what this README carries. The picture links to <code>docs/r9700-stack-page.png</code>, the same drawing at
-2000 × 3840, for zooming. Every bar names its machine: <code>210 W gate</code> is the gate box (210 W a card, -42 mV,
-32k); <code>210 W gate, -500 MHz</code> is that box's **eight-card** runs, which sit at the clock offset its 120 V
-feed forces on top of the cap; <code>the native box, uncapped</code> is this box's four R9700 at ~299 W a card in
-practice. None of the three crosses.</sub>
+2000 × 3912, for zooming. Every bar names its machine: <code>210 W gate</code> is **upstream's** gate box (210 W a
+card, -42 mV, 32k), kept here as the comparison column; <code>210 W gate, -500 MHz</code> is that box's
+**eight-card** runs, which sit at the clock offset its 120 V feed forces on top of the cap; <code>the native box,
+uncapped</code> is this box's four R9700 at ~299 W a card in practice — our measurements, and the ones the tables
+lead with. None of the three crosses.</sub>
 </p>
 
 <p align="center">
@@ -85,18 +89,19 @@ Qwen3.8-Flash-Next (MoE, 512 experts, MXFP4 experts plus fp8 dense) on four Rade
 
 | | measured | where it came from |
 |---|---:|---|
-| **decoding, one stream** | **225 tok/s** (best sample 228) | 14.3-14.4 ms a step; **the 210 W gate box**, four cards, 32k, the v0.3.3 gate — the four gates since read 221.4-222.9 |
+| **decoding, one stream** | **186.7 tok/s** on this box, uncapped, 14.3 ms a step | upstream's 210 W gate reads **225** there (best sample 228, v0.3.3; the four gates since read 221.4-222.9) — the same four cards capped; the two disagree and that is recorded, not reconciled |
 | **decoding, 32 streams** | **1,823 tok/s** aggregate (best sample 1,836.3) | 1,200-token waves, `bench/probe32.sh`; the native box, uncapped. The fp8 main-KV launch it now defaults to reads **1,792** (1,789 / 1,796) at the same protocol, and the 2026-11-08 standing launch (vLLM 0.32, router cap 4, util 0.96, `PREFIX_CACHE=0`) read **1,767 / 1,780** — inside that spread, so the router cap costs nothing measurable here (notes/bug-router-gemm-oob.md) |
-| **reading a prompt** | **9,633 tok/s** | 7,789-token prompt, the native box uncapped (7,141 at the 210 W gate); **9,702** on the fp8 launch, 7,792 tokens |
+| **reading a prompt** | **9,633 tok/s** | 7,789-token prompt, the native box uncapped; upstream's gate reads 7,141 at 210 W for comparison; **9,702** on the fp8 launch, 7,792 tokens |
 | **context** | **262,144 tokens**, needle found at 250,078 | the checkpoint's own ceiling, and the window this box serves at today; the standing launch (`MM_TP_MODE=data`, replicated vision tower) prints **797,453 tokens** (`Maximum concurrency for 262,144 tokens per request: 3.04x`) — the same launch with the tower split across the ranks printed **887,983** (3.39x), and one before that **902,153** (3.44x), so the pool is what a launch printed, not a property of the config ([notes/context-256k.md](notes/context-256k.md), and the tower price in [notes/multimodal-input.md](notes/multimodal-input.md)) — fp8 e4m3 main KV, image inputs on, `--gpu-memory-utilization 0.96`. At 0.97 the same launch read 935,216 with the vision knobs and 1,009,899 without them; 540,202 at bf16 main KV |
 | **decoding, in real work** (not a benchmark) | **162 tok/s** with the box to yourself, **115 tok/s** as a request actually finishes | 1,568 real requests off the fp8 launch's journal over 10.25 h, the 115 being the median of the 1,525 that generated >=40 tokens, prompts p50 52,083; the benchmark rows above describe a machine nobody sits on |
 
-<sub>Two boxes, two power settings, and these tables do not cross: the second table's first row is the **210 W gate
-box** and the rest is the **native box uncapped** (~299 W a card), each row naming which, and the Super VL table is
-the native box alone. The rows further down add the two-card and eight-card shapes, and the eight-card ones carry the
-gate box's -500 MHz offset too. The last row is not a benchmark at all — it is what the running serve reported about
-other people's requests, and it is the row to believe when asking what a request will feel like. Full protocols,
-sample lists and the measurements that were tried and rejected: <a href="#speed">Speed</a>,
+<sub>These tables lead with **our own measurements on this box** (the native box, four R9700, uncapped, ~299 W a
+card). Where an **upstream 210 W gate-box** number is quoted beside one of ours — the comparison cells in the first
+and third rows — the row says so in place, and the two never cross: no 210 W number is comparable with an uncapped
+one. The Super VL table is this box alone. The Speed section keeps the two-card and eight-card shapes, which are
+upstream gate-box shapes and carry its -500 MHz offset too. The last row is not a benchmark at all — it is what the
+running serve reported about other people's requests, and it is the row to believe when asking what a request will
+feel like. Full protocols, sample lists and the measurements that were tried and rejected: <a href="#speed">Speed</a>,
 <a href="notes/native-4xr9700.md">notes/native-4xr9700.md</a>,
 <a href="notes/context-256k.md">notes/context-256k.md</a>.</sub>
 
@@ -141,67 +146,38 @@ On the four-card native box this fork runs, the main KV cache is fp8 e4m3 by def
 
 ## Speed
 
-Two power settings sit behind these tables, and the capped one spans two hosts. A row that names neither its machine
-nor its power is a row you cannot use:
+Two power settings sit behind these tables, and the capped one spans two hosts — but only one of them is ours, and
+the tables are ordered that way. A row that names neither its machine nor its power is a row you cannot use:
 
-| | **the 210 W gate box** | **the native box** |
+| | **the native box — ours** | **the 210 W gate box — upstream's release gate** |
 |---|---|---|
-| what it is | the release-gate machine: eight R9700 in a KVM guest with emulated PCIe switches, the pinned stock ROCm 10 image, vLLM 0.33.0 | this repo's day-to-day machine: four R9700 on a Gen5 x16 host, no docker, venv vLLM 0.32.0+rocm723 |
-| cards in a launch | 2, 4 or 8 | 4 |
-| power a card | **capped at 210 W**, with a -42 mV offset | **no cap set** — median **299 W** at `gpu_busy_percent` 100 (132 samples, 179-303) |
-| clocks | its 120 V feed holds **eight-card** runs to a **-500 MHz** SCLK offset | stock |
+| what it is | this fork's day-to-day machine: four R9700 on a Gen5 x16 host, no docker, venv vLLM 0.32.0+rocm723 | upstream's release-gate machine: eight R9700 in a KVM guest with emulated PCIe switches, the pinned stock ROCm 10 image, vLLM 0.33.0 |
+| cards in a launch | 4 | 2, 4 or 8 |
+| power a card | **no cap set** — median **299 W** at `gpu_busy_percent` 100 (132 samples, 179-303) | **capped at 210 W**, with a -42 mV offset |
+| clocks | stock | its 120 V feed holds **eight-card** runs to a **-500 MHz** SCLK offset |
 
-One more thing the gate rows carry: from v0.4.x the gate box is **VM100**, the eight-card guest above. The v0.3.2 and
-v0.3.3 rows still quoted below were gated on the older **four-card Gen3 test box** at the same 210 W and -42 mV, and
-the two-card row was measured on both hosts side by side — same cap, different PCIe, which is why it prints 122 and
-143 instead of one number.
+One more thing the gate rows carry: from v0.4.x upstream gates on **VM100**, the eight-card guest above. The v0.3.2
+and v0.3.3 rows still quoted in the comparison section were gated on the older **four-card Gen3 test box** at the
+same 210 W and -42 mV, and the two-card row was measured on both hosts side by side — same cap, different PCIe,
+which is why it prints 122 and 143 instead of one number.
 
-Where this file says **this box**, it means the native box. Three rules follow, and every table below applies them.
-**Card count is a deployment shape, not a machine**: the same 4-card launch has been gated on the first box at 210 W
-and run on the second uncapped, and the two disagree — 225 tok/s single stream at the gate against 186.7 uncapped,
-recorded rather than reconciled, because host, pin and clocks differ and the 210 W figure has never been re-measured
-on the native box. **Nothing at 210 W is comparable with anything uncapped.** And every eight-card number carries the
--500 MHz offset as well as the cap.
+Where this file says **this box** or **our box**, it means the native box. Three rules follow, and every table below
+applies them. **Card count is a deployment shape, not a machine**: the same 4-card launch has been gated upstream at
+210 W and runs here uncapped, and the two disagree — **186.7** tok/s single stream uncapped on this box against
+**225** at the gate — recorded rather than reconciled, because host, pin and clocks differ and the 210 W figure has
+never been re-measured on the native box. **Nothing at 210 W is comparable with anything uncapped.** And every
+eight-card number carries the -500 MHz offset as well as the cap.
 
-### The gate table: 210 W a card, 32k context, single stream unless said otherwise
+The four subsections that open this section are **our measurements, on this box**: a second model this box ran in
+November (Super VL), the 32k recipe, the checkpoint's full 262,144-token context, and real traffic. The first three
+are **benchmarks** — fixed prompt lengths, equal `max_tokens` waves, nothing else arriving while you measure — and
+the real-traffic one is **not**; its decode numbers are roughly a third of the benchmark ones for reasons that are
+understood rather than surprising, and it is the one to read for what a user actually gets. What
+follows them is **upstream's release-gate record** at 210 W — the four / two / eight-card shapes this box does not
+run — kept as a comparison column so the same builds can be read side by side, never mixed into one number with
+ours.
 
-The rows are the release gate, and the record behind them is the tag that last ran a full one —
-[notes/release-v0.4.3.md](notes/release-v0.4.3.md); [notes/release-v0.4.4.md](notes/release-v0.4.4.md) and
-[notes/release-v0.4.5.md](notes/release-v0.4.5.md) say in their own words that they did not re-run it.
-
-Each row names the tags its range spans, and the newest gate is the number in bold. Nothing here is one run: the
-same configuration is re-gated at every release, and a range that spans v0.3.3 to v0.4.3 is a range across image
-pins, `KVMEM` budgets and, for GLM, an instrument change.
-
-| configuration, and the gates the row spans | single stream | aggregate | prompt processing | KV cache |
-|---|---:|---:|---:|---:|
-| **Qwen3.8-27B-NVFP4**, 2 cards, DFlash2 — v0.3.3-v0.4.3 | **217.1 tok/s** (217-222 across the gates; 4.5 tokens a step) | 514 / 655 at 8 / 16 streams | 3,822 tok/s (8k prompt) | 367,494 tokens |
-| **Qwen3.8-Flash-Next**, 4 cards, MTP-3 — v0.3.3-v0.4.3 | **222.9 tok/s** (221-225 across the gates) | 469 / 912 at 8 / 16 | 6,743 tok/s (8k) | 472,025 tokens |
-| **Qwen3.8-Flash-Next**, 2 cards, experts in host RAM — v0.3.2 | 122 (Gen3 test box) / **143** (Gen5) | 177 / 257 at 8 streams | 2.6k / 3.7k | 221,184 tokens |
-| **GLM-5.3-Flash**, 8 cards, MTP-3 — v0.4.0-v0.4.3 | **97.5 tok/s** (88.1 / 93.2 / 95.1 / 97.5, decode-only medians; v0.3.8's gate read **100.0** on the probe, which is not the same instrument) | 173 then 231 at four streams | 2.5-3.4k tok/s | **284,829** at `KVMEM 2.65` (203,329 at v0.4.2, 176,443 at v0.4.1) |
-| **DeepSeek-V4.1-Flash** EXL3 2.9 bpw, 8 cards, DSpark k=5 — v0.4.2-v0.4.3 | **104 prose / 215-222 code** (v0.4.1: 87-97 / 202) | 192-229 prose / 413-422 code at 4 streams, 313-317 / 529-555 at 8 | 3.6k tok/s | 387,069 (32k) / 392,289 (128k recipe) |
-
-The **single stream** column is the gate probe's mean over its four prompt types (code / prose / json / math, run on
-the box rather than from this repo) for the Qwen rows, and the **decode-only median** for GLM from
-v0.4.0 on — that instrument change, not a regression, is why v0.3.8's GLM reads 100.0 and v0.4.0's reads 88.1. The KV
-column moves with `KVMEM` and `UTIL`, not with the model, so each row quotes the newest gate's budget. The eight-card
-rows carry VM100's -500 MHz clock offset on top of the 210 W cap; the four- and two-card rows are cards 0-3 and 0-1 of
-the same box.
-
-Two DGX Sparks on TensorFold serve the same DeepSeek pack at 81 prose / 118 code single stream and 154-166 at four
-streams. DeepSeek accuracy on this stack: GSM8K 193-196 / 200, needles 9 / 9 to 28k and retrieval at 126.7k-token
-prompts, decode flat to 28k of context. How each number was produced, and what was tried and rejected:
-[PROGRESS.md](PROGRESS.md) and `notes/`.
-
-Each subsection below carries its box in the heading. The first is a different model from the gate table; the
-second is the 210 W gate box again; the next two are the native box uncapped, the same recipe at 32k and then at the
-checkpoint's full 262,144 tokens. All of those are **benchmarks**: fixed prompt lengths, equal `max_tokens` waves,
-nothing else arriving while you measure. The last is **not** a benchmark — it is 1,568 real requests that arrived at
-the running serve, plus a 1,400-request window on the launch before it, kept for comparison — and its decode numbers
-are roughly a third of the benchmark ones for reasons that are understood rather than surprising. Read the benchmark
-tables for what the kernels can do; read the real-traffic one for what a user gets.
-
-### Nemotron-3.5-Super-VL-120B-A12B, 512 experts: the native box, four cards, uncapped
+### Our box on a second model: Nemotron-3.5-Super-VL-120B-A12B, 512 experts, four cards, uncapped
 
 What this box ran for a day in 2026-11-18 - parked now, and none of it reverted. The pack is `modelopt_mixed`
 MIXED_PRECISION and **40,960 of
@@ -239,55 +215,7 @@ hours (`hf_quant_config.json`
 is not optional; the plugin registers `modelopt_mixed` inside `register()`, so a broken import quietly serves stock):
 [notes/nemotron-super-vl.md](notes/nemotron-super-vl.md).
 
-### The release configurations: the 210 W gate box, four / two / eight cards, 32k
-
-**Qwen3.8-Flash-Next (MXFP4 experts, fp8 dense), four cards, TP4, MTP-3** — the v0.3.3 gate with a warm cache, kept
-because it is the run the block at the top of this README quotes; v0.4.3's gate on the same four cards of VM100 reads
-222.9 tok/s into a 472,025-token pool.
-
-| | |
-|---|---:|
-| single-stream decode | **225 tok/s**, 14.3 ms a step (best sample 228) |
-| aggregate decode at 1 / 2 / 4 / 8 streams (BetterBench) | 175 / 277 / 410 / 530 tok/s |
-| aggregate decode at 8 / 16 streams (probe) | 620 / 944 tok/s |
-| time to first token | 70-80 ms |
-| prompt processing at 2k / 8k / 16k / 32k | 5,175 / 7,141 / 7,489 / 7,233 tok/s |
-| KV cache | 518,481 tokens |
-
-<details>
-<summary><b>The same model on two cards, and the 27B on two cards</b></summary>
-
-**Qwen3.8-Flash-Next, two cards, TP2, experts in host RAM** — the v0.3.2 gate, measured on two hosts at 210 W:
-
-| | PCIe Gen3 host (test box) | PCIe Gen5 host (production) |
-|---|---:|---:|
-| single-stream decode | 122 tok/s | 143 tok/s |
-| aggregate at 8 / 16 streams | 177 / 163 | 257 / 245 |
-| prompt processing at 8k | 2,594 | 3,724 |
-| KV cache | 221,184 tokens | |
-
-**Qwen3.8-27B-NVFP4, two cards, TP2, DFlash2 speculative decoding** — v0.3.3 warm-cache gate (v0.4.3 re-ran it at
-217.1 tok/s into the same 367,494-token pool):
-
-| | |
-|---|---:|
-| single-stream decode | 222 tok/s (4.5 tokens a step), 22 ms a step |
-| aggregate at 8 / 16 streams | 527 / 640-658 tok/s (probe; equal-prompt bursts match the previous release) |
-| prompt processing at 8k | 3,901-4,143 tok/s |
-| KV cache | 367,494 tokens |
-
-</details>
-
-**DeepSeek-V4.1-Flash EXL3 2.9 bpw, eight cards, TP8 + expert parallel, DSpark k = 5 adaptive** — the **210 W gate
-box at its -500 MHz clock offset**, `NSEQ 4`. The gate numbers are the Speed row above: 104 prose / 215 code single
-stream, 199-221 prose / 422 code at four streams, 317 / 555 at eight, and a **387,069-token** KV pool at
-`KVMEM 2.0`. The bring-up launch that got there is tabulated in [notes/exl3-serving.md](notes/exl3-serving.md)
-(v0.4.0 / v0.4.1, `KVMEM 1.7`: 70-75 prose / 158 code single stream, 187 / 336 at four streams, 329,008 KV tokens,
-GSM8K 195 / 200, needles 9 / 9 to 28k). Read the two as what they are: the decode gap is the Phase 4 kernel packages
-(code 158 -> 202 -> 215 tok/s), not the clock — both arms were measured at the offset — and the KV gap is `KVMEM`
-alone (1.7 = 329,008 against 2.0 = 387,069, and 1.0 at 128k = 392,289).
-
-### The native box, four cards, uncapped, at 32k
+### Our box: four cards, uncapped, at 32k
 
 The same four cards uncapped, on the recipe the box ran before the context was raised (`MAXLEN=32768 NSEQ=16`,
 vLLM 0.32.0+rocm723): 19.16 GiB of weights a card, draft acceptance 56.1% (2.68 tokens a step). This is where the
@@ -304,15 +232,15 @@ prefill and aggregate numbers in the block at the top of this README come from;
 | prompt processing at 1,951 / 7,789 / 31,166 tokens | **7,702 / 9,633 / 8,963 tok/s** |
 | KV cache | 554,982 tokens |
 
-Note that this row and the 210 W gate table disagree: uncapped, a single stream runs at **186.7 tok/s** here, while
-the cap with a -42 mV offset read **225** there (v0.3.3's gate, the run that figure comes from; the gates since read
-221.4-222.9). That is recorded, not reconciled — the two boxes differ in host, pin and clocks, and the 210 W figure
-has never been re-measured on this one.
+Note that this row and upstream's 210 W gate table kept below disagree: uncapped, a single stream runs at **186.7
+tok/s** here, while the cap with a -42 mV offset read **225** there (v0.3.3's gate, the run that figure comes from;
+the gates since read 221.4-222.9). That is recorded, not reconciled — the two boxes differ in host, pin and clocks,
+and the 210 W figure has never been re-measured on this one.
 
-### The native box, four cards, uncapped, at the checkpoint's full 262,144 tokens
+### Our box: four cards, uncapped, at the checkpoint's full 262,144 tokens
 
 The native box (four R9700, **uncapped**, vLLM 0.32.0+rocm723 in a venv), so compare these against the other native-box
-rows and not against the 210 W gate tables. Same model, TP4, MTP-3. Except where a row says otherwise this is the
+rows and not against the upstream 210 W gate tables kept below. Same model, TP4, MTP-3. Except where a row says otherwise this is the
 launch the box runs today: `MAXLEN=262144 NSEQ=32 NBT=8192` at `--gpu-memory-utilization 0.96` — 0.97 asks for
 30.90 GiB of a 31.86 GiB card against a free-at-startup reading that ranged 30.87-31.22 GiB, so it refused at both
 0.32 and 0.33 whenever the reading landed low, a coin flip rather than a regression, and 0.96 costs about 4-5% of the
@@ -342,7 +270,7 @@ fairness knob, not a speed one, and stays off. The retrieval ladder to 250,078 t
 measurements, the standing gate on this launch, the ~299 W median a card at `gpu_busy_percent` 100, and the
 metric-reading traps: [notes/context-256k.md](notes/context-256k.md).
 
-### Real traffic on the native box, not a benchmark
+### Real traffic on our box, not a benchmark
 
 Everything above this line was measured by sending requests on purpose: fixed prompt lengths, equal `max_tokens`,
 and nothing else arriving while the meter runs. That is the right way to compare builds and the wrong way to answer
@@ -384,9 +312,9 @@ and the step shape, not the decode path. Ruled out with the counters that say so
 against 1,823 aggregate), acceptance length (1.33 against 1.55-1.62 drafted tokens accepted) and context depth
 (182.6 tok/s alone under 20k prompt against 150.0 at 80-160k: **a 256k context costs one stream ~13%**).
 
-**And 162 here is not a regression against the 225 in the gate table.** That one is MTP-3 at ~3.1 accepted tokens a
-step at 32k on the 210 W gate box; this launch is MTP=2 at 2.33 a step, on contexts of 20-200k. If single-stream
-decode is wanted back, the knob is drafter depth (`MTP=3`), not the attention path.
+**And 162 here is not a regression against the 225 in upstream's gate table below.** That one is MTP-3 at ~3.1
+accepted tokens a step at 32k on the 210 W gate box; this launch is MTP=2 at 2.33 a step, on contexts of 20-200k. If
+single-stream decode is wanted back, the knob is drafter depth (`MTP=3`), not the attention path.
 
 The bf16 launch before this one (1,400 requests over 13.8 h, prompts p50 74,381, p90 concurrency 6) reads 157.7
 tok/s alone, 22.8 at three-to-four, **60.8** overall — and the two windows are **not** an fp8-vs-bf16 comparison:
@@ -397,6 +325,87 @@ Method, the four denominators, the prefill-by-prompt-size table with its p10/p90
 measurements, the drafter's whole-launch accounting, and the trap that made the first version of this table wrong
 (midpoint concurrency sampled 361 requests as "alone" and reported 137 tok/s):
 [notes/context-256k.md](notes/context-256k.md).
+
+### For comparison: upstream's release gate — 210 W a card, 32k context, four / two / eight cards
+
+Everything in this subsection is **upstream's release-gate record**, measured on the 210 W gate box and kept here
+only as a comparison column; none of it was measured on this box. The rows are the release gate, and the record
+behind them is the tag that last ran a full one — [notes/release-v0.4.3.md](notes/release-v0.4.3.md);
+[notes/release-v0.4.4.md](notes/release-v0.4.4.md) and [notes/release-v0.4.5.md](notes/release-v0.4.5.md) say in
+their own words that they did not re-run it.
+
+Each row names the tags its range spans, and the newest gate is the number in bold. Nothing here is one run: the
+same configuration is re-gated at every release, and a range that spans v0.3.3 to v0.4.3 is a range across image
+pins, `KVMEM` budgets and, for GLM, an instrument change.
+
+| configuration, and the gates the row spans | single stream | aggregate | prompt processing | KV cache |
+|---|---:|---:|---:|---:|
+| **Qwen3.8-27B-NVFP4**, 2 cards, DFlash2 — v0.3.3-v0.4.3 | **217.1 tok/s** (217-222 across the gates; 4.5 tokens a step) | 514 / 655 at 8 / 16 streams | 3,822 tok/s (8k prompt) | 367,494 tokens |
+| **Qwen3.8-Flash-Next**, 4 cards, MTP-3 — v0.3.3-v0.4.3 | **222.9 tok/s** (221-225 across the gates) | 469 / 912 at 8 / 16 | 6,743 tok/s (8k) | 472,025 tokens |
+| **Qwen3.8-Flash-Next**, 2 cards, experts in host RAM — v0.3.2 | 122 (Gen3 test box) / **143** (Gen5) | 177 / 257 at 8 streams | 2.6k / 3.7k | 221,184 tokens |
+| **GLM-5.3-Flash**, 8 cards, MTP-3 — v0.4.0-v0.4.3 | **97.5 tok/s** (88.1 / 93.2 / 95.1 / 97.5, decode-only medians; v0.3.8's gate read **100.0** on the probe, which is not the same instrument) | 173 then 231 at four streams | 2.5-3.4k tok/s | **284,829** at `KVMEM 2.65` (203,329 at v0.4.2, 176,443 at v0.4.1) |
+| **DeepSeek-V4.1-Flash** EXL3 2.9 bpw, 8 cards, DSpark k=5 — v0.4.2-v0.4.3 | **104 prose / 215-222 code** (v0.4.1: 87-97 / 202) | 192-229 prose / 413-422 code at 4 streams, 313-317 / 529-555 at 8 | 3.6k tok/s | 387,069 (32k) / 392,289 (128k recipe) |
+
+The one row that crosses over is the 4-card Flash-Next one: our box's own uncapped number for the same launch is
+**186.7** single stream (the 32k table above), set beside the gate's 221-225 as recorded disagreement, not as a
+comparison that decides anything. The **single stream** column is the gate probe's mean over its four prompt types
+(code / prose / json / math, run on the gate box rather than from this repo) for the Qwen rows, and the
+**decode-only median** for GLM from v0.4.0 on — that instrument change, not a regression, is why v0.3.8's GLM reads
+100.0 and v0.4.0's reads 88.1. The KV column moves with `KVMEM` and `UTIL`, not with the model, so each row quotes
+the newest gate's budget. The eight-card rows carry VM100's -500 MHz clock offset on top of the 210 W cap; the four-
+and two-card rows are cards 0-3 and 0-1 of the same box.
+
+The one third-party row here, for orientation: two DGX Sparks on TensorFold serve the same DeepSeek pack at 81 prose
+/ 118 code single stream and 154-166 at four streams. DeepSeek accuracy on this stack: GSM8K 193-196 / 200, needles
+9 / 9 to 28k and retrieval at 126.7k-token prompts, decode flat to 28k of context. How each number was produced, and
+what was tried and rejected: [PROGRESS.md](PROGRESS.md) and `notes/`.
+
+**The same gate behind the release configurations: Qwen3.8-Flash-Next (MXFP4 experts, fp8 dense), four cards, TP4,
+MTP-3** — the v0.3.3 gate with a warm cache, kept because it is the run the block at the top of this README quotes
+as the comparison figure beside our own; v0.4.3's gate on the same four cards of VM100 reads 222.9 tok/s into a
+472,025-token pool.
+
+| | |
+|---|---:|
+| single-stream decode | **225 tok/s**, 14.3 ms a step (best sample 228) |
+| aggregate decode at 1 / 2 / 4 / 8 streams (BetterBench) | 175 / 277 / 410 / 530 tok/s |
+| aggregate decode at 8 / 16 streams (probe) | 620 / 944 tok/s |
+| time to first token | 70-80 ms |
+| prompt processing at 2k / 8k / 16k / 32k | 5,175 / 7,141 / 7,489 / 7,233 tok/s |
+| KV cache | 518,481 tokens |
+
+<details>
+<summary><b>The same model on two cards, and the 27B on two cards</b></summary>
+
+**Qwen3.8-Flash-Next, two cards, TP2, experts in host RAM** — the v0.3.2 gate, measured on two hosts at 210 W:
+
+| | PCIe Gen3 host (test box) | PCIe Gen5 host (production) |
+|---|---:|---:|
+| single-stream decode | 122 tok/s | 143 tok/s |
+| aggregate at 8 / 16 streams | 177 / 163 | 257 / 245 |
+| prompt processing at 8k | 2,594 | 3,724 |
+| KV cache | 221,184 tokens | |
+
+**Qwen3.8-27B-NVFP4, two cards, TP2, DFlash2 speculative decoding** — v0.3.3 warm-cache gate (v0.4.3 re-ran it at
+217.1 tok/s into the same 367,494-token pool):
+
+| | |
+|---|---:|
+| single-stream decode | 222 tok/s (4.5 tokens a step), 22 ms a step |
+| aggregate at 8 / 16 streams | 527 / 640-658 tok/s (probe; equal-prompt bursts match the previous release) |
+| prompt processing at 8k | 3,901-4,143 tok/s |
+| KV cache | 367,494 tokens |
+
+</details>
+
+**DeepSeek-V4.1-Flash EXL3 2.9 bpw, eight cards, TP8 + expert parallel, DSpark k = 5 adaptive** — the **210 W gate
+box at its -500 MHz clock offset**, `NSEQ 4`. The gate numbers are the gate table above: 104 prose / 215 code single
+stream, 199-221 prose / 422 code at four streams, 317 / 555 at eight, and a **387,069-token** KV pool at
+`KVMEM 2.0`. The bring-up launch that got there is tabulated in [notes/exl3-serving.md](notes/exl3-serving.md)
+(v0.4.0 / v0.4.1, `KVMEM 1.7`: 70-75 prose / 158 code single stream, 187 / 336 at four streams, 329,008 KV tokens,
+GSM8K 195 / 200, needles 9 / 9 to 28k). Read the two as what they are: the decode gap is the Phase 4 kernel packages
+(code 158 -> 202 -> 215 tok/s), not the clock — both arms were measured at the offset — and the KV gap is `KVMEM`
+alone (1.7 = 329,008 against 2.0 = 387,069, and 1.0 at 128k = 392,289).
 
 ## What the kernels do
 

@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1920" viewBox="0 0 1000 1920" font-family="Outfit, 'DejaVu Sans', system-ui, sans-serif" role="img">
-<rect x="0" y="0" width="1000" height="1920" rx="0" fill="#0e1113" stroke="none"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1956" viewBox="0 0 1000 1956" font-family="Outfit, 'DejaVu Sans', system-ui, sans-serif" role="img">
+<rect x="0" y="0" width="1000" height="1956" rx="0" fill="#0e1113" stroke="none"/>
 <rect x="38.0" y="26.0" width="22.0" height="7.0" rx="3.5" fill="#34d399" stroke="none"/>
 <rect x="30.0" y="36.0" width="30.0" height="7.0" rx="3.5" fill="#34d399" stroke="none"/>
 <rect x="22.0" y="46.0" width="38.0" height="7.0" rx="3.5" fill="#34d399" stroke="none"/>
@@ -104,11 +104,11 @@
 <text x="481.2" y="1082" font-size="14" fill="#8e979f">tok/s</text>
 <text x="128" y="1100" font-size="14" fill="#8e979f">94-112 across launches; stock: 27 eager, 73 graphs</text>
 <text x="128" y="1124" font-size="15" font-weight="700" fill="#eef1f3">Qwen3.8-Flash-Next</text>
-<text x="128" y="1142" font-size="14" fill="#8e979f">TP4, four cards · 210 W gate</text>
-<rect x="128" y="1152" width="270.0" height="18" rx="7" fill="#7b93ff" stroke="none"/>
-<text x="440" y="1168" font-size="26" font-weight="800" fill="#eef1f3">225</text>
-<text x="496.8" y="1168" font-size="14" fill="#8e979f">tok/s</text>
-<text x="128" y="1186" font-size="14" fill="#8e979f">14.3-14.4 ms a step; best sample 228</text>
+<text x="128" y="1142" font-size="14" fill="#8e979f">TP4 · the native box, uncapped</text>
+<rect x="128" y="1152" width="224.0" height="18" rx="7" fill="#7b93ff" stroke="none"/>
+<text x="440" y="1168" font-size="26" font-weight="800" fill="#eef1f3">186.7</text>
+<text x="528.0" y="1168" font-size="14" fill="#8e979f">tok/s</text>
+<text x="128" y="1186" font-size="14" fill="#8e979f">14.3 ms a step; upstream's gate: 221-225</text>
 <text x="128" y="1210" font-size="15" font-weight="700" fill="#eef1f3">Qwen3.8-27B-NVFP4</text>
 <text x="128" y="1228" font-size="14" fill="#8e979f">TP2, two cards · 210 W gate</text>
 <rect x="128" y="1238" width="266.4" height="18" rx="7" fill="#7b93ff" stroke="none"/>
@@ -156,18 +156,20 @@
 <text x="644" y="1564" font-size="14" fill="#c7cdd3">at, median over 1,525 of them on this</text>
 <text x="644" y="1582" font-size="14" fill="#c7cdd3">launch (162 tok/s with the box to</text>
 <text x="644" y="1600" font-size="14" fill="#c7cdd3">itself)</text>
-<text x="16" y="1670" font-size="14" fill="#8e979f">Each number names its machine: "210 W gate" is the gate box (210 W a card, -42 mV, 32k); "210 W gate, -500 MHz" is</text>
-<text x="16" y="1688" font-size="14" fill="#8e979f">that box's eight-card runs, which also sit at the clock offset its 120 V feed forces; "the native box, uncapped" is</text>
-<text x="16" y="1706" font-size="14" fill="#8e979f">four R9700 at ~299 W a card in practice. None of the three crosses.</text>
-<text x="16" y="1724" font-size="14" fill="#8e979f">The Super VL row is a day on the native box, 2026-11-18, and is not in a tag: 40,960 of the 41,156 layer entries</text>
-<text x="16" y="1742" font-size="14" fill="#8e979f">its hf_quant_config.json declares are routed experts, converted NVFP4 -&gt; MXFP4 at load on the checkpoint's own</text>
-<text x="16" y="1760" font-size="14" fill="#8e979f">scales, with a new relu-squared activation kernel because its MLP is ungated. Same weights, same cards, stock</text>
-<text x="16" y="1778" font-size="14" fill="#8e979f">kernels: 27 tok/s eager, 73 with graphs.</text>
-<text x="16" y="1796" font-size="14" fill="#8e979f">The Flash-Next column is the fp8 e4m3 main-KV launch this box runs by default: the pool doubles (1,009,899 against</text>
-<text x="16" y="1814" font-size="14" fill="#8e979f">540,202 tokens; with image inputs on, as today's launch runs, 935,216) and GSM8K 800 reads 96.0 against 95.6 %,</text>
-<text x="16" y="1832" font-size="14" fill="#8e979f">HumanEval 164 98.17 against 96.95.</text>
-<text x="16" y="1850" font-size="14" fill="#8e979f">v0.4.2 is the DeepSeek step measured a launch at a time: a per-kernel ledger of the step, an eight-rank all-reduce</text>
-<text x="16" y="1868" font-size="14" fill="#8e979f">at 160 KiB-1.5 MiB, an expert placement map for the rank skew, the EXL3 GEMV trimmed, and the 48-token expert tier</text>
-<text x="16" y="1886" font-size="14" fill="#8e979f">released -- the drafter collapse that held it back in v0.4.1 was a graph-pool-layout latent bug, not that kernel.</text>
-<text x="16" y="1904" font-size="14" fill="#8e979f">github.com/bkvargyas/r9700-stack</text>
+<text x="16" y="1670" font-size="14" fill="#8e979f">Each number names its machine: "210 W gate" is upstream's release-gate box (210 W a card, -42 mV, 32k), kept for</text>
+<text x="16" y="1688" font-size="14" fill="#8e979f">comparison; "210 W gate, -500 MHz" is that box's eight-card runs, which also sit at the clock offset its 120 V feed</text>
+<text x="16" y="1706" font-size="14" fill="#8e979f">forces; "the native box, uncapped" is ours: four R9700 at ~299 W a card in practice, no cap and no clock pin. The</text>
+<text x="16" y="1724" font-size="14" fill="#8e979f">one shape both boxes ran disagrees and both stand recorded: our 186.7 against upstream's 221-225 on four Flash-Next</text>
+<text x="16" y="1742" font-size="14" fill="#8e979f">cards. None of the three crosses.</text>
+<text x="16" y="1760" font-size="14" fill="#8e979f">The Super VL row is a day on the native box, 2026-11-18, and is not in a tag: 40,960 of the 41,156 layer entries</text>
+<text x="16" y="1778" font-size="14" fill="#8e979f">its hf_quant_config.json declares are routed experts, converted NVFP4 -&gt; MXFP4 at load on the checkpoint's own</text>
+<text x="16" y="1796" font-size="14" fill="#8e979f">scales, with a new relu-squared activation kernel because its MLP is ungated. Same weights, same cards, stock</text>
+<text x="16" y="1814" font-size="14" fill="#8e979f">kernels: 27 tok/s eager, 73 with graphs.</text>
+<text x="16" y="1832" font-size="14" fill="#8e979f">The Flash-Next column is the fp8 e4m3 main-KV launch this box runs by default: the pool doubles (1,009,899 against</text>
+<text x="16" y="1850" font-size="14" fill="#8e979f">540,202 tokens; with image inputs on, as today's launch runs, 935,216) and GSM8K 800 reads 96.0 against 95.6 %,</text>
+<text x="16" y="1868" font-size="14" fill="#8e979f">HumanEval 164 98.17 against 96.95.</text>
+<text x="16" y="1886" font-size="14" fill="#8e979f">v0.4.2 is the DeepSeek step measured a launch at a time: a per-kernel ledger of the step, an eight-rank all-reduce</text>
+<text x="16" y="1904" font-size="14" fill="#8e979f">at 160 KiB-1.5 MiB, an expert placement map for the rank skew, the EXL3 GEMV trimmed, and the 48-token expert tier</text>
+<text x="16" y="1922" font-size="14" fill="#8e979f">released -- the drafter collapse that held it back in v0.4.1 was a graph-pool-layout latent bug, not that kernel.</text>
+<text x="16" y="1940" font-size="14" fill="#8e979f">github.com/bkvargyas/r9700-stack</text>
 </svg>

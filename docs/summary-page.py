@@ -75,17 +75,19 @@ MODELS = [
      "128k recipe: 392k KV, three needles"),
 ]
 
-# single-stream decode. Every row names its gate: the 210 W figures and the uncapped ones come from
-# different machines and have never been measured on both, so they do not share a banner.
-GATE, UNCAP = "210 W gate", "the native box, uncapped"
-# the eight-card rows take the gate box's clock offset on top of its power cap: its 120 V feed holds
+# single-stream decode. Every row names its machine: the 210 W figures are upstream's release-gate box
+# and the uncapped ones are ours; the two have never been measured on both, so they do not share a
+# banner. The one shape both boxes ran -- Flash-Next on four cards -- leads with ours at 186.7 and
+# carries upstream's 221-225 in its note: recorded, not reconciled.
+GATE, UNCAP = "210 W gate", "the native box, uncapped"        # upstream's gate box / this fork's box
+# upstream's eight-card rows take that box's clock offset on top of its power cap: its 120 V feed holds
 # eight-card runs to -500 MHz SCLK, so their numbers carry both facts and never share a banner with TP4.
 GATE8 = "210 W gate, -500 MHz"
 BARMAX, BARLEN = 250.0, 300
 BARS = [
     ("Nemotron-3.5-Super-VL", "TP4", 94,
      "94-112 across launches; stock: 27 eager, 73 graphs", UNCAP),
-    ("Qwen3.8-Flash-Next", "TP4, four cards", 225, "14.3-14.4 ms a step; best sample 228", GATE),
+    ("Qwen3.8-Flash-Next", "TP4", 186.7, "14.3 ms a step; upstream's gate: 221-225", UNCAP),
     ("Qwen3.8-27B-NVFP4", "TP2, two cards", 222, "4.5 tokens a step with the DFlash2 drafter", GATE),
     ("GLM-5.3-Flash", "TP8", 100, "75-80 before v0.3.8's host-memory collective", GATE8),
     ("DeepSeek-V4.1-Flash", "TP8+EP", 215, "on code; 104 prose (v0.4.1: 202, 87-97)", GATE8),
@@ -106,9 +108,11 @@ FACTS = [
      "(162 tok/s with the box to itself)"),
 ]
 
-FOOT = ["Each number names its machine: \"210 W gate\" is the gate box (210 W a card, -42 mV, 32k); \"210 W gate, "
-        "-500 MHz\" is that box's eight-card runs, which also sit at the clock offset its 120 V feed forces; \"the "
-        "native box, uncapped\" is four R9700 at ~299 W a card in practice. None of the three crosses.",
+FOOT = ["Each number names its machine: \"210 W gate\" is upstream's release-gate box (210 W a card, -42 mV, 32k), "
+        "kept for comparison; \"210 W gate, -500 MHz\" is that box's eight-card runs, which also sit at the clock "
+        "offset its 120 V feed forces; \"the native box, uncapped\" is ours: four R9700 at ~299 W a card in "
+        "practice, no cap and no clock pin. The one shape both boxes ran disagrees and both stand recorded: our "
+        "186.7 against upstream's 221-225 on four Flash-Next cards. None of the three crosses.",
         "The Super VL row is a day on the native box, 2026-11-18, and is not in a tag: 40,960 of the "
         "41,156 layer entries its hf_quant_config.json declares are routed experts, converted NVFP4 -> MXFP4 at load "
         "on the checkpoint's own scales, with a new relu-squared activation kernel because its MLP is ungated. Same "
